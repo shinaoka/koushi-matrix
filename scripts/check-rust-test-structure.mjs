@@ -2255,20 +2255,25 @@ export function checkCoreTimelineMediaAttentionReliableDelivery() {
 
 export function checkCoreTimelineRetryQueueOrder() {
   const rule = "core.timeline.retry_queue_order";
-  const body = timelineSection("outbound_send.rs", "async fn handle_retry_send", "async fn handle_cancel_send");
-  const enable = body?.indexOf("set_enabled(true)") ?? -1;
-  const unwedge = body?.indexOf("unwedge().await") ?? -1;
-  return enable >= 0 && unwedge >= 0 && enable < unwedge
-    ? []
-    : [sourceContractFailure(rule, "retry unwedges the SDK queue before re-enabling it")];
+  const retry = timelineSection("outbound_send.rs", "async fn handle_retry_send", "async fn handle_cancel_send");
+  // #1846: retry, cancel and the delayed recoverable re-enable share one resume
+  // helper, so the order lives there and every caller inherits it.
+  const resume = timelineItemBody("outbound_send.rs", "pub(super) async fn resume_room_send_queue");
+  const enable = resume?.indexOf("set_enabled(true)") ?? -1;
+  const unwedge = resume?.indexOf("unwedge().await") ?? -1;
+  const failures = [];
+  if (!retry?.includes("resume_room_send_queue")) failures.push(sourceContractFailure(rule, "retry does not resume the room queue through the ordered helper"));
+  if (!(enable >= 0 && unwedge >= 0 && enable < unwedge)) failures.push(sourceContractFailure(rule, "retry unwedges the SDK queue before re-enabling it"));
+  return failures;
 }
 
 export function checkCoreTimelineCancelQueueOrder() {
   const rule = "core.timeline.cancel_queue_order";
   const body = timelineSection("outbound_send.rs", "async fn handle_cancel_send", "fn sdk_room_for_key");
   const abort = body?.indexOf("abort().await") ?? -1;
-  const enable = body?.indexOf("set_enabled(true)") ?? -1;
-  return abort >= 0 && enable >= 0 && abort < enable
+  // #1846: cancel resumes through the same ordered helper as retry.
+  const resume = body?.indexOf("resume_room_send_queue") ?? -1;
+  return abort >= 0 && resume >= 0 && abort < resume
     ? []
     : [sourceContractFailure(rule, "cancel does not re-enable the SDK queue after abort")];
 }
@@ -2551,6 +2556,247 @@ export function checkCoreTimelineThreadComposerRoute() {
   return failures;
 }
 
+/// The only functions allowed to put a send state into a row: the derivation
+/// itself, and the manager-owned pending base records, which are resolved at
+/// render time. Everything else must derive.
+const ROW_SEND_STATE_WRITERS = new Map([
+  ["item_projection.rs", new Set(["sdk_item_to_timeline_item_with_send_states", "apply_all"])],
+  [
+    "outbound_send.rs",
+    new Set(["pending_send_item", "mark_retry_sending", "mark_hydrated", "apply_terminal"])
+  ]
+]);
+
+function timelineRelative(file) {
+  return file.replace(/^.*timeline\//u, "");
+}
+
+function rustFilesUnder(directory) {
+  const files = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const full = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...rustFilesUnder(full));
+    else if (entry.name.endsWith(".rs")) files.push(full);
+  }
+  return files;
+}
+
+/// Every production timeline source, keyed by `file` relative to `timeline/`.
+/// Submodules are scanned too: a bypass does not have to live in the nine files
+/// a human would list by hand.
+export function timelineProductionSources() {
+  const root = path.join(repositoryRoot, "crates/koushi-core/src/timeline");
+  const testOnly = /(?:^|\/)(?:tests|test_support|[a-z0-9_]+_tests)\.rs$/u;
+  return Object.fromEntries(
+    rustFilesUnder(root)
+      .map((file) => {
+        const relative = path.relative(repositoryRoot, file).split(path.sep).join("/");
+        return [relative, file];
+      })
+      .filter(([, file]) => !testOnly.test(file.split(path.sep).join("/")))
+      .map(([relative]) => [relative, productionOnly(readRustSource(relative), relative)])
+  );
+}
+
+/// The function a token belongs to, approximated as the nearest preceding `fn`
+/// name. Rust has no top-level statements, so every write is inside one.
+function enclosingFunctionNames(tokens) {
+  const names = [];
+  let name = null;
+  for (const token of tokens) {
+    if (token.kind === "identifier" && token.value === "fn" && tokens[tokens.indexOf(token) + 1]) {
+      // Filled below in the linear pass; `indexOf` is O(n) so keep this simple
+      // only for `fn` tokens (there are few).
+      name = name;
+    }
+    names.push(name);
+  }
+  let current = null;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.kind === "identifier" && token.value === "fn") {
+      const next = tokens[index + 1];
+      if (next?.kind === "identifier") current = next.value;
+    }
+    names[index] = current;
+  }
+  return names;
+}
+
+/// #1846: a rendered send state is derived at projection time. Writing one into a
+/// row outside the derivation is the shape that produced nine rounds of "a
+/// resolved state rolled back", so it fails here. The scan is token based, so a
+/// write split across lines (or hidden after a long function preamble) is the
+/// same token sequence as a one-line write, a copied or shorthand struct field is
+/// still a write, and a commented-out write is not a write.
+export function findForbiddenRowSendStateAssignments(sources) {
+  const offenders = [];
+  for (const [file, source] of Object.entries(sources)) {
+    const relative = timelineRelative(file);
+    const allowed = ROW_SEND_STATE_WRITERS.get(relative) ?? new Set();
+    const tokens = lexRust(source).filter((token) => token.kind !== "comment");
+    const owners = enclosingFunctionNames(tokens);
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      if (token.kind !== "identifier" || token.value !== "send_state") continue;
+      const next = tokens[index + 1];
+      const previous = tokens[index - 1];
+      // A parameter (`send_state: TimelineSendState`) is not a write.
+      const declared = next?.value === ":" && ["TimelineSendState", "&", "Option"].includes(tokens[index + 2]?.value) && tokens[index + 3]?.value !== "::";
+      // A struct-literal field, including a copied value and the `..rest`
+      // shorthand, is a write unless it is explicitly `None`.
+      const fieldInit = next?.value === ":" && !declared && tokens[index + 2]?.value !== "None";
+      let shorthand = false;
+      if (previous?.value === "{" || previous?.value === ",") {
+        if (next?.value === "," || next?.value === "}") {
+          // Struct-update shorthand (`TimelineItem { send_state, ..rest }`) is a
+          // copy of the source row; a plain argument named `send_state` is not.
+          let cursor = index + 1;
+          let depth = 0;
+          while (cursor < tokens.length) {
+            const part = tokens[cursor];
+            if (part.value === "{" || part.value === "(" || part.value === "[") depth += 1;
+            if (part.value === "}" || part.value === ")" || part.value === "]") {
+              if (depth === 0) break;
+              depth -= 1;
+            }
+            // The lexer emits `..` as two `.` tokens.
+            if (depth === 0 && part.value === "." && tokens[cursor + 1]?.value === ".") {
+              shorthand = true;
+              break;
+            }
+            cursor += 1;
+          }
+        }
+      }
+      const assignment = next?.value === "=" && next.value !== "==";
+      if (!assignment && !fieldInit && !shorthand) continue;
+      const owner = owners[index] ?? "";
+      if (allowed.has(owner)) continue;
+      offenders.push(`${relative}:${token.line} (${owner || "unknown function"})`);
+    }
+  }
+  return offenders;
+}
+
+/// #1846: a derivation whose result is thrown away cannot refuse anything. The
+/// discard idioms (`let _ =`, a bare call statement, `drop(..)`, `discard!(..)`,
+/// `discard!{ .. }`, `black_box(..)`) are the ways a source scan otherwise misses
+/// a dead boundary.
+export function findDiscardedSendStateDerivations(sources) {
+  const offenders = [];
+  for (const [file, source] of Object.entries(sources)) {
+    const relative = timelineRelative(file);
+    const tokens = lexRust(source).filter((token) => token.kind !== "comment");
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      if (token.kind !== "identifier") continue;
+      if (token.value !== "derive" && token.value !== "retry_admission") continue;
+      if (tokens[index + 1]?.value !== "(") continue;
+      // The call's own receiver (`authority.derive(..)`) is not part of the head.
+      let head = index - 1;
+      if (tokens[head]?.value === "." && tokens[head - 1]?.kind === "identifier") head -= 2;
+      const receiver = index - 1 - head;
+      while (head >= 0 && ![";", "{", "}"].includes(tokens[head].value)) head -= 1;
+      const prefix = tokens.slice(head + 1, index - receiver).map((part) => part.value).join(" ");
+      // `discard! { .. }` wraps the call in a block, so the macro name sits before
+      // the brace the head scan stopped at.
+      const wrapper =
+        head >= 0 && tokens[head].value === "{"
+          ? tokens.slice(Math.max(0, head - 4), head).map((part) => part.value).join(" ")
+          : "";
+      let close = index + 1;
+      let depth = 0;
+      while (close < tokens.length) {
+        if (tokens[close].value === "(") depth += 1;
+        if (tokens[close].value === ")") {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+        close += 1;
+      }
+      // A call that ends its statement and that nothing binds, tests or returns is
+      // dropped, however its receiver is spelled.
+      const standalone = tokens[close + 1]?.value === ";";
+      const consumed =
+        /^(?:let|if|match|return|assert|assert_eq|assert_ne|debug_assert|while|for|break|continue|await|move)\b/u.test(prefix) ||
+        /(?:^|[^=!<>])=(?!=)/u.test(prefix);
+      const discarded =
+        /^let _ =/u.test(prefix) ||
+        /(?:discard|black_box|drop)\s*[!({]/u.test(prefix) ||
+        /(?:discard|black_box|drop)\s*!?\s*$/u.test(wrapper) ||
+        (standalone && !consumed);
+      if (discarded) offenders.push(`${relative}:${token.line}`);
+    }
+  }
+  return offenders;
+}
+
+/// #1846: one derivation, read at every publish boundary.
+export function checkCoreTimelineSendStateDerivation() {
+  const rule = "core.timeline.send_state_derivation";
+  const converter = timelineItemBody("item_projection.rs", "fn sdk_item_to_timeline_item_with_send_states");
+  const authority = timelineItemBody("item_projection.rs", "impl SendStateAuthority");
+  const derive = timelineItemBody("item_projection.rs", "fn derive(");
+  const deriveForItem = timelineItemBody("item_projection.rs", "fn derive_for_item(");
+  const roomBlocked = timelineItemBody("item_projection.rs", "fn room_blocked(");
+  const applyAll = timelineItemBody("item_projection.rs", "fn apply_all(");
+  const admission = timelineItemBody("item_projection.rs", "fn retry_admission(");
+  const projection = timelineItemBody("display_projection.rs", "fn project_display_items(");
+  const status = timelineItemBody("actor.rs", "fn update_send_status(");
+  const retry = timelineSection("outbound_send.rs", "async fn handle_retry_send", "async fn handle_cancel_send");
+  const findRow = timelineItemBody("outbound_send.rs", "fn send_state_row(");
+  const failures = [];
+  // 1. A row stores the SDK's own report and nothing else.
+  if (!converter?.includes("timeline_send_state_from_sdk(event_item.send_state())")) failures.push(sourceContractFailure(rule, "the row conversion does not keep the SDK send state"));
+  if (converter?.includes("send_statuses")) failures.push(sourceContractFailure(rule, "the row conversion mixes the send table into a stored row"));
+  // 2. One derivation: the SDK report wins, the actor record answers while the SDK
+  //    has not attempted it, and an unattempted request in a stopped room is not
+  //    `Sending`.
+  const observed = derive?.indexOf("Some(TimelineSendState::Sending)") ?? -1;
+  const recorded = derive?.indexOf("self.recorded(") ?? -1;
+  const blocked = derive?.indexOf("room_blocked()") ?? -1;
+  if (!(observed >= 0 && recorded > observed && blocked > recorded)) failures.push(sourceContractFailure(rule, "the derivation does not resolve the SDK report, then the actor record, then blocking"));
+  // B1: blocking is room-wide table state. A row, or a window of rows, must never
+  // decide it, or a window rebuild would change what a surviving row means.
+  if (derive?.includes("blocked: bool") || derive?.includes("rows")) failures.push(sourceContractFailure(rule, "the derivation accepts row evidence for blocking"));
+  if (!roomBlocked?.includes("self.statuses") || roomBlocked.includes("TimelineItem")) failures.push(sourceContractFailure(rule, "blocking evidence is not the actor's send table alone"));
+  if (applyAll?.includes("is_recoverable_failure")) failures.push(sourceContractFailure(rule, "a projection derives blocking from the rows it renders"));
+  if (!applyAll?.includes("derive_for_item")) failures.push(sourceContractFailure(rule, "the projection does not derive each row through the row derivation"));
+  if (!deriveForItem?.includes("derive(")) failures.push(sourceContractFailure(rule, "the row derivation is not the one derivation"));
+  if (!authority?.includes("self.statuses.get")) failures.push(sourceContractFailure(rule, "the derivation does not read the actor's send table"));
+  if (!authority?.includes("fn apply_all(")) failures.push(sourceContractFailure(rule, "the authority does not derive a whole projection"));
+  if (!authority.includes("is_recoverable_failure")) failures.push(sourceContractFailure(rule, "the authority cannot tell a stopped room"));
+  // 3. Every publish boundary renders through the projection.
+  if (!projection?.includes("send_states.apply_all")) failures.push(sourceContractFailure(rule, "the display projection copies a row's send state instead of deriving it"));
+  // 4. Recording a state never patches a row: it reprojects.
+  if (status?.includes(".send_state")) failures.push(sourceContractFailure(rule, "recording a send state writes a row"));
+  if (!status?.includes("reproject_display_items")) failures.push(sourceContractFailure(rule, "recording a send state does not reproject"));
+  // 5. Retry admission reads the same derivation on the same row, and does not
+  //    require an SDK handle: a manager-owned row the SDK has not bound yet has
+  //    none, and it renders `not_sent` all the same (B2).
+  if (!admission?.includes("derive_for_item")) failures.push(sourceContractFailure(rule, "retry admission does not judge the row"));
+  if (admission?.includes("blocked")) failures.push(sourceContractFailure(rule, "retry admission takes blocking evidence from its caller"));
+  if (!retry?.includes("retry_admission")) failures.push(sourceContractFailure(rule, "retry admission does not read the rendered state"));
+  const judged = retry?.indexOf("retry_admission") ?? -1;
+  const handle = retry?.indexOf("send_handles") ?? -1;
+  if (judged < 0 || handle < 0 || handle < judged) failures.push(sourceContractFailure(rule, "retry admission depends on a bound SDK handle"));
+  if (!retry?.includes("resume_room_send_queue(&room, handle.as_ref())")) failures.push(sourceContractFailure(rule, "an admitted retry does not resume the room without requiring a handle"));
+  if (!findRow?.includes("navigation_items") || !findRow?.includes("pending_send_projections")) failures.push(sourceContractFailure(rule, "the retried row is not looked up among the un-derived rows"));
+  if (findRow?.includes("display_items")) failures.push(sourceContractFailure(rule, "the retried row is read back from a projected display row"));
+  // 6. Nothing else writes a row, and no derivation result is discarded.
+  const sources = timelineProductionSources();
+  const forbiddenAssignments = findForbiddenRowSendStateAssignments(sources);
+  if (forbiddenAssignments.length > 0) {
+    failures.push(sourceContractFailure(rule, `a rendered send state is written outside the derivation (${forbiddenAssignments.join(", ")})`));
+  }
+  const discarded = findDiscardedSendStateDerivations(sources);
+  if (discarded.length > 0) {
+    failures.push(sourceContractFailure(rule, `a send-state derivation is discarded (${discarded.join(", ")})`));
+  }
+  return failures;
+}
+
 export function checkCoreTimelineOutboundState() {
   const rule = "core.timeline.outbound_state";
   const outbound = timelineSource("outbound_send.rs");
@@ -2564,9 +2810,11 @@ export function checkCoreTimelineOutboundState() {
   const run = timelineItemBody("manager.rs", "async fn run(mut self)");
   const failures = [];
   if (!monitor?.includes("TimelineActorMessage::SendQueueLagged") || monitor.includes("not critical for send completion tracking")) failures.push(sourceContractFailure(rule, "send queue lag is not treated as terminally relevant"));
+  // #1846: the row conversion keeps only the SDK's own report; the rendered state
+  // is derived at projection time (`core.timeline.send_state_derivation`).
   const sdk = projection?.indexOf("timeline_send_state_from_sdk") ?? -1;
-  const mirror = projection?.indexOf("send_statuses.get") ?? -1;
-  if (sdk < 0 || mirror < 0 || sdk >= mirror) failures.push(sourceContractFailure(rule, "SDK send state does not win over the actor mirror"));
+  if (sdk < 0) failures.push(sourceContractFailure(rule, "the row conversion does not keep the SDK send state"));
+  if (projection?.includes("send_statuses")) failures.push(sourceContractFailure(rule, "the row conversion reads the send table"));
   if (!boundary?.includes("terminal_ingress.admit(handoff)") || boundary.includes(".await") || boundary.includes("executor::spawn")) failures.push(sourceContractFailure(rule, "terminal handoff is not synchronously admitted"));
   for (const marker of ["SendQueueUpdate", "RecvError::Lagged", "apply_send_completion_observation_loss_and_handoff"]) if (!observer?.includes(marker)) failures.push(sourceContractFailure(rule, `global send observer lacks ${marker}`));
   if (actor?.includes("apply_send_completion_observation_and_handoff") || actor?.includes("SendCompleted")) failures.push(sourceContractFailure(rule, "replaceable actor consumes send terminals"));
@@ -3742,6 +3990,7 @@ export function runSourceContractRules() {
     checkCoreTimelineMediaAttentionReliableDelivery(),
     checkCoreTimelineRetryQueueOrder(),
     checkCoreTimelineCancelQueueOrder(),
+    checkCoreTimelineSendStateDerivation(),
     checkCoreTimelineSignalTraces(),
     checkCoreTimelineLinkPreviewTrace(),
     checkCoreTimelineLinkPreviewOffLoop(),

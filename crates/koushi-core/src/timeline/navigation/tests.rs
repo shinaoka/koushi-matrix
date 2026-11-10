@@ -2397,7 +2397,6 @@ async fn sdk_vector_diff_batch_preserves_prefix_for_append_and_pop_variants() {
         canonical.len(),
         &key,
         Some(User::Alice.into()),
-        &HashMap::new(),
         None,
         None,
     );

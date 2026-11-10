@@ -1965,15 +1965,7 @@ pub fn sdk_item_to_timeline_item(
     item: &Arc<SdkTimelineItem>,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
 ) -> TimelineItem {
-    sdk_item_to_timeline_item_with_send_states(
-        key,
-        item,
-        own_user_id,
-        &HashMap::new(),
-        None,
-        None,
-        None,
-    )
+    sdk_item_to_timeline_item_with_send_states(key, item, own_user_id, None, None, None)
 }
 
 /// Build the closed room-key request presentation state for an event
@@ -2061,7 +2053,6 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
     key: &TimelineKey,
     item: &Arc<SdkTimelineItem>,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
-    send_statuses: &HashMap<String, TimelineSendState>,
     recovery: Option<&std::collections::BTreeMap<String, super::recovery_model::RecoveryOperation>>,
     key_request_states: Option<&std::collections::BTreeMap<String, KeyRequestUiState>>,
     withheld_codes: Option<&std::collections::BTreeMap<(String, String), &'static str>>,
@@ -2175,11 +2166,10 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 .as_message()
                 .map(|message| message.is_edited())
                 .unwrap_or(false);
-            let send_state = timeline_send_state_from_sdk(event_item.send_state()).or_else(|| {
-                transaction_id
-                    .as_deref()
-                    .and_then(|txn_id| send_statuses.get(txn_id).cloned())
-            });
+            // #1846: a row stores only the SDK's own report. What the user sees
+            // is derived from it and the actor's send table at projection time
+            // (`SendStateAuthority`), never stored here.
+            let send_state = timeline_send_state_from_sdk(event_item.send_state());
             let mut unable_to_decrypt = unable_to_decrypt_from_content(content);
             if let Some(utd) = unable_to_decrypt.as_mut() {
                 utd.can_request_keys = event_item.original_json().is_some();
@@ -3553,6 +3543,95 @@ pub(super) fn timeline_send_state_from_sdk(
     }
 }
 
+/// #1846: the room's outbound authority at projection time. It is rebuilt from
+/// the actor's send table for every projection and never stored in a row, so a
+/// copied, replayed or stale row cannot roll a resolved send state back.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct SendStateAuthority {
+    statuses: HashMap<String, TimelineSendState>,
+}
+
+impl SendStateAuthority {
+    pub(super) fn new(statuses: &HashMap<String, TimelineSendState>) -> Self {
+        Self {
+            statuses: statuses.clone(),
+        }
+    }
+
+    /// The one place a rendered send state is decided.
+    ///
+    /// The SDK's own report for the row wins: a sent echo, or one it reports as
+    /// failed, is what the queue itself will act on. While the SDK has not
+    /// attempted the request (`NotSentYet`) the actor's record answers, because
+    /// the SDK reports a failure that stops the room per room, not per request.
+    /// An unattempted request in a room stopped by a recoverable failure is not
+    /// `Sending`: the SDK keeps FIFO order, so it is waiting behind that failure.
+    ///
+    /// Only the room-wide table decides whether the room is stopped. A row is not
+    /// blocking evidence here: rows arrive in a display window, so a window that
+    /// drops the failed request would otherwise change what a surviving row means.
+    pub(super) fn derive(
+        &self,
+        observed: Option<&TimelineSendState>,
+        transaction_id: Option<&str>,
+    ) -> Option<TimelineSendState> {
+        let state = match observed {
+            // The SDK has not attempted this request yet, so its own report says
+            // nothing about why the room stopped; the actor's record does.
+            Some(TimelineSendState::Sending) => self
+                .recorded(transaction_id)
+                .or(Some(TimelineSendState::Sending)),
+            Some(state) => return Some(state.clone()),
+            None => self.recorded(transaction_id),
+        }?;
+        if matches!(state, TimelineSendState::Sending) && self.room_blocked() {
+            return Some(TimelineSendState::NotSent {
+                reason: TimelineSendFailureReason::Recoverable,
+            });
+        }
+        Some(state)
+    }
+
+    /// Derives one row from the report the row itself carries. Rendering and retry
+    /// admission both go through here, with the same row and the same authority.
+    pub(super) fn derive_for_item(&self, item: &TimelineItem) -> Option<TimelineSendState> {
+        let transaction_id = match &item.id {
+            TimelineItemId::Transaction { transaction_id } => Some(transaction_id.as_str()),
+            TimelineItemId::Event { .. } | TimelineItemId::Synthetic { .. } => None,
+        };
+        self.derive(item.send_state.as_ref(), transaction_id)
+    }
+
+    fn recorded(&self, transaction_id: Option<&str>) -> Option<TimelineSendState> {
+        transaction_id
+            .and_then(|transaction_id| self.statuses.get(transaction_id))
+            .cloned()
+    }
+
+    /// Whether this room is stopped by an unresolved recoverable failure. The
+    /// actor's table is the room-wide record and the only blocking evidence, so
+    /// the answer cannot change when a display window is rebuilt.
+    fn room_blocked(&self) -> bool {
+        self.statuses.values().any(is_recoverable_failure)
+    }
+
+    /// Derives every rendered row of one projection from the room's authority.
+    pub(super) fn apply_all(&self, rows: &mut [TimelineItem]) {
+        for item in rows {
+            item.send_state = self.derive_for_item(item);
+        }
+    }
+}
+
+fn is_recoverable_failure(state: &TimelineSendState) -> bool {
+    matches!(
+        state,
+        TimelineSendState::NotSent {
+            reason: TimelineSendFailureReason::Recoverable
+        }
+    )
+}
+
 pub(super) fn send_failure_reason(is_recoverable: bool) -> TimelineSendFailureReason {
     if is_recoverable {
         TimelineSendFailureReason::Recoverable
@@ -4254,6 +4333,16 @@ pub(crate) fn validate_retry_send(
     }
 }
 
+/// #1846: `RetrySend` and the rendered row read one derivation on the same input.
+/// The input is the row itself, so the command judges the report the projection
+/// renders from — including a manager-owned row the SDK has not bound yet.
+pub(super) fn retry_admission(
+    authority: &SendStateAuthority,
+    item: &TimelineItem,
+) -> Result<(), TimelineFailureKind> {
+    validate_retry_send(authority.derive_for_item(item).as_ref())
+}
+
 pub(crate) fn validate_cancel_send(
     state: Option<&TimelineSendState>,
 ) -> Result<(), TimelineFailureKind> {
@@ -4314,7 +4403,6 @@ pub(super) fn sdk_vector_diffs_to_timeline_diffs(
     initial_canonical_len: usize,
     key: &TimelineKey,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
-    send_statuses: &HashMap<String, TimelineSendState>,
     key_request_states: Option<&std::collections::BTreeMap<String, KeyRequestUiState>>,
     withheld_codes: Option<&std::collections::BTreeMap<(String, String), &'static str>>,
 ) -> Vec<TimelineDiff> {
@@ -4328,7 +4416,6 @@ pub(super) fn sdk_vector_diffs_to_timeline_diffs(
                         key,
                         value,
                         own_user_id,
-                        send_statuses,
                         None,
                         key_request_states,
                         withheld_codes,
@@ -4342,7 +4429,6 @@ pub(super) fn sdk_vector_diffs_to_timeline_diffs(
                         key,
                         value,
                         own_user_id,
-                        send_statuses,
                         None,
                         key_request_states,
                         withheld_codes,
@@ -4357,7 +4443,6 @@ pub(super) fn sdk_vector_diffs_to_timeline_diffs(
                         key,
                         value,
                         own_user_id,
-                        send_statuses,
                         None,
                         key_request_states,
                         withheld_codes,
@@ -4372,7 +4457,6 @@ pub(super) fn sdk_vector_diffs_to_timeline_diffs(
                         key,
                         value,
                         own_user_id,
-                        send_statuses,
                         None,
                         key_request_states,
                         withheld_codes,
@@ -4402,7 +4486,6 @@ pub(super) fn sdk_vector_diffs_to_timeline_diffs(
                                 key,
                                 value,
                                 own_user_id,
-                                send_statuses,
                                 None,
                                 None,
                                 None,
@@ -4432,7 +4515,6 @@ pub(super) fn sdk_vector_diffs_to_timeline_diffs(
                         key,
                         value,
                         own_user_id,
-                        send_statuses,
                         None,
                         key_request_states,
                         withheld_codes,

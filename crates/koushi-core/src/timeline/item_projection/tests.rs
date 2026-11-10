@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use koushi_state::{
     ComposerDocument, ComposerFormattingOptions, ComposerInline, LiveEventReceipts,
@@ -17,6 +17,7 @@ use matrix_sdk::ruma::events::{
 
 use matrix_sdk_ui::timeline::{EventSendState, MembershipChange, ReactionsByKeyBySender};
 
+use super::{SendStateAuthority, retry_admission};
 use crate::event_projection::message_actions_for_timeline_item;
 use koushi_protocol::command::TimelineCommand;
 
@@ -1985,4 +1986,133 @@ fn malformed_encryption_is_not_a_success_notice() {
     let projection = super::message_projection_from_timeline_content(&content);
     assert_ne!(projection.body.as_deref(), Some("enabled room encryption"));
     assert!(projection.notice_i18n.is_some());
+}
+
+fn recoverable_send() -> koushi_protocol::event::TimelineSendState {
+    koushi_protocol::event::TimelineSendState::NotSent {
+        reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
+    }
+}
+
+/// #1846: a settled row stays settled. Blocking is scoped to requests the room
+/// has not sent yet, so a sent or cancelled row is never relabelled.
+#[test]
+fn settled_send_rows_are_not_blocked_by_a_later_failure() {
+    use crate::timeline::test_support::send_row;
+    use koushi_protocol::event::TimelineSendState;
+
+    let authority = SendStateAuthority::new(&HashMap::from([
+        ("sent".to_owned(), TimelineSendState::Sent),
+        ("cancelled".to_owned(), TimelineSendState::Cancelled),
+        ("failed".to_owned(), recoverable_send()),
+        ("queued".to_owned(), TimelineSendState::Sending),
+    ]));
+    let mut rows = vec![
+        send_row("sent", Some(TimelineSendState::Sent)),
+        send_row("cancelled", None),
+        send_row("failed", Some(recoverable_send())),
+        send_row("queued", Some(TimelineSendState::Sending)),
+    ];
+
+    authority.apply_all(&mut rows);
+
+    assert_eq!(rows[0].send_state, Some(TimelineSendState::Sent));
+    assert_eq!(rows[1].send_state, Some(TimelineSendState::Cancelled));
+    assert_eq!(rows[2].send_state, Some(recoverable_send()));
+    assert_eq!(
+        rows[3].send_state,
+        Some(recoverable_send()),
+        "only the unattempted request is blocked"
+    );
+}
+
+/// #1846: rendering and admission read one derivation on the same input. Over the
+/// whole product of (row report x actor record), a row renders `not_sent` exactly
+/// when `RetrySend` accepts it — and both sides are handed the same row.
+#[test]
+fn rendered_not_sent_is_exactly_what_retry_accepts() {
+    use koushi_protocol::event::TimelineSendState;
+
+    let reported = [
+        None,
+        Some(TimelineSendState::Sending),
+        Some(recoverable_send()),
+        Some(TimelineSendState::NotSent {
+            reason: koushi_protocol::event::TimelineSendFailureReason::Unrecoverable,
+        }),
+        Some(TimelineSendState::Cancelled),
+        Some(TimelineSendState::Sent),
+    ];
+    let recorded = [
+        None,
+        Some(TimelineSendState::Sending),
+        Some(recoverable_send()),
+        Some(TimelineSendState::NotSent {
+            reason: koushi_protocol::event::TimelineSendFailureReason::Unrecoverable,
+        }),
+        Some(TimelineSendState::Cancelled),
+        Some(TimelineSendState::Sent),
+    ];
+    // The room's table either holds no recoverable failure or holds one for
+    // another request, and either way the judgement must stay the same shape.
+    let tables = [
+        HashMap::new(),
+        HashMap::from([("head".to_owned(), recoverable_send())]),
+    ];
+    for observed in &reported {
+        for record in &recorded {
+            for table in &tables {
+                let mut statuses = table.clone();
+                if let Some(state) = record.clone() {
+                    statuses.insert("txn".to_owned(), state);
+                }
+                let authority = SendStateAuthority::new(&statuses);
+                let row = crate::timeline::test_support::send_row("txn", observed.clone());
+
+                let mut rows = vec![row.clone()];
+                authority.apply_all(&mut rows);
+                let rendered = rows[0].send_state.clone();
+                let accepted = retry_admission(&authority, &row).is_ok();
+
+                assert_eq!(
+                    rendered,
+                    authority.derive(observed.as_ref(), Some("txn")),
+                    "the projection renders the derivation (observed={observed:?}, \
+                     recorded={record:?})"
+                );
+                assert_eq!(
+                    matches!(rendered, Some(TimelineSendState::NotSent { .. })),
+                    accepted,
+                    "rendered {rendered:?} but RetrySend accepted={accepted} \
+                     (observed={observed:?}, recorded={record:?}, table={table:?})"
+                );
+            }
+        }
+    }
+}
+
+/// #1846 B2: a manager-owned row the SDK has not bound yet carries only a client
+/// transaction id, so the room table has no entry for it and the actor holds no
+/// `SendHandle`. It still renders `not_sent` while the room is stopped, and
+/// admission must accept exactly that row.
+#[test]
+fn an_unbound_pending_row_is_accepted_exactly_as_it_renders() {
+    use koushi_protocol::event::TimelineSendState;
+
+    let authority =
+        SendStateAuthority::new(&HashMap::from([("head".to_owned(), recoverable_send())]));
+    let row = crate::timeline::test_support::send_row(
+        "client-transaction",
+        Some(TimelineSendState::Sending),
+    );
+
+    assert_eq!(authority.derive_for_item(&row), Some(recoverable_send()));
+    assert!(
+        retry_admission(&authority, &row).is_ok(),
+        "a rendered Resend must be accepted for a row without an SDK binding"
+    );
+
+    let mut rows = vec![row];
+    authority.apply_all(&mut rows);
+    assert_eq!(rows[0].send_state, Some(recoverable_send()));
 }

@@ -6,8 +6,6 @@
 //! This module lives outside `manager`'s inline test module, which is at the
 //! inline test-size limit.
 
-use std::collections::HashMap;
-
 use matrix_sdk::{
     ruma::{event_id, events::Mentions, room_id, user_id},
     test_utils::mocks::MatrixMockServer,
@@ -107,7 +105,6 @@ async fn thread_focus_projection_preserves_element_mention_anchors() {
             &key,
             item,
             Some(mentioned),
-            &HashMap::new(),
             None,
             None,
             None,

@@ -12,6 +12,7 @@ use koushi_protocol::ids::{TimelineKey, TimelineKind};
 use koushi_state::{LiveEventReceipts, TimelineThreadRootOrder};
 
 // BEGIN GENERATED SIBLING IMPORTS
+use super::item_projection::SendStateAuthority;
 use super::navigation::{
     DISPLAY_PROJECTION_RESET_FALLBACKS, ROOM_REPLAY_INITIAL_ITEMS_MAX, TimelineActorGenerationGate,
     TimelineActorGenerationLease,
@@ -362,31 +363,6 @@ impl DisplayProjectionState {
     ) {
         self.pending_items = pending_items;
         self.suppressed_transaction_ids = suppressed_transaction_ids;
-    }
-
-    pub(super) fn update_send_state(
-        &mut self,
-        transaction_id: &str,
-        send_state: TimelineSendState,
-        context: &DisplayProjectionContext,
-    ) -> Vec<TimelineDiff> {
-        let mut changed = false;
-        for slot in &mut self.slots {
-            if matches!(
-                &slot.item.id,
-                TimelineItemId::Transaction { transaction_id: id } if id == transaction_id
-            ) && slot.item.send_state != Some(send_state.clone())
-            {
-                slot.item.send_state = Some(send_state.clone());
-                changed = true;
-            }
-        }
-        if !changed {
-            return Vec::new();
-        }
-        let before = self.display_items.clone();
-        self.display_items = project_display_items(self, context);
-        finalize_display_projection_diffs(&before, &self.display_items, false).0
     }
 
     pub(super) fn replace_pending(
@@ -1136,6 +1112,9 @@ pub(super) struct DisplayProjectionContext {
     project_thread_roots: bool,
     pub(super) thread_root_order: TimelineThreadRootOrder,
     pub(super) thread_roots: Vec<ThreadRootDisplayData>,
+    /// #1846: the room's send authority for this projection. Empty for
+    /// timelines that never render an outbound row.
+    pub(super) send_states: SendStateAuthority,
 }
 
 impl DisplayProjectionContext {
@@ -1152,7 +1131,19 @@ impl DisplayProjectionContext {
             project_thread_roots: matches!(kind, TimelineKind::Room { .. }),
             thread_root_order: TimelineThreadRootOrder::RootEvent,
             thread_roots: Vec::new(),
+            send_states: SendStateAuthority::default(),
         }
+    }
+
+    /// #1846: the caller passes the actor's send table as it stands now. Every
+    /// projection (window rebuild, replay, pending refresh, batch) re-derives
+    /// from it, so no committed row can hold a resolved state back.
+    pub(super) fn with_send_states(
+        mut self,
+        statuses: &HashMap<String, TimelineSendState>,
+    ) -> Self {
+        self.send_states = SendStateAuthority::new(statuses);
+        self
     }
 
     pub(super) fn with_thread_roots(
@@ -1175,6 +1166,7 @@ impl DisplayProjectionContext {
             project_thread_roots: true,
             thread_root_order: TimelineThreadRootOrder::RootEvent,
             thread_roots: Vec::new(),
+            send_states: SendStateAuthority::default(),
         }
     }
 }
@@ -1388,6 +1380,18 @@ pub(super) fn live_edge_window_start(items: &[TimelineItem], max_items: usize) -
 }
 
 fn project_display_items(
+    state: &DisplayProjectionState,
+    context: &DisplayProjectionContext,
+) -> Vec<TimelineItem> {
+    // #1846: every publish boundary renders through here, so a row's send state
+    // comes from the room's current authority instead of a copied value. The
+    // authority is rebuilt per projection and never stored in a row.
+    let mut items = assemble_display_items(state, context);
+    context.send_states.apply_all(&mut items);
+    items
+}
+
+fn assemble_display_items(
     state: &DisplayProjectionState,
     context: &DisplayProjectionContext,
 ) -> Vec<TimelineItem> {
@@ -2250,3 +2254,7 @@ mod bounded_visibility_tests;
 #[cfg(test)]
 #[path = "display_projection/issue_1692_tests.rs"]
 mod issue_1692_tests;
+
+#[cfg(test)]
+#[path = "display_projection/send_state_tests.rs"]
+mod send_state_tests;
