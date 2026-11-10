@@ -786,13 +786,15 @@ impl AppActor {
         // mode, the room messages around the hit never arrive, and the view's
         // live tail is the thread's last reply.
         if let Some(root_event_id) = thread_root_event_id {
-            self.handle_event_navigation_thread_target(
+            // #1554: the thread route reduces a whole thread-pane open, so its
+            // future is kept off the navigation handler's stack.
+            Box::pin(self.handle_event_navigation_thread_target(
                 prepared.request_id,
                 prepared.generation,
                 prepared.room_id,
                 prepared.event_id,
                 root_event_id,
-            )
+            ))
             .await;
             return;
         }
