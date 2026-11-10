@@ -961,3 +961,48 @@ async fn cancelling_restores_the_previous_space_and_room() {
         })
         .await;
 }
+
+/// #1848 exception, pinned: a prior Space with no open room is not restored as
+/// "that Space with no room". The room-less Space is not a state the reducer can
+/// reach by SelectSpace (it auto-selects a room), so the cancel lands on the room
+/// SelectSpace picks. The displaced target room is left, not restored.
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_space_with_no_open_room_lands_on_its_auto_selected_room() {
+    let mut in_space = unread_diagnostic_room(SPACE_ROOM);
+    in_space.parent_space_ids = vec![SPACE.to_owned()];
+    let mut state = state_with(
+        vec![in_space, unread_diagnostic_room(ROOM)],
+        vec![koushi_state::SpaceSummary {
+            space_id: SPACE.to_owned(),
+            raw_name: None,
+            display_name: "Synthetic space".to_owned(),
+            avatar: None,
+            join_rule: None,
+            topic: None,
+            child_room_ids: vec![SPACE_ROOM.to_owned()],
+            parent_side_child_room_ids: vec![SPACE_ROOM.to_owned()],
+        }],
+        None,
+    );
+    // The open room vanished while the Space stayed selected (reducer/room.rs).
+    state.navigation.active_space_id = Some(SPACE.to_owned());
+    let mut harness = start_with(state);
+
+    // ROOM has no Space, so the jump leaves the Space.
+    harness.navigate(request(1)).await;
+    let _held = harness.manager.build_started().await;
+    harness.close_focused_context(request(2)).await;
+    harness.wait_for_close_committed(request(2)).await;
+
+    let state = harness.snapshot_rx.borrow().state.clone();
+    assert_eq!(state.navigation.active_space_id.as_deref(), Some(SPACE));
+    assert_eq!(
+        state.navigation.active_room_id.as_deref(),
+        Some(SPACE_ROOM),
+        "the Space-only prior lands on the room SelectSpace auto-selects"
+    );
+    assert!(matches!(
+        state.navigation.event_navigation,
+        EventNavigationState::Idle
+    ));
+}

@@ -1351,7 +1351,12 @@ presentation, ownership, or the waiter. Rust publishes every terminal or clear
 state before releasing its public waiter. The operation is transient and is not
 persisted with navigation preferences. A cancel from the pending banner
 (`CloseFocusedContext`) restores the Space and room the navigation displaced,
-and the close completes only after that restore is published (#1848); a user
+and the close completes only after that restore is published (#1848). The
+exception is a displaced Space with no open room: the reducer has no action
+that clears a room within a Space (`crates/koushi-state/src/reducer/navigation.rs:395-440`,
+`crates/koushi-state/src/reducer/mod.rs:3023-3040`), so that selection is not restored as "this Space
+with no room". A cancel that changes Space lands on the room `SelectSpace`
+auto-selects; a cancel within the same Space keeps the navigation's room. A user
 Space or room selection supersedes the navigation and keeps the user's choice.
 
 A reply quote's open-original activation is the same outer operation with source

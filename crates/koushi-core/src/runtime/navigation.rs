@@ -422,7 +422,7 @@ impl AppActor {
     /// #1848: put back the Space and room a cancelled navigation displaced,
     /// through the actions a user selection takes. A room is queued in
     /// `pending_select` first, or the reducer drops it.
-    // shortcut: a prior Space with no open room is not restored when that Space has rooms, because SelectSpace auto-selects one and no action clears the room within a Space (reducer/navigation.rs:395-440, reducer/mod.rs:3023-3040); upgrade with a reducer action that sets Space and room together.
+    // shortcut: a Space-only prior (no open room) is not restored; the cancel lands on the room SelectSpace auto-selects, or keeps the navigation's room when the Space is unchanged (reducer/navigation.rs:395-440, reducer/mod.rs:3023-3040); upgrade when a reducer action can set Space and room together.
     pub(super) async fn restore_prior_selection(&mut self, prior: PriorSelection) {
         let current_space = self.state.navigation.active_space_id.clone();
         // SelectSpace(None) is the only action that clears an open room in Home,
