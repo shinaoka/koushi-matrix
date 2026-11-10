@@ -962,12 +962,13 @@ async fn cancelling_restores_the_previous_space_and_room() {
         .await;
 }
 
-/// #1848 exception, pinned: a prior Space with no open room is not restored as
-/// "that Space with no room". The room-less Space is not a state the reducer can
-/// reach by SelectSpace (it auto-selects a room), so the cancel lands on the room
-/// SelectSpace picks. The displaced target room is left, not restored.
+/// #1848 boundary, pinned, tracked by #1850. A prior selection that is a Space
+/// with no open room, where the Space has an eligible room: the cancel
+/// re-selects the Space (SelectSpace runs because the jump left it), and the
+/// room is SelectSpace's preferred optional room, not the prior's absent room.
+/// The assertions pin the current result; they do not state the intended one.
 #[tokio::test(start_paused = true)]
-async fn cancelling_a_space_with_no_open_room_lands_on_its_auto_selected_room() {
+async fn cancelling_a_space_only_prior_reselects_the_space_with_its_preferred_room() {
     let mut in_space = unread_diagnostic_room(SPACE_ROOM);
     in_space.parent_space_ids = vec![SPACE.to_owned()];
     let mut state = state_with(
@@ -999,7 +1000,7 @@ async fn cancelling_a_space_with_no_open_room_lands_on_its_auto_selected_room() 
     assert_eq!(
         state.navigation.active_room_id.as_deref(),
         Some(SPACE_ROOM),
-        "the Space-only prior lands on the room SelectSpace auto-selects"
+        "the room is SelectSpace's preferred optional room (#1850)"
     );
     assert!(matches!(
         state.navigation.event_navigation,
