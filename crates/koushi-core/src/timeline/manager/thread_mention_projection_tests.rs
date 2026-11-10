@@ -107,10 +107,13 @@ async fn thread_focus_projection_preserves_element_mention_anchors() {
             &key,
             item,
             Some(mentioned),
-            &HashMap::new(),
             None,
             None,
             None,
+            super::super::item_projection::RowWriteInputs {
+                send_statuses: &HashMap::new(),
+                revision: Default::default(),
+            },
         ));
     }
     let projected = reply_projection.expect("the thread reply is projected");

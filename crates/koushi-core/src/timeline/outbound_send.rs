@@ -399,6 +399,30 @@ pub(super) enum PendingSendPhase {
     HydratedSent,
 }
 
+/// #1846: the row a manager-owned pending send renders. Its record is the coordinator's
+/// observation of the SDK, resolved by the same function as a canonical row, so no path —
+/// the actor's refresh, a relay batch's pending inputs or the startup projection — can
+/// publish a raw base state that disagrees with the retry guard.
+pub(super) fn pending_display_item(
+    projection: &PendingSendProjection,
+    send_statuses: &HashMap<String, TimelineSendState>,
+    revision: super::item_projection::RowRevision,
+) -> TimelineItem {
+    let mut item = projection.item.clone();
+    let recorded = item.send_state.take();
+    super::item_projection::install_row(
+        &mut item,
+        None,
+        recorded.as_ref(),
+        super::item_projection::blocked_behind_recoverable_failure(
+            projection.sdk_transaction_id.as_deref(),
+            send_statuses,
+        ),
+        revision,
+    );
+    item
+}
+
 #[derive(Clone)]
 pub(super) struct PendingSendProjection {
     pub(super) lifecycle_trace: Option<SendLifecycleTrace>,
@@ -2272,6 +2296,7 @@ impl TimelineActor {
     pub(super) async fn handle_send_queue_lagged(&mut self) {
         self.resync_send_queue_statuses().await;
 
+        let observed = self.observe_sdk_observation();
         let (current_items, _) = self.timeline.subscribe().await;
         let link_preview_context = self.link_preview_policy.for_room(self.key.room_id());
         let items: Vec<TimelineItem> = current_items
@@ -2281,10 +2306,16 @@ impl TimelineActor {
                     &self.key,
                     item,
                     self.own_user_id.as_deref(),
-                    &self.send_statuses,
                     Some(&self.room_key_recovery),
                     Some(&self.key_request_states),
                     Some(&self.withheld_codes),
+                    super::item_projection::RowWriteInputs {
+                        send_statuses: &self.send_statuses,
+                        revision: super::item_projection::RowRevision {
+                            observed,
+                            current: self.sdk_observation_revision,
+                        },
+                    },
                 )
             })
             .map(|mut item| {

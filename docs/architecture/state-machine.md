@@ -4318,9 +4318,20 @@ itself when the failure is retried, sent, cancelled or wedged. The derivation ne
 row's own observed transaction in the send table, so a bound but not yet observed row
 keeps its normal state.
 
-The canonical row and the manager-owned pending row render that result, and the
-`RetrySend` guard judges **the state the row renders** — not a second reading of the send
-table. Exactly what that guarantees, and what it does not:
+Every rendered row's send state is assigned in exactly one place,
+`install_row(item, sdk_state, recorded, blocked, revision)`
+(`crates/koushi-core/src/timeline/item_projection.rs`): the SDK item conversion (relay
+batches, lag restore, startup), the manager-owned pending row, the queued batch's
+snapshot re-resolution and the send-state republish all install through it, and a path
+that cannot supply the SDK state it saw does not write a row. Each write carries the
+actor's SDK observation revision it was computed at; a write older than the current
+observation is refused and counted (`core.timeline_send_state` /
+`stale_row_write_dropped`), so a queued batch or an old snapshot cannot roll a row back.
+The `TimelineGeneration` gate stays separate: it fences actor replacement, not observation
+order.
+
+The `RetrySend` guard judges **the state the row renders** — not a second reading of the
+send table. Exactly what that guarantees, and what it does not:
 
 - guaranteed: a row rendered as `not_sent` is accepted by `RetrySend`, and a row rendered
   as anything else is refused (`invalid_send_state`, or `invalid_send_target` when the

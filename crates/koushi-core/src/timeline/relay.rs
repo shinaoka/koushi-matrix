@@ -17,7 +17,7 @@ use crate::executor;
 use crate::search::SearchIndexMessage;
 use crate::threads_list::ThreadRootProjectionService;
 use koushi_protocol::event::{
-    CoreEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineResyncReason,
+    CoreEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineResyncReason, TimelineSendState,
     TimelineViewportObservation,
 };
 use koushi_protocol::ids::{TimelineBatchId, TimelineGeneration, TimelineKey, TimelineKind};
@@ -64,8 +64,32 @@ use super::thread_projection::{
 };
 // END GENERATED SIBLING IMPORTS
 
+fn timeline_diff_items(diff: &TimelineDiff) -> Vec<&TimelineItem> {
+    match diff {
+        TimelineDiff::PushFront { item }
+        | TimelineDiff::PushBack { item }
+        | TimelineDiff::Insert { item, .. }
+        | TimelineDiff::Set { item, .. } => vec![item],
+        TimelineDiff::Reset { items } => items.iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn timeline_diff_items_mut(diff: &mut TimelineDiff) -> Vec<&mut TimelineItem> {
+    match diff {
+        TimelineDiff::PushFront { item }
+        | TimelineDiff::PushBack { item }
+        | TimelineDiff::Insert { item, .. }
+        | TimelineDiff::Set { item, .. } => vec![item],
+        TimelineDiff::Reset { items } => items.iter_mut().collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn pending_display_inputs_for_incoming_transactions(
     projections: &[PendingSendProjection],
+    send_statuses: &HashMap<String, TimelineSendState>,
+    revision: super::item_projection::RowRevision,
     incoming_transaction_ids: &HashSet<String>,
     mut suppressed: HashSet<String>,
 ) -> (Vec<TimelineItem>, HashSet<String>) {
@@ -91,7 +115,9 @@ fn pending_display_inputs_for_incoming_transactions(
                     bound_incoming_transaction_ids.contains(transaction_id)
                 })
         })
-        .map(|projection| projection.item.clone())
+        .map(|projection| {
+            super::outbound_send::pending_display_item(projection, send_statuses, revision)
+        })
         .collect();
     suppressed.extend(
         projections
@@ -281,6 +307,93 @@ impl TimelineActor {
             .await;
     }
 
+    /// #1846: a queued batch can be older than the SDK snapshot a send-state republish just
+    /// read — the relay stream and the send-queue monitor consume the same SDK updates in
+    /// either order. Its own item values are therefore not authoritative for outbound rows:
+    /// before the batch is published, the send states of its transaction rows are resolved
+    /// again against the SDK's current items, the boundary `republish_send_rows` reads.
+    async fn resolve_batch_send_states(
+        &mut self,
+        core_diffs: &mut [TimelineDiff],
+        batch_observation: u64,
+    ) {
+        let mut wanted = std::collections::HashSet::new();
+        for diff in core_diffs.iter() {
+            for item in timeline_diff_items(diff) {
+                if let koushi_protocol::event::TimelineItemId::Transaction { transaction_id } =
+                    &item.id
+                    && self.send_statuses.contains_key(transaction_id)
+                {
+                    wanted.insert(transaction_id.clone());
+                }
+            }
+        }
+        if wanted.is_empty() {
+            return;
+        }
+        let observed = self.observe_sdk_observation();
+        let (sdk_items, _) = self.timeline.subscribe().await;
+        let mut resolved = HashMap::new();
+        for item in &sdk_items {
+            let Some(transaction_id) = item
+                .as_event()
+                .and_then(|event| event.transaction_id())
+                .map(|transaction_id| transaction_id.to_string())
+            else {
+                continue;
+            };
+            if !wanted.contains(&transaction_id) {
+                continue;
+            }
+            let projected = sdk_item_to_timeline_item_with_send_states(
+                &self.key,
+                item,
+                self.own_user_id.as_deref(),
+                Some(&self.room_key_recovery),
+                Some(&self.key_request_states),
+                Some(&self.withheld_codes),
+                super::item_projection::RowWriteInputs {
+                    send_statuses: &self.send_statuses,
+                    revision: super::item_projection::RowRevision {
+                        observed,
+                        current: self.sdk_observation_revision,
+                    },
+                },
+            );
+            if let Some(send_state) = projected.send_state {
+                resolved.insert(transaction_id, send_state);
+            }
+        }
+        if resolved.is_empty() {
+            return;
+        }
+        let revision = super::item_projection::RowRevision {
+            observed: batch_observation,
+            current: self.sdk_observation_revision,
+        };
+        for diff in core_diffs.iter_mut() {
+            for item in timeline_diff_items_mut(diff) {
+                let koushi_protocol::event::TimelineItemId::Transaction { transaction_id } =
+                    &item.id
+                else {
+                    continue;
+                };
+                let Some(send_state) = resolved.get(transaction_id) else {
+                    continue;
+                };
+                // #1846: the batch's snapshot resolution is installed through the same
+                // boundary, so a newer observation wins over this batch.
+                super::item_projection::install_row(
+                    item,
+                    Some(send_state.clone()),
+                    self.send_statuses.get(transaction_id),
+                    false,
+                    revision,
+                );
+            }
+        }
+    }
+
     pub(super) async fn handle_diff_batch(
         &mut self,
         diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
@@ -398,6 +511,10 @@ impl TimelineActor {
         if let Some((operation, result)) = decrypt_retry_resolution {
             self.settle_decrypt_retry(operation, result);
         }
+        // #1846: the batch's SDK observation point. A row write it derived from here is
+        // refused if a newer observation (the send-state republish reading the SDK snapshot)
+        // has landed by the time the batch is ready to publish.
+        let batch_observation = self.observe_sdk_observation();
         let sdk_diffs = diffs;
         // Issue #460: automatic one-shot key requests for Thread timelines.
         // Admission is Rust-owned (the automatic guard in
@@ -442,10 +559,18 @@ impl TimelineActor {
             self.navigation_items.len(),
             &self.key,
             self.own_user_id.as_deref(),
-            &self.send_statuses,
             Some(&self.key_request_states),
             Some(&self.withheld_codes),
+            super::item_projection::RowWriteInputs {
+                send_statuses: &self.send_statuses,
+                revision: super::item_projection::RowRevision {
+                    observed: batch_observation,
+                    current: batch_observation,
+                },
+            },
         );
+        self.resolve_batch_send_states(&mut core_diffs, batch_observation)
+            .await;
         for diff in &mut core_diffs {
             apply_timeline_item_visibility_to_diff(
                 diff,
@@ -531,6 +656,11 @@ impl TimelineActor {
                 let projections = coordinator.projections_for_key(&self.key);
                 pending_display_inputs_for_incoming_transactions(
                     &projections,
+                    &self.send_statuses,
+                    super::item_projection::RowRevision {
+                        observed: batch_observation,
+                        current: self.sdk_observation_revision,
+                    },
                     &incoming_transaction_ids,
                     coordinator.settled_transaction_ids(
                         self.key.room_id(),
@@ -737,7 +867,16 @@ impl TimelineActor {
             let mut pending_items = self
                 .pending_send_projections
                 .iter()
-                .map(|projection| projection.item.clone())
+                .map(|projection| {
+                    super::outbound_send::pending_display_item(
+                        projection,
+                        &self.send_statuses,
+                        super::item_projection::RowRevision {
+                            observed: batch_observation,
+                            current: self.sdk_observation_revision,
+                        },
+                    )
+                })
                 .collect::<Vec<_>>();
             self.overlay_reply_quotes_on_pending(&mut pending_items, &batch.originals);
             let mut suppressed = self
@@ -1143,10 +1282,16 @@ impl TimelineActor {
                     &self.key,
                     item,
                     self.own_user_id.as_deref(),
-                    &self.send_statuses,
                     Some(&self.room_key_recovery),
                     Some(&self.key_request_states),
                     Some(&self.withheld_codes),
+                    super::item_projection::RowWriteInputs {
+                        send_statuses: &self.send_statuses,
+                        revision: super::item_projection::RowRevision {
+                            observed: self.sdk_observation_revision,
+                            current: self.sdk_observation_revision,
+                        },
+                    },
                 )
             })
             .map(|mut item| {

@@ -4526,6 +4526,40 @@ impl SendQueueActorFixture {
             .await;
     }
 
+    /// Causal barrier: the actor emits this progress event only after every earlier mailbox
+    /// message has been handled, so an assertion after it reads a settled state instead of the
+    /// last value some earlier publication happened to leave in the cache.
+    async fn barrier(&mut self, tag: &str) {
+        let related_to =
+            matrix_sdk::ruma::OwnedTransactionId::from(format!("barrier-{tag}").as_str());
+        self.push(RoomSendQueueUpdate::MediaUpload {
+            related_to: related_to.clone(),
+            file: None,
+            index: 0,
+            progress: matrix_sdk::send_queue::AbstractProgress {
+                current: 0,
+                total: 1,
+            },
+        })
+        .await;
+        let events = &mut self.actor_events;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let event = events.recv().await.expect("core event");
+                if let CoreEvent::Timeline(TimelineEvent::MediaUploadProgress {
+                    transaction_id,
+                    ..
+                }) = &event
+                    && transaction_id == related_to.as_str()
+                {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("the actor reaches the barrier");
+    }
+
     async fn push(&self, update: RoomSendQueueUpdate) {
         self.handle
             .tx
@@ -4998,6 +5032,7 @@ async fn a_settled_row_keeps_sent_when_a_later_send_fails() {
         .await_row(&second.transaction_id, "the failed later row", is_not_sent)
         .await;
 
+    fixture.barrier("settled-row").await;
     assert_eq!(
         fixture.row_state(sent_event_id),
         Some(TimelineSendState::Sent),
@@ -5036,8 +5071,8 @@ async fn an_sdk_reported_failure_survives_a_stale_retry_event() {
             transaction_id: head.transaction_id.clone(),
         })
         .await;
-    // A later send proves the stale retry was consumed before this assertion.
-    fixture.queue_row("later").await;
+    // The barrier proves the stale retry was consumed before this assertion.
+    fixture.barrier("stale-retry").await;
 
     assert_eq!(
         fixture.row_state(head.transaction_id.as_str()),

@@ -61,23 +61,40 @@ use matrix_sdk_ui::timeline::ReactionInfo;
 
 use super::super::diagnostics::timeline_item_diagnostic_event;
 use super::{
-    apply_timeline_item_visibility, blocked_behind_recoverable_failure,
+    RowRevision, RowWrite, apply_timeline_item_visibility, blocked_behind_recoverable_failure,
     composer_document_from_event_json, edited_content_for_edit_target,
     edited_document_content_for_edit_target, eligible_activity_preview, has_user_visible_content,
-    link_ranges_for_message_projection, megolm_message_index_from_original_json,
+    install_row, link_ranges_for_message_projection, megolm_message_index_from_original_json,
     membership_change_projection, mention_marked_message_preview,
     mentioned_user_ids_from_event_json, mentions_room_from_event_json, message_edit_target_token,
     message_projection_from_msgtype, msgtype_carries_editable_caption,
     project_local_megolm_rotation_reason, raw_event_reply_quote_media, reaction_groups_from_sdk,
     reply_quote_from_message_projection, reply_quote_from_timeline_item,
     reset_loading_link_previews_to_pending, resolve_send_state, room_name_notice_projection,
-    send_state_with_recoverable_block, state_event_notice_body, state_event_notice_projection,
-    timeline_item_can_edit, timeline_item_can_react, timeline_item_can_redact,
-    timeline_item_should_be_hidden, validate_cancel_send, validate_redact_reaction,
-    validate_retry_send, validate_send_reaction,
+    state_event_notice_body, state_event_notice_projection, timeline_item_can_edit,
+    timeline_item_can_react, timeline_item_can_redact, timeline_item_should_be_hidden,
+    validate_cancel_send, validate_redact_reaction, validate_retry_send, validate_send_reaction,
 };
 
 use super::super::test_support::{fake_rid, room_key, timeline_item};
+
+/// #1846: the state a row renders for these inputs — the single row-write boundary applied to a
+/// scratch row, so these assertions exercise the same path the projection uses.
+fn projected_state(
+    sdk_state: Option<TimelineSendState>,
+    transaction_id: Option<&str>,
+    send_statuses: &HashMap<String, TimelineSendState>,
+) -> Option<TimelineSendState> {
+    let mut item = timeline_item("$row:test", Some("body"), "@alice:test", false);
+    install_row(
+        &mut item,
+        sdk_state,
+        transaction_id.and_then(|transaction_id| send_statuses.get(transaction_id)),
+        blocked_behind_recoverable_failure(transaction_id, send_statuses),
+        RowRevision::default(),
+    );
+    item.send_state
+}
 
 #[test]
 fn extracts_megolm_message_index_from_encrypted_event_source() {
@@ -1131,11 +1148,7 @@ fn a_request_queued_behind_a_recoverable_failure_projects_as_not_sent() {
         ("behind".to_owned(), TimelineSendState::Sending),
     ]);
     assert_eq!(
-        send_state_with_recoverable_block(
-            Some(TimelineSendState::Sending),
-            Some("behind"),
-            &queued
-        ),
+        projected_state(Some(TimelineSendState::Sending), Some("behind"), &queued),
         Some(recoverable.clone())
     );
     // A row the actor has not observed yet has no entry of its own: nothing in the table
@@ -1143,7 +1156,7 @@ fn a_request_queued_behind_a_recoverable_failure_projects_as_not_sent() {
     // `InvalidSendTarget`, so it keeps its normal state.
     let unobserved = HashMap::from([("head".to_owned(), recoverable.clone())]);
     assert_eq!(
-        send_state_with_recoverable_block(
+        projected_state(
             Some(TimelineSendState::Sending),
             Some("behind"),
             &unobserved
@@ -1157,12 +1170,12 @@ fn a_request_queued_behind_a_recoverable_failure_projects_as_not_sent() {
     // The failed request renders from its own record, never from "blocked behind itself":
     // while the SDK reports it as not attempted, the actor's record of the failure stands.
     assert_eq!(
-        send_state_with_recoverable_block(Some(TimelineSendState::Sending), Some("head"), &queued),
+        projected_state(Some(TimelineSendState::Sending), Some("head"), &queued),
         Some(recoverable.clone())
     );
     // Explicit SDK terminals and a wedged head keep the SDK's own story.
     assert_eq!(
-        send_state_with_recoverable_block(Some(TimelineSendState::Sent), Some("behind"), &queued),
+        projected_state(Some(TimelineSendState::Sent), Some("behind"), &queued),
         Some(TimelineSendState::Sent)
     );
     let wedged = HashMap::from([(
@@ -1172,11 +1185,7 @@ fn a_request_queued_behind_a_recoverable_failure_projects_as_not_sent() {
         },
     )]);
     assert_eq!(
-        send_state_with_recoverable_block(
-            Some(TimelineSendState::Sending),
-            Some("behind"),
-            &wedged
-        ),
+        projected_state(Some(TimelineSendState::Sending), Some("behind"), &wedged),
         Some(TimelineSendState::Sending)
     );
     // Once the head is retried, sent or cancelled its record changes and the
@@ -1188,11 +1197,7 @@ fn a_request_queued_behind_a_recoverable_failure_projects_as_not_sent() {
     ] {
         let released = HashMap::from([("head".to_owned(), released)]);
         assert_eq!(
-            send_state_with_recoverable_block(
-                Some(TimelineSendState::Sending),
-                Some("behind"),
-                &released
-            ),
+            projected_state(Some(TimelineSendState::Sending), Some("behind"), &released),
             Some(TimelineSendState::Sending)
         );
         assert!(!blocked_behind_recoverable_failure(
@@ -1203,7 +1208,7 @@ fn a_request_queued_behind_a_recoverable_failure_projects_as_not_sent() {
     // A row the SDK has not bound yet has no transaction to reason about: it keeps its
     // normal state, because retrying its client transaction would be an unknown target.
     assert_eq!(
-        send_state_with_recoverable_block(Some(TimelineSendState::Sending), None, &queued),
+        projected_state(Some(TimelineSendState::Sending), None, &queued),
         Some(TimelineSendState::Sending)
     );
     assert!(!blocked_behind_recoverable_failure(None, &queued));
@@ -1213,7 +1218,7 @@ fn a_request_queued_behind_a_recoverable_failure_projects_as_not_sent() {
         ("behind".to_owned(), TimelineSendState::Sending),
     ]);
     assert_eq!(
-        send_state_with_recoverable_block(None, Some("behind"), &recorded_behind),
+        projected_state(None, Some("behind"), &recorded_behind),
         Some(recoverable)
     );
 }
@@ -1320,6 +1325,77 @@ fn a_rendered_resend_and_retry_acceptance_always_agree() {
         Ok(()),
         "a row rendered from the SDK's failure must be retryable"
     );
+}
+
+/// #1846: the single row-write boundary. A write computed from an SDK observation the actor
+/// has already superseded is refused and counted, so a queued batch or an old snapshot cannot
+/// roll a row back; a write from the current observation applies.
+#[test]
+fn install_row_refuses_a_write_from_a_superseded_observation() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock();
+    let recoverable = TimelineSendState::NotSent {
+        reason: TimelineSendFailureReason::Recoverable,
+    };
+    let mut item = timeline_item("$row:test", Some("body"), "@alice:test", false);
+    // A stale batch would publish `sending` over the failure a newer observation resolved.
+    assert_eq!(
+        install_row(
+            &mut item,
+            Some(TimelineSendState::Sending),
+            None,
+            false,
+            RowRevision {
+                observed: 3,
+                current: 7,
+            },
+        ),
+        RowWrite::DroppedStale
+    );
+    assert_eq!(
+        item.send_state, None,
+        "a refused write leaves the row alone"
+    );
+    let refused = koushi_diagnostics::test_support::detail_snapshot()
+        .records
+        .iter()
+        .filter(|record| {
+            record.event.source == "core.timeline_send_state"
+                && record.event.fields.iter().any(|field| {
+                    field.value
+                        == koushi_diagnostics::DiagnosticValue::Token("stale_row_write_dropped")
+                })
+        })
+        .count();
+    assert_eq!(
+        refused, 1,
+        "a refused write is counted, never silently dropped"
+    );
+
+    assert_eq!(
+        install_row(
+            &mut item,
+            Some(TimelineSendState::Sending),
+            None,
+            false,
+            RowRevision {
+                observed: 7,
+                current: 7,
+            },
+        ),
+        RowWrite::Applied
+    );
+    assert_eq!(item.send_state, Some(TimelineSendState::Sending));
+    assert_eq!(
+        install_row(
+            &mut item,
+            Some(TimelineSendState::Sending),
+            Some(&recoverable),
+            true,
+            RowRevision::default(),
+        ),
+        RowWrite::Applied
+    );
+    assert_eq!(item.send_state, Some(recoverable));
 }
 
 #[test]

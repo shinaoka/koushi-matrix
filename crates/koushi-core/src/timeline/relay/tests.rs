@@ -44,6 +44,57 @@ use super::{
     prepare_relay_recovery, replace_authoritative_cache, run_diff_relay, spawn_relay_restart_timer,
 };
 
+/// #1846: the relay's pending inputs go through the same row-write boundary as the actor's
+/// own refresh, so an unrelated incoming batch cannot republish a blocked manager-owned row as
+/// `sending` — which would drop its `Resend` while the retry guard still accepted it.
+#[test]
+fn relay_pending_inputs_resolve_a_blocked_manager_owned_row() {
+    let key = room_key();
+    let projection = |client: &str, sdk: Option<&str>| {
+        let render_id = sdk.unwrap_or(client);
+        PendingSendProjection {
+            lifecycle_trace: None,
+            key: key.clone(),
+            sequence: 0,
+            client_txn_id: client.to_owned(),
+            item: pending_send_item(render_id, "body", None, None, None),
+            sdk_transaction_id: sdk.map(str::to_owned),
+            handle: None,
+            terminal_event_id: None,
+            phase: PendingSendPhase::Pending,
+        }
+    };
+    // The room already holds a recoverable failure for `head`; `behind` was queued behind it.
+    let send_statuses = HashMap::from([
+        (
+            "head".to_owned(),
+            TimelineSendState::NotSent {
+                reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
+            },
+        ),
+        ("behind".to_owned(), TimelineSendState::Sending),
+    ]);
+    let projections = vec![projection("client-behind", Some("behind"))];
+    // An unrelated local echo arrives in this batch; `behind` is not part of it.
+    let incoming = HashSet::from(["unrelated".to_owned()]);
+    let (pending, _) = pending_display_inputs_for_incoming_transactions(
+        &projections,
+        &send_statuses,
+        Default::default(),
+        &incoming,
+        HashSet::new(),
+    );
+
+    assert_eq!(pending.len(), 1);
+    assert_eq!(
+        pending[0].send_state,
+        Some(TimelineSendState::NotSent {
+            reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
+        }),
+        "a relay batch must not republish the blocked row as sending"
+    );
+}
+
 #[test]
 fn mixed_bound_and_unbound_local_echo_batch_keeps_exactly_one_row_per_send() {
     let key = room_key();
@@ -78,8 +129,13 @@ fn mixed_bound_and_unbound_local_echo_batch_keeps_exactly_one_row_per_send() {
         "sdk-overtake".to_owned(),
         "sdk-delayed".to_owned(),
     ]);
-    let (pending, suppressed) =
-        pending_display_inputs_for_incoming_transactions(&projections, &incoming, HashSet::new());
+    let (pending, suppressed) = pending_display_inputs_for_incoming_transactions(
+        &projections,
+        &HashMap::new(),
+        Default::default(),
+        &incoming,
+        HashSet::new(),
+    );
 
     assert_eq!(pending.len(), 2);
     assert!(pending.iter().any(|item| matches!(
@@ -372,8 +428,18 @@ async fn relay_overflow_recovery_subscribes_once_emits_snapshot_then_next_live_u
     };
     let sdk_diffs = accepted_relay_batch(generation, batch_generation, diffs)
         .expect("replacement generation must be accepted");
-    let diffs =
-        sdk_vector_diffs_to_timeline_diffs(&sdk_diffs, 0, &key, None, &HashMap::new(), None, None);
+    let diffs = sdk_vector_diffs_to_timeline_diffs(
+        &sdk_diffs,
+        0,
+        &key,
+        None,
+        None,
+        None,
+        super::super::item_projection::RowWriteInputs {
+            send_statuses: &HashMap::new(),
+            revision: Default::default(),
+        },
+    );
     assert!(
         emit_items_updated_for_generation(
             &event_tx,

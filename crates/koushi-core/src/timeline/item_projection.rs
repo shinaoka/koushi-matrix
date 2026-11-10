@@ -1969,10 +1969,13 @@ pub fn sdk_item_to_timeline_item(
         key,
         item,
         own_user_id,
-        &HashMap::new(),
         None,
         None,
         None,
+        RowWriteInputs {
+            send_statuses: &HashMap::new(),
+            revision: RowRevision::default(),
+        },
     )
 }
 
@@ -2061,12 +2064,13 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
     key: &TimelineKey,
     item: &Arc<SdkTimelineItem>,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
-    send_statuses: &HashMap<String, TimelineSendState>,
     recovery: Option<&std::collections::BTreeMap<String, super::recovery_model::RecoveryOperation>>,
     key_request_states: Option<&std::collections::BTreeMap<String, KeyRequestUiState>>,
     withheld_codes: Option<&std::collections::BTreeMap<(String, String), &'static str>>,
+    row: RowWriteInputs<'_>,
 ) -> TimelineItem {
     use matrix_sdk_ui::timeline::{TimelineItemKind, VirtualTimelineItem};
+    let send_statuses = row.send_statuses;
 
     match &item.kind() {
         TimelineItemKind::Event(event_item) => {
@@ -2176,11 +2180,6 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 .map(|message| message.is_edited())
                 .unwrap_or(false);
             let sdk_send_state = timeline_send_state_from_sdk(event_item.send_state());
-            let send_state = send_state_with_recoverable_block(
-                sdk_send_state,
-                transaction_id.as_deref(),
-                send_statuses,
-            );
             let mut unable_to_decrypt = unable_to_decrypt_from_content(content);
             if let Some(utd) = unable_to_decrypt.as_mut() {
                 utd.can_request_keys = event_item.original_json().is_some();
@@ -2224,7 +2223,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
             let link_ranges =
                 link_ranges_for_message_projection(body.as_deref(), formatted.as_ref());
 
-            TimelineItem {
+            let mut projected = TimelineItem {
                 request_state: request_state_for_item(
                     key_request_states,
                     withheld_codes,
@@ -2259,9 +2258,19 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 can_edit,
                 unable_to_decrypt,
                 actions,
-                send_state,
+                send_state: None,
                 display_metadata: None,
-            }
+            };
+            install_row(
+                &mut projected,
+                sdk_send_state,
+                transaction_id
+                    .as_deref()
+                    .and_then(|transaction_id| send_statuses.get(transaction_id)),
+                blocked_behind_recoverable_failure(transaction_id.as_deref(), send_statuses),
+                row.revision,
+            );
+            projected
         }
         TimelineItemKind::Virtual(virtual_item) => {
             let (synthetic_id, timestamp_ms, is_hidden) = match virtual_item {
@@ -3634,17 +3643,59 @@ pub(super) fn resolve_send_state(
     }
 }
 
-/// The row's inputs for [`resolve_send_state`], straight from the room's send table.
-pub(super) fn send_state_with_recoverable_block(
+/// #1846: the SDK observation a row write was computed from, and the actor's current one.
+/// A write whose observation is older than the current revision is refused.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct RowRevision {
+    pub(super) observed: u64,
+    pub(super) current: u64,
+}
+
+/// #1846: the inputs a row write needs beyond the SDK item itself — the room's send table and
+/// the observation it was read at.
+#[derive(Clone, Copy)]
+pub(super) struct RowWriteInputs<'a> {
+    pub(super) send_statuses: &'a HashMap<String, TimelineSendState>,
+    pub(super) revision: RowRevision,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RowWrite {
+    Applied,
+    /// The write was computed from an SDK observation the actor has already superseded.
+    DroppedStale,
+}
+
+/// #1846: the single boundary that assigns a rendered row's send state. Every path — the relay
+/// diff batch, the startup projection, the send-state republish, the lag restore and the pending
+/// row re-projection — installs through this function and passes the SDK state it saw together
+/// with the observation revision it saw it at. The state itself comes from
+/// [`resolve_send_state`]; a write computed at an older revision than the current observation is
+/// dropped and counted, so a queued batch or an old snapshot cannot overwrite a newer result.
+pub(super) fn install_row(
+    item: &mut TimelineItem,
     sdk_state: Option<TimelineSendState>,
-    transaction_id: Option<&str>,
-    send_statuses: &HashMap<String, TimelineSendState>,
-) -> Option<TimelineSendState> {
-    resolve_send_state(
-        sdk_state,
-        transaction_id.and_then(|transaction_id| send_statuses.get(transaction_id)),
-        blocked_behind_recoverable_failure(transaction_id, send_statuses),
-    )
+    recorded: Option<&TimelineSendState>,
+    blocked: bool,
+    revision: RowRevision,
+) -> RowWrite {
+    if revision.observed < revision.current {
+        record_stale_row_write();
+        return RowWrite::DroppedStale;
+    }
+    item.send_state = resolve_send_state(sdk_state, recorded, blocked);
+    RowWrite::Applied
+}
+
+fn record_stale_row_write() {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline_send_state",
+            "row_write",
+        )
+        .field(DiagnosticField::token("outcome", "stale_row_write_dropped")),
+    );
 }
 
 pub(super) fn send_failure_reason(is_recoverable: bool) -> TimelineSendFailureReason {
@@ -4411,9 +4462,9 @@ pub(super) fn sdk_vector_diffs_to_timeline_diffs(
     initial_canonical_len: usize,
     key: &TimelineKey,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
-    send_statuses: &HashMap<String, TimelineSendState>,
     key_request_states: Option<&std::collections::BTreeMap<String, KeyRequestUiState>>,
     withheld_codes: Option<&std::collections::BTreeMap<(String, String), &'static str>>,
+    row: RowWriteInputs<'_>,
 ) -> Vec<TimelineDiff> {
     let mut canonical_len = initial_canonical_len;
     let mut converted = Vec::with_capacity(diffs.len());
@@ -4425,10 +4476,10 @@ pub(super) fn sdk_vector_diffs_to_timeline_diffs(
                         key,
                         value,
                         own_user_id,
-                        send_statuses,
                         None,
                         key_request_states,
                         withheld_codes,
+                        row,
                     ),
                 });
                 canonical_len += 1;
@@ -4439,10 +4490,10 @@ pub(super) fn sdk_vector_diffs_to_timeline_diffs(
                         key,
                         value,
                         own_user_id,
-                        send_statuses,
                         None,
                         key_request_states,
                         withheld_codes,
+                        row,
                     ),
                 });
                 canonical_len += 1;
@@ -4454,10 +4505,10 @@ pub(super) fn sdk_vector_diffs_to_timeline_diffs(
                         key,
                         value,
                         own_user_id,
-                        send_statuses,
                         None,
                         key_request_states,
                         withheld_codes,
+                        row,
                     ),
                 });
                 canonical_len += 1;
@@ -4469,10 +4520,10 @@ pub(super) fn sdk_vector_diffs_to_timeline_diffs(
                         key,
                         value,
                         own_user_id,
-                        send_statuses,
                         None,
                         key_request_states,
                         withheld_codes,
+                        row,
                     ),
                 });
             }
@@ -4499,10 +4550,10 @@ pub(super) fn sdk_vector_diffs_to_timeline_diffs(
                                 key,
                                 value,
                                 own_user_id,
-                                send_statuses,
                                 None,
                                 None,
                                 None,
+                                row,
                             )
                         })
                         .collect(),
@@ -4529,10 +4580,10 @@ pub(super) fn sdk_vector_diffs_to_timeline_diffs(
                         key,
                         value,
                         own_user_id,
-                        send_statuses,
                         None,
                         key_request_states,
                         withheld_codes,
+                        row,
                     ),
                 }));
                 canonical_len += values.len();

@@ -868,6 +868,11 @@ pub(super) struct TimelineActor {
     pub(super) projection_request_id: RequestId,
     pub(super) initial_projection_committed: bool,
     pub(super) next_batch_id: TimelineBatchId,
+    /// #1846: the actor's SDK observation revision. It grows on every SDK observation this
+    /// actor takes — a relay batch consuming SDK stream data, or a snapshot read before a
+    /// re-projection — and a row write computed at an older observation is refused, so a
+    /// queued batch or an old snapshot cannot overwrite a newer resolution.
+    pub(super) sdk_observation_revision: u64,
     /// Correlates send queue completions across the enqueue / SentEvent race.
     pub(super) send_completion: SharedSendCompletionCoordinator,
     /// SDK transaction id -> Rust-owned outbound send state.
@@ -1121,6 +1126,12 @@ impl TimelineActor {
             .and_then(|item| item.send_state.clone())
     }
 
+    /// #1846: takes a new SDK observation and returns its revision.
+    pub(super) fn observe_sdk_observation(&mut self) -> u64 {
+        self.sdk_observation_revision = self.sdk_observation_revision.saturating_add(1);
+        self.sdk_observation_revision
+    }
+
     pub(super) async fn update_send_status(
         &mut self,
         transaction_id: &str,
@@ -1140,6 +1151,7 @@ impl TimelineActor {
         if self.send_statuses.is_empty() {
             return;
         }
+        let observed = self.observe_sdk_observation();
         let (sdk_items, _) = self.timeline.subscribe().await;
         let context = self.display_projection_context();
         let mut diffs = Vec::new();
@@ -1158,10 +1170,16 @@ impl TimelineActor {
                 &self.key,
                 item,
                 self.own_user_id.as_deref(),
-                &self.send_statuses,
                 Some(&self.room_key_recovery),
                 Some(&self.key_request_states),
                 Some(&self.withheld_codes),
+                super::item_projection::RowWriteInputs {
+                    send_statuses: &self.send_statuses,
+                    revision: super::item_projection::RowRevision {
+                        observed,
+                        current: self.sdk_observation_revision,
+                    },
+                },
             );
             let Some(send_state) = projected.send_state else {
                 continue;
@@ -1211,24 +1229,19 @@ impl TimelineActor {
                 &super::outbound_send::canonical_event_ids(&self.navigation_items),
             );
         self.pending_send_projections = projections;
+        // #1846: every manager-owned row is resolved the same way, here and in the relay.
         let mut pending_items = self
             .pending_send_projections
             .iter()
             .map(|projection| {
-                let mut item = projection.item.clone();
-                // #1846: a pending row queued behind a recoverable failure was never
-                // attempted, so it is not sending. Derived here from the send table so
-                // the row resolves itself once the failure is retried, sent or cancelled.
-                let recorded = item.send_state.take();
-                item.send_state = super::item_projection::resolve_send_state(
-                    None,
-                    recorded.as_ref(),
-                    super::item_projection::blocked_behind_recoverable_failure(
-                        projection.sdk_transaction_id.as_deref(),
-                        &self.send_statuses,
-                    ),
-                );
-                item
+                super::outbound_send::pending_display_item(
+                    projection,
+                    &self.send_statuses,
+                    super::item_projection::RowRevision {
+                        observed: self.sdk_observation_revision,
+                        current: self.sdk_observation_revision,
+                    },
+                )
             })
             .collect::<Vec<_>>();
         // No batch is being committed here: the canonical items are current.
@@ -1795,9 +1808,34 @@ impl TimelineActor {
                 ),
             )
         };
+        // #1846: the pending rows resolved below read the same send table the actor holds,
+        // so warm it from the SDK's own echoes before projecting them.
+        let startup_send_statuses = match matrix_sdk::ruma::RoomId::parse(key.room_id()) {
+            Ok(room_id) => match session.client().get_room(&room_id) {
+                Some(room) => match room.send_queue().subscribe().await {
+                    Ok((local_echoes, _update_rx)) => {
+                        let mut errors = HashMap::new();
+                        let mut handles = HashMap::new();
+                        for echo in &local_echoes {
+                            remember_local_echo(&mut errors, &mut handles, echo);
+                        }
+                        errors
+                    }
+                    Err(_) => HashMap::new(),
+                },
+                None => HashMap::new(),
+            },
+            Err(_) => HashMap::new(),
+        };
         let pending_items = pending_send_projections
             .iter()
-            .map(|projection| projection.item.clone())
+            .map(|projection| {
+                super::outbound_send::pending_display_item(
+                    projection,
+                    &startup_send_statuses,
+                    super::item_projection::RowRevision::default(),
+                )
+            })
             .collect();
         let mut suppressed = pending_send_projections
             .iter()
@@ -2153,6 +2191,7 @@ impl TimelineActor {
             projection_request_id: subscribe_request_id,
             initial_projection_committed: initial_emitted,
             next_batch_id: TimelineBatchId(0),
+            sdk_observation_revision: 0,
             send_completion: Arc::clone(&send_completion),
             send_statuses,
             send_handles,

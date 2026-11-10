@@ -2570,7 +2570,7 @@ export function checkCoreTimelineOutboundState() {
   const failures = [];
   if (!monitor?.includes("TimelineActorMessage::SendQueueLagged") || monitor.includes("not critical for send completion tracking")) failures.push(sourceContractFailure(rule, "send queue lag is not treated as terminally relevant"));
   const sdk = projection?.indexOf("timeline_send_state_from_sdk") ?? -1;
-  const derived = projection?.indexOf("send_state_with_recoverable_block") ?? -1;
+  const derived = projection?.indexOf("install_row") ?? -1;
   // #1846: one resolution (`resolve_send_state`) takes the SDK's report, the actor's record
   // and the room's stopped-queue context, and every surface reads its result. Rule 1 must
   // stay first, so an SDK terminal is never re-labelled by the actor's record, and the
@@ -2603,6 +2603,23 @@ export function checkCoreTimelineOutboundState() {
   const republish = timelineItemBody("actor.rs", "pub(super) async fn republish_send_rows");
   if (slotWriters.length !== 1 || slotWriters[0] !== "actor.rs") failures.push(sourceContractFailure(rule, "a rendered send state has more than one writer"));
   if (!republish?.includes("sdk_item_to_timeline_item_with_send_states")) failures.push(sourceContractFailure(rule, "the send-state republish does not resolve the SDK's own report"));
+  // #1846: one boundary assigns a row's send state (`install_row`), and every path either goes
+  // through it (the converter, the pending row helper, the batch re-resolution) or writes only
+  // a pending base that is resolved at render time.
+  const install = timelineItemBody("item_projection.rs", "pub(super) fn install_row");
+  const rowAssignments = ["item_projection.rs", "actor.rs", "outbound_send.rs", "relay.rs", "navigation.rs"]
+    .flatMap((file) => timelineSource(file).split("\n").map((line) => ({ file, line })))
+    .filter(({ line }) => /(^|[^_.])\b\w+\\.send_state = /.test(line) || /\\bitem\\.send_state = /.test(line))
+    .map(({ file }) => file);
+  if (!install?.includes("resolve_send_state")) failures.push(sourceContractFailure(rule, "the row-write boundary does not resolve the state"));
+  if (!install?.includes("revision.observed < revision.current")) failures.push(sourceContractFailure(rule, "the row-write boundary has no SDK revision fence"));
+  if (rowAssignments.some((file) => file !== "item_projection.rs")) failures.push(sourceContractFailure(rule, "a send state is assigned outside the row-write boundary"));
+  const converter = timelineItemBody("item_projection.rs", "fn sdk_item_to_timeline_item_with_send_states");
+  if (!converter?.includes("install_row")) failures.push(sourceContractFailure(rule, "the SDK item conversion does not install through the boundary"));
+  const pendingRow = timelineItemBody("outbound_send.rs", "fn pending_display_item");
+  if (!pendingRow?.includes("install_row")) failures.push(sourceContractFailure(rule, "the pending row does not install through the boundary"));
+  const batchResolve = timelineItemBody("relay.rs", "async fn resolve_batch_send_states");
+  if (!batchResolve?.includes("install_row")) failures.push(sourceContractFailure(rule, "the queued batch does not install through the boundary"));
   return failures;
 }
 

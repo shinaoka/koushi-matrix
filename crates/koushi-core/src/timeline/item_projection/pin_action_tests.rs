@@ -69,10 +69,13 @@ async fn only_message_like_events_offer_pin() {
                     &key,
                     item,
                     Some(alice),
-                    &HashMap::new(),
                     None,
                     None,
                     None,
+                    super::RowWriteInputs {
+                        send_statuses: &HashMap::new(),
+                        revision: Default::default(),
+                    },
                 )
                 .actions
                 .can_pin

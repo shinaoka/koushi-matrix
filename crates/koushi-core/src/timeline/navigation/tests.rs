@@ -2397,9 +2397,12 @@ async fn sdk_vector_diff_batch_preserves_prefix_for_append_and_pop_variants() {
         canonical.len(),
         &key,
         Some(User::Alice.into()),
-        &HashMap::new(),
         None,
         None,
+        super::super::item_projection::RowWriteInputs {
+            send_statuses: &HashMap::new(),
+            revision: Default::default(),
+        },
     );
     apply_timeline_diffs_to_items(&mut canonical, &diffs);
 
