@@ -2571,18 +2571,19 @@ export function checkCoreTimelineOutboundState() {
   if (!monitor?.includes("TimelineActorMessage::SendQueueLagged") || monitor.includes("not critical for send completion tracking")) failures.push(sourceContractFailure(rule, "send queue lag is not treated as terminally relevant"));
   const sdk = projection?.indexOf("timeline_send_state_from_sdk") ?? -1;
   const derived = projection?.indexOf("send_state_with_recoverable_block") ?? -1;
-  // #1846: one decision (`resolve_send_state`) answers both "does the row show Resend"
-  // and "is RetrySend accepted". It may only turn the SDK's `NotSentYet` collapse into
-  // not-sent for a room that still holds a recoverable failure; the SDK state stays the
-  // base and the record is only its fallback.
-  const recordFallback = timelineItemBody("item_projection.rs", "fn send_state_with_recoverable_block");
-  const record = recordFallback?.indexOf("send_statuses.get") ?? -1;
-  const fallback = recordFallback?.indexOf(".or_else") ?? -1;
+  // #1846: one resolution (`resolve_send_state`) takes the SDK's report, the actor's record
+  // and the room's stopped-queue context, and every surface reads its result. Rule 1 must
+  // stay first, so an SDK terminal is never re-labelled by the actor's record, and the
+  // not-sent override must stay scoped to a request the SDK has not attempted while the
+  // room holds a recoverable failure.
   const precedence = timelineItemBody("item_projection.rs", "fn resolve_send_state");
+  const terminalFirst = precedence?.indexOf("TimelineSendState::Sent") ?? -1;
+  const recordFallback = precedence?.indexOf("recorded.cloned()") ?? -1;
+  const notSent = precedence?.indexOf("TimelineSendFailureReason::Recoverable") ?? -1;
   if (!precedence?.includes("TimelineSendState::Sending")) failures.push(sourceContractFailure(rule, "recorded send state override is not scoped to the SDK collecting state"));
-  if (!precedence?.includes("TimelineSendFailureReason::Recoverable")) failures.push(sourceContractFailure(rule, "recorded send state override is not scoped to a recoverable failure"));
+  if (notSent < 0) failures.push(sourceContractFailure(rule, "recorded send state override is not scoped to a recoverable failure"));
+  if (terminalFirst < 0 || recordFallback < 0 || terminalFirst >= recordFallback) failures.push(sourceContractFailure(rule, "SDK send state does not win over the actor mirror"));
   if (sdk < 0 || derived < 0 || sdk >= derived) failures.push(sourceContractFailure(rule, "SDK send state does not win over the actor mirror"));
-  if (record < 0 || fallback < 0 || fallback >= record) failures.push(sourceContractFailure(rule, "SDK send state does not win over the actor mirror"));
   if (!boundary?.includes("terminal_ingress.admit(handoff)") || boundary.includes(".await") || boundary.includes("executor::spawn")) failures.push(sourceContractFailure(rule, "terminal handoff is not synchronously admitted"));
   for (const marker of ["SendQueueUpdate", "RecvError::Lagged", "apply_send_completion_observation_loss_and_handoff"]) if (!observer?.includes(marker)) failures.push(sourceContractFailure(rule, `global send observer lacks ${marker}`));
   if (actor?.includes("apply_send_completion_observation_and_handoff") || actor?.includes("SendCompleted")) failures.push(sourceContractFailure(rule, "replaceable actor consumes send terminals"));

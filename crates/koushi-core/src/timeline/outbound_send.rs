@@ -2037,21 +2037,23 @@ impl TimelineActor {
         request_id: RequestId,
         transaction_id: String,
     ) {
+        // #1846: the retry judges the resolved state the row renders — the one object the
+        // projection produced — so a shown `Resend` is always accepted and nothing else is.
+        let resolved = self.rendered_send_state(&transaction_id);
+        if let Err(kind) = validate_retry_send(resolved.clone()) {
+            self.emit_timeline_failure(request_id, kind);
+            return;
+        }
         let retained = self
             .send_completion
             .lock()
             .expect("send completion coordinator lock must not be poisoned")
-            .retry_handle(&self.key, &transaction_id, &self.send_statuses);
+            .retry_handle(&self.key, &transaction_id, resolved.as_ref());
         let (sdk_transaction_id, handle, manager_owned) = if let Some((sdk_id, handle)) = retained {
             (sdk_id, Some(handle), true)
         } else {
-            if let Err(kind) = validate_retry_send(&transaction_id, &self.send_statuses) {
-                self.emit_timeline_failure(request_id, kind);
-                return;
-            }
-            // #1846: an item queued behind a failed send was never attempted, so
-            // there is no handle to unwedge; resuming the room queue below is
-            // its retry.
+            // An item queued behind a failed send was never attempted, so there is no
+            // handle to unwedge; resuming the room queue below is its retry.
             (
                 transaction_id.clone(),
                 self.send_handles.get(&transaction_id).cloned(),
@@ -3035,44 +3037,33 @@ impl SendCompletionCoordinator {
         projections
     }
 
-    /// #1846: the manager-owned handle for a retry the shared decision accepts. The
-    /// coordinator phase is bookkeeping: a row the projection renders as not sent is
-    /// retryable while it is still `Pending`, because the SDK may bind it before this
-    /// actor observes its echo. The decision itself is `resolve_send_state`, the same
-    /// function the projection and `validate_retry_send` use.
+    /// #1846: the manager-owned handle for a retry the guard accepted. It takes the
+    /// resolved state the row renders, so the coordinator's phase stays bookkeeping and no
+    /// second reading of the send table can disagree with the projection.
     pub(super) fn retry_handle(
         &self,
         key: &TimelineKey,
         render_id: &str,
-        send_statuses: &HashMap<String, TimelineSendState>,
+        resolved: Option<&TimelineSendState>,
     ) -> Option<(String, matrix_sdk::send_queue::SendHandle)> {
-        for (correlation, pending) in &self.pending_sends {
-            let Some(projection) = pending.projection.as_ref() else {
-                continue;
-            };
-            if &projection.key != key
-                || (projection.client_txn_id != render_id
-                    && projection.sdk_transaction_id.as_deref() != Some(render_id))
-            {
-                continue;
-            }
-            let retryable = projection.phase == PendingSendPhase::FailedRecoverable
-                || matches!(
-                    super::item_projection::resolve_send_state(
-                        projection.sdk_transaction_id.as_deref(),
-                        projection.item.send_state.clone(),
-                        send_statuses,
-                    ),
-                    Some(TimelineSendState::NotSent { .. })
-                );
-            if !retryable {
-                continue;
-            }
-            if let Some(handle) = projection.handle.clone() {
-                return Some((correlation.sdk_transaction_id.clone(), handle));
-            }
+        if !matches!(resolved, Some(TimelineSendState::NotSent { .. })) {
+            return None;
         }
-        None
+        self.pending_sends
+            .iter()
+            .find_map(|(correlation, pending)| {
+                let projection = pending.projection.as_ref()?;
+                if &projection.key != key
+                    || (projection.client_txn_id != render_id
+                        && projection.sdk_transaction_id.as_deref() != Some(render_id))
+                {
+                    return None;
+                }
+                Some((
+                    correlation.sdk_transaction_id.clone(),
+                    projection.handle.clone()?,
+                ))
+            })
     }
 
     pub(super) fn retained_handle(

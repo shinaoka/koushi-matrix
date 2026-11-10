@@ -4304,16 +4304,30 @@ The SDK's own send state wins when the actor mirrors a local echo, with one
 narrow exception: the SDK collapses a request it never attempted into
 `NotSentYet` (projected as `sending`), so while the room still holds an
 unresolved recoverable failure that request is derived as
-`notSent { recoverable }`. The decision is `resolve_send_state` in `crates/koushi-core/src/timeline/item_projection.rs`;
-the canonical window, the pending fallback, the coordinator's retry lookup and the
-`RetrySend` guard all call it, so the rendered affordance and the command cannot
-disagree. Nothing is stored per row, so the state ends by itself when the failure
-is retried, sent, cancelled or wedged. It
-requires the row's own observed transaction in that table: a bound but not yet
-observed row keeps its normal state, so the rendered affordance and the command
-guard cannot disagree.
-Every explicit SDK terminal state (`SendingFailed`, `Sent`) keeps precedence,
-so the exception never reports an attempted or settled send as not sent.
+`notSent { recoverable }`. Every row state is resolved in one function,
+`resolve_send_state(sdk_state, actor_record, room_blocked)` in
+`crates/koushi-core/src/timeline/item_projection.rs`, with three rules: an SDK terminal
+(`sent`, `cancelled`, any SDK send failure) wins; while the SDK reports the request as
+not attempted (`NotSentYet`) the actor's record of a failure stands; and that
+not-attempted state becomes `not_sent { recoverable }` while the room's queue is stopped
+on a recoverable failure for another request. Nothing is stored per row, so it ends by
+itself when the failure is retried, sent, cancelled or wedged. The derivation needs the
+row's own observed transaction in the send table, so a bound but not yet observed row
+keeps its normal state.
+
+The canonical row and the manager-owned pending row render that result, and the
+`RetrySend` guard judges **the state the row renders** — not a second reading of the send
+table. Exactly what that guarantees, and what it does not:
+
+- guaranteed: a row rendered as `not_sent` is accepted by `RetrySend`, and a row rendered
+  as anything else is refused (`invalid_send_state`, or `invalid_send_target` when the
+  actor knows no such row);
+- not promised: that the SDK's view and the actor's send table agree. They are fed by
+  separate tasks, so a row can render from the SDK's failure before the table records it.
+  That direction is intended — the reader acted on the SDK's terminal, and the retry
+  follows the row;
+- not covered: a row that is not currently rendered (scrolled out of the bounded window).
+  The guard answers `invalid_send_target` and the UI offers no `Resend` for it.
 
 Headless core QA covers this with the `send_queue` scenario against disposable
 local homeservers. The Rust QA binary inserts a local TCP proxy to inject

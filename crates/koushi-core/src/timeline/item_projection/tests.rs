@@ -1154,10 +1154,11 @@ fn a_request_queued_behind_a_recoverable_failure_projects_as_not_sent() {
         Some("behind"),
         &unobserved
     ));
-    // The failed request itself keeps its own state, never "blocked behind itself".
+    // The failed request renders from its own record, never from "blocked behind itself":
+    // while the SDK reports it as not attempted, the actor's record of the failure stands.
     assert_eq!(
         send_state_with_recoverable_block(Some(TimelineSendState::Sending), Some("head"), &queued),
-        Some(TimelineSendState::Sending)
+        Some(recoverable.clone())
     );
     // Explicit SDK terminals and a wedged head keep the SDK's own story.
     assert_eq!(
@@ -1217,9 +1218,13 @@ fn a_request_queued_behind_a_recoverable_failure_projects_as_not_sent() {
     );
 }
 
-/// #1846: the invariant, both ways. A row shows `Resend` exactly when `RetrySend` is
-/// accepted, for every row state and every room table — the projection, the pending row,
-/// the coordinator's retry lookup and the guard all read this one decision.
+/// #1846: the invariant, both ways, over the full product of the inputs that can know
+/// about a row — the SDK's report × the actor's record for it × whether the room holds a
+/// recoverable failure. Rendering shows `Resend` exactly when `RetrySend` accepts, and the
+/// guard judges the same resolved object the row renders.
+///
+/// The pair that motivated this test is in the product: the SDK has already published
+/// `SendingFailed` while the actor's record still says `Sending`.
 #[test]
 fn a_rendered_resend_and_retry_acceptance_always_agree() {
     let recoverable = TimelineSendState::NotSent {
@@ -1228,95 +1233,89 @@ fn a_rendered_resend_and_retry_acceptance_always_agree() {
     let wedged = TimelineSendState::NotSent {
         reason: TimelineSendFailureReason::Unrecoverable,
     };
-    let mut tables = vec![HashMap::new()];
-    for predecessor in [
-        TimelineSendState::Sending,
-        recoverable.clone(),
-        wedged.clone(),
-        TimelineSendState::Sent,
-        TimelineSendState::Cancelled,
-    ] {
-        for item in [
-            TimelineSendState::Sending,
-            recoverable.clone(),
-            wedged.clone(),
-            TimelineSendState::Sent,
-            TimelineSendState::Cancelled,
-        ] {
-            // The row's own record is present (the actor observed its echo) or absent
-            // (the SDK bound it but the echo has not arrived).
-            tables.push(HashMap::from([("head".to_owned(), predecessor.clone())]));
-            tables.push(HashMap::from([
-                ("head".to_owned(), predecessor.clone()),
-                ("item".to_owned(), item.clone()),
-            ]));
+    let sdk_reports = [
+        None,
+        Some(TimelineSendState::Sending),
+        Some(recoverable.clone()),
+        Some(wedged.clone()),
+        Some(TimelineSendState::Sent),
+        Some(TimelineSendState::Cancelled),
+    ];
+    let records = [
+        None,
+        Some(TimelineSendState::Sending),
+        Some(recoverable.clone()),
+        Some(wedged.clone()),
+        Some(TimelineSendState::Sent),
+        Some(TimelineSendState::Cancelled),
+    ];
+
+    let mut cases = 0;
+    for sdk_state in &sdk_reports {
+        for recorded in &records {
+            for blocked in [false, true] {
+                cases += 1;
+                // The one resolution every surface reads.
+                let resolved = resolve_send_state(sdk_state.clone(), recorded.as_ref(), blocked);
+                // Rendering: the canonical row and the manager-owned pending row both
+                // publish this object, so both show `Resend` under the same condition.
+                let shows_resend = matches!(resolved, Some(TimelineSendState::NotSent { .. }));
+                // The command: the guard accepts exactly that object.
+                assert_eq!(
+                    validate_retry_send(resolved.clone()).is_ok(),
+                    shows_resend,
+                    "guard disagrees with the rendered row {resolved:?} \
+                     (sdk {sdk_state:?}, record {recorded:?}, blocked {blocked})"
+                );
+                // The SDK's own terminal is never re-labelled by the actor's record.
+                if let Some(terminal @ (TimelineSendState::Sent | TimelineSendState::Cancelled)) =
+                    sdk_state
+                {
+                    assert_eq!(
+                        resolved.as_ref(),
+                        Some(terminal),
+                        "an SDK terminal must survive the record {recorded:?}"
+                    );
+                }
+            }
         }
     }
+    assert_eq!(cases, 6 * 6 * 2);
 
-    for table in &tables {
-        let observed = table.get("item").cloned();
-        // What the SDK and the actor together report for the row: its own record when
-        // the actor has one, otherwise the SDK's "not attempted yet".
-        let report = observed.clone().unwrap_or(TimelineSendState::Sending);
-        let accepted = validate_retry_send("item", table).is_ok();
-
-        // The record-driven surfaces: the pending row and the coordinator's retry lookup.
-        // An unobserved pending row still carries its own base state (`Sending`).
-        let pending = resolve_send_state(Some("item"), Some(report.clone()), table);
-        assert_eq!(
-            matches!(pending, Some(TimelineSendState::NotSent { .. })),
-            accepted,
-            "pending row {pending:?} vs acceptance {accepted} for {table:?}"
-        );
-        // The canonical row reports the same answer through the same decision.
-        let canonical = send_state_with_recoverable_block(Some(report), Some("item"), table);
-        assert_eq!(
-            canonical, pending,
-            "canonical row {canonical:?} vs pending row {pending:?} for {table:?}"
-        );
-        assert_eq!(
-            matches!(canonical, Some(TimelineSendState::NotSent { .. })),
-            accepted,
-            "canonical row {canonical:?} vs acceptance {accepted} for {table:?}"
-        );
-
-        if observed.is_none() {
-            // Nothing has been observed for this row: it renders sending and the command
-            // reports an unknown target instead of accepting it.
-            assert_eq!(canonical, Some(TimelineSendState::Sending));
-            assert!(!accepted);
-        }
-    }
+    // The reachable order the review named: the SDK published the failure first and the
+    // actor's record lags behind it.
+    assert_eq!(
+        resolve_send_state(
+            Some(recoverable.clone()),
+            Some(&TimelineSendState::Sending),
+            false
+        ),
+        Some(recoverable.clone())
+    );
+    assert_eq!(
+        validate_retry_send(Some(recoverable)),
+        Ok(()),
+        "a row rendered from the SDK's failure must be retryable"
+    );
 }
 
 #[test]
 fn send_operation_guards_allow_retry_and_cancel_only_from_outbound_states() {
-    let failed = HashMap::from([(
-        "head".to_owned(),
-        TimelineSendState::NotSent {
-            reason: TimelineSendFailureReason::Recoverable,
-        },
-    )]);
-    assert_eq!(validate_retry_send("head", &failed), Ok(()));
-    let queued_behind = HashMap::from([
-        ("head".to_owned(), failed["head"].clone()),
-        ("behind".to_owned(), TimelineSendState::Sending),
-    ]);
-    // #1846: the same predicate that projects the row as not sent makes it retryable.
-    assert_eq!(validate_retry_send("behind", &queued_behind), Ok(()));
+    let failed = TimelineSendState::NotSent {
+        reason: TimelineSendFailureReason::Recoverable,
+    };
+    assert_eq!(validate_retry_send(Some(failed.clone())), Ok(()));
     assert_eq!(
-        validate_retry_send(
-            "behind",
-            &HashMap::from([("behind".to_owned(), TimelineSendState::Sending)])
-        ),
+        validate_retry_send(Some(TimelineSendState::Sending)),
         Err(TimelineFailureKind::InvalidSendState)
     );
     assert_eq!(
-        validate_retry_send(
-            "sent",
-            &HashMap::from([("sent".to_owned(), TimelineSendState::Sent)])
-        ),
+        validate_retry_send(Some(TimelineSendState::Sent)),
         Err(TimelineFailureKind::InvalidSendState)
+    );
+    assert_eq!(
+        validate_retry_send(None),
+        Err(TimelineFailureKind::InvalidSendTarget)
     );
     assert_eq!(
         validate_cancel_send(Some(&TimelineSendState::Sending)),

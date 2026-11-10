@@ -3585,48 +3585,57 @@ pub(super) fn blocked_behind_recoverable_failure(
     })
 }
 
-/// #1846: the **only** decision behind every send-state surface — the canonical row
-/// projection, the manager-owned pending rows, the `RetrySend` guard and the retry lookup
-/// in the send coordinator. Its inputs are the row's own state and its room's send table
-/// and nothing else, and it is what makes rendering and the command structurally agree:
+/// #1846: the **only** place a row's send state is resolved, from the three inputs that
+/// can know about it: the SDK's own report, the actor's record for that transaction, and
+/// whether the room still holds an unresolved recoverable failure for another request.
+/// The rules, in order:
 ///
-/// > A row that shows `Resend` is always accepted by `RetrySend`, and a row that does not
-/// > show it never is.
+/// 1. an SDK terminal wins — `sent`, `cancelled`, and any SDK send failure, which is the
+///    only surface that knows what happened on the wire;
+/// 2. while the SDK reports `NotSentYet` (never attempted, or nothing at all), the actor's
+///    record of a failure stands, because the SDK has nothing more to say about it;
+/// 3. that "never attempted" state of a request the room's stopped queue cannot reach is
+///    reported as `not_sent { recoverable }` instead of `sending`.
 ///
-/// A request the SDK never attempted reads as `Sending`; while its room still holds an
-/// unresolved recoverable failure that the SDK keeps queued (with strict FIFO order
-/// behind it) the request is blocked behind that failure rather than sending. Every
-/// explicit state is kept, and the answer follows the table, so it stops applying by
-/// itself once the failure is retried, sent, cancelled or wedged.
+/// Everything a user can act on reads this one result: the canonical row projection, the
+/// manager-owned pending row, the `RetrySend` guard and the coordinator's retry lookup.
+/// Nothing is stored per row, so rule 3 stops applying by itself once the failure is
+/// retried, sent, cancelled or wedged.
 pub(super) fn resolve_send_state(
-    transaction_id: Option<&str>,
-    state: Option<TimelineSendState>,
-    send_statuses: &HashMap<String, TimelineSendState>,
+    sdk_state: Option<TimelineSendState>,
+    recorded: Option<&TimelineSendState>,
+    blocked: bool,
 ) -> Option<TimelineSendState> {
-    match state? {
-        TimelineSendState::Sending
-            if blocked_behind_recoverable_failure(transaction_id, send_statuses) =>
-        {
-            Some(TimelineSendState::NotSent {
+    match sdk_state {
+        // Rule 1: the SDK's own terminal is authoritative.
+        Some(
+            TimelineSendState::NotSent { .. }
+            | TimelineSendState::Sent
+            | TimelineSendState::Cancelled,
+        ) => sdk_state,
+        // Rule 2 and 3: the SDK reports the request as not attempted — `Sending` is its
+        // `NotSentYet` — so the actor's record and the room's stopped queue decide.
+        sdk_unattempted @ (Some(TimelineSendState::Sending) | None) => match recorded {
+            Some(TimelineSendState::NotSent { .. }) => recorded.cloned(),
+            _ if blocked => Some(TimelineSendState::NotSent {
                 reason: TimelineSendFailureReason::Recoverable,
-            })
-        }
-        other => Some(other),
+            }),
+            _ => sdk_unattempted.or_else(|| recorded.cloned()),
+        },
     }
 }
 
-/// The SDK's own state, or the actor's record when the SDK reports none.
+/// The row's inputs for [`resolve_send_state`], straight from the room's send table.
 pub(super) fn send_state_with_recoverable_block(
     sdk_state: Option<TimelineSendState>,
     transaction_id: Option<&str>,
     send_statuses: &HashMap<String, TimelineSendState>,
 ) -> Option<TimelineSendState> {
-    let state = sdk_state.or_else(|| {
-        transaction_id
-            .and_then(|transaction_id| send_statuses.get(transaction_id))
-            .cloned()
-    });
-    resolve_send_state(transaction_id, state, send_statuses)
+    resolve_send_state(
+        sdk_state,
+        transaction_id.and_then(|transaction_id| send_statuses.get(transaction_id)),
+        blocked_behind_recoverable_failure(transaction_id, send_statuses),
+    )
 }
 
 pub(super) fn send_failure_reason(is_recoverable: bool) -> TimelineSendFailureReason {
@@ -4317,17 +4326,14 @@ pub(super) fn trace_message_edit_lifecycle(
     koushi_diagnostics::record(event);
 }
 
+/// #1846: judges the **resolved** state of the row — the same object
+/// [`resolve_send_state`] produced for rendering, never a second reading of the SDK state
+/// or the send table. A row that shows `Resend` is therefore always accepted, and a row
+/// that does not show it never is.
 pub(crate) fn validate_retry_send(
-    transaction_id: &str,
-    send_statuses: &HashMap<String, TimelineSendState>,
+    resolved: Option<TimelineSendState>,
 ) -> Result<(), TimelineFailureKind> {
-    // #1846: the guard judges the same resolved state the row renders, so an offered
-    // `Resend` always resolves and an unoffered one never does.
-    match resolve_send_state(
-        Some(transaction_id),
-        send_statuses.get(transaction_id).cloned(),
-        send_statuses,
-    ) {
+    match resolved {
         Some(TimelineSendState::NotSent { .. }) => Ok(()),
         Some(
             TimelineSendState::Sending | TimelineSendState::Cancelled | TimelineSendState::Sent,

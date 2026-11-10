@@ -1103,6 +1103,24 @@ impl TimelineActor {
         self.display_projection.reproject(&context)
     }
 
+    /// #1846: the resolved state this actor renders for a transaction row. The display is
+    /// what the user actually sees (the trimmed canonical window plus the manager-owned
+    /// pending rows), so the retry guard judges that object first and falls back to the
+    /// canonical window for a row that is currently scrolled out of it.
+    pub(super) fn rendered_send_state(&self, render_id: &str) -> Option<TimelineSendState> {
+        self.display_projection
+            .display_items()
+            .iter()
+            .chain(self.navigation_items.iter())
+            .find(|item| {
+                matches!(
+                    &item.id,
+                    TimelineItemId::Transaction { transaction_id } if transaction_id == render_id
+                )
+            })
+            .and_then(|item| item.send_state.clone())
+    }
+
     pub(super) fn update_send_status(
         &mut self,
         transaction_id: &str,
@@ -1127,11 +1145,14 @@ impl TimelineActor {
         let mut diffs = Vec::new();
         for (transaction_id, state) in states {
             let state = super::item_projection::resolve_send_state(
-                Some(transaction_id.as_str()),
-                Some(state),
-                &self.send_statuses,
+                None,
+                Some(&state),
+                super::item_projection::blocked_behind_recoverable_failure(
+                    Some(transaction_id.as_str()),
+                    &self.send_statuses,
+                ),
             )
-            .expect("a recorded state resolves to itself");
+            .unwrap_or(state);
             diffs.extend(self.display_projection.update_send_state(
                 &transaction_id,
                 state,
@@ -1185,10 +1206,14 @@ impl TimelineActor {
                 // #1846: a pending row queued behind a recoverable failure was never
                 // attempted, so it is not sending. Derived here from the send table so
                 // the row resolves itself once the failure is retried, sent or cancelled.
+                let recorded = item.send_state.take();
                 item.send_state = super::item_projection::resolve_send_state(
-                    projection.sdk_transaction_id.as_deref(),
-                    item.send_state.take(),
-                    &self.send_statuses,
+                    None,
+                    recorded.as_ref(),
+                    super::item_projection::blocked_behind_recoverable_failure(
+                        projection.sdk_transaction_id.as_deref(),
+                        &self.send_statuses,
+                    ),
                 );
                 item
             })

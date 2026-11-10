@@ -4359,6 +4359,53 @@ impl SendQueueActorFixture {
             .bind(sdk_transaction_id.to_owned());
     }
 
+    /// The manager-owned observer records the SDK's own terminal for this row; the actor's
+    /// send table is deliberately left behind, as it is while the timeline relay wins.
+    async fn observe_sdk_failure(
+        &mut self,
+        echo: &matrix_sdk::send_queue::LocalEcho,
+        is_recoverable: bool,
+    ) {
+        apply_send_completion_observation_and_handoff(
+            &self.coordinator,
+            &self.terminal_ingress,
+            self.room.room_id().as_str(),
+            SendCompletionObservation::SendError {
+                sdk_transaction_id: echo.transaction_id.to_string(),
+                diagnostic: crate::send_diagnostics::SendFailureDiagnostic {
+                    reason: "http",
+                    recoverable: is_recoverable,
+                },
+            },
+        );
+        self.republish_rows().await;
+    }
+
+    /// The retry was accepted: the queue resumes and no failure is reported for it.
+    async fn await_retry_accepted(&mut self) {
+        let request_id = self.retry_request_id.expect("a retry was sent");
+        let room = &self.room;
+        let events = &mut self.actor_events;
+        let accepted = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if room.send_queue().is_enabled() {
+                    return true;
+                }
+                let event = events.recv().await.expect("core event");
+                if let CoreEvent::OperationFailed {
+                    request_id: failed,
+                    failure,
+                } = event
+                    && failed == request_id
+                {
+                    panic!("the rendered retry was refused: {failure:?}");
+                }
+            }
+        })
+        .await;
+        assert_eq!(accepted, Ok(true), "the retry never resumed the room queue");
+    }
+
     /// Binds the most recently registered row and delivers the SDK's local echo for it.
     async fn bind_last_row(&mut self, echo: &matrix_sdk::send_queue::LocalEcho) {
         self.bind_last_row_to(echo.transaction_id.as_str());
@@ -4419,7 +4466,7 @@ impl SendQueueActorFixture {
             Some(projection),
         );
         registration.activate();
-        registration.bind(transaction_id);
+        registration.bind_with_handle(transaction_id, echo_handle(&echo));
         self.pending.push(registration);
         // The actor publishes the row as soon as it records the echo; whether it
         // reads as sending or as blocked is what the test asserts next.
@@ -4578,6 +4625,17 @@ impl SendQueueActorFixture {
             failure,
             CoreFailure::TimelineOperationFailed { kind: expected }
         );
+    }
+}
+
+fn echo_handle(
+    echo: &matrix_sdk::send_queue::LocalEcho,
+) -> Option<matrix_sdk::send_queue::SendHandle> {
+    match &echo.content {
+        matrix_sdk::send_queue::LocalEchoContent::Event { send_handle, .. } => {
+            Some(send_handle.clone())
+        }
+        _ => None,
     }
 }
 
@@ -4756,8 +4814,10 @@ async fn an_unbound_row_is_not_derived_as_blocked_until_the_sdk_binds_it() {
         .await_row(&client_id, "an unbound composer row", is_sending)
         .await;
     fixture.retry_transaction(&client_txn_id).await;
+    // The row renders `Sending`, so the guard refuses it as a sending row — the same
+    // reason, not a separate unknown-target path.
     fixture
-        .await_retry_refused(TimelineFailureKind::InvalidSendTarget)
+        .await_retry_refused(TimelineFailureKind::InvalidSendState)
         .await;
 
     // The SDK binds the row to the transaction it enqueued; the derived state now
@@ -4775,8 +4835,8 @@ async fn an_unbound_row_is_not_derived_as_blocked_until_the_sdk_binds_it() {
 
 /// #1846: the SDK binds a composer row to a transaction id before this actor's monitor
 /// delivers its echo. In that window the row is not derivable — the send table has no
-/// entry for it, so `RetrySend` would answer `InvalidSendTarget` — and the row therefore
-/// keeps its normal state, so what it renders and what its commands do agree.
+/// entry for it — so it renders `Sending` and the retry guard refuses it for the same
+/// reason it refuses any sending row: what the row shows and what `RetrySend` does agree.
 #[tokio::test]
 async fn a_bound_row_is_not_derived_before_the_actor_observes_its_echo() {
     let mut fixture = SendQueueActorFixture::start().await;
@@ -4803,8 +4863,29 @@ async fn a_bound_row_is_not_derived_before_the_actor_observes_its_echo() {
         .await;
     fixture.retry_transaction(sdk_transaction_id.as_str()).await;
     fixture
-        .await_retry_refused(TimelineFailureKind::InvalidSendTarget)
+        .await_retry_refused(TimelineFailureKind::InvalidSendState)
         .await;
+}
+
+/// #1846: the SDK's own failure projection can be published before this actor mirrors it in
+/// its send table — the timeline relay and the send queue monitor are separate tasks. The
+/// rendered row therefore decides the retry, and the command follows it.
+#[tokio::test]
+async fn a_row_the_sdk_reported_failed_is_retryable_before_the_send_table_catches_up() {
+    let mut fixture = SendQueueActorFixture::start().await;
+
+    let head = fixture.queue_row("head").await;
+    fixture.observe_sdk_failure(&head, true).await;
+    fixture
+        .await_row(
+            &head.transaction_id,
+            "the row the SDK reported failed",
+            is_not_sent,
+        )
+        .await;
+
+    fixture.retry(&head).await;
+    fixture.await_retry_accepted().await;
 }
 
 /// #1846: retrying the head succeeds, so the rows behind it stop offering `Resend`
