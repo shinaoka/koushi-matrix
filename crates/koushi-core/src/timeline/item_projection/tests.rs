@@ -1282,6 +1282,29 @@ fn a_rendered_resend_and_retry_acceptance_always_agree() {
     }
     assert_eq!(cases, 6 * 6 * 2);
 
+    // A settled row never follows a later failure: the block only speaks about requests that
+    // were never sent, whatever else the room is doing.
+    let recoverable_failure = TimelineSendState::NotSent {
+        reason: TimelineSendFailureReason::Recoverable,
+    };
+    for settled in [TimelineSendState::Sent, TimelineSendState::Cancelled] {
+        assert_eq!(
+            resolve_send_state(None, Some(&settled), true),
+            Some(settled.clone()),
+            "a settled row must survive a room-wide block"
+        );
+        assert_eq!(
+            resolve_send_state(Some(TimelineSendState::Sending), Some(&settled), true),
+            Some(settled.clone()),
+            "a settled row outranks the SDK's not-attempted report"
+        );
+    }
+    // Only a request that has not been sent is blocked.
+    assert_eq!(
+        resolve_send_state(None, Some(&TimelineSendState::Sending), true),
+        Some(recoverable_failure)
+    );
+
     // The reachable order the review named: the SDK published the failure first and the
     // actor's record lags behind it.
     assert_eq!(

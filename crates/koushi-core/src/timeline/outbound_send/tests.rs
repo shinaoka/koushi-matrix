@@ -4359,6 +4359,45 @@ impl SendQueueActorFixture {
             .bind(sdk_transaction_id.to_owned());
     }
 
+    /// The manager-owned observer records the SDK's own success for this row: the send went
+    /// out and only its remote echo is still missing.
+    async fn observe_sdk_sent(&mut self, echo: &matrix_sdk::send_queue::LocalEcho, event_id: &str) {
+        apply_send_completion_observation_and_handoff(
+            &self.coordinator,
+            &self.terminal_ingress,
+            self.room.room_id().as_str(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: echo.transaction_id.to_string(),
+                event_id: event_id.to_owned(),
+            },
+        );
+        self.republish_rows().await;
+    }
+
+    /// The SDK's own send attempt fails recoverably (its queue is disabled afterwards).
+    async fn await_sdk_send_failure(&mut self, transaction_id: &str) {
+        let updates = &mut self.queue_updates;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if let Ok(RoomSendQueueUpdate::SendError {
+                    transaction_id: failed,
+                    is_recoverable: true,
+                    ..
+                }) = updates.recv().await
+                    && failed.as_str() == transaction_id
+                {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("the SDK reports the recoverable send failure");
+    }
+
+    fn row_state(&self, render_id: &str) -> Option<TimelineSendState> {
+        self.rows.get(render_id).cloned()
+    }
+
     /// The manager-owned observer records the SDK's own terminal for this row; the actor's
     /// send table is deliberately left behind, as it is while the timeline relay wins.
     async fn observe_sdk_failure(
@@ -4475,6 +4514,18 @@ impl SendQueueActorFixture {
         echo
     }
 
+    /// Any number of room sends fails recoverably, as a homeserver outage would.
+    async fn mount_failing_send(&self) {
+        self._server
+            .mock_room_send()
+            .respond_with_code_and_json(
+                500,
+                serde_json::json!({ "errcode": "M_UNKNOWN", "error": "Server is unavailable" }),
+            )
+            .mount()
+            .await;
+    }
+
     async fn push(&self, update: RoomSendQueueUpdate) {
         self.handle
             .tx
@@ -4535,6 +4586,35 @@ impl SendQueueActorFixture {
             .send(TimelineActorMessage::SendQueueLagged)
             .await
             .expect("actor accepts the lagged notification");
+    }
+
+    /// The row the actor publishes under `render_id` (a transaction or event id).
+    async fn await_row_state(
+        &mut self,
+        render_id: &str,
+        label: &str,
+        expected: fn(&TimelineSendState) -> bool,
+    ) -> TimelineSendState {
+        let rows = &mut self.rows;
+        let events = &mut self.actor_events;
+        let observed = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(state) = rows.get(render_id)
+                    && expected(state)
+                {
+                    return state.clone();
+                }
+                let event = events.recv().await.expect("core event");
+                record_row_states(event, rows);
+            }
+        })
+        .await;
+        observed.unwrap_or_else(|_| {
+            panic!(
+                "timed out waiting for {label} ({render_id}): {:?}",
+                self.rows
+            )
+        })
     }
 
     /// The rows the actor publishes for `transaction_id`, once one matches `expected`.
@@ -4665,10 +4745,18 @@ fn send_error(
 fn record_row_states(event: CoreEvent, rows: &mut HashMap<String, TimelineSendState>) {
     let record = |item: &koushi_protocol::event::TimelineItem,
                   rows: &mut HashMap<String, TimelineSendState>| {
-        if let koushi_protocol::event::TimelineItemId::Transaction { transaction_id } = &item.id
-            && let Some(state) = &item.send_state
-        {
-            rows.insert(transaction_id.clone(), state.clone());
+        let Some(state) = &item.send_state else {
+            return;
+        };
+        match &item.id {
+            koushi_protocol::event::TimelineItemId::Transaction { transaction_id } => {
+                rows.insert(transaction_id.clone(), state.clone());
+            }
+            // A settled fallback row is addressed by the event id it resolved to.
+            koushi_protocol::event::TimelineItemId::Event { event_id } => {
+                rows.insert(event_id.clone(), state.clone());
+            }
+            _ => {}
         }
     };
     let diffs = match event {
@@ -4720,6 +4808,10 @@ fn is_not_sent(state: &TimelineSendState) -> bool {
 
 fn is_sending(state: &TimelineSendState) -> bool {
     matches!(state, TimelineSendState::Sending)
+}
+
+fn is_sent(state: &TimelineSendState) -> bool {
+    matches!(state, TimelineSendState::Sent)
 }
 
 /// #1846: a message queued while the room queue is stopped behind a recoverable
@@ -4886,6 +4978,74 @@ async fn a_row_the_sdk_reported_failed_is_retryable_before_the_send_table_catche
 
     fixture.retry(&head).await;
     fixture.await_retry_accepted().await;
+}
+
+/// #1846: a row the SDK has already settled must not be re-derived as unsent because a
+/// later request failed — the block only speaks about requests that were never sent.
+#[tokio::test]
+async fn a_settled_row_keeps_sent_when_a_later_send_fails() {
+    let mut fixture = SendQueueActorFixture::start().await;
+
+    let first = fixture.queue_row("first").await;
+    let sent_event_id = "$first-sent:example.invalid";
+    fixture.observe_sdk_sent(&first, sent_event_id).await;
+    fixture
+        .await_row_state(sent_event_id, "the settled row", is_sent)
+        .await;
+    let second = fixture.queue_row("second").await;
+    fixture.fail(&second, true).await;
+    fixture
+        .await_row(&second.transaction_id, "the failed later row", is_not_sent)
+        .await;
+
+    assert_eq!(
+        fixture.row_state(sent_event_id),
+        Some(TimelineSendState::Sent),
+        "a settled row must not follow a later failure"
+    );
+}
+
+/// #1846: the SDK's own terminal for a row survives a republish driven by a stale retry. The
+/// send-queue monitor can consume an older `RetryEvent` after the timeline relay published
+/// the SDK's failure, so the republish must read the SDK's state, not only the send table.
+#[tokio::test]
+async fn an_sdk_reported_failure_survives_a_stale_retry_event() {
+    let mut fixture = SendQueueActorFixture::start().await;
+    // The SDK's own attempt fails recoverably; its queue is disabled afterwards.
+    fixture.mount_failing_send().await;
+    fixture.room.send_queue().set_enabled(true);
+
+    let head = fixture.queue_row("head").await;
+    fixture
+        .await_sdk_send_failure(head.transaction_id.as_str())
+        .await;
+    // The lag rebuild publishes the canonical window, whose rows carry the SDK's state.
+    fixture.queue_lagged().await;
+    fixture
+        .await_row(
+            &head.transaction_id,
+            "the SDK-reported failure",
+            is_not_sent,
+        )
+        .await;
+
+    // A stale retry for the same request arrives afterwards and puts the actor's record back
+    // to sending. Republishing from that record would erase the SDK's failure.
+    fixture
+        .push(RoomSendQueueUpdate::RetryEvent {
+            transaction_id: head.transaction_id.clone(),
+        })
+        .await;
+    // A later send proves the stale retry was consumed before this assertion.
+    fixture.queue_row("later").await;
+
+    assert_eq!(
+        fixture.row_state(head.transaction_id.as_str()),
+        Some(TimelineSendState::NotSent {
+            reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
+        }),
+        "the SDK's failure must survive a republish driven by the actor's record"
+    );
 }
 
 /// #1846: retrying the head succeeds, so the rows behind it stop offering `Resend`

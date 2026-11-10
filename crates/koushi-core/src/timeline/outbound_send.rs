@@ -2193,12 +2193,14 @@ impl TimelineActor {
             }
             RoomSendQueueUpdate::CancelledLocalEvent { transaction_id } => {
                 let sdk_txn_str = transaction_id.to_string();
-                self.update_send_status(&sdk_txn_str, TimelineSendState::Cancelled);
+                self.update_send_status(&sdk_txn_str, TimelineSendState::Cancelled)
+                    .await;
                 self.send_handles.remove(&sdk_txn_str);
                 self.refresh_pending_rows_for_send_table().await;
             }
             RoomSendQueueUpdate::ReplacedLocalEvent { transaction_id, .. } => {
-                self.update_send_status(transaction_id.as_ref(), TimelineSendState::Sending);
+                self.update_send_status(transaction_id.as_ref(), TimelineSendState::Sending)
+                    .await;
             }
             RoomSendQueueUpdate::SendError {
                 transaction_id,
@@ -2211,7 +2213,8 @@ impl TimelineActor {
                     TimelineSendState::NotSent {
                         reason: send_failure_reason(is_recoverable),
                     },
-                );
+                )
+                .await;
                 self.refresh_pending_rows_for_send_table().await;
             }
             RoomSendQueueUpdate::RetryEvent { transaction_id } => {
@@ -2220,7 +2223,8 @@ impl TimelineActor {
                     .lock()
                     .expect("send completion coordinator lock must not be poisoned")
                     .stage_pending_send(self.key.room_id(), &sdk_transaction_id, "retry_scheduled");
-                self.update_send_status(&sdk_transaction_id, TimelineSendState::Sending);
+                self.update_send_status(&sdk_transaction_id, TimelineSendState::Sending)
+                    .await;
                 self.refresh_pending_rows_for_send_table().await;
             }
             RoomSendQueueUpdate::SentEvent {
@@ -2230,7 +2234,8 @@ impl TimelineActor {
                 // Presentation-only mirror: manager-global correlation owns the
                 // request/client transaction terminal.
                 let sdk_txn_str = transaction_id.to_string();
-                self.update_send_status(&sdk_txn_str, TimelineSendState::Sent);
+                self.update_send_status(&sdk_txn_str, TimelineSendState::Sent)
+                    .await;
                 self.send_handles.remove(&sdk_txn_str);
                 self.sent_event_txns
                     .lock()

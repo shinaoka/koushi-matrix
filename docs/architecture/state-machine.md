@@ -4307,10 +4307,13 @@ unresolved recoverable failure that request is derived as
 `notSent { recoverable }`. Every row state is resolved in one function,
 `resolve_send_state(sdk_state, actor_record, room_blocked)` in
 `crates/koushi-core/src/timeline/item_projection.rs`, with three rules: an SDK terminal
-(`sent`, `cancelled`, any SDK send failure) wins; while the SDK reports the request as
-not attempted (`NotSentYet`) the actor's record of a failure stands; and that
-not-attempted state becomes `not_sent { recoverable }` while the room's queue is stopped
-on a recoverable failure for another request. Nothing is stored per row, so it ends by
+(`sent`, `cancelled`, any SDK send failure) wins; while the SDK reports no attempt of its
+own (`NotSentYet`, or nothing) the actor's record stands — an unresolved failure or a
+settled outcome; and a `sending` row becomes `not_sent { recoverable }` only while the
+room's queue is stopped on a recoverable failure for another request, so the block never
+touches a row that was already sent or cancelled. `NotSentYet` is not proof that nothing is
+in flight: the SDK reports it again as soon as a retry starts, so the record (not the SDK's
+silence) decides in that window. Nothing is stored per row, so it ends by
 itself when the failure is retried, sent, cancelled or wedged. The derivation needs the
 row's own observed transaction in the send table, so a bound but not yet observed row
 keeps its normal state.
@@ -4326,8 +4329,11 @@ table. Exactly what that guarantees, and what it does not:
   separate tasks, so a row can render from the SDK's failure before the table records it.
   That direction is intended — the reader acted on the SDK's terminal, and the retry
   follows the row;
-- not covered: a row that is not currently rendered (scrolled out of the bounded window).
-  The guard answers `invalid_send_target` and the UI offers no `Resend` for it.
+- not covered: a row the actor cannot resolve at all. The guard reads the rendered state
+  first (the bounded display window) and falls back to the canonical navigation window, so a
+  row that is merely scrolled out of the display is still resolvable; `invalid_send_target`
+  answers only a transaction the actor holds in neither window. The UI offers no `Resend`
+  for such a row either way.
 
 Headless core QA covers this with the `send_queue` scenario against disposable
 local homeservers. The Rust QA binary inserts a local TCP proxy to inject

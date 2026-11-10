@@ -2592,6 +2592,17 @@ export function checkCoreTimelineOutboundState() {
   if (!run?.includes("tokio::select!") || !run.includes("biased;") || !run.includes("terminal_rx.recv()")) failures.push(sourceContractFailure(rule, "timeline manager does not prioritize terminal ingress"));
   if ((manager.match(/session\.client\(\)\.send_queue\(\)\.subscribe\(\)/gu) ?? []).length !== 1) failures.push(sourceContractFailure(rule, "timeline manager does not have one global send terminal subscription"));
   if (outbound.includes("SharedSendCompletionTracker") || manager.includes("SharedSendCompletionTracker")) failures.push(sourceContractFailure(rule, "obsolete shared send tracker remains"));
+  // #1846: one writer owns a rendered row's send state, and it resolves that state from the
+  // SDK's own report (`sdk_item_to_timeline_item_with_send_states`). A second writer, or a
+  // writer working from the send table alone, can overwrite an SDK terminal (the send-queue
+  // monitor and the timeline relay consume the same updates in either order).
+  const slotWriters = ["actor.rs", "outbound_send.rs", "relay.rs", "navigation.rs", "item_projection.rs"]
+    .flatMap((file) => timelineSource(file).split("\n").map((line) => ({ file, line })))
+    .filter(({ line }) => line.includes(".update_send_state("))
+    .map(({ file }) => file);
+  const republish = timelineItemBody("actor.rs", "pub(super) async fn republish_send_rows");
+  if (slotWriters.length !== 1 || slotWriters[0] !== "actor.rs") failures.push(sourceContractFailure(rule, "a rendered send state has more than one writer"));
+  if (!republish?.includes("sdk_item_to_timeline_item_with_send_states")) failures.push(sourceContractFailure(rule, "the send-state republish does not resolve the SDK's own report"));
   return failures;
 }
 

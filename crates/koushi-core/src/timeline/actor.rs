@@ -1121,41 +1121,54 @@ impl TimelineActor {
             .and_then(|item| item.send_state.clone())
     }
 
-    pub(super) fn update_send_status(
+    pub(super) async fn update_send_status(
         &mut self,
         transaction_id: &str,
         send_state: TimelineSendState,
     ) {
         self.send_statuses
             .insert(transaction_id.to_owned(), send_state);
-        self.republish_send_rows();
+        self.republish_send_rows().await;
     }
 
-    /// #1846: whether an outbound row reads as "not sent" depends on what its room's
-    /// send table says about the other requests, so every outbound row is re-derived
-    /// and republished from that table after any change to it. Nothing is stored per
-    /// row: the answer follows the table and disappears with it.
-    pub(super) fn republish_send_rows(&mut self) {
+    /// #1846: an outbound row's state depends on the SDK's own report as well as on the send
+    /// table, so a table change re-projects the affected rows through the same conversion
+    /// the timeline relay uses. Deriving from the table alone would overwrite a row the SDK
+    /// has already reported as failed or sent — the send-queue monitor can consume a stale
+    /// retry after the timeline relay published the failure. Nothing is stored per row.
+    pub(super) async fn republish_send_rows(&mut self) {
+        if self.send_statuses.is_empty() {
+            return;
+        }
+        let (sdk_items, _) = self.timeline.subscribe().await;
         let context = self.display_projection_context();
-        let states = self
-            .send_statuses
-            .iter()
-            .map(|(transaction_id, state)| (transaction_id.clone(), state.clone()))
-            .collect::<Vec<_>>();
         let mut diffs = Vec::new();
-        for (transaction_id, state) in states {
-            let state = super::item_projection::resolve_send_state(
-                None,
-                Some(&state),
-                super::item_projection::blocked_behind_recoverable_failure(
-                    Some(transaction_id.as_str()),
-                    &self.send_statuses,
-                ),
-            )
-            .unwrap_or(state);
+        for item in &sdk_items {
+            let Some(transaction_id) = item
+                .as_event()
+                .and_then(|event| event.transaction_id())
+                .map(|transaction_id| transaction_id.to_string())
+            else {
+                continue;
+            };
+            if !self.send_statuses.contains_key(&transaction_id) {
+                continue;
+            }
+            let projected = super::item_projection::sdk_item_to_timeline_item_with_send_states(
+                &self.key,
+                item,
+                self.own_user_id.as_deref(),
+                &self.send_statuses,
+                Some(&self.room_key_recovery),
+                Some(&self.key_request_states),
+                Some(&self.withheld_codes),
+            );
+            let Some(send_state) = projected.send_state else {
+                continue;
+            };
             diffs.extend(self.display_projection.update_send_state(
                 &transaction_id,
-                state,
+                send_state,
                 &context,
             ));
         }

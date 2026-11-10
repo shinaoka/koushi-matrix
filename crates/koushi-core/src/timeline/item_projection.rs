@@ -3592,8 +3592,10 @@ pub(super) fn blocked_behind_recoverable_failure(
 ///
 /// 1. an SDK terminal wins — `sent`, `cancelled`, and any SDK send failure, which is the
 ///    only surface that knows what happened on the wire;
-/// 2. while the SDK reports `NotSentYet` (never attempted, or nothing at all), the actor's
-///    record of a failure stands, because the SDK has nothing more to say about it;
+/// 2. while the SDK reports no attempt of its own (`NotSentYet`, or nothing at all — the SDK
+///    also resets that state on a retry), the actor's record stands, because it carries what
+///    the SDK already told the send-queue stream: a failure that has not been resolved yet,
+///    or a settled outcome that must not be re-derived as unsent;
 /// 3. that "never attempted" state of a request the room's stopped queue cannot reach is
 ///    reported as `not_sent { recoverable }` instead of `sending`.
 ///
@@ -3616,7 +3618,14 @@ pub(super) fn resolve_send_state(
         // Rule 2 and 3: the SDK reports the request as not attempted — `Sending` is its
         // `NotSentYet` — so the actor's record and the room's stopped queue decide.
         sdk_unattempted @ (Some(TimelineSendState::Sending) | None) => match recorded {
-            Some(TimelineSendState::NotSent { .. }) => recorded.cloned(),
+            // An unresolved failure and a settled outcome both outrank "the SDK has no
+            // attempt to report": a row that already failed or already went out must never
+            // be re-derived as unsent by the room's other failures.
+            Some(
+                TimelineSendState::NotSent { .. }
+                | TimelineSendState::Sent
+                | TimelineSendState::Cancelled,
+            ) => recorded.cloned(),
             _ if blocked => Some(TimelineSendState::NotSent {
                 reason: TimelineSendFailureReason::Recoverable,
             }),
