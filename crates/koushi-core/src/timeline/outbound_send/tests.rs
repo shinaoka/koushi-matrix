@@ -4308,9 +4308,62 @@ impl SendQueueActorFixture {
             .await;
     }
 
+    /// Registers the fallback row a composer send shows before the SDK binds it to a
+    /// transaction, and returns the client transaction id that row is rendered under.
+    async fn register_unbound_row(&mut self, body: &str) -> String {
+        let key = room_key_from(&self.room);
+        let client_txn_id = format!("client-{body}");
+        let projection = PendingSendProjection {
+            lifecycle_trace: None,
+            key: key.clone(),
+            sequence: 0,
+            client_txn_id: client_txn_id.clone(),
+            item: pending_send_item(&client_txn_id, body, None, None, None),
+            sdk_transaction_id: None,
+            handle: None,
+            terminal_event_id: None,
+            phase: PendingSendPhase::Pending,
+        };
+        let mut registration = SendCompletionRegistration::begin_with_projection(
+            Arc::clone(&self.coordinator),
+            self.terminal_ingress.clone(),
+            key,
+            client_txn_id.clone(),
+            None,
+            fake_rid(9311),
+            true,
+            Some(projection),
+        );
+        registration.activate();
+        self.pending.push(registration);
+        client_txn_id
+    }
+
+    /// Forces a republish of the manager-owned rows without rebuilding the send table,
+    /// which a lag would do and the SDK's echoes would then not carry a synthetic
+    /// failure. The terminal belongs to a transaction this room never queued.
+    async fn republish_rows(&self) {
+        self.push(RoomSendQueueUpdate::SentEvent {
+            transaction_id: matrix_sdk::ruma::OwnedTransactionId::from("refresh-row"),
+            event_id: matrix_sdk::ruma::event_id!("$refresh-row:example.invalid").to_owned(),
+        })
+        .await;
+    }
+
+    /// Binds the most recently registered row to a confirmed SDK transaction.
+    async fn bind_last_row(&mut self, echo: &matrix_sdk::send_queue::LocalEcho) {
+        self.pending
+            .last_mut()
+            .expect("a registered row")
+            .bind(echo.transaction_id.to_string());
+        // The republish after the binding is what makes the derived state apply.
+        self.push(RoomSendQueueUpdate::NewLocalEvent(echo.clone()))
+            .await;
+    }
+
     /// Queues a real send, registers the manager-owned row a composer send would
     /// show, and waits until the actor has recorded the SDK's local echo for it.
-    async fn queue_row(&mut self, body: &str) -> matrix_sdk::send_queue::LocalEcho {
+    async fn queue_echo(&mut self, body: &str) -> matrix_sdk::send_queue::LocalEcho {
         use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 
         let sent = self
@@ -4320,16 +4373,21 @@ impl SendQueueActorFixture {
             .await
             .expect("queue a send");
         let transaction_id = sent.transaction_id().to_string();
-        let echo = loop {
+        loop {
             match self.queue_updates.recv().await.expect("room queue update") {
                 RoomSendQueueUpdate::NewLocalEvent(echo)
                     if echo.transaction_id.as_str() == transaction_id =>
                 {
-                    break echo;
+                    return echo;
                 }
                 _ => {}
             }
-        };
+        }
+    }
+
+    async fn queue_row(&mut self, body: &str) -> matrix_sdk::send_queue::LocalEcho {
+        let echo = self.queue_echo(body).await;
+        let transaction_id = echo.transaction_id.to_string();
         let key = room_key_from(&self.room);
         let client_txn_id = format!("client-{transaction_id}");
         let projection = PendingSendProjection {
@@ -4390,13 +4448,17 @@ impl SendQueueActorFixture {
     }
 
     async fn retry(&mut self, echo: &matrix_sdk::send_queue::LocalEcho) {
+        self.retry_transaction(echo.transaction_id.as_ref()).await;
+    }
+
+    async fn retry_transaction(&mut self, transaction_id: &str) {
         let request_id = fake_rid(9301);
         self.retry_request_id = Some(request_id);
         self.handle
             .tx
             .send(TimelineActorMessage::RetrySend {
                 request_id,
-                transaction_id: echo.transaction_id.to_string(),
+                transaction_id: transaction_id.to_owned(),
             })
             .await
             .expect("actor accepts the retry");
@@ -4555,6 +4617,12 @@ fn record_row_states(event: CoreEvent, rows: &mut HashMap<String, TimelineSendSt
         }
         _ => return,
     };
+    let transaction_id_of = |item: &koushi_protocol::event::TimelineItem| match &item.id {
+        koushi_protocol::event::TimelineItemId::Transaction { transaction_id } => {
+            Some(transaction_id.clone())
+        }
+        _ => None,
+    };
     for diff in diffs {
         match diff {
             koushi_protocol::event::TimelineDiff::PushFront { item }
@@ -4562,10 +4630,18 @@ fn record_row_states(event: CoreEvent, rows: &mut HashMap<String, TimelineSendSt
             | koushi_protocol::event::TimelineDiff::Insert { item, .. }
             | koushi_protocol::event::TimelineDiff::Set { item, .. } => record(&item, rows),
             koushi_protocol::event::TimelineDiff::Reset { items } => {
+                let live = items
+                    .iter()
+                    .filter_map(transaction_id_of)
+                    .collect::<Vec<_>>();
+                rows.retain(|transaction_id, _| live.contains(transaction_id));
                 for item in &items {
                     record(item, rows);
                 }
             }
+            koushi_protocol::event::TimelineDiff::Clear => rows.clear(),
+            // An index-based removal does not name its transaction, and these tests
+            // never remove a row: the cache keeps the last state published for it.
             _ => {}
         }
     }
@@ -4646,6 +4722,45 @@ async fn a_send_after_an_unrecoverable_failure_is_not_marked_not_sent() {
     fixture.retry(&later).await;
     fixture
         .await_retry_refused(TimelineFailureKind::InvalidSendState)
+        .await;
+}
+
+/// #1846: only a row the SDK has bound to a transaction can be derived as blocked — an
+/// unbound composer row keeps its normal state, because retrying its client transaction
+/// id would be rejected as an unknown target.
+#[tokio::test]
+async fn an_unbound_row_is_not_derived_as_blocked_until_the_sdk_binds_it() {
+    let mut fixture = SendQueueActorFixture::start().await;
+
+    let head = fixture.queue_row("head").await;
+    fixture.fail(&head, true).await;
+    fixture
+        .await_row(&head.transaction_id, "the failed head", is_not_sent)
+        .await;
+
+    // A composer row that the SDK has not bound yet is published for the first time
+    // while the room already holds the failure: it must not be derived as blocked.
+    let client_txn_id = fixture.register_unbound_row("draft").await;
+    let client_id = matrix_sdk::ruma::OwnedTransactionId::from(client_txn_id.as_str());
+    fixture.republish_rows().await;
+    fixture
+        .await_row(&client_id, "an unbound composer row", is_sending)
+        .await;
+    fixture.retry_transaction(&client_txn_id).await;
+    fixture
+        .await_retry_refused(TimelineFailureKind::InvalidSendTarget)
+        .await;
+
+    // The SDK binds the row to the transaction it enqueued; the derived state now
+    // applies, because the row can be retried against that transaction.
+    let later = fixture.queue_echo("later").await;
+    fixture.bind_last_row(&later).await;
+    fixture
+        .await_row(
+            &later.transaction_id,
+            "a bound row behind the failure",
+            is_not_sent,
+        )
         .await;
 }
 

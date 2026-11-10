@@ -3563,8 +3563,14 @@ pub(super) fn blocked_behind_recoverable_failure(
     transaction_id: Option<&str>,
     send_statuses: &HashMap<String, TimelineSendState>,
 ) -> bool {
+    // #1846: a row without a confirmed SDK transaction is not derivable — retrying it
+    // would be rejected as an unknown target, so it keeps its normal state until the
+    // SDK binds it.
+    let Some(transaction_id) = transaction_id else {
+        return false;
+    };
     send_statuses.iter().any(|(other, state)| {
-        Some(other.as_str()) != transaction_id
+        other.as_str() != transaction_id
             && matches!(
                 state,
                 TimelineSendState::NotSent {

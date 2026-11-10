@@ -1180,6 +1180,13 @@ fn a_request_queued_behind_a_recoverable_failure_projects_as_not_sent() {
             &released
         ));
     }
+    // A row the SDK has not bound yet has no transaction to reason about: it keeps its
+    // normal state, because retrying its client transaction would be an unknown target.
+    assert_eq!(
+        send_state_with_recoverable_block(Some(TimelineSendState::Sending), None, &queued),
+        Some(TimelineSendState::Sending)
+    );
+    assert!(!blocked_behind_recoverable_failure(None, &queued));
     // An item with no SDK state falls back to its own record, derived the same way.
     let recorded_behind = HashMap::from([
         ("head".to_owned(), recoverable.clone()),
