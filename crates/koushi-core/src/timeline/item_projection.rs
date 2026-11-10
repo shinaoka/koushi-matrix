@@ -2175,11 +2175,12 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 .as_message()
                 .map(|message| message.is_edited())
                 .unwrap_or(false);
-            let send_state = timeline_send_state_from_sdk(event_item.send_state()).or_else(|| {
+            let send_state = send_state_with_recorded(
+                event_item.send_state(),
                 transaction_id
                     .as_deref()
-                    .and_then(|txn_id| send_statuses.get(txn_id).cloned())
-            });
+                    .and_then(|txn_id| send_statuses.get(txn_id)),
+            );
             let mut unable_to_decrypt = unable_to_decrypt_from_content(content);
             if let Some(utd) = unable_to_decrypt.as_mut() {
                 utd.can_request_keys = event_item.original_json().is_some();
@@ -3553,6 +3554,32 @@ pub(super) fn timeline_send_state_from_sdk(
     }
 }
 
+/// #1846: the SDK folds a request it never attempted into `NotSentYet`, which
+/// reads as `Sending`. After a recoverable failure the room's queue is disabled,
+/// so the actor's own record of that request wins over the collapse and keeps
+/// the retry that resumes the queue reachable.
+pub(super) fn send_state_with_recorded(
+    sdk_state: Option<&SdkEventSendState>,
+    recorded: Option<&TimelineSendState>,
+) -> Option<TimelineSendState> {
+    let sdk_state = timeline_send_state_from_sdk(sdk_state);
+    match sdk_state {
+        Some(TimelineSendState::Sending) => recorded
+            .filter(|recorded| {
+                matches!(
+                    recorded,
+                    TimelineSendState::NotSent {
+                        reason: TimelineSendFailureReason::Recoverable
+                    }
+                )
+            })
+            .cloned()
+            .or(sdk_state),
+        None => recorded.cloned(),
+        other => other,
+    }
+}
+
 pub(super) fn send_failure_reason(is_recoverable: bool) -> TimelineSendFailureReason {
     if is_recoverable {
         TimelineSendFailureReason::Recoverable
@@ -3560,7 +3587,6 @@ pub(super) fn send_failure_reason(is_recoverable: bool) -> TimelineSendFailureRe
         TimelineSendFailureReason::Unrecoverable
     }
 }
-
 pub(super) fn remember_local_echo(
     statuses: &mut HashMap<String, TimelineSendState>,
     handles: &mut HashMap<String, SendHandle>,

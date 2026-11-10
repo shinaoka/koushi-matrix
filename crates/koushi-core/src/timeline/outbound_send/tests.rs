@@ -63,8 +63,9 @@ use super::{
     apply_send_completion_observation_and_handoff,
     apply_send_completion_observation_loss_and_handoff, await_submission_admission,
     classify_send_queue_error, make_offline_reply_content, make_offline_thread_content,
-    media_upload_progress_identity, pending_send_item, reply_source_from_raw,
-    run_global_send_completion_observer, send_retry_delay,
+    media_upload_progress_identity, pending_send_item, queued_behind_recoverable_failure,
+    reply_source_from_raw, resume_room_send_queue, run_global_send_completion_observer,
+    send_retry_delay,
 };
 
 #[test]
@@ -298,6 +299,117 @@ fn test_session_key() -> koushi_protocol::SessionKeyId {
         user_id: "@a:test".to_owned(),
         device_id: "DEVICE".to_owned(),
     }
+}
+
+/// #1846: a recoverable failure disables the room's send queue and keeps the
+/// failed request queued, so nothing behind it is on the wire and only the
+/// attempted request receives a `SendError`. Everything still marked `Sending`
+/// in that room is blocked behind the failure, not sending.
+#[test]
+fn recoverable_failure_fans_out_to_the_items_queued_behind_it() {
+    let mut statuses = HashMap::from([
+        (
+            "failed".to_owned(),
+            koushi_protocol::event::TimelineSendState::NotSent {
+                reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
+            },
+        ),
+        (
+            "behind".to_owned(),
+            koushi_protocol::event::TimelineSendState::Sending,
+        ),
+        (
+            "wedged".to_owned(),
+            koushi_protocol::event::TimelineSendState::NotSent {
+                reason: koushi_protocol::event::TimelineSendFailureReason::Unrecoverable,
+            },
+        ),
+        (
+            "sent".to_owned(),
+            koushi_protocol::event::TimelineSendState::Sent,
+        ),
+        (
+            "cancelled".to_owned(),
+            koushi_protocol::event::TimelineSendState::Cancelled,
+        ),
+    ]);
+
+    let mut behind = queued_behind_recoverable_failure(&statuses, "failed");
+    behind.sort();
+    assert_eq!(behind, vec!["behind".to_owned()]);
+
+    // Nothing is reported a second time once the followers are marked not sent.
+    for transaction_id in &behind {
+        statuses.insert(
+            transaction_id.clone(),
+            koushi_protocol::event::TimelineSendState::NotSent {
+                reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
+            },
+        );
+    }
+    assert!(queued_behind_recoverable_failure(&statuses, "behind").is_empty());
+}
+
+/// #1846: the retry of an item that was never attempted has no wedged request to
+/// clear, so resuming the room queue is the retry. The SDK then sends the oldest
+/// queued request first, which keeps the room's order.
+#[tokio::test]
+async fn resuming_the_room_queue_retries_the_oldest_queued_send_first() {
+    use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = matrix_sdk::ruma::room_id!("!queued-behind:example.test");
+    let room = server.sync_joined_room(&client, room_id).await;
+    server.mock_room_state_encryption().plain().mount().await;
+    server
+        .mock_room_send()
+        .ok(matrix_sdk::ruma::event_id!("$queued-behind:example.test"))
+        .expect(2)
+        .mount()
+        .await;
+    room.send_queue().set_enabled(false);
+    let (local_echoes, mut updates) = room
+        .send_queue()
+        .subscribe()
+        .await
+        .expect("room queue subscription");
+    assert!(local_echoes.is_empty());
+    let first = room
+        .send_queue()
+        .send(RoomMessageEventContent::text_plain("first").into())
+        .await
+        .expect("queue the head send");
+    let second = room
+        .send_queue()
+        .send(RoomMessageEventContent::text_plain("second").into())
+        .await
+        .expect("queue the send behind it");
+
+    // The queued-behind item has no wedged request and no handle to clear.
+    resume_room_send_queue(&room, None)
+        .await
+        .expect("resuming the queue is the retry");
+    assert!(room.send_queue().is_enabled());
+
+    let mut sent = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while sent.len() < 2 {
+            if let Ok(RoomSendQueueUpdate::SentEvent { transaction_id, .. }) = updates.recv().await
+            {
+                sent.push(transaction_id.to_string());
+            }
+        }
+    })
+    .await
+    .expect("both queued sends are attempted");
+    assert_eq!(
+        sent,
+        vec![
+            first.transaction_id().to_string(),
+            second.transaction_id().to_string(),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -1973,6 +2085,77 @@ fn local_echo_before_sdk_bind_preserves_fallback_until_terminal() {
         Some(key.clone())
     );
     assert!(owner.projections_for_key(&key).is_empty());
+}
+
+/// #1846: a pending row queued behind a recoverable failure shows the retry that
+/// resumes the room queue, and only that row changes.
+#[test]
+fn pending_row_queued_behind_a_recoverable_failure_becomes_retryable() {
+    let coordinator = SharedSendCompletionCoordinator::default();
+    let (ingress, _terminal_rx) = TimelineSendTerminalIngress::channel();
+    let key = room_key();
+    let projection = |client_txn_id: &str| PendingSendProjection {
+        lifecycle_trace: None,
+        key: key.clone(),
+        sequence: 0,
+        client_txn_id: client_txn_id.to_owned(),
+        item: pending_send_item(client_txn_id, "queued body", None, None, None),
+        sdk_transaction_id: None,
+        handle: None,
+        terminal_event_id: None,
+        phase: PendingSendPhase::Pending,
+    };
+    let mut blocked = SendCompletionRegistration::begin_with_projection(
+        Arc::clone(&coordinator),
+        ingress.clone(),
+        key.clone(),
+        "client-blocked".to_owned(),
+        None,
+        fake_rid(7410),
+        true,
+        Some(projection("client-blocked")),
+    );
+    blocked.activate();
+    blocked.bind("sdk-blocked".to_owned());
+    let mut sent_ahead = SendCompletionRegistration::begin_with_projection(
+        Arc::clone(&coordinator),
+        ingress.clone(),
+        key.clone(),
+        "client-ahead".to_owned(),
+        None,
+        fake_rid(7411),
+        true,
+        Some(projection("client-ahead")),
+    );
+    sent_ahead.activate();
+    sent_ahead.bind("sdk-ahead".to_owned());
+
+    let mut owner = coordinator.lock().expect("coordinator");
+    assert!(
+        !owner.mark_blocked_behind_recoverable_failure(&key, "sdk-unknown"),
+        "an unknown request marks nothing"
+    );
+    assert!(owner.mark_blocked_behind_recoverable_failure(&key, "sdk-blocked"));
+    let projections = owner.projections_for_key(&key);
+    let row = |client_txn_id: &str| {
+        projections
+            .iter()
+            .find(|projection| projection.client_txn_id == client_txn_id)
+            .expect("projection row")
+    };
+    assert_eq!(
+        row("client-blocked").phase,
+        PendingSendPhase::FailedRecoverable
+    );
+    assert_eq!(
+        row("client-blocked").item.send_state,
+        Some(koushi_protocol::event::TimelineSendState::NotSent {
+            reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
+        })
+    );
+    assert_eq!(row("client-ahead").phase, PendingSendPhase::Pending);
+    // The same retry the failed head of the queue uses resolves this row.
+    assert!(owner.mark_retry_sending(&key, "sdk-blocked"));
 }
 
 #[test]

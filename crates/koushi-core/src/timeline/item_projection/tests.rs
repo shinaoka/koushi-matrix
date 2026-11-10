@@ -70,10 +70,10 @@ use super::{
     msgtype_carries_editable_caption, project_local_megolm_rotation_reason,
     raw_event_reply_quote_media, reaction_groups_from_sdk, reply_quote_from_message_projection,
     reply_quote_from_timeline_item, reset_loading_link_previews_to_pending,
-    room_name_notice_projection, state_event_notice_body, state_event_notice_projection,
-    timeline_item_can_edit, timeline_item_can_react, timeline_item_can_redact,
-    timeline_item_should_be_hidden, validate_cancel_send, validate_redact_reaction,
-    validate_retry_send, validate_send_reaction,
+    room_name_notice_projection, send_state_with_recorded, state_event_notice_body,
+    state_event_notice_projection, timeline_item_can_edit, timeline_item_can_react,
+    timeline_item_can_redact, timeline_item_should_be_hidden, validate_cancel_send,
+    validate_redact_reaction, validate_retry_send, validate_send_reaction,
 };
 
 use super::super::test_support::{fake_rid, room_key, timeline_item};
@@ -1115,6 +1115,36 @@ fn timeline_item_structured_fields_match_private_legacy_semantics() {
     for private_value in ["$private-event:test", "!r:test"] {
         assert!(!serialized.contains(private_value));
     }
+}
+
+/// #1846: a request the SDK never attempted reports `NotSentYet`, which reads as
+/// `Sending`; the actor's record of a recoverable failure beats that collapse.
+#[test]
+fn recorded_recoverable_failure_beats_the_sdk_not_sent_yet_collapse() {
+    let not_sent_yet = matrix_sdk_ui::timeline::EventSendState::NotSentYet { progress: None };
+    let recoverable = TimelineSendState::NotSent {
+        reason: TimelineSendFailureReason::Recoverable,
+    };
+    assert_eq!(
+        send_state_with_recorded(Some(&not_sent_yet), Some(&recoverable)),
+        Some(recoverable.clone())
+    );
+    // An attempt in flight and every explicit SDK terminal keep their own state.
+    assert_eq!(
+        send_state_with_recorded(Some(&not_sent_yet), Some(&TimelineSendState::Sending)),
+        Some(TimelineSendState::Sending)
+    );
+    assert_eq!(
+        send_state_with_recorded(Some(&not_sent_yet), None),
+        Some(TimelineSendState::Sending)
+    );
+    let sent = matrix_sdk_ui::timeline::EventSendState::Sent {
+        event_id: matrix_sdk::ruma::event_id!("$sent:test").to_owned(),
+    };
+    assert_eq!(
+        send_state_with_recorded(Some(&sent), Some(&recoverable)),
+        Some(TimelineSendState::Sent)
+    );
 }
 
 #[test]

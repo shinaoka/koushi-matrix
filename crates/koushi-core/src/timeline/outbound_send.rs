@@ -1998,6 +1998,47 @@ async fn await_submission_admission(admission: Option<oneshot::Receiver<()>>) ->
     }
 }
 
+/// #1846: a recoverable failure disables the room's send queue and keeps the
+/// failed request in it, so only the attempted request receives a `SendError`.
+/// Every other item this room still marks `Sending` was never attempted: it is
+/// blocked behind the failure, not on the wire.
+pub(super) fn queued_behind_recoverable_failure(
+    statuses: &HashMap<String, TimelineSendState>,
+    failed_transaction_id: &str,
+) -> Vec<String> {
+    statuses
+        .iter()
+        .filter(|(transaction_id, state)| {
+            transaction_id.as_str() != failed_transaction_id
+                && matches!(state, TimelineSendState::Sending)
+        })
+        .map(|(transaction_id, _)| transaction_id.clone())
+        .collect()
+}
+
+/// #1846: an item queued behind a failed send was never attempted, so it has no
+/// wedged request of its own to clear; resuming the room queue is its retry, and
+/// the SDK then sends the oldest queued request first, which keeps the room's
+/// order.
+pub(super) async fn resume_room_send_queue(
+    room: &matrix_sdk::Room,
+    handle: Option<&matrix_sdk::send_queue::SendHandle>,
+) -> Result<(), matrix_sdk::send_queue::RoomSendQueueError> {
+    // #1737: never resume one room past a paused session-wide queue, or a
+    // persisted request would escape the send admission.
+    // shortcut: the check and the per-room enable are not atomic with the
+    // session-wide pause, so a pause landing between them could resume this
+    // one room; move the pause to the SDK's final network boundary (fork
+    // change) when a plaintext send must be impossible rather than unlikely.
+    if room.client().send_queue().is_enabled() {
+        room.send_queue().set_enabled(true);
+    }
+    match handle {
+        Some(handle) => handle.unwedge().await,
+        None => Ok(()),
+    }
+}
+
 /// Composer terminals belong to the manager-owned submission ledger, not to
 /// one replaceable timeline actor. The manager waits for reducer capacity and
 /// only then tombstones the submission.
@@ -2024,54 +2065,50 @@ impl TimelineActor {
                 PendingSendPhase::FailedRecoverable,
             );
         let (sdk_transaction_id, handle, manager_owned) = if let Some((sdk_id, handle)) = retained {
-            (sdk_id, handle, true)
+            (sdk_id, Some(handle), true)
         } else {
             if let Err(kind) = validate_retry_send(self.send_statuses.get(&transaction_id)) {
                 self.emit_timeline_failure(request_id, kind);
                 return;
             }
-            let Some(handle) = self.send_handles.get(&transaction_id).cloned() else {
-                self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
-                return;
-            };
-            (transaction_id.clone(), handle, false)
+            // #1846: an item queued behind a failed send was never attempted, so
+            // there is no handle to unwedge; resuming the room queue below is
+            // its retry.
+            (
+                transaction_id.clone(),
+                self.send_handles.get(&transaction_id).cloned(),
+                false,
+            )
         };
 
         let Some(room) = self.sdk_room_for_key() else {
             self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
             return;
         };
-        // #1737: never resume one room past a paused session-wide queue, or a
-        // persisted request would escape the send admission.
-        // shortcut: the check and the per-room enable are not atomic with the
-        // session-wide pause, so a pause landing between them could resume this
-        // one room; move the pause to the SDK's final network boundary (fork
-        // change) when a plaintext send must be impossible rather than unlikely.
-        if room.client().send_queue().is_enabled() {
-            room.send_queue().set_enabled(true);
+        if let Err(err) = resume_room_send_queue(&room, handle.as_ref()).await {
+            self.emit_timeline_failure(request_id, classify_send_queue_error(&err));
+            return;
+        }
+        if handle.is_none() {
+            // Nothing was wedged for this item; the SDK reports its progress
+            // once the requests ahead of it are done.
+            return;
         }
 
-        match handle.unwedge().await {
-            Ok(()) => {
-                self.send_statuses
-                    .insert(sdk_transaction_id, TimelineSendState::Sending);
-                if manager_owned {
-                    self.send_completion
-                        .lock()
-                        .expect("send completion coordinator lock must not be poisoned")
-                        .mark_retry_sending(&self.key, &transaction_id);
-                    let projections = self
-                        .send_completion
-                        .lock()
-                        .expect("send completion coordinator lock must not be poisoned")
-                        .projections_for_key(&self.key);
-                    self.refresh_pending_send_projection(self.actor_generation, projections)
-                        .await;
-                }
-            }
-            Err(err) => {
-                self.emit_timeline_failure(request_id, classify_send_queue_error(&err));
-            }
+        self.send_statuses
+            .insert(sdk_transaction_id, TimelineSendState::Sending);
+        if manager_owned {
+            self.send_completion
+                .lock()
+                .expect("send completion coordinator lock must not be poisoned")
+                .mark_retry_sending(&self.key, &transaction_id);
+            let projections = self
+                .send_completion
+                .lock()
+                .expect("send completion coordinator lock must not be poisoned")
+                .projections_for_key(&self.key);
+            self.refresh_pending_send_projection(self.actor_generation, projections)
+                .await;
         }
     }
     pub(super) async fn handle_cancel_send(
@@ -2188,6 +2225,40 @@ impl TimelineActor {
                         reason: send_failure_reason(is_recoverable),
                     },
                 );
+                if is_recoverable {
+                    // #1846: the SDK disabled this room's queue and left the
+                    // failed request in it, so nothing behind it is on the wire
+                    // and none of it reports itself; offer the retry that
+                    // resumes the queue on those items too.
+                    let blocked =
+                        queued_behind_recoverable_failure(&self.send_statuses, &sdk_txn_str);
+                    let projections = {
+                        let mut coordinator = self
+                            .send_completion
+                            .lock()
+                            .expect("send completion coordinator lock must not be poisoned");
+                        let mut marked = false;
+                        for blocked_transaction_id in &blocked {
+                            marked |= coordinator.mark_blocked_behind_recoverable_failure(
+                                &self.key,
+                                blocked_transaction_id,
+                            );
+                        }
+                        marked.then(|| coordinator.projections_for_key(&self.key))
+                    };
+                    for blocked_transaction_id in blocked {
+                        self.update_send_status(
+                            &blocked_transaction_id,
+                            TimelineSendState::NotSent {
+                                reason: send_failure_reason(true),
+                            },
+                        );
+                    }
+                    if let Some(projections) = projections {
+                        self.refresh_pending_send_projection(self.actor_generation, projections)
+                            .await;
+                    }
+                }
             }
             RoomSendQueueUpdate::RetryEvent { transaction_id } => {
                 let sdk_transaction_id = transaction_id.to_string();
@@ -3032,6 +3103,34 @@ impl SendCompletionCoordinator {
                     None
                 }
             })
+    }
+
+    /// #1846: a pending row queued behind a recoverable failure was never
+    /// attempted and will not report itself, so it shows the same retry that
+    /// resumes the room queue. Only its projection changes: its submission's
+    /// guard and terminal remain the SDK's own outcome for it.
+    pub(super) fn mark_blocked_behind_recoverable_failure(
+        &mut self,
+        key: &TimelineKey,
+        sdk_transaction_id: &str,
+    ) -> bool {
+        let Some(pending) = self.pending_sends.values_mut().find(|pending| {
+            pending.projection.as_ref().is_some_and(|projection| {
+                &projection.key == key
+                    && projection.phase == PendingSendPhase::Pending
+                    && projection.sdk_transaction_id.as_deref() == Some(sdk_transaction_id)
+            })
+        }) else {
+            return false;
+        };
+        let Some(projection) = pending.projection.as_mut() else {
+            return false;
+        };
+        projection.phase = PendingSendPhase::FailedRecoverable;
+        projection.item.send_state = Some(TimelineSendState::NotSent {
+            reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
+        });
+        true
     }
 
     pub(super) fn mark_retry_sending(&mut self, key: &TimelineKey, render_id: &str) -> bool {
