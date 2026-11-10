@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use koushi_state::{AppAction, TimelineThreadRootOrder};
 
 use tokio::sync::mpsc;
@@ -151,15 +153,17 @@ fn send_error_reprojects_a_canonical_transaction_with_its_failure_state() {
         transaction_id: "sdk-transaction".to_owned(),
     };
     transaction.send_state = Some(TimelineSendState::Sending);
-    let mut projection = DisplayProjectionState::from_canonical_window(&[transaction], 0..1);
-
-    let diffs = projection.update_send_state(
-        "sdk-transaction",
+    let canonical_items = vec![transaction];
+    let mut projection = DisplayProjectionState::from_canonical_window(&canonical_items, 0..1);
+    let send_statuses = HashMap::from([(
+        "sdk-transaction".to_owned(),
         TimelineSendState::NotSent {
             reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
         },
-        &DisplayProjectionContext::bounded_live_edge(),
-    );
+    )]);
+    let context = DisplayProjectionContext::bounded_live_edge().with_send_states(&send_statuses);
+
+    let diffs = projection.reproject(&context);
 
     assert!(matches!(diffs.as_slice(), [TimelineDiff::Set { .. }]));
     assert_eq!(
@@ -258,6 +262,7 @@ fn historical_display_projection_context() -> DisplayProjectionContext {
         project_thread_roots: true,
         thread_root_order: TimelineThreadRootOrder::RootEvent,
         thread_roots: Vec::new(),
+        send_states: Default::default(),
     }
 }
 

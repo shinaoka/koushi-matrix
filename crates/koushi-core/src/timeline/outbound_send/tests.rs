@@ -4138,3 +4138,171 @@ async fn plain_thread_submissions_clear_persisted_drafts_and_settle_after_reopen
         );
     }
 }
+
+/// #1846 path 7: pressing `Resend` on a message queued behind a recoverable
+/// failure resumes the room, and the SDK still sends the queue in enqueue order.
+#[tokio::test]
+async fn retry_advances_a_stopped_room_in_enqueue_order() {
+    use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+    use matrix_sdk_ui::timeline::{EventSendState, RoomExt};
+
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = matrix_sdk::ruma::room_id!("!retry-order:example.test");
+    server.mock_room_state_encryption().plain().mount().await;
+    let room = server.sync_joined_room(&client, room_id).await;
+    tokio::time::pause();
+    let mut updates = client.send_queue().subscribe();
+    let timeline = Arc::new(room.timeline().await.expect("live timeline"));
+
+    // The head exhausts the SDK's own retries with a transient (recoverable) error.
+    let faulty = server
+        .mock_room_send()
+        .error500()
+        .expect(3)
+        .mount_as_scoped()
+        .await;
+    timeline
+        .send(RoomMessageEventContent::text_plain("first").into())
+        .await
+        .expect("first enqueued");
+    timeline
+        .send(RoomMessageEventContent::text_plain("second").into())
+        .await
+        .expect("second enqueued");
+
+    let mut enqueued = Vec::new();
+    let mut failure = None;
+    for _ in 0..400 {
+        while let Ok(update) = updates.try_recv() {
+            match update.update {
+                RoomSendQueueUpdate::NewLocalEvent(echo) => {
+                    enqueued.push(echo.transaction_id.to_string())
+                }
+                RoomSendQueueUpdate::SendError {
+                    transaction_id,
+                    is_recoverable,
+                    ..
+                } => failure = Some((transaction_id.to_string(), is_recoverable)),
+                _ => {}
+            }
+        }
+        if enqueued.len() == 2 && failure.is_some() {
+            break;
+        }
+        tokio::time::advance(Duration::from_millis(500)).await;
+        tokio::task::yield_now().await;
+    }
+    let (failed_transaction, is_recoverable) = failure.expect("the head reports its failure");
+    assert!(is_recoverable, "a 500 is a transient failure");
+    assert_eq!(
+        failed_transaction, enqueued[0],
+        "the failure is reported on the head"
+    );
+    let successor = enqueued[1].clone();
+    assert!(!room.send_queue().is_enabled(), "the room is stopped");
+
+    // The actor's table records the failure; the successor's own SDK report is
+    // still `NotSentYet`. The projection therefore renders the successor as
+    // blocked, and `RetrySend` accepts exactly that.
+    let Ok((local_echoes, _)) = room.send_queue().subscribe().await else {
+        panic!("the room send queue is available")
+    };
+    let observed = timeline
+        .items()
+        .await
+        .iter()
+        .filter_map(|item| item.as_event())
+        .find(|event| {
+            event
+                .transaction_id()
+                .is_some_and(|transaction_id| transaction_id.as_str() == successor)
+        })
+        .and_then(|event| {
+            super::super::item_projection::timeline_send_state_from_sdk(event.send_state())
+        });
+    assert_eq!(
+        observed,
+        Some(koushi_protocol::event::TimelineSendState::Sending)
+    );
+    let statuses = HashMap::from([
+        (
+            failed_transaction.clone(),
+            koushi_protocol::event::TimelineSendState::NotSent {
+                reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
+            },
+        ),
+        (
+            successor.clone(),
+            koushi_protocol::event::TimelineSendState::Sending,
+        ),
+    ]);
+    let authority = super::SendStateAuthority::new(&statuses);
+    let blocked = authority.blocked(&[]);
+    assert_eq!(
+        authority.derive(observed.as_ref(), Some(&successor), blocked),
+        Some(koushi_protocol::event::TimelineSendState::NotSent {
+            reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
+        }),
+        "the queued successor renders as not sent"
+    );
+    assert!(
+        super::retry_admission(&authority, &successor, observed.as_ref(), blocked).is_ok(),
+        "Resend is accepted for the state the row renders"
+    );
+
+    drop(faulty);
+    server
+        .mock_room_send()
+        .body_matches_partial_json(serde_json::json!({ "body": "first" }))
+        .ok(matrix_sdk::ruma::event_id!("$ev-first"))
+        .mount()
+        .await;
+    server
+        .mock_room_send()
+        .body_matches_partial_json(serde_json::json!({ "body": "second" }))
+        .ok(matrix_sdk::ruma::event_id!("$ev-second"))
+        .mount()
+        .await;
+
+    let handle = local_echoes
+        .iter()
+        .find_map(|echo| match &echo.content {
+            matrix_sdk::send_queue::LocalEchoContent::Event { send_handle, .. }
+                if echo.transaction_id.as_str() == successor =>
+            {
+                Some(send_handle.clone())
+            }
+            _ => None,
+        })
+        .expect("the successor keeps its send handle");
+    super::resume_room_send_queue(&room, Some(&handle))
+        .await
+        .expect("resuming the room");
+
+    let mut sent = Vec::new();
+    for _ in 0..400 {
+        while let Ok(update) = updates.try_recv() {
+            if let RoomSendQueueUpdate::SentEvent { transaction_id, .. } = update.update {
+                sent.push(transaction_id.to_string());
+            }
+        }
+        if sent.len() == 2 {
+            break;
+        }
+        tokio::time::advance(Duration::from_millis(500)).await;
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        sent,
+        vec![failed_transaction, successor],
+        "the room is drained in the SDK's enqueue order"
+    );
+    assert!(
+        timeline.items().await.iter().all(|item| item
+            .as_event()
+            .and_then(matrix_sdk_ui::timeline::EventTimelineItem::send_state)
+            .is_none_or(|state| matches!(state, EventSendState::Sent { .. }))),
+        "every queued row is delivered"
+    );
+}

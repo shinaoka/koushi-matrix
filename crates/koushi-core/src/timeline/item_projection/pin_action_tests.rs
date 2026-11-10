@@ -4,8 +4,6 @@
 //! room notices such as the pinned-events notice itself. Rust now decides
 //! with `actions.can_pin`, like the other row actions.
 
-use std::collections::HashMap;
-
 use matrix_sdk::{
     ruma::{event_id, events::room::message::RedactedRoomMessageEventContent, room_id, user_id},
     test_utils::mocks::MatrixMockServer,
@@ -69,7 +67,6 @@ async fn only_message_like_events_offer_pin() {
                     &key,
                     item,
                     Some(alice),
-                    &HashMap::new(),
                     None,
                     None,
                     None,

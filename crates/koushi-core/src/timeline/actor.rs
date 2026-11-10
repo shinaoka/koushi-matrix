@@ -1081,8 +1081,11 @@ fn canonical_pending_event_ids(
 
 impl TimelineActor {
     pub(super) fn display_projection_context(&self) -> DisplayProjectionContext {
+        // #1846: the projection re-derives every rendered send state from the
+        // table as it stands now; nothing about the state is stored in a row.
         let mut context =
-            DisplayProjectionContext::for_timeline(&self.key.kind, &self.viewport_observation);
+            DisplayProjectionContext::for_timeline(&self.key.kind, &self.viewport_observation)
+                .with_send_states(&self.send_statuses);
         if matches!(self.key.kind, TimelineKind::Room { .. }) {
             context.include_append = self.viewport_observation.at_bottom
                 && self
@@ -1108,13 +1111,12 @@ impl TimelineActor {
         transaction_id: &str,
         send_state: TimelineSendState,
     ) {
+        // #1846: recording the state is the whole write. The rows are re-derived
+        // from the table, so no publisher has to patch a row (and none can roll
+        // a resolved row back by copying an older one).
         self.send_statuses
-            .insert(transaction_id.to_owned(), send_state.clone());
-        let diffs = self.display_projection.update_send_state(
-            transaction_id,
-            send_state.clone(),
-            &self.display_projection_context(),
-        );
+            .insert(transaction_id.to_owned(), send_state);
+        let diffs = self.reproject_display_items();
         if diffs.is_empty() {
             return;
         }

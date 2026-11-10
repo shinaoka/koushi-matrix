@@ -37,9 +37,12 @@ import {
   checkCoreThreadsReliableRelays,
   checkCoreTimelineUnsubscribeCleanupOrder,
   checkCoreTimelinePaginationScheduler,
+  checkCoreTimelineSendStateDerivation,
   checkCoreTimelineSendSupervision,
   checkCoreTimelineThreadReadReceipts,
   checkSdkLibrarySourceManifest,
+  findDiscardedSendStateDerivations,
+  findForbiddenRowSendStateAssignments,
   checkSdkRoomReadMarkerContract,
   checkSdkSessionBackupFence,
   checkStateFocusedContextReducerContract,
@@ -162,9 +165,117 @@ test("runs representative migrated timeline source-contract rules", () => {
   for (const check of [
     checkCoreTimelineUnsubscribeCleanupOrder,
     checkCoreTimelinePaginationScheduler,
+    checkCoreTimelineSendStateDerivation,
     checkCoreTimelineSendSupervision,
     checkCoreTimelineThreadReadReceipts
   ]) assert.deepEqual(check(), []);
+});
+
+test("the send-state tripwire rejects a row write outside the derivation", () => {
+  // #1846: a rendered send state is derived at projection time. The scan is token
+  // based, so a multi-line write, a write buried in a long function, a copied
+  // struct field and the `..rest` shorthand are all writes; a comment, a
+  // parameter and an explicit `None` are not.
+  const longFunction = [
+    "fn a_long_publisher(item: &mut TimelineItem, slot: &mut Slot) {",
+    ...Array.from({ length: 30 }, (_, index) => `    let step_${index} = ${index};`),
+    "    slot.item",
+    "        .send_state =",
+    "        Some(TimelineSendState::NotSent { reason: Recoverable });",
+    "}",
+    "// item.send_state = Some(TimelineSendState::Sending); is not a write",
+    "fn pending_base(projection: &mut Projection) {",
+    "    projection.item.send_state = Some(TimelineSendState::Sending);",
+    "}"
+  ].join("\n");
+  const offenders = findForbiddenRowSendStateAssignments({
+    "crates/koushi-core/src/timeline/relay.rs": [
+      "fn publish(item: &mut TimelineItem) {",
+      "    item",
+      "        .send_state =",
+      "        Some(TimelineSendState::Sending);",
+      "}",
+      "fn copy(previous: &TimelineItem) -> TimelineItem {",
+      "    TimelineItem { send_state: previous.send_state.clone(), ..previous.clone() }",
+      "}",
+      "fn shorthand(previous: TimelineItem) -> TimelineItem {",
+      "    TimelineItem { send_state, ..previous }",
+      "}"
+    ].join("\n"),
+    "crates/koushi-core/src/timeline/actor.rs": longFunction,
+    "crates/koushi-core/src/timeline/display_projection.rs": [
+      "fn template(existing: &TimelineItem) -> TimelineItem {",
+      "    TimelineItem {",
+      "        send_state: None,",
+      "        ..existing.clone()",
+      "    }",
+      "}",
+      "fn declare(send_state: TimelineSendState) {}"
+    ].join("\n"),
+    // The boundary files are exempt only inside the functions that own the write.
+    "crates/koushi-core/src/timeline/item_projection.rs": [
+      "impl SendStateAuthority {",
+      "    fn apply_all(&self, rows: &mut [TimelineItem]) {",
+      "        item.send_state = self.derive(item.send_state.as_ref(), None, false);",
+      "    }",
+      "}",
+      "fn somewhere_else(item: &mut TimelineItem) {",
+      "    item.send_state = Some(TimelineSendState::Sending);",
+      "}"
+    ].join("\n"),
+    "crates/koushi-core/src/timeline/outbound_send.rs": [
+      "fn pending_send_item() {",
+      "    TimelineItem { send_state: Some(TimelineSendState::Sending), ..Default::default() }",
+      "}",
+      "fn not_a_base_writer(item: &mut TimelineItem) {",
+      "    item.send_state = Some(TimelineSendState::Sent);",
+      "}"
+    ].join("\n")
+  });
+
+  // Each entry names the line that writes, not the line the statement started on
+  // and not the function the whole file is named after.
+  assert.deepEqual(offenders, [
+    "relay.rs:3 (publish)",
+    "relay.rs:7 (copy)",
+    "relay.rs:10 (shorthand)",
+    "actor.rs:33 (a_long_publisher)",
+    "actor.rs:38 (pending_base)",
+    "item_projection.rs:7 (somewhere_else)",
+    "outbound_send.rs:5 (not_a_base_writer)"
+  ]);
+});
+
+test("the send-state tripwire rejects a discarded derivation", () => {
+  // #1846: `let _ =`, a bare and multiline call statement, `discard!(..)`,
+  // `discard!{ .. }`, `black_box(..)` and `drop(..)` throw the derivation away,
+  // which is how a dead boundary used to survive the scan.
+  const offenders = findDiscardedSendStateDerivations({
+    "crates/koushi-core/src/timeline/relay.rs": [
+      "fn publish(authority: &SendStateAuthority) {",
+      "    let _ = authority.derive(None, Some(\"txn\"), true);",
+      "    discard!(authority.derive(None, Some(\"txn\"), true));",
+      "    discard! { authority.derive(None, Some(\"txn\"), true) }",
+      "    core::hint::black_box(authority.derive(None, Some(\"txn\"), true));",
+      "    drop(retry_admission(&authority, \"txn\", None, true));",
+      "    authority",
+      "        .derive(None, Some(\"txn\"), true);",
+      "    SendStateAuthority::new(&statuses).derive(None, Some(\"txn\"), true);",
+      "    let admitted = retry_admission(&authority, \"txn\", None, true);",
+      "    if retry_admission(&authority, \"txn\", None, true).is_err() { return; }",
+      "}"
+    ].join("\n")
+  });
+
+  assert.deepEqual(offenders, [
+    "relay.rs:2",
+    "relay.rs:3",
+    "relay.rs:4",
+    "relay.rs:5",
+    "relay.rs:6",
+    "relay.rs:8",
+    "relay.rs:9"
+  ]);
 });
 
 test("timeline source-contract failures stay closed-token and private-data-free", () => {

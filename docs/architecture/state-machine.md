@@ -4243,6 +4243,31 @@ the composite `(room_id, sdk_transaction_id)` correlation back to the original
 `TimelineKey`, `RequestId`, and `SubmissionId`. React may render
 `TimelineItem.send_state` and dispatch typed commands, but it must not derive
 identity, convergence, or retry/cancel legality from local component state.
+
+A rendered send state is not stored in a row. Every publish projection derives
+it from the actor-owned `send_statuses` table (fed by `RoomSendQueueUpdate`) and
+the row's own SDK report:
+
+1. The SDK's own report for the row wins: a sent echo, or one the SDK reports as
+   failed, is what the queue itself acts on.
+2. While the SDK has not attempted the request (`NotSentYet`), the actor's record
+   answers, for example the failure the SDK reports per room rather than per
+   request.
+3. A request the room is not attempting because an earlier one failed
+   *recoverably* is not `sending`: it renders `notSent { recoverable }`. The SDK
+   keeps FIFO order, so every unattempted request in a stopped room is behind
+   that failure. The room-wide record is the actor's table, and a row carrying a
+   recoverable failure is evidence too, which covers a replayed or freshly
+   materialized window. `RetrySend` judges the same derivation, so a rendered
+   `notSent` is exactly what the command accepts. A manager-owned send is instead
+   admitted by the coordinator's own `FailedRecoverable` phase before the request
+   is bound to the SDK. Retry, cancel and the delayed recoverable re-enable resume
+   the room through one helper.
+
+Because the state is derived per projection, no publisher (a relay batch commit,
+the pending fallback, a bounded-window rebuild, a replay, or a recovery reset)
+can roll a resolved state back by copying an older row: the next projection reads
+the current table. Rows keep only the SDK report they were projected from.
 Visible timeline sends still go through the SDK UI `Timeline::send` path; a
 missing local-echo diff no longer creates a visibility gap.
 
@@ -4265,8 +4290,8 @@ stateDiagram-v2
 | --- | --- | --- | --- |
 | accepted text/reply | below the bounded pending cap with an active account and joined room enqueue context | cap full, missing session, account mismatch, missing/nonjoined/leaving room, registration activation or reducer acceptance delivery failed | Direct `SendText`/`SendReply` never submit or settle a GUI composer. The draft lifecycle below applies only to GUI `SubmitText`/`SubmitReply`. Actor publication is best-effort and never waited on; the row appears when the actor catches up. Publishes one client-transaction `sending` row, retaining the persisted draft until SDK enqueue succeeds. Replies construct their relation from known event IDs, and plain thread sends use the known root as fallback, without a network fetch before enqueue. `ComposerSubmissionQueued` then clears the submitted draft revision and releases only that composer while the submission registry retains its remote terminal. A failed pre-enqueue attempt leaves the draft intact. |
 | `NewLocalEvent` | any | none | Exact SDK binding merges the canonical local echo into the pending row and stores the SDK `SendHandle`; it never inserts a duplicate. Restored local echoes from `RoomSendQueue::subscribe()` initialize the same actor table before commands. The send-queue update is not a rendered row: only a canonical Timeline transaction row lets a later `SentEvent` retire the fallback. |
-| `SendError` | `sending` | none | Records `not_sent { reason }` using only the SDK recoverable flag. Release diagnostics may record a closed app-owned failure class plus that recoverable flag, but raw SDK errors stay out of DTOs, logs, QA tokens, and React state. The matching composer pending state is failed once if enqueue never succeeded. A recoverable SDK failure after enqueue schedules room-queue re-enablement with bounded backoff and server Retry-After; later success can still emit `SendCompleted`. |
-| `RetrySend { room_id, transaction_id }` | `not_sent` with a stored `SendHandle` | `sending`, `sent`, `cancelled`, unknown transaction | Re-enables the SDK room queue with `room.send_queue().set_enabled(true)`, then calls `SendHandle::unwedge()`. FIFO order remains the SDK send queue's responsibility; React never reorders or manually marks successors sent. |
+| `SendError` | `sending` | none | Records `not_sent { reason }` in the actor's table using only the SDK recoverable flag; the rows are reprojected from that table, so the failing row and the requests queued behind it change together. Release diagnostics may record a closed app-owned failure class plus that recoverable flag, but raw SDK errors stay out of DTOs, logs, QA tokens, and React state. The matching composer pending state is failed once if enqueue never succeeded. A recoverable SDK failure after enqueue schedules room-queue re-enablement with bounded backoff and server Retry-After; later success can still emit `SendCompleted`. |
+| `RetrySend { room_id, transaction_id }` | the derived state is `not_sent` (a failed row, or an unattempted row queued behind a recoverable failure) with a stored `SendHandle` | derived `sending`, `sent`, `cancelled`, unknown transaction | Re-enables the SDK room queue with `room.send_queue().set_enabled(true)`, then calls `SendHandle::unwedge()`. FIFO order remains the SDK send queue's responsibility; React never reorders or manually marks successors sent. |
 | `CancelSend { room_id, transaction_id }` | `sending`, `not_sent` with a stored `SendHandle` | `sent`, `cancelled`, unknown transaction | Calls `SendHandle::abort()`. A successful cancel records `cancelled`, drops the handle, re-enables the SDK room queue so successors are not stranded, and clears matching composer pending state without creating a send-failure error. |
 | `SentEvent` | any | none | The manager-owned observer records `sent`, maps the composite SDK correlation to the original request, reliably enqueues the matching reducer action, then emits `SendCompleted`. Without a local echo, the same row changes atomically to the event ID and remains visible until canonical remote convergence or exact-event hydration. Settled correlations are bounded tombstones so duplicate SDK terminals cannot complete twice. A delivered send's SDK transaction row is hidden only once its remote event has a canonical row, so the hand-off never leaves the message without a row. |
 

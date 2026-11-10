@@ -17,7 +17,7 @@ use crate::executor;
 use crate::search::SearchIndexMessage;
 use crate::threads_list::ThreadRootProjectionService;
 use koushi_protocol::event::{
-    CoreEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineResyncReason,
+    CoreEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineResyncReason, TimelineSendState,
     TimelineViewportObservation,
 };
 use koushi_protocol::ids::{TimelineBatchId, TimelineGeneration, TimelineKey, TimelineKind};
@@ -437,12 +437,13 @@ impl TimelineActor {
             .iter()
             .any(|projection| projection.operation.domain == CausalProjectionDomain::LiveTail);
 
+        // #1846: rows carry the SDK's own report only; the rendered send state is
+        // derived at the publish boundary from `self.send_statuses`.
         let mut core_diffs = sdk_vector_diffs_to_timeline_diffs(
             &sdk_diffs,
             self.navigation_items.len(),
             &self.key,
             self.own_user_id.as_deref(),
-            &self.send_statuses,
             Some(&self.key_request_states),
             Some(&self.withheld_codes),
         );
@@ -593,6 +594,7 @@ impl TimelineActor {
         }
         let display_context =
             DisplayProjectionContext::for_timeline(&self.key.kind, &self.viewport_observation)
+                .with_send_states(&self.send_statuses)
                 .with_thread_roots(
                     self.thread_root_order,
                     self.thread_root_projection_service
@@ -1143,7 +1145,6 @@ impl TimelineActor {
                     &self.key,
                     item,
                     self.own_user_id.as_deref(),
-                    &self.send_statuses,
                     Some(&self.room_key_recovery),
                     Some(&self.key_request_states),
                     Some(&self.withheld_codes),
@@ -1189,6 +1190,7 @@ impl TimelineActor {
         if !commit_authoritative_recovery_window(
             &mut self.navigation_items,
             &mut self.display_projection,
+            &self.send_statuses,
             &self.event_tx,
             &self.thread_root_projection_service,
             self.thread_root_order,
@@ -1552,6 +1554,7 @@ pub(super) fn accepted_relay_batch<T>(
 pub(super) fn commit_authoritative_recovery_window<F>(
     navigation_items: &mut Vec<TimelineItem>,
     display_projection: &mut DisplayProjectionState,
+    send_statuses: &HashMap<String, TimelineSendState>,
     event_tx: &broadcast::Sender<CoreEvent>,
     thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
     thread_root_order: koushi_state::TimelineThreadRootOrder,
@@ -1582,13 +1585,15 @@ where
             0..authoritative_items.len(),
         )
     };
-    let context = DisplayProjectionContext::for_timeline(&key.kind, viewport).with_thread_roots(
-        thread_root_order,
-        thread_root_projection_service
-            .lock()
-            .expect("thread-root projection service lock must not be poisoned")
-            .display_data_for_room(key.room_id()),
-    );
+    let context = DisplayProjectionContext::for_timeline(&key.kind, viewport)
+        .with_send_states(send_statuses)
+        .with_thread_roots(
+            thread_root_order,
+            thread_root_projection_service
+                .lock()
+                .expect("thread-root projection service lock must not be poisoned")
+                .display_data_for_room(key.room_id()),
+        );
     if matches!(key.kind, TimelineKind::Room { .. }) {
         candidate_display.reset_bounded(&authoritative_items, &context);
         candidate_display.window_revision = display_projection.window_revision.saturating_add(1);

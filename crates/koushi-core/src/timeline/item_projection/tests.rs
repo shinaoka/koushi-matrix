@@ -17,6 +17,7 @@ use matrix_sdk::ruma::events::{
 
 use matrix_sdk_ui::timeline::{EventSendState, MembershipChange, ReactionsByKeyBySender};
 
+use super::{SendStateAuthority, retry_admission};
 use crate::event_projection::message_actions_for_timeline_item;
 use koushi_protocol::command::TimelineCommand;
 
@@ -1985,4 +1986,101 @@ fn malformed_encryption_is_not_a_success_notice() {
     let projection = super::message_projection_from_timeline_content(&content);
     assert_ne!(projection.body.as_deref(), Some("enabled room encryption"));
     assert!(projection.notice_i18n.is_some());
+}
+
+fn recoverable_send() -> koushi_protocol::event::TimelineSendState {
+    koushi_protocol::event::TimelineSendState::NotSent {
+        reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
+    }
+}
+
+/// #1846: a settled row stays settled. Blocking is scoped to requests the room
+/// has not sent yet, so a sent or cancelled row is never relabelled.
+#[test]
+fn settled_send_rows_are_not_blocked_by_a_later_failure() {
+    use crate::timeline::test_support::send_row;
+    use koushi_protocol::event::TimelineSendState;
+
+    let authority = SendStateAuthority::new(&std::collections::HashMap::from([
+        ("sent".to_owned(), TimelineSendState::Sent),
+        ("cancelled".to_owned(), TimelineSendState::Cancelled),
+        ("failed".to_owned(), recoverable_send()),
+        ("queued".to_owned(), TimelineSendState::Sending),
+    ]));
+    let mut rows = vec![
+        send_row("sent", Some(TimelineSendState::Sent)),
+        send_row("cancelled", None),
+        send_row("failed", Some(recoverable_send())),
+        send_row("queued", Some(TimelineSendState::Sending)),
+    ];
+
+    authority.apply_all(&mut rows);
+
+    assert_eq!(rows[0].send_state, Some(TimelineSendState::Sent));
+    assert_eq!(rows[1].send_state, Some(TimelineSendState::Cancelled));
+    assert_eq!(rows[2].send_state, Some(recoverable_send()));
+    assert_eq!(
+        rows[3].send_state,
+        Some(recoverable_send()),
+        "only the unattempted request is blocked"
+    );
+}
+
+/// #1846: rendering and admission read one derivation. Over the whole product of
+/// (SDK report x actor record x predecessor), a row renders `not_sent` exactly
+/// when `RetrySend` accepts it.
+#[test]
+fn rendered_not_sent_is_exactly_what_retry_accepts() {
+    use koushi_protocol::event::TimelineSendState;
+
+    let reported = [
+        None,
+        Some(TimelineSendState::Sending),
+        Some(recoverable_send()),
+        Some(TimelineSendState::NotSent {
+            reason: koushi_protocol::event::TimelineSendFailureReason::Unrecoverable,
+        }),
+        Some(TimelineSendState::Sent),
+    ];
+    let recorded = [
+        None,
+        Some(TimelineSendState::Sending),
+        Some(recoverable_send()),
+        Some(TimelineSendState::Cancelled),
+        Some(TimelineSendState::Sent),
+    ];
+    for observed in &reported {
+        for record in &recorded {
+            for blocked in [false, true] {
+                let statuses = record
+                    .clone()
+                    .map(|state| std::collections::HashMap::from([("txn".to_owned(), state)]))
+                    .unwrap_or_default();
+                let authority = SendStateAuthority::new(&statuses);
+                let rendered = authority.derive(observed.as_ref(), Some("txn"), blocked);
+                let accepted =
+                    retry_admission(&authority, "txn", observed.as_ref(), blocked).is_ok();
+                let mut rows = vec![crate::timeline::test_support::send_row(
+                    "txn",
+                    observed.clone(),
+                )];
+                // The projection decides its own blocked input from the same
+                // evidence, and renders exactly the derivation.
+                let projected_blocked = authority.blocked(&rows);
+                authority.apply_all(&mut rows);
+                assert_eq!(
+                    rows[0].send_state,
+                    authority.derive(observed.as_ref(), Some("txn"), projected_blocked),
+                    "the projection renders the derivation (observed={observed:?}, \
+                     recorded={record:?})"
+                );
+                assert_eq!(
+                    matches!(rendered, Some(TimelineSendState::NotSent { .. })),
+                    accepted,
+                    "rendered {rendered:?} but RetrySend accepted={accepted} \
+                     (observed={observed:?}, recorded={record:?}, blocked={blocked})"
+                );
+            }
+        }
+    }
 }

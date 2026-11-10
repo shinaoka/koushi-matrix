@@ -327,6 +327,7 @@ async fn relay_overflow_recovery_subscribes_once_emits_snapshot_then_next_live_u
     assert!(commit_authoritative_recovery_window(
         &mut navigation_items,
         &mut display_projection,
+        &HashMap::new(),
         &event_tx,
         &projection_service,
         koushi_state::TimelineThreadRootOrder::LatestReply,
@@ -372,8 +373,7 @@ async fn relay_overflow_recovery_subscribes_once_emits_snapshot_then_next_live_u
     };
     let sdk_diffs = accepted_relay_batch(generation, batch_generation, diffs)
         .expect("replacement generation must be accepted");
-    let diffs =
-        sdk_vector_diffs_to_timeline_diffs(&sdk_diffs, 0, &key, None, &HashMap::new(), None, None);
+    let diffs = sdk_vector_diffs_to_timeline_diffs(&sdk_diffs, 0, &key, None, None, None);
     assert!(
         emit_items_updated_for_generation(
             &event_tx,
@@ -488,6 +488,7 @@ async fn authoritative_resync_projects_event_only_and_emits_ordered_recovery_eve
     commit_authoritative_recovery_window(
         &mut current,
         &mut display_projection,
+        &HashMap::new(),
         &event_tx,
         &projection_service,
         koushi_state::TimelineThreadRootOrder::LatestReply,
@@ -554,6 +555,7 @@ async fn stale_generation_recovery_does_not_commit_candidate_or_publish() {
     assert!(!commit_authoritative_recovery_window(
         &mut navigation_items,
         &mut display_projection,
+        &HashMap::new(),
         &event_tx,
         &projection_service,
         koushi_state::TimelineThreadRootOrder::LatestReply,

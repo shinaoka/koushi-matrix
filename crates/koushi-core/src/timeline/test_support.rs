@@ -14,7 +14,7 @@ use crate::live_tail_freshness::LiveTailRefreshCoordinator;
 use crate::threads_list::ThreadRootProjectionService;
 use koushi_protocol::event::{
     TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
-    TimelineMediaThumbnail, TimelineMessageActions,
+    TimelineMediaThumbnail, TimelineMessageActions, TimelineSendState,
 };
 #[cfg(any(test, feature = "test-hooks"))]
 use koushi_protocol::ids::AccountKey;
@@ -96,6 +96,22 @@ pub(super) fn timeline_item(
         unable_to_decrypt: None,
         display_metadata: None,
     }
+}
+
+/// A canonical local-echo row: transaction identity plus the SDK's own report.
+/// #1846: this is all a row stores about a send; the rendered state is derived.
+pub(super) fn send_row(transaction_id: &str, observed: Option<TimelineSendState>) -> TimelineItem {
+    let mut item = timeline_item(
+        &format!("${transaction_id}:local"),
+        Some("queued body"),
+        "@sender:test",
+        false,
+    );
+    item.id = TimelineItemId::Transaction {
+        transaction_id: transaction_id.to_owned(),
+    };
+    item.send_state = observed;
+    item
 }
 
 pub(super) fn test_timeline_actor_handle() -> TimelineActorHandle {

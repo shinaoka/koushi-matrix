@@ -51,10 +51,11 @@ use super::composer::{
 use super::diagnostics::trace_timeline_items;
 use super::display_projection::{DisplayProjectionContext, DisplayProjectionState};
 use super::item_projection::{
-    apply_link_previews_to_item, apply_timeline_item_visibility, attachment_info_for_upload,
-    attachment_reply_for_key, is_attention_eligible_event, remember_local_echo,
-    sdk_item_to_timeline_item_with_send_states, send_failure_reason, thumbnail_for_upload,
-    timeline_media_source_from_sdk, timeline_room_id, validate_cancel_send, validate_retry_send,
+    SendStateAuthority, apply_link_previews_to_item, apply_timeline_item_visibility,
+    attachment_info_for_upload, attachment_reply_for_key, is_attention_eligible_event,
+    remember_local_echo, retry_admission, sdk_item_to_timeline_item_with_send_states,
+    send_failure_reason, thumbnail_for_upload, timeline_media_source_from_sdk, timeline_room_id,
+    validate_cancel_send,
 };
 use super::manager::TimelineManagerActor;
 use super::navigation::{
@@ -1998,6 +1999,28 @@ async fn await_submission_admission(admission: Option<oneshot::Receiver<()>>) ->
     }
 }
 
+/// #1846: the one way this actor resumes a room's send queue. Retry, cancel and
+/// the delayed recoverable re-enable all pass through it, so the session-wide
+/// pause (#1737) and the enable-before-unwedge order cannot drift apart.
+pub(super) async fn resume_room_send_queue(
+    room: &matrix_sdk::Room,
+    handle: Option<&matrix_sdk::send_queue::SendHandle>,
+) -> Result<(), matrix_sdk::send_queue::RoomSendQueueError> {
+    // #1737: never resume one room past a paused session-wide queue, or a
+    // persisted request would escape the send admission.
+    // shortcut: the check and the per-room enable are not atomic with the
+    // session-wide pause, so a pause landing between them could resume this
+    // one room; move the pause to the SDK's final network boundary (fork
+    // change) when a plaintext send must be impossible rather than unlikely.
+    if room.client().send_queue().is_enabled() {
+        room.send_queue().set_enabled(true);
+    }
+    match handle {
+        Some(handle) => handle.unwedge().await,
+        None => Ok(()),
+    }
+}
+
 /// Composer terminals belong to the manager-owned submission ledger, not to
 /// one replaceable timeline actor. The manager waits for reducer capacity and
 /// only then tombstones the submission.
@@ -2009,6 +2032,32 @@ pub(super) async fn deliver_submission_terminal_action(
 }
 
 impl TimelineActor {
+    /// The SDK's own report for one transaction, read from the canonical rows the
+    /// SDK produced. Manager-owned pending rows are excluded on purpose: their
+    /// `send_state` is product state the coordinator assigned, and only the SDK
+    /// may tell the derivation that a request was attempted.
+    fn observed_send_state(&self, transaction_id: &str) -> Option<TimelineSendState> {
+        self.navigation_items
+            .iter()
+            .find(|item| {
+                matches!(
+                    &item.id,
+                    TimelineItemId::Transaction { transaction_id: id } if id == transaction_id
+                )
+            })
+            .and_then(|item| item.send_state.clone())
+    }
+
+    /// The rows rendering and retry admission both consult: the canonical window
+    /// plus the manager-owned pending rows the projection also renders.
+    fn send_state_evidence(&self) -> impl Iterator<Item = &TimelineItem> {
+        self.navigation_items.iter().chain(
+            self.pending_send_projections
+                .iter()
+                .map(|projection| &projection.item),
+        )
+    }
+
     pub(super) async fn handle_retry_send(
         &mut self,
         request_id: RequestId,
@@ -2026,7 +2075,14 @@ impl TimelineActor {
         let (sdk_transaction_id, handle, manager_owned) = if let Some((sdk_id, handle)) = retained {
             (sdk_id, handle, true)
         } else {
-            if let Err(kind) = validate_retry_send(self.send_statuses.get(&transaction_id)) {
+            // #1846: the command judges the same derived state the row shows, so a
+            // visible `Resend` is always accepted and nothing else is.
+            let authority = SendStateAuthority::new(&self.send_statuses);
+            let observed = self.observed_send_state(&transaction_id);
+            let blocked = authority.blocked(self.send_state_evidence());
+            if let Err(kind) =
+                retry_admission(&authority, &transaction_id, observed.as_ref(), blocked)
+            {
                 self.emit_timeline_failure(request_id, kind);
                 return;
             }
@@ -2041,17 +2097,7 @@ impl TimelineActor {
             self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
             return;
         };
-        // #1737: never resume one room past a paused session-wide queue, or a
-        // persisted request would escape the send admission.
-        // shortcut: the check and the per-room enable are not atomic with the
-        // session-wide pause, so a pause landing between them could resume this
-        // one room; move the pause to the SDK's final network boundary (fork
-        // change) when a plaintext send must be impossible rather than unlikely.
-        if room.client().send_queue().is_enabled() {
-            room.send_queue().set_enabled(true);
-        }
-
-        match handle.unwedge().await {
+        match resume_room_send_queue(&room, Some(&handle)).await {
             Ok(()) => {
                 self.send_statuses
                     .insert(sdk_transaction_id, TimelineSendState::Sending);
@@ -2114,12 +2160,10 @@ impl TimelineActor {
                     .insert(sdk_transaction_id.clone(), TimelineSendState::Cancelled);
                 self.send_handles.remove(&sdk_transaction_id);
                 if let Some(room) = self.sdk_room_for_key() {
-                    // #1737: never resume one room past a paused session-wide
-                    // queue, or a persisted request would escape the send
-                    // admission (see the retry-path note on the non-atomic pair).
-                    if room.client().send_queue().is_enabled() {
-                        room.send_queue().set_enabled(true);
-                    }
+                    // Successors must not stay stranded behind the cancelled row.
+                    resume_room_send_queue(&room, None)
+                        .await
+                        .expect("resuming without a handle cannot fail");
                 }
                 apply_send_completion_observation_and_handoff(
                     &self.send_completion,
@@ -2249,7 +2293,6 @@ impl TimelineActor {
                     &self.key,
                     item,
                     self.own_user_id.as_deref(),
-                    &self.send_statuses,
                     Some(&self.room_key_recovery),
                     Some(&self.key_request_states),
                     Some(&self.withheld_codes),
@@ -2286,6 +2329,7 @@ impl TimelineActor {
             DisplayProjectionState::from_canonical_window(&items, 0..items.len());
         let context =
             DisplayProjectionContext::for_timeline(&self.key.kind, &self.viewport_observation)
+                .with_send_states(&self.send_statuses)
                 .with_thread_roots(
                     self.thread_root_order,
                     self.thread_root_projection_service
@@ -2371,10 +2415,9 @@ pub(super) async fn run_global_send_completion_observer(
                 {
                     // SDK keeps recoverable requests in its durable queue but
                     // disables this room after exhausting its own HTTP retries.
-                    // #1737: the session-wide pause still wins.
-                    if room.client().send_queue().is_enabled() {
-                        room.send_queue().set_enabled(true);
-                    }
+                    // The shared helper keeps the session-wide pause (#1737) and
+                    // the enable-before-unwedge order (#1846) in one place.
+                    let _ = resume_room_send_queue(&room, None).await;
                 }
             }
             continue;
