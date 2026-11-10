@@ -5,7 +5,7 @@ use super::{
     matrix_message_text_from_msgtype, matrix_room_latest_event_projection,
     matrix_room_list_room_from_counts, matrix_timeline_event_is_redacted,
     newest_conversation_activity, people_scope_diagnostic_event,
-    space_members_scope_diagnostic_event, trace_sdk_unread_snapshot,
+    space_members_scope_diagnostic_event, timeline_event_thread_root, trace_sdk_unread_snapshot,
 };
 
 use koushi_diagnostics::DiagnosticValue;
@@ -300,6 +300,40 @@ async fn remote_replacement_latest_keeps_original_identity_and_order() {
     assert_eq!(latest.preview.as_deref(), Some("after"));
     assert!(!latest.has_reactions);
     assert_eq!(activity.map(|activity| activity.timestamp_ms), Some(42));
+}
+
+/// #1854: the event lookup reports the thread a located target replies into, so
+/// Core can route a threaded target into the thread pane. A thread root and an
+/// ordinary room message both belong to the room timeline.
+#[test]
+fn a_thread_reply_reports_the_thread_it_replies_into() {
+    use matrix_sdk::ruma::{event_id, room_id, user_id};
+    use matrix_sdk_test::event_factory::EventFactory;
+
+    let root = event_id!("$root:example.invalid");
+    let factory = EventFactory::new()
+        .room(room_id!("!threads:example.invalid"))
+        .sender(user_id!("@sender:example.invalid"));
+    let thread_root = factory
+        .text_msg("synthetic root")
+        .event_id(root)
+        .into_event();
+    let reply = factory
+        .text_msg("synthetic reply")
+        .event_id(event_id!("$reply:example.invalid"))
+        .in_thread(root, root)
+        .into_event();
+    let room_message = factory
+        .text_msg("synthetic room message")
+        .event_id(event_id!("$message:example.invalid"))
+        .into_event();
+
+    assert_eq!(
+        timeline_event_thread_root(&reply).as_deref(),
+        Some("$root:example.invalid")
+    );
+    assert_eq!(timeline_event_thread_root(&thread_root), None);
+    assert_eq!(timeline_event_thread_root(&room_message), None);
 }
 
 /// #997: a cold room's Activity row is built from this latest-event summary.

@@ -4176,7 +4176,9 @@ async fn event_navigation_preserves_opening_through_internal_room_selection() {
                 .expect("lookup message")
         {
             response_tx
-                .send(crate::account::RoomEventLookupResult::Located)
+                .send(crate::account::RoomEventLookupResult::Located {
+                    thread_root_event_id: None,
+                })
                 .expect("lookup response");
             break;
         }
@@ -5602,6 +5604,7 @@ mod activity_renderer_states;
 mod anchored_send;
 mod navigation_network;
 mod search_navigation_owner;
+mod search_thread_target;
 mod settings_loading;
 
 /// #1524: a direct search may not reach the GUI's search state. It is

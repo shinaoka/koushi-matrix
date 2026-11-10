@@ -3010,6 +3010,18 @@ fn matrix_timeline_event_type(
         .flatten()
 }
 
+/// #1854: the thread root an event replies into, from its own `m.thread`
+/// relation. A thread root (an event with a thread summary but no relation)
+/// and an ordinary room event both return `None`.
+pub fn timeline_event_thread_root(
+    timeline_event: &matrix_sdk::deserialized_responses::TimelineEvent,
+) -> Option<String> {
+    let (relation_type, relation_event_id) = matrix_timeline_event_relation(timeline_event);
+    (relation_type.as_deref() == Some("m.thread"))
+        .then_some(relation_event_id)
+        .flatten()
+}
+
 fn matrix_timeline_event_relation(
     timeline_event: &matrix_sdk::deserialized_responses::TimelineEvent,
 ) -> (Option<String>, Option<String>) {

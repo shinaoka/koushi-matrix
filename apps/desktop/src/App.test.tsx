@@ -1873,6 +1873,13 @@ describe("desktop integration source guards", () => {
     expect(selectSearchResultSource).not.toContain("document.querySelector");
     expect(selectSearchResultSource).not.toContain("scrollIntoView");
     expect(selectSearchResultSource).not.toContain("cssEscape");
+    // #1854: Core routes a hit that is a reply inside a thread into the thread
+    // pane, so the renderer reveals the pane Rust opened instead of leaving the
+    // search panel over it. It reads Rust state; it never decides from the
+    // result whether the hit is threaded.
+    expect(selectSearchResultSource).toContain("state.ui.thread");
+    expect(selectSearchResultSource).toContain('setRightPanelMode("thread")');
+    expect(selectSearchResultSource).not.toContain("thread_root");
   });
 
   test("message context menu reply uses the row's route, falling back to the room composer", () => {

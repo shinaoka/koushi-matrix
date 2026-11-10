@@ -1592,6 +1592,16 @@ impl CoreConnection {
                     }) if lifecycle_request_id == request_id => {
                         return Ok(self.versioned_snapshot());
                     }
+                    // #1854: a target that is a reply inside a thread is
+                    // carried by the thread pane, so the navigation commits
+                    // without ever reaching `Anchored` or `LiveFallback`.
+                    Ok(CoreEvent::IntentLifecycle {
+                        request_id: lifecycle_request_id,
+                        outcome: IntentOutcome::Committed,
+                        ..
+                    }) if lifecycle_request_id == request_id => {
+                        return Ok(self.versioned_snapshot());
+                    }
                     Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
                     Err(broadcast::error::RecvError::Closed) => {
                         event_stream_open = false;

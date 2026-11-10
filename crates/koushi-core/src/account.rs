@@ -1,8 +1,12 @@
 //! AccountActor ownership façade.
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RoomEventLookupResult {
-    Located,
+    /// #1854: the lookup also reports the thread the event replies into, so a
+    /// threaded navigation target can be routed to the thread pane.
+    Located {
+        thread_root_event_id: Option<String>,
+    },
     Missing,
     Failed,
 }

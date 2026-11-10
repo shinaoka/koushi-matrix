@@ -183,7 +183,7 @@ pub use room_projection::{
     room_attention_summary_from_counts, room_attention_summary_from_room, room_list_snapshot,
     room_list_snapshot_blocking, room_list_snapshot_from_sdk_rooms,
     room_list_snapshot_from_sdk_rooms_with_direct_targets,
-    room_list_snapshot_from_sdk_rooms_with_invites,
+    room_list_snapshot_from_sdk_rooms_with_invites, timeline_event_thread_root,
 };
 
 pub use retention::{

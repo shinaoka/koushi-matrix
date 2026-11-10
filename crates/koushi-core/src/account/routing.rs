@@ -510,7 +510,7 @@ impl AccountActor {
         ))
         .await
         {
-            Ok(Ok(_)) => {
+            Ok(Ok(event)) => {
                 Self::record_event_cache_repair(request_id, "done", "succeeded", "loaded");
                 if let Some(account_key) = self.active_account_key() {
                     self.route_timeline_command(TimelineCommand::RepairGaps {
@@ -522,7 +522,9 @@ impl AccountActor {
                     })
                     .await;
                 }
-                crate::account::RoomEventLookupResult::Located
+                crate::account::RoomEventLookupResult::Located {
+                    thread_root_event_id: koushi_sdk::timeline_event_thread_root(&event),
+                }
             }
             Ok(Err(error)) => {
                 let result = classify_room_event_lookup_error(error.client_api_error_kind());
@@ -538,7 +540,7 @@ impl AccountActor {
                     crate::account::RoomEventLookupResult::Failed => {
                         Self::record_event_cache_repair(request_id, "failed", "failed", "sdk");
                     }
-                    crate::account::RoomEventLookupResult::Located => unreachable!(),
+                    crate::account::RoomEventLookupResult::Located { .. } => unreachable!(),
                 }
                 result
             }

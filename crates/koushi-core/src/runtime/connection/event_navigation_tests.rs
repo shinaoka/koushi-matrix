@@ -59,6 +59,36 @@ async fn displaced_event_navigation_waiter_accepts_matching_superseded_lifecycle
     assert_eq!(waiter.await, Ok(expected));
 }
 
+/// #1854: a target that is a reply inside a thread is carried by the thread
+/// pane, so its navigation commits without `Anchored`/`LiveFallback`. The waiter
+/// must accept that terminal instead of waiting for its deadline.
+#[tokio::test]
+async fn thread_routed_event_navigation_waiter_accepts_matching_committed_lifecycle() {
+    let (mut connection, mut control) = CoreConnection::new_for_testing(4);
+    let expected = connection.versioned_snapshot();
+    let mut waiter = Box::pin(connection.navigate_to_event_and_wait(
+        "!room:example.invalid".to_owned(),
+        "$event:example.invalid".to_owned(),
+        EventNavigationSource::Search,
+        EventNavigationMissingTargetPolicy::LiveFallback,
+        Duration::from_secs(1),
+    ));
+    assert!(waiter.as_mut().now_or_never().is_none());
+    let request_id = control
+        .recv_command()
+        .await
+        .expect("navigation command")
+        .request_id();
+
+    control.send_event(CoreEvent::IntentLifecycle {
+        request_id,
+        outcome: IntentOutcome::Committed,
+        published_generation: expected.generation,
+    });
+
+    assert_eq!(waiter.await, Ok(expected));
+}
+
 #[tokio::test]
 async fn unrelated_event_navigation_lifecycle_does_not_settle_waiter() {
     let (mut connection, mut control) = CoreConnection::new_for_testing(4);

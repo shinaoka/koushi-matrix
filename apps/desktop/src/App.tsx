@@ -6992,7 +6992,25 @@ function AccountContent({
   }
 
   function selectSearchResult(roomId: string, eventId: string) {
-    runInBackground(settleCommand(api.selectSearchResult(roomId, eventId)));
+    runInBackground(
+      (async () => {
+        await settleCommand(api.selectSearchResult(roomId, eventId));
+        // #1854: Core routes a hit that is a reply inside a thread into the
+        // thread pane. Reveal the pane it opened for this room and event, as
+        // every other thread-open entry point does; the renderer still never
+        // decides from the result whether the hit is threaded.
+        const thread = getAppStoreSnapshot()?.state.ui.thread;
+        const opened =
+          (thread?.kind === "opening" ||
+            thread?.kind === "open" ||
+            thread?.kind === "failed") &&
+          thread.room_id === roomId &&
+          typeof thread.intent === "object" &&
+          "pinnedReply" in thread.intent &&
+          thread.intent.pinnedReply.event_id === eventId;
+        if (opened) setRightPanelMode("thread");
+      })()
+    );
   }
 
   function runContextMenuAction(actionId: ContextMenuActionId) {
