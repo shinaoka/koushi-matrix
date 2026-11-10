@@ -326,6 +326,11 @@ pub async fn close_focused_context(
     let baseline_snapshot = event_conn.versioned_snapshot();
     let account_key = account_key_from_app_state(&baseline_snapshot.state);
     let room_id = baseline_snapshot.state.navigation.active_room_id.clone();
+    // #1848: closing a pending navigation restores the room it displaced.
+    let allow_room_restore = matches!(
+        baseline_snapshot.state.navigation.event_navigation,
+        koushi_state::EventNavigationState::Opening { .. }
+    );
     let baseline_generation = baseline_snapshot.generation;
     let deadline = tokio::time::Instant::now() + FOCUSED_CONTEXT_EVENT_TIMEOUT;
     let request_id = event_conn.next_request_id();
@@ -340,6 +345,7 @@ pub async fn close_focused_context(
         request_id,
         account_key,
         room_id,
+        allow_room_restore,
         baseline_generation,
         deadline,
     )
@@ -520,6 +526,7 @@ async fn wait_for_focused_context_closed(
     request_id: RequestId,
     account_key: AccountKey,
     room_id: Option<String>,
+    allow_room_restore: bool,
     baseline_generation: u64,
     deadline: tokio::time::Instant,
 ) -> Result<u64, String> {
@@ -530,7 +537,8 @@ async fn wait_for_focused_context_closed(
                 request_id,
                 account_key,
                 room_id,
-                allow_projection_only: true,
+                allow_projection_only: !allow_room_restore,
+                allow_room_restore,
             },
             baseline_generation,
             deadline,
@@ -623,7 +631,9 @@ pub(super) fn build_select_room_command(
 pub(super) const SELECT_ROOM_EVENT_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(10);
 
-const FOCUSED_CONTEXT_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// #1848: must outlast the core event-navigation backstop (45 s), so a core
+/// timeout reaches the waiter as the core's own `Failed` outcome.
+const FOCUSED_CONTEXT_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(50);
 
 #[cfg(test)]
 mod tests;

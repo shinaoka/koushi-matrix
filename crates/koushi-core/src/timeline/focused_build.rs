@@ -36,11 +36,13 @@ use super::residency::SubscriptionReconcileTrigger;
 // END GENERATED SIBLING IMPORTS
 
 /// Upper bound for one focused SDK build. It stays below the AppActor
-/// event-navigation deadline (`EVENT_NAVIGATION_TIMEOUT`, 15 s from the click,
+/// event-navigation deadline (`EVENT_NAVIGATION_TIMEOUT`, 45 s from the click,
 /// which also covers the up-to-5 s target-event cache lookup), so the
 /// manager's bounded failure normally settles the navigation and the AppActor
-/// deadline remains the backstop.
-pub(super) const FOCUSED_TIMELINE_BUILD_TIMEOUT: Duration = Duration::from_secs(10);
+/// deadline remains the backstop. #1848: 30 s (was 10 s): in the reported jump,
+/// paging back to an old event ran past 10 s, so each cut failed the navigation
+/// and only a later attempt succeeded.
+pub(crate) const FOCUSED_TIMELINE_BUILD_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Bound on observer subscribes remembered for one pending focused build.
 const FOCUSED_BUILD_MAX_OBSERVERS: usize = 8;

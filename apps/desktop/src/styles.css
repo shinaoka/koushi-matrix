@@ -1210,6 +1210,9 @@ button:disabled {
   max-inline-size: min(360px, calc(100vw - 24px));
   margin: 0 auto;
   padding: 4px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   color: var(--text-muted);
@@ -1220,6 +1223,16 @@ button:disabled {
 
 .navigation-pending-text {
   margin: 0;
+}
+
+/* #1848: the banner passes pointer events through; only its cancel control takes them. */
+.navigation-pending-cancel {
+  pointer-events: auto;
+  padding: 0 4px;
+  border: 0;
+  color: var(--text);
+  background: none;
+  text-decoration: underline;
 }
 
 @keyframes navigation-pending-reveal {

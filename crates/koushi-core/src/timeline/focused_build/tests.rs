@@ -373,6 +373,35 @@ async fn blocked_focused_build_times_out_releases_ownership_and_retry_succeeds()
     assert_eq!(probe.room_leases, 1);
 }
 
+/// #1848: a slow old-history build that finishes inside the focused budget
+/// must install, not fail at the former 10 s cut-off.
+#[tokio::test(start_paused = true)]
+async fn focused_build_completing_within_budget_is_not_failed() {
+    let mut harness = spawn_harness();
+    let key = focused_key();
+    harness.subscribe(fake_rid(30), key.clone()).await;
+    let release = harness.build_started().await;
+    // Let the spawned build task register its budget timer before the clock
+    // moves; otherwise the deadline is computed after the advance.
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(20)).await;
+    tokio::task::yield_now().await;
+    assert!(
+        !release.is_closed(),
+        "the build must still be running after 20 s, inside its budget"
+    );
+    release.send(Ok(())).expect("build is still pending");
+
+    assert!(
+        matches!(
+            harness.next_action().await,
+            AppAction::FocusedContextSubscribed { .. }
+        ),
+        "a build inside its budget must subscribe, not fail"
+    );
+    assert!(harness.probe(&key).await.installed);
+}
+
 async fn subscribe_directly(
     manager: &mut super::super::manager::TimelineManagerActor,
     request_id: RequestId,

@@ -7544,6 +7544,16 @@ function AccountContent({
           // the bounded anchored/live-fallback/failed outcome replaces it.
           <div className="navigation-pending" role="status">
             <p className="navigation-pending-text">{t("navigation.opening")}</p>
+            {/* #1848: cancel through the existing close command; no failure is published. */}
+            <button
+              className="navigation-pending-cancel"
+              type="button"
+              onClick={() => {
+                settleCommandInBackground(api.closeFocusedContext());
+              }}
+            >
+              {t("action.cancel")}
+            </button>
           </div>
         ) : null}
         {eventNavigation?.kind === "failed" ? (

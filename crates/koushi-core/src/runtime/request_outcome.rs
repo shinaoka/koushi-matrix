@@ -126,6 +126,9 @@ pub enum RequestOutcomeExpectation {
         account_key: AccountKey,
         room_id: Option<String>,
         allow_projection_only: bool,
+        /// #1848: a cancel of a pending navigation restores the prior room, so
+        /// the close is complete on any room.
+        allow_room_restore: bool,
     },
     FocusedContextOpened {
         request_id: RequestId,
@@ -1794,8 +1797,10 @@ fn snapshot_outcome(
             account_key,
             room_id,
             allow_projection_only: true,
+            allow_room_restore,
         } if account_matches(&snapshot.state, Some(account_key))
-            && room_target_matches(&snapshot.state, room_id.as_deref())
+            && (*allow_room_restore
+                || room_target_matches(&snapshot.state, room_id.as_deref()))
             && snapshot.state.focused_context == FocusedContextState::Closed
             && snapshot.state.navigation.main_timeline_anchor.is_none() =>
         {
@@ -2056,12 +2061,14 @@ fn snapshot_outcome_for_progress(
                 request_id,
                 account_key,
                 room_id,
+                allow_room_restore,
                 ..
             },
         ) if account_matches(&snapshot.state, Some(account_key))
             && snapshot.state.focused_context == FocusedContextState::Closed
             && snapshot.state.navigation.main_timeline_anchor.is_none()
-            && room_target_matches(&snapshot.state, room_id.as_deref()) =>
+            && (*allow_room_restore
+                || room_target_matches(&snapshot.state, room_id.as_deref())) =>
         {
             Some(RequestOutcome::FocusedContext {
                 generation: snapshot.generation,

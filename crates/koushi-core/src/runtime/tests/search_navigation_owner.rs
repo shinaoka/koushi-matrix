@@ -13,6 +13,10 @@ use koushi_state::{EventNavigationFailureKind, EventNavigationSource, EventNavig
 const ROOM: &str = "!search-owner-room:example.invalid";
 const EVENT: &str = "$search-owner-target:example.invalid";
 const USER: &str = "@synthetic:example.invalid";
+const PREVIOUS_ROOM: &str = "!search-owner-previous:example.invalid";
+const OTHER_ROOM: &str = "!search-owner-other:example.invalid";
+const SPACE: &str = "!search-owner-space:example.invalid";
+const SPACE_ROOM: &str = "!search-owner-space-room:example.invalid";
 
 fn request(sequence: u64) -> RequestId {
     RequestId {
@@ -53,6 +57,7 @@ fn selected_room_state() -> AppState {
 
 struct Harness {
     command_tx: mpsc::Sender<CoreCommandEnvelope>,
+    event_rx: broadcast::Receiver<CoreEvent>,
     snapshot_rx: watch::Receiver<VersionedAppStateSnapshot>,
     focused_projection_tx: mpsc::UnboundedSender<FocusedProjectionCommitted>,
     manager: GatedFocusedBuildManager,
@@ -79,18 +84,50 @@ fn timeline_command_request_id(command: &koushi_protocol::command::TimelineComma
 }
 
 fn start() -> Harness {
+    start_with(selected_room_state())
+}
+
+/// A session whose rooms and Spaces are the given fixture, with `selected` open.
+fn state_with(
+    rooms: Vec<koushi_state::RoomSummary>,
+    spaces: Vec<koushi_state::SpaceSummary>,
+    selected: Option<&str>,
+) -> AppState {
+    let mut state = AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: USER.to_owned(),
+            device_id: "SYNTHETIC".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        rooms,
+        spaces,
+        ..AppState::default()
+    };
+    if let Some(room_id) = selected {
+        reduce(
+            &mut state,
+            AppAction::SelectRoom {
+                room_id: room_id.to_owned(),
+            },
+        );
+    }
+    state
+}
+
+fn start_with(state: AppState) -> Harness {
     let data_dir = tempfile::tempdir().expect("runtime data directory");
     let (
         actor,
         command_tx,
         action_tx,
         mut account_rx,
-        _event_rx,
+        event_rx,
         snapshot_rx,
         navigation_projection_rx,
         _event_navigation_prepared_tx,
         focused_projection_tx,
-    ) = app_actor_event_navigation_fixture(data_dir.path(), selected_room_state());
+    ) = app_actor_event_navigation_fixture(data_dir.path(), state);
     let mut manager = crate::timeline::spawn_gated_focused_build_manager(
         navigation_projection_rx,
         focused_projection_tx.clone(),
@@ -135,6 +172,7 @@ fn start() -> Harness {
     });
     Harness {
         command_tx,
+        event_rx,
         snapshot_rx,
         focused_projection_tx,
         manager,
@@ -151,6 +189,15 @@ impl Harness {
     }
 
     async fn navigate_from(&mut self, source: EventNavigationSource, request_id: RequestId) {
+        self.navigate_in(ROOM, source, request_id).await;
+    }
+
+    async fn navigate_in(
+        &mut self,
+        room_id: &str,
+        source: EventNavigationSource,
+        request_id: RequestId,
+    ) {
         use koushi_protocol::command::EventNavigationMissingTargetPolicy as Policy;
         let missing_target_policy = match source {
             EventNavigationSource::Activity | EventNavigationSource::Search => Policy::LiveFallback,
@@ -162,7 +209,7 @@ impl Harness {
             .send(CoreCommandEnvelope::Public {
                 command: CoreCommand::App(AppCommand::NavigateToEvent {
                     request_id,
-                    room_id: ROOM.to_owned(),
+                    room_id: room_id.to_owned(),
                     event_id: EVENT.to_owned(),
                     source,
                     missing_target_policy,
@@ -173,6 +220,38 @@ impl Harness {
             .await
             .expect("navigation command");
         self.wait_forwarded(request_id).await;
+    }
+
+    /// The pending banner's cancel: the existing `CloseFocusedContext` command.
+    async fn close_focused_context(&mut self, request_id: RequestId) {
+        self.command_tx
+            .send(CoreCommandEnvelope::Public {
+                command: CoreCommand::App(AppCommand::CloseFocusedContext { request_id }),
+                composer_permit: None,
+                admission: None,
+            })
+            .await
+            .expect("close focused context command");
+    }
+
+    /// The close is complete once its request-correlated `Committed` is
+    /// published, which follows the restore and the close.
+    async fn wait_for_close_committed(&mut self, request_id: RequestId) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match self.event_rx.recv().await {
+                    Ok(CoreEvent::IntentLifecycle {
+                        request_id: committed,
+                        outcome: IntentOutcome::Committed,
+                        ..
+                    }) if committed == request_id => return,
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(error) => panic!("event stream closed: {error:?}"),
+                }
+            }
+        })
+        .await
+        .expect("the close must publish its committed outcome");
     }
 
     /// The renderer's recovery `ensure_timeline_subscribed` for the same key.
@@ -450,7 +529,9 @@ async fn blocked_focused_build_with_an_observer_settles_at_the_deadline() {
     let _held = harness.manager.build_started().await;
     harness.renderer_subscribe(request(2)).await;
 
-    let failed = tokio::time::timeout(Duration::from_secs(30), async {
+    // #1848: the focused budget (30 s) must settle this, before the 45 s
+    // backstop could be what fails it.
+    let failed = tokio::time::timeout(Duration::from_secs(40), async {
         loop {
             if matches!(
                 harness
@@ -623,4 +704,306 @@ async fn a_commit_for_the_superseded_navigation_does_not_settle_the_repeat() {
         release.send(Ok(())).expect("build is pending");
     }
     harness.wait_anchored().await;
+}
+
+/// #1848: a slow old-history build that finishes inside its budget must anchor.
+/// Under the former 10 s budget and 15 s backstop it was cut at 10 s.
+#[tokio::test(start_paused = true)]
+async fn slow_old_history_build_within_budget_anchors_without_failure() {
+    let mut harness = start();
+    harness.navigate(request(1)).await;
+    let release = harness.manager.build_started().await;
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(20)).await;
+    tokio::task::yield_now().await;
+    release.send(Ok(())).expect("build is still pending");
+    harness.wait_anchored().await;
+}
+
+/// #1848: the AppActor backstop must outlive the focused build it backs, plus
+/// the up-to-5 s room-event cache lookup that runs before the build starts
+/// (`account/routing.rs` `ROOM_EVENT_CACHE_TIMEOUT`).
+#[test]
+fn event_navigation_backstop_outlives_the_focused_build_budget() {
+    assert!(
+        crate::runtime::navigation::EVENT_NAVIGATION_TIMEOUT
+            > crate::timeline::FOCUSED_TIMELINE_BUILD_TIMEOUT + Duration::from_secs(5)
+    );
+}
+
+/// #1848: cancelling the pending navigation from its banner (`CloseFocusedContext`)
+/// ends the wait without a failure: the held build is dropped, the owner is
+/// cleared, and the superseded deadline cannot publish a failure later.
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_pending_navigation_publishes_no_failure() {
+    let mut harness = start();
+    let key = focused_key();
+    harness.navigate(request(1)).await;
+    let release = harness.manager.build_started().await;
+
+    harness.close_focused_context(request(2)).await;
+
+    harness.wait_for_close_committed(request(2)).await;
+    harness
+        .wait_for_state("cancel must clear the pending navigation", |state| {
+            matches!(
+                state.navigation.event_navigation,
+                EventNavigationState::Idle
+            )
+        })
+        .await;
+    assert!(
+        release.is_closed(),
+        "cancel must drop the held focused build"
+    );
+    assert_eq!(harness.manager.pending_owner(&key).await, None);
+
+    tokio::time::advance(crate::runtime::navigation::EVENT_NAVIGATION_TIMEOUT).await;
+    assert!(
+        matches!(
+            harness
+                .snapshot_rx
+                .borrow()
+                .state
+                .navigation
+                .event_navigation,
+            EventNavigationState::Idle
+        ),
+        "no late deadline may publish a failure after cancel"
+    );
+}
+
+/// #1848: cancelling a pending navigation puts back the room it displaced, and
+/// the navigation settles Idle with no failure.
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_pending_navigation_restores_the_previous_room() {
+    let mut harness = start_with(state_with(
+        vec![
+            unread_diagnostic_room(ROOM),
+            unread_diagnostic_room(PREVIOUS_ROOM),
+        ],
+        Vec::new(),
+        Some(PREVIOUS_ROOM),
+    ));
+    harness.navigate(request(1)).await;
+    let release = harness.manager.build_started().await;
+    harness.close_focused_context(request(2)).await;
+    harness.wait_for_close_committed(request(2)).await;
+    harness
+        .wait_for_state("cancel must restore the previous room", |state| {
+            state.navigation.active_room_id.as_deref() == Some(PREVIOUS_ROOM)
+                && matches!(
+                    state.navigation.event_navigation,
+                    EventNavigationState::Idle
+                )
+        })
+        .await;
+    assert!(
+        release.is_closed(),
+        "cancel must drop the held focused build"
+    );
+
+    tokio::time::advance(crate::runtime::navigation::EVENT_NAVIGATION_TIMEOUT).await;
+    let state = harness.snapshot_rx.borrow().state.clone();
+    assert_eq!(
+        state.navigation.active_room_id.as_deref(),
+        Some(PREVIOUS_ROOM)
+    );
+    assert!(
+        matches!(
+            state.navigation.event_navigation,
+            EventNavigationState::Idle
+        ),
+        "no late deadline may publish a failure after cancel"
+    );
+}
+
+/// #1848: a superseding navigation keeps the selection the first one displaced,
+/// so cancelling the second returns to the room the user had open.
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_superseded_navigation_restores_the_original_room() {
+    let mut harness = start_with(state_with(
+        vec![
+            unread_diagnostic_room(ROOM),
+            unread_diagnostic_room(PREVIOUS_ROOM),
+            unread_diagnostic_room(OTHER_ROOM),
+        ],
+        Vec::new(),
+        Some(PREVIOUS_ROOM),
+    ));
+    harness.navigate(request(1)).await;
+    let _first = harness.manager.build_started().await;
+    harness
+        .navigate_in(OTHER_ROOM, EventNavigationSource::Search, request(3))
+        .await;
+    let _second = harness.manager.build_started().await;
+    harness.close_focused_context(request(4)).await;
+    harness.wait_for_close_committed(request(4)).await;
+    harness
+        .wait_for_state("cancel must restore the original room", |state| {
+            state.navigation.active_room_id.as_deref() == Some(PREVIOUS_ROOM)
+                && matches!(
+                    state.navigation.event_navigation,
+                    EventNavigationState::Idle
+                )
+        })
+        .await;
+}
+
+/// #1848: a room the user selects while a navigation is pending is the user's
+/// choice; cancelling later must not roll it back.
+#[tokio::test(start_paused = true)]
+async fn user_room_selection_supersedes_without_rollback() {
+    let mut harness = start_with(state_with(
+        vec![
+            unread_diagnostic_room(ROOM),
+            unread_diagnostic_room(PREVIOUS_ROOM),
+            unread_diagnostic_room(OTHER_ROOM),
+        ],
+        Vec::new(),
+        Some(PREVIOUS_ROOM),
+    ));
+    harness.navigate(request(1)).await;
+    let _held = harness.manager.build_started().await;
+    harness
+        .command_tx
+        .send(CoreCommandEnvelope::Public {
+            command: CoreCommand::Room(koushi_protocol::command::RoomCommand::SelectRoom {
+                request_id: request(2),
+                room_id: OTHER_ROOM.to_owned(),
+            }),
+            composer_permit: None,
+            admission: None,
+        })
+        .await
+        .expect("select room command");
+    harness
+        .wait_for_state("the user selection must settle the navigation", |state| {
+            state.navigation.active_room_id.as_deref() == Some(OTHER_ROOM)
+                && matches!(
+                    state.navigation.event_navigation,
+                    EventNavigationState::Idle
+                )
+        })
+        .await;
+
+    harness.close_focused_context(request(3)).await;
+    harness.wait_for_close_committed(request(3)).await;
+    assert_eq!(
+        harness
+            .snapshot_rx
+            .borrow()
+            .state
+            .navigation
+            .active_room_id
+            .as_deref(),
+        Some(OTHER_ROOM),
+        "a later close must not roll the user's selection back"
+    );
+}
+
+/// #1848: a cancel from Home returns to Home (no Space, no room).
+#[tokio::test(start_paused = true)]
+async fn cancelling_from_home_returns_to_home() {
+    let mut harness = start_with(state_with(
+        vec![unread_diagnostic_room(ROOM)],
+        Vec::new(),
+        None,
+    ));
+    harness.navigate(request(1)).await;
+    let _held = harness.manager.build_started().await;
+    harness.close_focused_context(request(2)).await;
+    harness.wait_for_close_committed(request(2)).await;
+    harness
+        .wait_for_state("cancel must return to Home", |state| {
+            state.navigation.active_room_id.is_none()
+                && state.navigation.active_space_id.is_none()
+                && matches!(
+                    state.navigation.event_navigation,
+                    EventNavigationState::Idle
+                )
+        })
+        .await;
+}
+
+/// #1848: a cancel restores the Space as well as the room, so a navigation
+/// that left a Space for a room outside it returns to that Space's room.
+#[tokio::test(start_paused = true)]
+async fn cancelling_restores_the_previous_space_and_room() {
+    let mut space_room = unread_diagnostic_room(SPACE_ROOM);
+    space_room.parent_space_ids = vec![SPACE.to_owned()];
+    let mut harness = start_with(state_with(
+        vec![space_room, unread_diagnostic_room(ROOM)],
+        vec![koushi_state::SpaceSummary {
+            space_id: SPACE.to_owned(),
+            raw_name: None,
+            display_name: "Synthetic space".to_owned(),
+            avatar: None,
+            join_rule: None,
+            topic: None,
+            child_room_ids: vec![SPACE_ROOM.to_owned()],
+            parent_side_child_room_ids: vec![SPACE_ROOM.to_owned()],
+        }],
+        Some(SPACE_ROOM),
+    ));
+    harness.navigate(request(1)).await;
+    let _held = harness.manager.build_started().await;
+    harness.close_focused_context(request(2)).await;
+    harness.wait_for_close_committed(request(2)).await;
+    harness
+        .wait_for_state("cancel must restore the Space and its room", |state| {
+            state.navigation.active_space_id.as_deref() == Some(SPACE)
+                && state.navigation.active_room_id.as_deref() == Some(SPACE_ROOM)
+                && matches!(
+                    state.navigation.event_navigation,
+                    EventNavigationState::Idle
+                )
+        })
+        .await;
+}
+
+/// #1848 boundary, pinned, tracked by #1850. A prior selection that is a Space
+/// with no open room, where the Space has an eligible room: the cancel
+/// re-selects the Space (SelectSpace runs because the jump left it), and the
+/// room is SelectSpace's preferred optional room, not the prior's absent room.
+/// The assertions pin the current result; they do not state the intended one.
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_space_only_prior_reselects_the_space_with_its_preferred_room() {
+    let mut in_space = unread_diagnostic_room(SPACE_ROOM);
+    in_space.parent_space_ids = vec![SPACE.to_owned()];
+    let mut state = state_with(
+        vec![in_space, unread_diagnostic_room(ROOM)],
+        vec![koushi_state::SpaceSummary {
+            space_id: SPACE.to_owned(),
+            raw_name: None,
+            display_name: "Synthetic space".to_owned(),
+            avatar: None,
+            join_rule: None,
+            topic: None,
+            child_room_ids: vec![SPACE_ROOM.to_owned()],
+            parent_side_child_room_ids: vec![SPACE_ROOM.to_owned()],
+        }],
+        None,
+    );
+    // The open room vanished while the Space stayed selected (reducer/room.rs).
+    state.navigation.active_space_id = Some(SPACE.to_owned());
+    let mut harness = start_with(state);
+
+    // ROOM has no Space, so the jump leaves the Space.
+    harness.navigate(request(1)).await;
+    let _held = harness.manager.build_started().await;
+    harness.close_focused_context(request(2)).await;
+    harness.wait_for_close_committed(request(2)).await;
+
+    let state = harness.snapshot_rx.borrow().state.clone();
+    assert_eq!(state.navigation.active_space_id.as_deref(), Some(SPACE));
+    assert_eq!(
+        state.navigation.active_room_id.as_deref(),
+        Some(SPACE_ROOM),
+        "the room is SelectSpace's preferred optional room (#1850)"
+    );
+    assert!(matches!(
+        state.navigation.event_navigation,
+        EventNavigationState::Idle
+    ));
 }
