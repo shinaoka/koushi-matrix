@@ -2738,9 +2738,14 @@ export function checkCoreTimelineSendStateDerivation() {
   const converter = timelineItemBody("item_projection.rs", "fn sdk_item_to_timeline_item_with_send_states");
   const authority = timelineItemBody("item_projection.rs", "impl SendStateAuthority");
   const derive = timelineItemBody("item_projection.rs", "fn derive(");
+  const deriveForItem = timelineItemBody("item_projection.rs", "fn derive_for_item(");
+  const roomBlocked = timelineItemBody("item_projection.rs", "fn room_blocked(");
+  const applyAll = timelineItemBody("item_projection.rs", "fn apply_all(");
+  const admission = timelineItemBody("item_projection.rs", "fn retry_admission(");
   const projection = timelineItemBody("display_projection.rs", "fn project_display_items(");
   const status = timelineItemBody("actor.rs", "fn update_send_status(");
   const retry = timelineSection("outbound_send.rs", "async fn handle_retry_send", "async fn handle_cancel_send");
+  const findRow = timelineItemBody("outbound_send.rs", "fn send_state_row(");
   const failures = [];
   // 1. A row stores the SDK's own report and nothing else.
   if (!converter?.includes("timeline_send_state_from_sdk(event_item.send_state())")) failures.push(sourceContractFailure(rule, "the row conversion does not keep the SDK send state"));
@@ -2750,18 +2755,35 @@ export function checkCoreTimelineSendStateDerivation() {
   //    `Sending`.
   const observed = derive?.indexOf("Some(TimelineSendState::Sending)") ?? -1;
   const recorded = derive?.indexOf("self.recorded(") ?? -1;
-  const blocked = derive?.indexOf("blocked &&") ?? -1;
+  const blocked = derive?.indexOf("room_blocked()") ?? -1;
   if (!(observed >= 0 && recorded > observed && blocked > recorded)) failures.push(sourceContractFailure(rule, "the derivation does not resolve the SDK report, then the actor record, then blocking"));
+  // B1: blocking is room-wide table state. A row, or a window of rows, must never
+  // decide it, or a window rebuild would change what a surviving row means.
+  if (derive?.includes("blocked: bool") || derive?.includes("rows")) failures.push(sourceContractFailure(rule, "the derivation accepts row evidence for blocking"));
+  if (!roomBlocked?.includes("self.statuses") || roomBlocked.includes("TimelineItem")) failures.push(sourceContractFailure(rule, "blocking evidence is not the actor's send table alone"));
+  if (applyAll?.includes("is_recoverable_failure")) failures.push(sourceContractFailure(rule, "a projection derives blocking from the rows it renders"));
+  if (!applyAll?.includes("derive_for_item")) failures.push(sourceContractFailure(rule, "the projection does not derive each row through the row derivation"));
+  if (!deriveForItem?.includes("derive(")) failures.push(sourceContractFailure(rule, "the row derivation is not the one derivation"));
   if (!authority?.includes("self.statuses.get")) failures.push(sourceContractFailure(rule, "the derivation does not read the actor's send table"));
   if (!authority?.includes("fn apply_all(")) failures.push(sourceContractFailure(rule, "the authority does not derive a whole projection"));
-  if (!authority.includes("fn blocked") || !authority.includes("is_recoverable_failure")) failures.push(sourceContractFailure(rule, "the authority cannot tell a stopped room"));
+  if (!authority.includes("is_recoverable_failure")) failures.push(sourceContractFailure(rule, "the authority cannot tell a stopped room"));
   // 3. Every publish boundary renders through the projection.
   if (!projection?.includes("send_states.apply_all")) failures.push(sourceContractFailure(rule, "the display projection copies a row's send state instead of deriving it"));
   // 4. Recording a state never patches a row: it reprojects.
   if (status?.includes(".send_state")) failures.push(sourceContractFailure(rule, "recording a send state writes a row"));
   if (!status?.includes("reproject_display_items")) failures.push(sourceContractFailure(rule, "recording a send state does not reproject"));
-  // 5. Retry admission reads the same derivation as the row.
+  // 5. Retry admission reads the same derivation on the same row, and does not
+  //    require an SDK handle: a manager-owned row the SDK has not bound yet has
+  //    none, and it renders `not_sent` all the same (B2).
+  if (!admission?.includes("derive_for_item")) failures.push(sourceContractFailure(rule, "retry admission does not judge the row"));
+  if (admission?.includes("blocked")) failures.push(sourceContractFailure(rule, "retry admission takes blocking evidence from its caller"));
   if (!retry?.includes("retry_admission")) failures.push(sourceContractFailure(rule, "retry admission does not read the rendered state"));
+  const judged = retry?.indexOf("retry_admission") ?? -1;
+  const handle = retry?.indexOf("send_handles") ?? -1;
+  if (judged < 0 || handle < 0 || handle < judged) failures.push(sourceContractFailure(rule, "retry admission depends on a bound SDK handle"));
+  if (!retry?.includes("resume_room_send_queue(&room, handle.as_ref())")) failures.push(sourceContractFailure(rule, "an admitted retry does not resume the room without requiring a handle"));
+  if (!findRow?.includes("navigation_items") || !findRow?.includes("pending_send_projections")) failures.push(sourceContractFailure(rule, "the retried row is not looked up among the un-derived rows"));
+  if (findRow?.includes("display_items")) failures.push(sourceContractFailure(rule, "the retried row is read back from a projected display row"));
   // 6. Nothing else writes a row, and no derivation result is discarded.
   const sources = timelineProductionSources();
   const forbiddenAssignments = findForbiddenRowSendStateAssignments(sources);

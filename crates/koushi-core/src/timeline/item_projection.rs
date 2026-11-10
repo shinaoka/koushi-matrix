@@ -3566,11 +3566,14 @@ impl SendStateAuthority {
     /// the SDK reports a failure that stops the room per room, not per request.
     /// An unattempted request in a room stopped by a recoverable failure is not
     /// `Sending`: the SDK keeps FIFO order, so it is waiting behind that failure.
+    ///
+    /// Only the room-wide table decides whether the room is stopped. A row is not
+    /// blocking evidence here: rows arrive in a display window, so a window that
+    /// drops the failed request would otherwise change what a surviving row means.
     pub(super) fn derive(
         &self,
         observed: Option<&TimelineSendState>,
         transaction_id: Option<&str>,
-        blocked: bool,
     ) -> Option<TimelineSendState> {
         let state = match observed {
             // The SDK has not attempted this request yet, so its own report says
@@ -3581,12 +3584,22 @@ impl SendStateAuthority {
             Some(state) => return Some(state.clone()),
             None => self.recorded(transaction_id),
         }?;
-        if blocked && matches!(state, TimelineSendState::Sending) {
+        if matches!(state, TimelineSendState::Sending) && self.room_blocked() {
             return Some(TimelineSendState::NotSent {
                 reason: TimelineSendFailureReason::Recoverable,
             });
         }
         Some(state)
+    }
+
+    /// Derives one row from the report the row itself carries. Rendering and retry
+    /// admission both go through here, with the same row and the same authority.
+    pub(super) fn derive_for_item(&self, item: &TimelineItem) -> Option<TimelineSendState> {
+        let transaction_id = match &item.id {
+            TimelineItemId::Transaction { transaction_id } => Some(transaction_id.as_str()),
+            TimelineItemId::Event { .. } | TimelineItemId::Synthetic { .. } => None,
+        };
+        self.derive(item.send_state.as_ref(), transaction_id)
     }
 
     fn recorded(&self, transaction_id: Option<&str>) -> Option<TimelineSendState> {
@@ -3595,26 +3608,17 @@ impl SendStateAuthority {
             .cloned()
     }
 
-    /// Whether the room is stopped by a recoverable failure. The actor's table
-    /// is the room-wide record; the rows handed to a projection are evidence too,
-    /// because a row can carry the SDK's failure before the table hears of it.
-    /// Rendering and retry admission pass the same evidence, so they cannot
-    /// disagree about whether the room is blocked.
-    pub(super) fn blocked<'a>(&self, rows: impl IntoIterator<Item = &'a TimelineItem>) -> bool {
-        rows.into_iter()
-            .any(|item| item.send_state.as_ref().is_some_and(is_recoverable_failure))
-            || self.statuses.values().any(is_recoverable_failure)
+    /// Whether this room is stopped by an unresolved recoverable failure. The
+    /// actor's table is the room-wide record and the only blocking evidence, so
+    /// the answer cannot change when a display window is rebuilt.
+    fn room_blocked(&self) -> bool {
+        self.statuses.values().any(is_recoverable_failure)
     }
 
     /// Derives every rendered row of one projection from the room's authority.
     pub(super) fn apply_all(&self, rows: &mut [TimelineItem]) {
-        let blocked = self.blocked(rows.iter());
         for item in rows {
-            let transaction_id = match &item.id {
-                TimelineItemId::Transaction { transaction_id } => Some(transaction_id.as_str()),
-                TimelineItemId::Event { .. } | TimelineItemId::Synthetic { .. } => None,
-            };
-            item.send_state = self.derive(item.send_state.as_ref(), transaction_id, blocked);
+            item.send_state = self.derive_for_item(item);
         }
     }
 }
@@ -4329,19 +4333,14 @@ pub(crate) fn validate_retry_send(
     }
 }
 
-/// #1846: `RetrySend` and the rendered row read one derivation, so the state a
-/// row shows and the state the command accepts cannot disagree.
+/// #1846: `RetrySend` and the rendered row read one derivation on the same input.
+/// The input is the row itself, so the command judges the report the projection
+/// renders from — including a manager-owned row the SDK has not bound yet.
 pub(super) fn retry_admission(
     authority: &SendStateAuthority,
-    transaction_id: &str,
-    observed: Option<&TimelineSendState>,
-    blocked: bool,
+    item: &TimelineItem,
 ) -> Result<(), TimelineFailureKind> {
-    validate_retry_send(
-        authority
-            .derive(observed, Some(transaction_id), blocked)
-            .as_ref(),
-    )
+    validate_retry_send(authority.derive_for_item(item).as_ref())
 }
 
 pub(crate) fn validate_cancel_send(

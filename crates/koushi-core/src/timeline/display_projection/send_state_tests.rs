@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use koushi_protocol::event::{TimelineItemId, TimelineSendFailureReason};
 
-use super::super::item_projection::SendStateAuthority;
+use super::super::item_projection::{SendStateAuthority, retry_admission};
 use super::super::test_support::{room_key, send_row};
 use super::*;
 
@@ -154,7 +154,49 @@ fn batch_inserted_successor_joins_as_blocked() {
     );
     assert_eq!(
         rendered_send_state(fresh.display_items(), "t2"),
-        authority.derive(Some(&TimelineSendState::Sending), Some("t2"), true),
+        authority.derive(Some(&TimelineSendState::Sending), Some("t2")),
         "the projection renders exactly the derivation"
     );
+}
+
+/// #1846 B1: the blocking authority is the room table, never the rows a display
+/// window happens to keep. Counterexample shape: the SDK reported the failure on
+/// the head's row, but the room monitor has not written it into the table yet, so
+/// the only recoverable failure is the head's own row.
+#[test]
+fn window_composition_never_changes_a_rendered_send_state() {
+    let canonical = canonical_queue();
+    let row_evidence_only = HashMap::from([("t2".to_owned(), TimelineSendState::Sending)]);
+    let table_knows = stopped_room();
+
+    for statuses in [row_evidence_only, table_knows] {
+        let context = room_context(&statuses);
+        let with_head_in_window = {
+            let mut projection = DisplayProjectionState::from_canonical_window(&canonical, 0..2);
+            projection.reproject(&context);
+            rendered_send_state(projection.display_items(), "t2")
+        };
+        // `return_to_live_window` keeps only the live tail, so a longer queue leaves
+        // the failed head outside the materialized window.
+        let without_head_in_window = {
+            let mut projection = DisplayProjectionState::from_canonical_window(&canonical, 1..2);
+            projection.reproject(&context);
+            rendered_send_state(projection.display_items(), "t2")
+        };
+
+        assert_eq!(
+            with_head_in_window, without_head_in_window,
+            "the materialized window must not decide a rendered send state (table={statuses:?})"
+        );
+        let authority = SendStateAuthority::new(&statuses);
+        let row = send_row("t2", Some(TimelineSendState::Sending));
+        assert_eq!(
+            matches!(
+                without_head_in_window,
+                Some(TimelineSendState::NotSent { .. })
+            ),
+            retry_admission(&authority, &row).is_ok(),
+            "admission must agree with the rendered row (table={statuses:?})"
+        );
+    }
 }

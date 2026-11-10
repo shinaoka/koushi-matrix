@@ -4244,30 +4244,45 @@ the composite `(room_id, sdk_transaction_id)` correlation back to the original
 `TimelineItem.send_state` and dispatch typed commands, but it must not derive
 identity, convergence, or retry/cancel legality from local component state.
 
-A rendered send state is not stored in a row. Every publish projection derives
-it from the actor-owned `send_statuses` table (fed by `RoomSendQueueUpdate`) and
-the row's own SDK report:
+A rendered send state is not stored in a row. Every publish projection derives it
+from the row's own report and one room-wide authority, the actor-owned
+`send_statuses` table (fed by `RoomSendQueueUpdate`):
 
-1. The SDK's own report for the row wins: a sent echo, or one the SDK reports as
-   failed, is what the queue itself acts on.
+1. The row's own report wins: a sent echo, or one the SDK reports as failed, is
+   what the queue itself acts on. For a manager-owned row the SDK has not bound
+   yet, that report is the coordinator's pending base (`sending`).
 2. While the SDK has not attempted the request (`NotSentYet`), the actor's record
    answers, for example the failure the SDK reports per room rather than per
    request.
-3. A request the room is not attempting because an earlier one failed
-   *recoverably* is not `sending`: it renders `notSent { recoverable }`. The SDK
-   keeps FIFO order, so every unattempted request in a stopped room is behind
-   that failure. The room-wide record is the actor's table, and a row carrying a
-   recoverable failure is evidence too, which covers a replayed or freshly
-   materialized window. `RetrySend` judges the same derivation, so a rendered
-   `notSent` is exactly what the command accepts. A manager-owned send is instead
-   admitted by the coordinator's own `FailedRecoverable` phase before the request
-   is bound to the SDK. Retry, cancel and the delayed recoverable re-enable resume
-   the room through one helper.
+3. A request with no attempt in a room whose table holds an unresolved
+   `NotSent { recoverable }` is not `sending`: it renders `notSent { recoverable }`.
+   The SDK keeps FIFO order, so every unattempted request in a stopped room is
+   behind that failure. Only the table decides whether the room is stopped; a row
+   or the set of rows a window happens to hold is never blocking evidence, so a
+   window rebuild, eviction or replay cannot change what a surviving row means.
+4. `RetrySend` judges that same derivation on the same row, so a rendered
+   `notSent` is what the command accepts, including a manager-owned row the SDK
+   has not bound yet. An admitted retry resumes the room send queue; it unwedges
+   a request only when the SDK bound one. Cancel and the delayed recoverable
+   re-enable resume through the same helper.
 
 Because the state is derived per projection, no publisher (a relay batch commit,
-the pending fallback, a bounded-window rebuild, a replay, or a recovery reset)
-can roll a resolved state back by copying an older row: the next projection reads
-the current table. Rows keep only the SDK report they were projected from.
+the pending fallback, a bounded-window rebuild, a replay, or a recovery reset) can
+roll a resolved state back by copying an older row: the next projection reads the
+current table, and rows keep only the report they were projected from.
+
+Two conditions follow from the described authority and are not stronger than it:
+
+- The projection that startup emits runs before the restored local echoes are
+  seeded, so its authority is still empty, and the table is rebuilt from
+  `RoomSendQueue::subscribe()` when an actor starts or a broadcast lag forces a
+  resync. That call carries the unrecoverable wedge flag but not a recoverable
+  failure, so after such a rebuild the failing row still renders `notSent` from
+  its own report while its successors render `sending` until the queue reports
+  that failure again through `RoomSendQueueUpdate`.
+- A projected display row is never read back as input: its `send_state` is the
+  derivation's own output. Admission reads the un-derived canonical or
+  manager-owned pending row, so a resolved state cannot become sticky.
 Visible timeline sends still go through the SDK UI `Timeline::send` path; a
 missing local-echo diff no longer creates a visibility gap.
 
@@ -4291,7 +4306,7 @@ stateDiagram-v2
 | accepted text/reply | below the bounded pending cap with an active account and joined room enqueue context | cap full, missing session, account mismatch, missing/nonjoined/leaving room, registration activation or reducer acceptance delivery failed | Direct `SendText`/`SendReply` never submit or settle a GUI composer. The draft lifecycle below applies only to GUI `SubmitText`/`SubmitReply`. Actor publication is best-effort and never waited on; the row appears when the actor catches up. Publishes one client-transaction `sending` row, retaining the persisted draft until SDK enqueue succeeds. Replies construct their relation from known event IDs, and plain thread sends use the known root as fallback, without a network fetch before enqueue. `ComposerSubmissionQueued` then clears the submitted draft revision and releases only that composer while the submission registry retains its remote terminal. A failed pre-enqueue attempt leaves the draft intact. |
 | `NewLocalEvent` | any | none | Exact SDK binding merges the canonical local echo into the pending row and stores the SDK `SendHandle`; it never inserts a duplicate. Restored local echoes from `RoomSendQueue::subscribe()` initialize the same actor table before commands. The send-queue update is not a rendered row: only a canonical Timeline transaction row lets a later `SentEvent` retire the fallback. |
 | `SendError` | `sending` | none | Records `not_sent { reason }` in the actor's table using only the SDK recoverable flag; the rows are reprojected from that table, so the failing row and the requests queued behind it change together. Release diagnostics may record a closed app-owned failure class plus that recoverable flag, but raw SDK errors stay out of DTOs, logs, QA tokens, and React state. The matching composer pending state is failed once if enqueue never succeeded. A recoverable SDK failure after enqueue schedules room-queue re-enablement with bounded backoff and server Retry-After; later success can still emit `SendCompleted`. |
-| `RetrySend { room_id, transaction_id }` | the derived state is `not_sent` (a failed row, or an unattempted row queued behind a recoverable failure) with a stored `SendHandle` | derived `sending`, `sent`, `cancelled`, unknown transaction | Re-enables the SDK room queue with `room.send_queue().set_enabled(true)`, then calls `SendHandle::unwedge()`. FIFO order remains the SDK send queue's responsibility; React never reorders or manually marks successors sent. |
+| `RetrySend { room_id, transaction_id }` | the row derives `not_sent` (a failed row, or a row with no attempt queued behind a recoverable failure), with or without a bound `SendHandle` | derived `sending`, `sent`, `cancelled`, unknown row | Re-enables the SDK room queue with `room.send_queue().set_enabled(true)`, then calls `SendHandle::unwedge()` when the SDK bound the request. FIFO order remains the SDK send queue's responsibility; React never reorders or manually marks successors sent. |
 | `CancelSend { room_id, transaction_id }` | `sending`, `not_sent` with a stored `SendHandle` | `sent`, `cancelled`, unknown transaction | Calls `SendHandle::abort()`. A successful cancel records `cancelled`, drops the handle, re-enables the SDK room queue so successors are not stranded, and clears matching composer pending state without creating a send-failure error. |
 | `SentEvent` | any | none | The manager-owned observer records `sent`, maps the composite SDK correlation to the original request, reliably enqueues the matching reducer action, then emits `SendCompleted`. Without a local echo, the same row changes atomically to the event ID and remains visible until canonical remote convergence or exact-event hydration. Settled correlations are bounded tombstones so duplicate SDK terminals cannot complete twice. A delivered send's SDK transaction row is hidden only once its remote event has a canonical row, so the hand-off never leaves the message without a row. |
 

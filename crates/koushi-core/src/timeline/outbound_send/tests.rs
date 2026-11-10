@@ -4238,17 +4238,23 @@ async fn retry_advances_a_stopped_room_in_enqueue_order() {
         ),
     ]);
     let authority = super::SendStateAuthority::new(&statuses);
-    let blocked = authority.blocked(&[]);
+    // The row the projection renders for the successor: its own SDK report is
+    // still `NotSentYet`, and only the room table knows the head failed.
+    let mut rows = vec![crate::timeline::test_support::send_row(
+        &successor,
+        observed.clone(),
+    )];
+    authority.apply_all(&mut rows);
     assert_eq!(
-        authority.derive(observed.as_ref(), Some(&successor), blocked),
+        rows[0].send_state,
         Some(koushi_protocol::event::TimelineSendState::NotSent {
             reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
         }),
         "the queued successor renders as not sent"
     );
     assert!(
-        super::retry_admission(&authority, &successor, observed.as_ref(), blocked).is_ok(),
-        "Resend is accepted for the state the row renders"
+        super::retry_admission(&authority, &rows[0]).is_ok(),
+        "Resend is accepted for the row the projection rendered"
     );
 
     drop(faulty);

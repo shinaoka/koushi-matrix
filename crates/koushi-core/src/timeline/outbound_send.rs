@@ -2032,30 +2032,27 @@ pub(super) async fn deliver_submission_terminal_action(
 }
 
 impl TimelineActor {
-    /// The SDK's own report for one transaction, read from the canonical rows the
-    /// SDK produced. Manager-owned pending rows are excluded on purpose: their
-    /// `send_state` is product state the coordinator assigned, and only the SDK
-    /// may tell the derivation that a request was attempted.
-    fn observed_send_state(&self, transaction_id: &str) -> Option<TimelineSendState> {
+    /// The un-derived row a send command names: the canonical SDK row first (the
+    /// freshest SDK report), then the manager-owned pending row. A projected display
+    /// row is deliberately not consulted: its `send_state` is the derivation's own
+    /// output, and feeding it back would make a resolved state sticky.
+    fn send_state_row(&self, transaction_id: &str) -> Option<TimelineItem> {
+        let named = |item: &&TimelineItem| {
+            matches!(
+                &item.id,
+                TimelineItemId::Transaction { transaction_id: id } if id == transaction_id
+            )
+        };
         self.navigation_items
             .iter()
-            .find(|item| {
-                matches!(
-                    &item.id,
-                    TimelineItemId::Transaction { transaction_id: id } if id == transaction_id
-                )
+            .find(named)
+            .or_else(|| {
+                self.pending_send_projections
+                    .iter()
+                    .map(|projection| &projection.item)
+                    .find(named)
             })
-            .and_then(|item| item.send_state.clone())
-    }
-
-    /// The rows rendering and retry admission both consult: the canonical window
-    /// plus the manager-owned pending rows the projection also renders.
-    fn send_state_evidence(&self) -> impl Iterator<Item = &TimelineItem> {
-        self.navigation_items.iter().chain(
-            self.pending_send_projections
-                .iter()
-                .map(|projection| &projection.item),
-        )
+            .cloned()
     }
 
     pub(super) async fn handle_retry_send(
@@ -2063,6 +2060,22 @@ impl TimelineActor {
         request_id: RequestId,
         transaction_id: String,
     ) {
+        // #1846: the command judges the row the user sees, through the derivation
+        // the projection uses. A row the SDK has not bound yet has no `SendHandle`,
+        // so the admission must not depend on one.
+        let Some(row) = self.send_state_row(&transaction_id) else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
+            return;
+        };
+        let admission = {
+            let authority = SendStateAuthority::new(&self.send_statuses);
+            retry_admission(&authority, &row)
+        };
+        if let Err(kind) = admission {
+            self.emit_timeline_failure(request_id, kind);
+            return;
+        }
+
         let retained = self
             .send_completion
             .lock()
@@ -2072,32 +2085,22 @@ impl TimelineActor {
                 &transaction_id,
                 PendingSendPhase::FailedRecoverable,
             );
-        let (sdk_transaction_id, handle, manager_owned) = if let Some((sdk_id, handle)) = retained {
-            (sdk_id, handle, true)
-        } else {
-            // #1846: the command judges the same derived state the row shows, so a
-            // visible `Resend` is always accepted and nothing else is.
-            let authority = SendStateAuthority::new(&self.send_statuses);
-            let observed = self.observed_send_state(&transaction_id);
-            let blocked = authority.blocked(self.send_state_evidence());
-            if let Err(kind) =
-                retry_admission(&authority, &transaction_id, observed.as_ref(), blocked)
-            {
-                self.emit_timeline_failure(request_id, kind);
-                return;
-            }
-            let Some(handle) = self.send_handles.get(&transaction_id).cloned() else {
-                self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
-                return;
-            };
-            (transaction_id.clone(), handle, false)
+        let (sdk_transaction_id, handle, manager_owned) = match retained {
+            Some((sdk_id, handle)) => (sdk_id, Some(handle), true),
+            None => (
+                transaction_id.clone(),
+                self.send_handles.get(&transaction_id).cloned(),
+                false,
+            ),
         };
 
         let Some(room) = self.sdk_room_for_key() else {
             self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
             return;
         };
-        match resume_room_send_queue(&room, Some(&handle)).await {
+        // An admitted retry always resumes the room: that is what makes the queue
+        // move again. `unwedge` is only possible once the SDK bound the request.
+        match resume_room_send_queue(&room, handle.as_ref()).await {
             Ok(()) => {
                 self.send_statuses
                     .insert(sdk_transaction_id, TimelineSendState::Sending);
