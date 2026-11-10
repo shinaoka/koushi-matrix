@@ -22,7 +22,7 @@ use crate::account_work::AccountWorkScheduler;
 use crate::executor;
 use crate::link_preview::LinkPreviewContext;
 use koushi_protocol::command::TimelineCommand;
-use koushi_protocol::event::{CoreEvent, TimelineEvent};
+use koushi_protocol::event::{CoreEvent, TimelineEvent, TimelineSendState};
 use koushi_protocol::failure::{CoreFailure, TimelineFailureKind};
 #[cfg(any(test, feature = "test-hooks"))]
 use koushi_protocol::ids::AccountKey;
@@ -65,7 +65,6 @@ use super::{
     classify_send_queue_error, make_offline_reply_content, make_offline_thread_content,
     media_upload_progress_identity, pending_send_item, reply_source_from_raw,
     resume_room_send_queue, run_global_send_completion_observer, send_retry_delay,
-    sending_items_blocked_by_recoverable_failure,
 };
 
 #[test]
@@ -299,55 +298,6 @@ fn test_session_key() -> koushi_protocol::SessionKeyId {
         user_id: "@a:test".to_owned(),
         device_id: "DEVICE".to_owned(),
     }
-}
-
-/// #1846: a recoverable failure disables the room's send queue and keeps the
-/// failed request queued, so nothing behind it is on the wire and only the
-/// attempted request receives a `SendError`. Everything still marked `Sending`
-/// in that room is blocked behind the failure, not sending.
-#[test]
-fn recoverable_failure_fans_out_to_the_items_queued_behind_it() {
-    let mut statuses = HashMap::from([
-        (
-            "failed".to_owned(),
-            koushi_protocol::event::TimelineSendState::NotSent {
-                reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
-            },
-        ),
-        (
-            "behind".to_owned(),
-            koushi_protocol::event::TimelineSendState::Sending,
-        ),
-        (
-            "wedged".to_owned(),
-            koushi_protocol::event::TimelineSendState::NotSent {
-                reason: koushi_protocol::event::TimelineSendFailureReason::Unrecoverable,
-            },
-        ),
-        (
-            "sent".to_owned(),
-            koushi_protocol::event::TimelineSendState::Sent,
-        ),
-        (
-            "cancelled".to_owned(),
-            koushi_protocol::event::TimelineSendState::Cancelled,
-        ),
-    ]);
-
-    let mut behind = sending_items_blocked_by_recoverable_failure(&statuses);
-    behind.sort();
-    assert_eq!(behind, vec!["behind".to_owned()]);
-
-    // Nothing is reported a second time once the followers are marked not sent.
-    for transaction_id in &behind {
-        statuses.insert(
-            transaction_id.clone(),
-            koushi_protocol::event::TimelineSendState::NotSent {
-                reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
-            },
-        );
-    }
-    assert!(sending_items_blocked_by_recoverable_failure(&statuses).is_empty());
 }
 
 /// #1846: the retry of an item that was never attempted has no wedged request to
@@ -2085,77 +2035,6 @@ fn local_echo_before_sdk_bind_preserves_fallback_until_terminal() {
         Some(key.clone())
     );
     assert!(owner.projections_for_key(&key).is_empty());
-}
-
-/// #1846: a pending row queued behind a recoverable failure shows the retry that
-/// resumes the room queue, and only that row changes.
-#[test]
-fn pending_row_queued_behind_a_recoverable_failure_becomes_retryable() {
-    let coordinator = SharedSendCompletionCoordinator::default();
-    let (ingress, _terminal_rx) = TimelineSendTerminalIngress::channel();
-    let key = room_key();
-    let projection = |client_txn_id: &str| PendingSendProjection {
-        lifecycle_trace: None,
-        key: key.clone(),
-        sequence: 0,
-        client_txn_id: client_txn_id.to_owned(),
-        item: pending_send_item(client_txn_id, "queued body", None, None, None),
-        sdk_transaction_id: None,
-        handle: None,
-        terminal_event_id: None,
-        phase: PendingSendPhase::Pending,
-    };
-    let mut blocked = SendCompletionRegistration::begin_with_projection(
-        Arc::clone(&coordinator),
-        ingress.clone(),
-        key.clone(),
-        "client-blocked".to_owned(),
-        None,
-        fake_rid(7410),
-        true,
-        Some(projection("client-blocked")),
-    );
-    blocked.activate();
-    blocked.bind("sdk-blocked".to_owned());
-    let mut sent_ahead = SendCompletionRegistration::begin_with_projection(
-        Arc::clone(&coordinator),
-        ingress.clone(),
-        key.clone(),
-        "client-ahead".to_owned(),
-        None,
-        fake_rid(7411),
-        true,
-        Some(projection("client-ahead")),
-    );
-    sent_ahead.activate();
-    sent_ahead.bind("sdk-ahead".to_owned());
-
-    let mut owner = coordinator.lock().expect("coordinator");
-    assert!(
-        !owner.mark_blocked_behind_recoverable_failure(&key, "sdk-unknown"),
-        "an unknown request marks nothing"
-    );
-    assert!(owner.mark_blocked_behind_recoverable_failure(&key, "sdk-blocked"));
-    let projections = owner.projections_for_key(&key);
-    let row = |client_txn_id: &str| {
-        projections
-            .iter()
-            .find(|projection| projection.client_txn_id == client_txn_id)
-            .expect("projection row")
-    };
-    assert_eq!(
-        row("client-blocked").phase,
-        PendingSendPhase::FailedRecoverable
-    );
-    assert_eq!(
-        row("client-blocked").item.send_state,
-        Some(koushi_protocol::event::TimelineSendState::NotSent {
-            reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
-        })
-    );
-    assert_eq!(row("client-ahead").phase, PendingSendPhase::Pending);
-    // The same retry the failed head of the queue uses resolves this row.
-    assert!(owner.mark_retry_sending(&key, "sdk-blocked"));
 }
 
 #[test]
@@ -4322,88 +4201,20 @@ async fn plain_thread_submissions_clear_persisted_drafts_and_settle_after_reopen
     }
 }
 
-/// #1846: the actor's own event path — a recoverable `SendError`, then a message
-/// queued while the room queue stays disabled — must leave the later message
-/// retryable, and that `Resend` must resume the queue in FIFO order.
-#[tokio::test]
-async fn a_send_queued_after_a_recoverable_failure_is_retryable_in_the_actor() {
-    let mut fixture = SendQueueActorFixture::start().await;
-    fixture
-        .mount_send("head", "$queued-head:example.invalid")
-        .await;
-    fixture
-        .mount_send("behind", "$queued-behind:example.invalid")
-        .await;
-
-    let head = fixture.queue_echo("head").await;
-    fixture
-        .push(RoomSendQueueUpdate::NewLocalEvent(head.clone()))
-        .await;
-    fixture.push(send_error(&head, true)).await;
-
-    // The user sends again while the SDK keeps the room queue disabled.
-    let behind = fixture.queue_echo("behind").await;
-    fixture
-        .push(RoomSendQueueUpdate::NewLocalEvent(behind.clone()))
-        .await;
-
-    // `Resend` on the queued-behind item: refused while it still mirrored as
-    // `Sending`, accepted once it is recorded as not sent.
-    fixture.retry(&behind).await;
-    fixture
-        .await_sent(&[&head.transaction_id, &behind.transaction_id])
-        .await;
-    fixture.assert_retry_accepted();
-}
-
-/// #1846: the block ends with the room's send queue. An unrecoverable failure
-/// wedges the head instead, so a later message keeps the SDK's own state and its
-/// retry is refused exactly as before.
-#[tokio::test]
-async fn a_send_after_an_unrecoverable_failure_is_not_marked_not_sent() {
-    let mut fixture = SendQueueActorFixture::start().await;
-
-    let head = fixture.queue_echo("head").await;
-    fixture
-        .push(RoomSendQueueUpdate::NewLocalEvent(head.clone()))
-        .await;
-    fixture.push(send_error(&head, true)).await;
-    let behind = fixture.queue_echo("behind").await;
-    fixture
-        .push(RoomSendQueueUpdate::NewLocalEvent(behind.clone()))
-        .await;
-
-    // The room wedges: a recoverable block is not what stops sends any more.
-    fixture.push(send_error(&head, false)).await;
-    let later = fixture.queue_echo("later").await;
-    fixture
-        .push(RoomSendQueueUpdate::NewLocalEvent(later.clone()))
-        .await;
-
-    fixture.retry(&later).await;
-    fixture
-        .await_retry_refused(TimelineFailureKind::InvalidSendState)
-        .await;
-}
-
-fn send_error(
-    echo: &matrix_sdk::send_queue::LocalEcho,
-    is_recoverable: bool,
-) -> RoomSendQueueUpdate {
-    RoomSendQueueUpdate::SendError {
-        transaction_id: echo.transaction_id.clone(),
-        error: Arc::new(matrix_sdk::Error::Timeout),
-        is_recoverable,
-    }
-}
-
-/// A real SDK room queue feeding a real actor through its own mailbox.
+/// #1846: a real SDK room queue feeding the real actor through its own mailbox, plus
+/// the manager-owned fallback rows a composer send would show, so a test can read the
+/// state the actor publishes for a row.
 struct SendQueueActorFixture {
     _server: MatrixMockServer,
     room: matrix_sdk::Room,
     handle: TimelineActorHandle,
     actor_events: broadcast::Receiver<CoreEvent>,
     queue_updates: broadcast::Receiver<RoomSendQueueUpdate>,
+    coordinator: SharedSendCompletionCoordinator,
+    terminal_ingress: TimelineSendTerminalIngress,
+    _terminal_rx: mpsc::UnboundedReceiver<TimelineSendTerminalHandoff>,
+    pending: Vec<SendCompletionRegistration>,
+    rows: HashMap<String, TimelineSendState>,
     retry_request_id: Option<RequestId>,
 }
 
@@ -4431,10 +4242,7 @@ impl SendQueueActorFixture {
                 authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
             },
         ));
-        let key = TimelineKey::room(
-            AccountKey(session.info.user_id.clone()),
-            room.room_id().as_str(),
-        );
+        let key = room_key_from(&room);
         let timeline = Arc::new(
             matrix_sdk_ui::timeline::TimelineBuilder::new(&room)
                 .build()
@@ -4444,10 +4252,11 @@ impl SendQueueActorFixture {
         let generations = Arc::new(TimelineActorGenerationGate::default());
         let actor_generation = generations.activate_after_quiescence(&key).await.generation;
         let (action_tx, _action_rx) = mpsc::channel(32);
-        let (event_tx, actor_events) = broadcast::channel(64);
+        let (event_tx, actor_events) = broadcast::channel(256);
         let (manager_tx, mut manager_rx) = mpsc::channel(8);
         executor::spawn(async move { while manager_rx.recv().await.is_some() {} });
-        let (terminal_ingress, _terminal_rx) = TimelineSendTerminalIngress::channel();
+        let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
+        let coordinator = SharedSendCompletionCoordinator::default();
         let handle = super::super::actor::TimelineActor::spawn(
             key,
             timeline,
@@ -4467,8 +4276,8 @@ impl SendQueueActorFixture {
             generations,
             actor_generation,
             None,
-            SharedSendCompletionCoordinator::default(),
-            terminal_ingress,
+            Arc::clone(&coordinator),
+            terminal_ingress.clone(),
             manager_tx,
         )
         .await;
@@ -4478,6 +4287,11 @@ impl SendQueueActorFixture {
             handle,
             actor_events,
             queue_updates,
+            coordinator,
+            terminal_ingress,
+            _terminal_rx: terminal_rx,
+            pending: Vec::new(),
+            rows: HashMap::new(),
             retry_request_id: None,
         }
     }
@@ -4494,7 +4308,9 @@ impl SendQueueActorFixture {
             .await;
     }
 
-    async fn queue_echo(&mut self, body: &str) -> matrix_sdk::send_queue::LocalEcho {
+    /// Queues a real send, registers the manager-owned row a composer send would
+    /// show, and waits until the actor has recorded the SDK's local echo for it.
+    async fn queue_row(&mut self, body: &str) -> matrix_sdk::send_queue::LocalEcho {
         use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 
         let sent = self
@@ -4504,16 +4320,47 @@ impl SendQueueActorFixture {
             .await
             .expect("queue a send");
         let transaction_id = sent.transaction_id().to_string();
-        loop {
+        let echo = loop {
             match self.queue_updates.recv().await.expect("room queue update") {
                 RoomSendQueueUpdate::NewLocalEvent(echo)
                     if echo.transaction_id.as_str() == transaction_id =>
                 {
-                    return echo;
+                    break echo;
                 }
                 _ => {}
             }
-        }
+        };
+        let key = room_key_from(&self.room);
+        let client_txn_id = format!("client-{transaction_id}");
+        let projection = PendingSendProjection {
+            lifecycle_trace: None,
+            key: key.clone(),
+            sequence: 0,
+            client_txn_id: client_txn_id.clone(),
+            item: pending_send_item(&client_txn_id, "queued body", None, None, None),
+            sdk_transaction_id: None,
+            handle: None,
+            terminal_event_id: None,
+            phase: PendingSendPhase::Pending,
+        };
+        let mut registration = SendCompletionRegistration::begin_with_projection(
+            Arc::clone(&self.coordinator),
+            self.terminal_ingress.clone(),
+            key,
+            client_txn_id,
+            None,
+            fake_rid(9310),
+            true,
+            Some(projection),
+        );
+        registration.activate();
+        registration.bind(transaction_id);
+        self.pending.push(registration);
+        // The actor publishes the row as soon as it records the echo; whether it
+        // reads as sending or as blocked is what the test asserts next.
+        self.await_row(&echo.transaction_id, "the queued send", |_| true)
+            .await;
+        echo
     }
 
     async fn push(&self, update: RoomSendQueueUpdate) {
@@ -4522,6 +4369,24 @@ impl SendQueueActorFixture {
             .send(TimelineActorMessage::SendQueueUpdate(update))
             .await
             .expect("actor accepts the queue update");
+    }
+
+    /// The SDK's own terminal for the head, as the manager-owned observer records it,
+    /// followed by the send-queue update the actor mirrors.
+    async fn fail(&mut self, echo: &matrix_sdk::send_queue::LocalEcho, is_recoverable: bool) {
+        apply_send_completion_observation_and_handoff(
+            &self.coordinator,
+            &self.terminal_ingress,
+            self.room.room_id().as_str(),
+            SendCompletionObservation::SendError {
+                sdk_transaction_id: echo.transaction_id.to_string(),
+                diagnostic: crate::send_diagnostics::SendFailureDiagnostic {
+                    reason: "http",
+                    recoverable: is_recoverable,
+                },
+            },
+        );
+        self.push(send_error(echo, is_recoverable)).await;
     }
 
     async fn retry(&mut self, echo: &matrix_sdk::send_queue::LocalEcho) {
@@ -4537,8 +4402,55 @@ impl SendQueueActorFixture {
             .expect("actor accepts the retry");
     }
 
-    /// The retry accepted the item: the resumed queue sends the requests in FIFO
-    /// order, oldest first, and the retry reports no failure of its own.
+    async fn cancel(&mut self, echo: &matrix_sdk::send_queue::LocalEcho) {
+        self.handle
+            .tx
+            .send(TimelineActorMessage::CancelSend {
+                request_id: fake_rid(9302),
+                transaction_id: echo.transaction_id.to_string(),
+            })
+            .await
+            .expect("actor accepts the cancel");
+    }
+
+    async fn queue_lagged(&mut self) {
+        self.handle
+            .tx
+            .send(TimelineActorMessage::SendQueueLagged)
+            .await
+            .expect("actor accepts the lagged notification");
+    }
+
+    /// The rows the actor publishes for `transaction_id`, once one matches `expected`.
+    async fn await_row(
+        &mut self,
+        transaction_id: &matrix_sdk::ruma::OwnedTransactionId,
+        label: &str,
+        expected: fn(&TimelineSendState) -> bool,
+    ) -> TimelineSendState {
+        let rows = &mut self.rows;
+        let events = &mut self.actor_events;
+        let observed = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(state) = rows.get(transaction_id.as_str())
+                    && expected(state)
+                {
+                    return state.clone();
+                }
+                let event = events.recv().await.expect("core event");
+                record_row_states(event, rows);
+            }
+        })
+        .await;
+        observed.unwrap_or_else(|_| {
+            panic!(
+                "timed out waiting for {label} ({transaction_id}): {:?}",
+                self.rows
+            )
+        })
+    }
+
+    /// The resumed queue sends the requests in FIFO order, oldest first.
     async fn await_sent(&mut self, expected: &[&matrix_sdk::ruma::OwnedTransactionId]) {
         let updates = &mut self.queue_updates;
         let sent = tokio::time::timeout(Duration::from_secs(10), async {
@@ -4598,4 +4510,310 @@ impl SendQueueActorFixture {
             CoreFailure::TimelineOperationFailed { kind: expected }
         );
     }
+}
+
+fn room_key_from(room: &matrix_sdk::Room) -> TimelineKey {
+    TimelineKey::room(
+        AccountKey(
+            room.client()
+                .user_id()
+                .expect("logged-in client")
+                .to_string(),
+        ),
+        room.room_id().as_str(),
+    )
+}
+
+fn send_error(
+    echo: &matrix_sdk::send_queue::LocalEcho,
+    is_recoverable: bool,
+) -> RoomSendQueueUpdate {
+    RoomSendQueueUpdate::SendError {
+        transaction_id: echo.transaction_id.clone(),
+        error: Arc::new(matrix_sdk::Error::Timeout),
+        is_recoverable,
+    }
+}
+
+fn record_row_states(event: CoreEvent, rows: &mut HashMap<String, TimelineSendState>) {
+    let record = |item: &koushi_protocol::event::TimelineItem,
+                  rows: &mut HashMap<String, TimelineSendState>| {
+        if let koushi_protocol::event::TimelineItemId::Transaction { transaction_id } = &item.id
+            && let Some(state) = &item.send_state
+        {
+            rows.insert(transaction_id.clone(), state.clone());
+        }
+    };
+    let diffs = match event {
+        CoreEvent::Timeline(TimelineEvent::ItemsUpdated { diffs, .. }) => diffs,
+        // A lag rebuild republishes the whole window under a recovery identity.
+        CoreEvent::Timeline(TimelineEvent::InitialItems { items, .. }) => {
+            for item in &items {
+                record(item, rows);
+            }
+            return;
+        }
+        _ => return,
+    };
+    for diff in diffs {
+        match diff {
+            koushi_protocol::event::TimelineDiff::PushFront { item }
+            | koushi_protocol::event::TimelineDiff::PushBack { item }
+            | koushi_protocol::event::TimelineDiff::Insert { item, .. }
+            | koushi_protocol::event::TimelineDiff::Set { item, .. } => record(&item, rows),
+            koushi_protocol::event::TimelineDiff::Reset { items } => {
+                for item in &items {
+                    record(item, rows);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn is_not_sent(state: &TimelineSendState) -> bool {
+    matches!(state, TimelineSendState::NotSent { .. })
+}
+
+fn is_sending(state: &TimelineSendState) -> bool {
+    matches!(state, TimelineSendState::Sending)
+}
+
+/// #1846: a message queued while the room queue is stopped behind a recoverable
+/// failure is projected as not sent, and its `Resend` resumes the queue.
+#[tokio::test]
+async fn a_send_queued_after_a_recoverable_failure_is_retryable_in_the_actor() {
+    let mut fixture = SendQueueActorFixture::start().await;
+    fixture
+        .mount_send("head", "$queued-head:example.invalid")
+        .await;
+    fixture
+        .mount_send("behind", "$queued-behind:example.invalid")
+        .await;
+
+    let head = fixture.queue_row("head").await;
+    fixture.fail(&head, true).await;
+    let behind = fixture.queue_row("behind").await;
+    fixture
+        .await_row(
+            &behind.transaction_id,
+            "a row behind the failure",
+            is_not_sent,
+        )
+        .await;
+
+    fixture.retry(&behind).await;
+    fixture
+        .await_sent(&[&head.transaction_id, &behind.transaction_id])
+        .await;
+    fixture.assert_retry_accepted();
+}
+
+/// #1846: a wedged (unrecoverable) failure is not a recoverable block, so a message
+/// queued behind it keeps the SDK's own state and its retry is refused as before.
+#[tokio::test]
+async fn a_send_after_an_unrecoverable_failure_is_not_marked_not_sent() {
+    let mut fixture = SendQueueActorFixture::start().await;
+
+    let head = fixture.queue_row("head").await;
+    fixture.fail(&head, true).await;
+    let behind = fixture.queue_row("behind").await;
+    fixture
+        .await_row(
+            &behind.transaction_id,
+            "a row behind the failure",
+            is_not_sent,
+        )
+        .await;
+
+    fixture.fail(&head, false).await;
+    fixture
+        .await_row(
+            &behind.transaction_id,
+            "a row behind a wedged head",
+            is_sending,
+        )
+        .await;
+    let later = fixture.queue_row("later").await;
+    fixture
+        .await_row(
+            &later.transaction_id,
+            "a message after the wedge",
+            is_sending,
+        )
+        .await;
+
+    fixture.retry(&later).await;
+    fixture
+        .await_retry_refused(TimelineFailureKind::InvalidSendState)
+        .await;
+}
+
+/// #1846: retrying the head succeeds, so the rows behind it stop offering `Resend`
+/// without any bookkeeping — the failure record changes and the derivation follows.
+#[tokio::test]
+async fn retrying_the_head_clears_the_rows_queued_behind_it() {
+    let mut fixture = SendQueueActorFixture::start().await;
+    fixture
+        .mount_send("head", "$queued-head:example.invalid")
+        .await;
+    fixture
+        .mount_send("behind", "$queued-behind:example.invalid")
+        .await;
+
+    let head = fixture.queue_row("head").await;
+    fixture.fail(&head, true).await;
+    let behind = fixture.queue_row("behind").await;
+    fixture
+        .await_row(
+            &behind.transaction_id,
+            "a row behind the failure",
+            is_not_sent,
+        )
+        .await;
+
+    fixture.retry(&head).await;
+    fixture
+        .await_sent(&[&head.transaction_id, &behind.transaction_id])
+        .await;
+    fixture
+        .await_row(
+            &behind.transaction_id,
+            "a row behind a retried head",
+            is_sending,
+        )
+        .await;
+}
+
+/// #1846: cancelling the head starts its successor, so the successor is a normal send
+/// and a message composed afterwards is `Sending` from the start.
+#[tokio::test]
+async fn cancelling_the_head_clears_the_rows_queued_behind_it() {
+    let mut fixture = SendQueueActorFixture::start().await;
+    fixture
+        .mount_send("behind", "$queued-behind:example.invalid")
+        .await;
+    fixture
+        .mount_send("later", "$queued-later:example.invalid")
+        .await;
+
+    let head = fixture.queue_row("head").await;
+    fixture.fail(&head, true).await;
+    let behind = fixture.queue_row("behind").await;
+    fixture
+        .await_row(
+            &behind.transaction_id,
+            "a row behind the failure",
+            is_not_sent,
+        )
+        .await;
+
+    fixture.cancel(&head).await;
+    fixture
+        .await_row(
+            &behind.transaction_id,
+            "a row behind a cancelled head",
+            is_sending,
+        )
+        .await;
+    let later = fixture.queue_row("later").await;
+    fixture
+        .await_row(
+            &later.transaction_id,
+            "a message after the cancel",
+            is_sending,
+        )
+        .await;
+    fixture
+        .await_sent(&[&behind.transaction_id, &later.transaction_id])
+        .await;
+}
+
+/// #1846: the bounded automatic re-enable needs no extra bookkeeping — once the queue
+/// runs again the rows behind the retried head are plain sends.
+#[tokio::test]
+async fn the_automatic_re_enable_does_not_leave_a_working_row_not_sent() {
+    let mut fixture = SendQueueActorFixture::start().await;
+    fixture
+        .mount_send("head", "$queued-head:example.invalid")
+        .await;
+    fixture
+        .mount_send("behind", "$queued-behind:example.invalid")
+        .await;
+
+    let head = fixture.queue_row("head").await;
+    fixture.fail(&head, true).await;
+    let behind = fixture.queue_row("behind").await;
+    fixture
+        .await_row(
+            &behind.transaction_id,
+            "a row behind the failure",
+            is_not_sent,
+        )
+        .await;
+
+    // The global observer re-enables the room queue on its backoff deadline.
+    fixture.room.send_queue().set_enabled(true);
+    fixture
+        .await_sent(&[&head.transaction_id, &behind.transaction_id])
+        .await;
+    fixture
+        .await_row(
+            &behind.transaction_id,
+            "a row behind a sent head",
+            is_sending,
+        )
+        .await;
+}
+
+/// #1846: after a lag the send table is rebuilt from the SDK's echoes, so the rows
+/// follow whatever the head reports: retryable while it is failed, sending once it is
+/// sent.
+#[tokio::test]
+async fn lag_recovery_re_derives_the_rows_behind_the_head() {
+    let mut fixture = SendQueueActorFixture::start().await;
+
+    let head = fixture.queue_row("head").await;
+    fixture.fail(&head, true).await;
+    let behind = fixture.queue_row("behind").await;
+    fixture
+        .await_row(
+            &behind.transaction_id,
+            "a row behind the failure",
+            is_not_sent,
+        )
+        .await;
+
+    // The rebuild keeps the local echoes but no failure marker: nothing is blocked.
+    fixture.queue_lagged().await;
+    fixture
+        .await_row(
+            &behind.transaction_id,
+            "a row after the lag rebuild",
+            is_sending,
+        )
+        .await;
+    // A failure reported again after the rebuild blocks the rows again.
+    fixture.fail(&head, true).await;
+    fixture
+        .await_row(
+            &behind.transaction_id,
+            "a row behind a failed head",
+            is_not_sent,
+        )
+        .await;
+    // Once the SDK reports the head sent, the rows are plain sends.
+    fixture
+        .push(RoomSendQueueUpdate::SentEvent {
+            transaction_id: head.transaction_id.clone(),
+            event_id: matrix_sdk::ruma::event_id!("$queued-head:example.invalid").to_owned(),
+        })
+        .await;
+    fixture
+        .await_row(
+            &behind.transaction_id,
+            "a row behind a sent head",
+            is_sending,
+        )
+        .await;
 }

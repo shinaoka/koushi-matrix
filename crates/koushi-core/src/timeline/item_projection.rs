@@ -2176,11 +2176,10 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 .map(|message| message.is_edited())
                 .unwrap_or(false);
             let sdk_send_state = timeline_send_state_from_sdk(event_item.send_state());
-            let send_state = send_state_with_recorded(
+            let send_state = send_state_with_recoverable_block(
                 sdk_send_state,
-                transaction_id
-                    .as_deref()
-                    .and_then(|txn_id| send_statuses.get(txn_id)),
+                transaction_id.as_deref(),
+                send_statuses,
             );
             let mut unable_to_decrypt = unable_to_decrypt_from_content(content);
             if let Some(utd) = unable_to_decrypt.as_mut() {
@@ -3555,30 +3554,65 @@ pub(super) fn timeline_send_state_from_sdk(
     }
 }
 
-/// #1846: the SDK folds a request it never attempted into `NotSentYet`, which
-/// reads as `Sending`. While a room's queue is disabled by a recoverable
-/// failure, the actor's own record of that request wins over the collapse and
-/// keeps the retry that resumes the queue reachable. Every other state stays the
-/// SDK's, so this is not a general preference for the actor mirror.
-pub(super) fn send_state_with_recorded(
-    sdk_state: Option<TimelineSendState>,
-    recorded: Option<&TimelineSendState>,
-) -> Option<TimelineSendState> {
-    match sdk_state {
-        Some(TimelineSendState::Sending) => recorded
-            .filter(|recorded| {
-                matches!(
-                    recorded,
-                    TimelineSendState::NotSent {
-                        reason: TimelineSendFailureReason::Recoverable
-                    }
-                )
-            })
-            .cloned()
-            .or(sdk_state),
-        None => recorded.cloned(),
+/// #1846: this room holds a request that failed recoverably and is still queued, so
+/// the SDK's send queue is stopped on that request and nothing behind it has been
+/// attempted. Derived from the send table on every projection, so no flag can go
+/// stale: the moment the failure is retried, sent, cancelled or wedged its record
+/// changes and this is false again.
+pub(super) fn blocked_behind_recoverable_failure(
+    transaction_id: Option<&str>,
+    send_statuses: &HashMap<String, TimelineSendState>,
+) -> bool {
+    send_statuses.iter().any(|(other, state)| {
+        Some(other.as_str()) != transaction_id
+            && matches!(
+                state,
+                TimelineSendState::NotSent {
+                    reason: TimelineSendFailureReason::Recoverable
+                }
+            )
+    })
+}
+
+/// #1846: the one decision every send-state consumer shares — the row projection, the
+/// manager-owned pending rows and the retry guard. A request the SDK never attempted
+/// reads as `Sending`, but while its room still holds an unresolved recoverable
+/// failure it is blocked behind that failure, not sending. Every explicit state is
+/// kept, and the answer follows the table, so it stops applying by itself once the
+/// failure is retried, sent, cancelled or wedged.
+pub(super) fn derive_blocked_send_state(
+    state: TimelineSendState,
+    transaction_id: Option<&str>,
+    send_statuses: &HashMap<String, TimelineSendState>,
+) -> TimelineSendState {
+    match state {
+        TimelineSendState::Sending
+            if blocked_behind_recoverable_failure(transaction_id, send_statuses) =>
+        {
+            TimelineSendState::NotSent {
+                reason: TimelineSendFailureReason::Recoverable,
+            }
+        }
         other => other,
     }
+}
+
+/// The SDK's own state, or the actor's record when the SDK reports none.
+pub(super) fn send_state_with_recoverable_block(
+    sdk_state: Option<TimelineSendState>,
+    transaction_id: Option<&str>,
+    send_statuses: &HashMap<String, TimelineSendState>,
+) -> Option<TimelineSendState> {
+    let state = sdk_state.or_else(|| {
+        transaction_id
+            .and_then(|transaction_id| send_statuses.get(transaction_id))
+            .cloned()
+    })?;
+    Some(derive_blocked_send_state(
+        state,
+        transaction_id,
+        send_statuses,
+    ))
 }
 
 pub(super) fn send_failure_reason(is_recoverable: bool) -> TimelineSendFailureReason {
@@ -4270,10 +4304,18 @@ pub(super) fn trace_message_edit_lifecycle(
 }
 
 pub(crate) fn validate_retry_send(
-    state: Option<&TimelineSendState>,
+    transaction_id: &str,
+    send_statuses: &HashMap<String, TimelineSendState>,
 ) -> Result<(), TimelineFailureKind> {
-    match state {
+    match send_statuses.get(transaction_id) {
         Some(TimelineSendState::NotSent { .. }) => Ok(()),
+        // #1846: an item queued behind a recoverable failure was never attempted, so
+        // the same predicate that projects it as not sent makes it retryable.
+        Some(TimelineSendState::Sending)
+            if blocked_behind_recoverable_failure(Some(transaction_id), send_statuses) =>
+        {
+            Ok(())
+        }
         Some(
             TimelineSendState::Sending | TimelineSendState::Cancelled | TimelineSendState::Sent,
         ) => Err(TimelineFailureKind::InvalidSendState),

@@ -872,10 +872,6 @@ pub(super) struct TimelineActor {
     pub(super) send_completion: SharedSendCompletionCoordinator,
     /// SDK transaction id -> Rust-owned outbound send state.
     pub(super) send_statuses: HashMap<String, TimelineSendState>,
-    /// #1846: this room's send queue was disabled by a recoverable failure, so
-    /// echoes created while it stays disabled have never been attempted. Held
-    /// only here; no protocol or coordinator key carries it.
-    pub(super) recoverable_send_blocked: bool,
     /// SDK transaction id -> SDK send handle used for retry/cancel.
     pub(super) send_handles: HashMap<String, SendHandle>,
     /// Manager-owned sends retained even when the SDK local echo is omitted.
@@ -1113,12 +1109,34 @@ impl TimelineActor {
         send_state: TimelineSendState,
     ) {
         self.send_statuses
-            .insert(transaction_id.to_owned(), send_state.clone());
-        let diffs = self.display_projection.update_send_state(
-            transaction_id,
-            send_state.clone(),
-            &self.display_projection_context(),
-        );
+            .insert(transaction_id.to_owned(), send_state);
+        self.republish_send_rows();
+    }
+
+    /// #1846: whether an outbound row reads as "not sent" depends on what its room's
+    /// send table says about the other requests, so every outbound row is re-derived
+    /// and republished from that table after any change to it. Nothing is stored per
+    /// row: the answer follows the table and disappears with it.
+    pub(super) fn republish_send_rows(&mut self) {
+        let context = self.display_projection_context();
+        let states = self
+            .send_statuses
+            .iter()
+            .map(|(transaction_id, state)| (transaction_id.clone(), state.clone()))
+            .collect::<Vec<_>>();
+        let mut diffs = Vec::new();
+        for (transaction_id, state) in states {
+            let state = super::item_projection::derive_blocked_send_state(
+                state,
+                Some(transaction_id.as_str()),
+                &self.send_statuses,
+            );
+            diffs.extend(self.display_projection.update_send_state(
+                &transaction_id,
+                state,
+                &context,
+            ));
+        }
         if diffs.is_empty() {
             return;
         }
@@ -1161,7 +1179,20 @@ impl TimelineActor {
         let mut pending_items = self
             .pending_send_projections
             .iter()
-            .map(|projection| projection.item.clone())
+            .map(|projection| {
+                let mut item = projection.item.clone();
+                // #1846: a pending row queued behind a recoverable failure was never
+                // attempted, so it is not sending. Derived here from the send table so
+                // the row resolves itself once the failure is retried, sent or cancelled.
+                item.send_state = item.send_state.take().map(|state| {
+                    super::item_projection::derive_blocked_send_state(
+                        state,
+                        projection.sdk_transaction_id.as_deref(),
+                        &self.send_statuses,
+                    )
+                });
+                item
+            })
             .collect::<Vec<_>>();
         // No batch is being committed here: the canonical items are current.
         self.overlay_reply_quotes_on_pending(&mut pending_items, &HashMap::new());
@@ -2087,7 +2118,6 @@ impl TimelineActor {
             next_batch_id: TimelineBatchId(0),
             send_completion: Arc::clone(&send_completion),
             send_statuses,
-            recoverable_send_blocked: false,
             send_handles,
             pending_send_projections,
             own_user_id,

@@ -172,8 +172,9 @@ test("runs representative migrated timeline source-contract rules", () => {
 });
 
 test("runs the retry queue order rule through the shared resume helper", () => {
-  // #1846: retry, cancel and the queued-behind retry share one resume helper, so the
-  // re-enable-before-unwedge order is asserted on the helper body every caller uses.
+  // #1846: retry and the queued-behind retry share one resume helper, so the
+  // re-enable-before-unwedge order is asserted on the helper body every caller uses;
+  // cancel keeps its own abort-then-enable path under its own rule.
   assert.deepEqual(checkCoreTimelineRetryQueueOrder(), []);
   assert.deepEqual(checkCoreTimelineOutboundState(), []);
 });

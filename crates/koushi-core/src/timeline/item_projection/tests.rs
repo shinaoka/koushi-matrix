@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use koushi_state::{
     ComposerDocument, ComposerFormattingOptions, ComposerInline, LiveEventReceipts,
@@ -61,19 +61,20 @@ use matrix_sdk_ui::timeline::ReactionInfo;
 
 use super::super::diagnostics::timeline_item_diagnostic_event;
 use super::{
-    apply_timeline_item_visibility, composer_document_from_event_json,
-    edited_content_for_edit_target, edited_document_content_for_edit_target,
-    eligible_activity_preview, has_user_visible_content, link_ranges_for_message_projection,
-    megolm_message_index_from_original_json, membership_change_projection,
-    mention_marked_message_preview, mentioned_user_ids_from_event_json,
-    mentions_room_from_event_json, message_edit_target_token, message_projection_from_msgtype,
-    msgtype_carries_editable_caption, project_local_megolm_rotation_reason,
-    raw_event_reply_quote_media, reaction_groups_from_sdk, reply_quote_from_message_projection,
-    reply_quote_from_timeline_item, reset_loading_link_previews_to_pending,
-    room_name_notice_projection, send_state_with_recorded, state_event_notice_body,
-    state_event_notice_projection, timeline_item_can_edit, timeline_item_can_react,
-    timeline_item_can_redact, timeline_item_should_be_hidden, validate_cancel_send,
-    validate_redact_reaction, validate_retry_send, validate_send_reaction,
+    apply_timeline_item_visibility, blocked_behind_recoverable_failure,
+    composer_document_from_event_json, edited_content_for_edit_target,
+    edited_document_content_for_edit_target, eligible_activity_preview, has_user_visible_content,
+    link_ranges_for_message_projection, megolm_message_index_from_original_json,
+    membership_change_projection, mention_marked_message_preview,
+    mentioned_user_ids_from_event_json, mentions_room_from_event_json, message_edit_target_token,
+    message_projection_from_msgtype, msgtype_carries_editable_caption,
+    project_local_megolm_rotation_reason, raw_event_reply_quote_media, reaction_groups_from_sdk,
+    reply_quote_from_message_projection, reply_quote_from_timeline_item,
+    reset_loading_link_previews_to_pending, room_name_notice_projection,
+    send_state_with_recoverable_block, state_event_notice_body, state_event_notice_projection,
+    timeline_item_can_edit, timeline_item_can_react, timeline_item_can_redact,
+    timeline_item_should_be_hidden, validate_cancel_send, validate_redact_reaction,
+    validate_retry_send, validate_send_reaction,
 };
 
 use super::super::test_support::{fake_rid, room_key, timeline_item};
@@ -1118,58 +1119,105 @@ fn timeline_item_structured_fields_match_private_legacy_semantics() {
 }
 
 /// #1846: a request the SDK never attempted reports `NotSentYet`, which reads as
-/// `Sending`; the actor's record of a recoverable failure beats that collapse.
+/// `Sending`. While the room still holds a recoverable failure the request is
+/// blocked behind it, and the moment that failure resolves the collapse stands.
 #[test]
-fn recorded_recoverable_failure_beats_the_sdk_not_sent_yet_collapse() {
+fn a_request_queued_behind_a_recoverable_failure_projects_as_not_sent() {
     let recoverable = TimelineSendState::NotSent {
         reason: TimelineSendFailureReason::Recoverable,
     };
-    // The SDK's `NotSentYet` reads as `Sending`; only the recorded recoverable
-    // failure replaces it.
+    let queued = HashMap::from([("head".to_owned(), recoverable.clone())]);
     assert_eq!(
-        send_state_with_recorded(Some(TimelineSendState::Sending), Some(&recoverable)),
+        send_state_with_recoverable_block(
+            Some(TimelineSendState::Sending),
+            Some("behind"),
+            &queued
+        ),
         Some(recoverable.clone())
     );
+    // The failed request itself keeps its own state, never "blocked behind itself".
     assert_eq!(
-        send_state_with_recorded(Some(TimelineSendState::Sending), None),
+        send_state_with_recoverable_block(Some(TimelineSendState::Sending), Some("head"), &queued),
         Some(TimelineSendState::Sending)
     );
-    // In flight, wedged and every explicit SDK terminal keep their own state.
+    // Explicit SDK terminals and a wedged head keep the SDK's own story.
     assert_eq!(
-        send_state_with_recorded(
-            Some(TimelineSendState::NotSent {
-                reason: TimelineSendFailureReason::Unrecoverable
-            }),
-            Some(&recoverable)
-        ),
-        Some(TimelineSendState::NotSent {
-            reason: TimelineSendFailureReason::Unrecoverable
-        })
-    );
-    assert_eq!(
-        send_state_with_recorded(Some(TimelineSendState::Sent), Some(&recoverable)),
+        send_state_with_recoverable_block(Some(TimelineSendState::Sent), Some("behind"), &queued),
         Some(TimelineSendState::Sent)
     );
+    let wedged = HashMap::from([(
+        "head".to_owned(),
+        TimelineSendState::NotSent {
+            reason: TimelineSendFailureReason::Unrecoverable,
+        },
+    )]);
     assert_eq!(
-        send_state_with_recorded(None, Some(&recoverable)),
+        send_state_with_recoverable_block(
+            Some(TimelineSendState::Sending),
+            Some("behind"),
+            &wedged
+        ),
+        Some(TimelineSendState::Sending)
+    );
+    // Once the head is retried, sent or cancelled its record changes and the
+    // followers are plain `Sending` again.
+    for released in [
+        TimelineSendState::Sending,
+        TimelineSendState::Sent,
+        TimelineSendState::Cancelled,
+    ] {
+        let released = HashMap::from([("head".to_owned(), released)]);
+        assert_eq!(
+            send_state_with_recoverable_block(
+                Some(TimelineSendState::Sending),
+                Some("behind"),
+                &released
+            ),
+            Some(TimelineSendState::Sending)
+        );
+        assert!(!blocked_behind_recoverable_failure(
+            Some("behind"),
+            &released
+        ));
+    }
+    // An item with no SDK state falls back to its own record, derived the same way.
+    let recorded_behind = HashMap::from([
+        ("head".to_owned(), recoverable.clone()),
+        ("behind".to_owned(), TimelineSendState::Sending),
+    ]);
+    assert_eq!(
+        send_state_with_recoverable_block(None, Some("behind"), &recorded_behind),
         Some(recoverable)
     );
 }
 
 #[test]
 fn send_operation_guards_allow_retry_and_cancel_only_from_outbound_states() {
-    assert_eq!(
-        validate_retry_send(Some(&TimelineSendState::NotSent {
+    let failed = HashMap::from([(
+        "head".to_owned(),
+        TimelineSendState::NotSent {
             reason: TimelineSendFailureReason::Recoverable,
-        })),
-        Ok(())
-    );
+        },
+    )]);
+    assert_eq!(validate_retry_send("head", &failed), Ok(()));
+    let queued_behind = HashMap::from([
+        ("head".to_owned(), failed["head"].clone()),
+        ("behind".to_owned(), TimelineSendState::Sending),
+    ]);
+    // #1846: the same predicate that projects the row as not sent makes it retryable.
+    assert_eq!(validate_retry_send("behind", &queued_behind), Ok(()));
     assert_eq!(
-        validate_retry_send(Some(&TimelineSendState::Sending)),
+        validate_retry_send(
+            "behind",
+            &HashMap::from([("behind".to_owned(), TimelineSendState::Sending)])
+        ),
         Err(TimelineFailureKind::InvalidSendState)
     );
     assert_eq!(
-        validate_retry_send(Some(&TimelineSendState::Sent)),
+        validate_retry_send(
+            "sent",
+            &HashMap::from([("sent".to_owned(), TimelineSendState::Sent)])
+        ),
         Err(TimelineFailureKind::InvalidSendState)
     );
     assert_eq!(
