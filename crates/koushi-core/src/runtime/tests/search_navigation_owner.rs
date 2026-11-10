@@ -141,7 +141,9 @@ fn start_with(state: AppState) -> Harness {
         while let Some(message) = account_rx.recv().await {
             let command = match message {
                 AccountMessage::EnsureRoomEventCached { response_tx, .. } => {
-                    let _ = response_tx.send(crate::account::RoomEventLookupResult::Located);
+                    let _ = response_tx.send(crate::account::RoomEventLookupResult::Located {
+                        thread_root_event_id: None,
+                    });
                     continue;
                 }
                 AccountMessage::TimelineCommand(command)

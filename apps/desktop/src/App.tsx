@@ -152,7 +152,8 @@ import {
   type RightPanelMode,
   rightPanelIntentForContextMenuAction,
   rightPanelModeForEventNavigation,
-  rightPanelModeForSearchQuery
+  rightPanelModeForSearchQuery,
+  threadPaneIdentityForActiveRoom
 } from "./domain/rightPanel";
 import {
   desktopAttentionSummary,
@@ -1573,6 +1574,20 @@ function AccountContent({
       rightPanelModeForEventNavigation(eventNavigation.source, current)
     );
   }, [eventNavigation]);
+  // #1854: Core routes a navigation target that is a reply inside a thread into
+  // the thread pane and settles that navigation as `idle`, so no anchored
+  // event-navigation terminal reveals it. Reveal the pane Rust opened for the
+  // active room, once per room/root, whatever source produced the navigation;
+  // the renderer never classifies the target itself.
+  const threadPaneIdentity = snapshot ? threadPaneIdentityForActiveRoom(snapshot) : null;
+  const revealedThreadPaneRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!threadPaneIdentity || threadPaneIdentity === revealedThreadPaneRef.current) {
+      return;
+    }
+    revealedThreadPaneRef.current = threadPaneIdentity;
+    setRightPanelMode("thread");
+  }, [threadPaneIdentity]);
   useEffect(() => {
     const eventNavigationOwnsPresentation =
       eventNavigation?.kind === "anchored" || eventNavigation?.kind === "liveFallback";

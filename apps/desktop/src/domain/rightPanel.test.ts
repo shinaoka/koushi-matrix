@@ -6,7 +6,8 @@ import {
   rightPanelIntentForContextMenuAction,
   rightPanelModeForEventNavigation,
   rightPanelModeForSearchQuery,
-  roomOrSpaceForPeoplePanelScope
+  roomOrSpaceForPeoplePanelScope,
+  threadPaneIdentityForActiveRoom
 } from "./rightPanel";
 import type {
   DesktopSnapshot,
@@ -105,6 +106,23 @@ describe("right panel context menu routing", () => {
     ).toBe(room);
 
     expect(roomOrSpaceForPeoplePanelScope(null, room, space, [room], [space])).toBe(room);
+  });
+
+  test("#1854: identifies only the thread pane of the active room", () => {
+    const snapshot = snapshotForPanelMode("ready", true);
+
+    // No active room yet: a pane from another room must not be revealed.
+    expect(threadPaneIdentityForActiveRoom(snapshot)).toBeNull();
+
+    snapshot.state.ui.navigation.active_room_id = "!room:example";
+    expect(threadPaneIdentityForActiveRoom(snapshot)).toBe("!room:example\u0000$event");
+
+    snapshot.state.ui.navigation.active_room_id = "!other:example";
+    expect(threadPaneIdentityForActiveRoom(snapshot)).toBeNull();
+
+    snapshot.state.ui.navigation.active_room_id = "!room:example";
+    snapshot.state.ui.thread = { kind: "closed" };
+    expect(threadPaneIdentityForActiveRoom(snapshot)).toBeNull();
   });
 
   test("forces recovery mode only while recovery is required", () => {

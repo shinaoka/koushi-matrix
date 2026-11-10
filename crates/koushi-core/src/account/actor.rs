@@ -359,6 +359,13 @@ pub(crate) enum AccountMessage {
     ConfigureEventCacheFetchForTesting {
         fetch: oneshot::Receiver<super::RoomEventLookupResult>,
     },
+    /// #1854: install a synthetic session so a test can drive the production
+    /// event lookup against the SDK mock server.
+    #[cfg(test)]
+    ConfigureSessionForTesting {
+        session: std::sync::Arc<MatrixClientSession>,
+        acknowledged: oneshot::Sender<()>,
+    },
     #[cfg(test)]
     ConfigureSearchActorForTesting {
         handle: Option<SearchActorHandle>,
@@ -2178,6 +2185,14 @@ impl AccountActor {
                 #[cfg(test)]
                 AccountMessage::ConfigureEventCacheFetchForTesting { fetch } => {
                     self.event_cache_fetch_override = Some(fetch);
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureSessionForTesting {
+                    session,
+                    acknowledged,
+                } => {
+                    self.session = Some(session);
+                    let _ = acknowledged.send(());
                 }
                 #[cfg(test)]
                 AccountMessage::NoteOwnAvatarSourceForTesting {

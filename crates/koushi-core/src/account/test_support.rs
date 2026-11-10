@@ -527,7 +527,7 @@ pub(super) fn spawn_named_quarantine_password_server_with_controls(
     format!("http://{addr}")
 }
 
-pub(super) fn spawn_actor_with_dirs(
+pub(crate) fn spawn_actor_with_dirs(
     cred_dir: &std::path::Path,
     data_dir: &std::path::Path,
 ) -> (

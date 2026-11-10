@@ -1531,6 +1531,7 @@ impl CoreConnection {
             .checked_add(1)
             .ok_or(EventNavigationError::Rejected)?;
         let request_id = self.next_request_id();
+        let (target_room_id, target_event_id) = (room_id.clone(), event_id.clone());
         tokio::time::timeout_at(
             deadline,
             self.command(CoreCommand::App(AppCommand::NavigateToEvent {
@@ -1565,6 +1566,7 @@ impl CoreConnection {
                 } if current == generation => Some(Err(EventNavigationError::Failed(failure_kind))),
                 _ => None,
             }
+            .or_else(|| thread_navigation_terminal(snapshot, &target_room_id, &target_event_id))
         };
 
         let mut event_stream_open = true;
@@ -1588,6 +1590,16 @@ impl CoreConnection {
                     Ok(CoreEvent::IntentLifecycle {
                         request_id: lifecycle_request_id,
                         outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                        ..
+                    }) if lifecycle_request_id == request_id => {
+                        return Ok(self.versioned_snapshot());
+                    }
+                    // #1854: a target that is a reply inside a thread is
+                    // carried by the thread pane, so the navigation commits
+                    // without ever reaching `Anchored` or `LiveFallback`.
+                    Ok(CoreEvent::IntentLifecycle {
+                        request_id: lifecycle_request_id,
+                        outcome: IntentOutcome::Committed,
                         ..
                     }) if lifecycle_request_id == request_id => {
                         return Ok(self.versioned_snapshot());
@@ -1705,6 +1717,46 @@ impl CoreConnection {
         operation.finish(result.is_ok());
         result
     }
+}
+
+/// #1854: a navigation whose target is a reply inside a thread is delivered by
+/// the thread pane, and that route settles the event navigation as `Idle`
+/// instead of publishing `Anchored`/`LiveFallback`. The pane is therefore the
+/// only snapshot fact that carries the outcome, so a waiter that missed the
+/// correlated `Committed` broadcast still settles on it instead of timing out.
+/// `Failed` is a failure: the pane is visible, but the target was not delivered.
+fn thread_navigation_terminal(
+    snapshot: &VersionedAppStateSnapshot,
+    room_id: &str,
+    event_id: &str,
+) -> Option<Result<VersionedAppStateSnapshot, EventNavigationError>> {
+    use koushi_state::{ThreadOpenIntent, ThreadPaneState};
+
+    let (pane_room_id, intent, failed) = match &snapshot.state.thread {
+        ThreadPaneState::Opening {
+            room_id, intent, ..
+        }
+        | ThreadPaneState::Open {
+            room_id, intent, ..
+        } => (room_id, intent, false),
+        ThreadPaneState::Failed {
+            room_id, intent, ..
+        } => (room_id, intent, true),
+        ThreadPaneState::Closed => return None,
+    };
+    let ThreadOpenIntent::PinnedReply { event_id: pinned } = intent else {
+        return None;
+    };
+    if pane_room_id != room_id || pinned != event_id {
+        return None;
+    }
+    Some(if failed {
+        Err(EventNavigationError::Failed(
+            koushi_state::EventNavigationFailureKind::Timeline,
+        ))
+    } else {
+        Ok(snapshot.clone())
+    })
 }
 
 fn validate_active_composer_scope(

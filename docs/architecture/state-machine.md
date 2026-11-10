@@ -2670,7 +2670,27 @@ stateDiagram-v2
   route. AppActor acquires the active actor-generation lease and dispatches
   `EnterAnchoredTimeline` only for the matching request/key/actor/timeline
   generation and target-presence result. WebView application and DOM paint are
-  not part of this transition. These paths do not open the right panel.
+  not part of this transition. These paths do not open the right panel unless
+  the target is a reply inside a thread (#1854, next bullet).
+- #1854: a `NavigateToEvent` target that is a reply inside a thread opens that
+  reply in the thread pane as `ThreadOpenIntent::PinnedReply` instead of
+  anchoring the main pane. The event lookup that already reads the target
+  reports its thread root from the event's own `m.thread` relation, so Core
+  routes to `OpenThread` with no extra round trip; the main pane stays on the
+  live room timeline, and the navigation settles `Committed` by clearing the
+  owner (`EventNavigationCleared`). Every `NavigateToEvent` source gets this one
+  decision in Core; the renderer reveals the thread pane from that Rust state and
+  never decides from search-result content whether a hit is threaded. A threaded
+  target is never presented as a main-pane Focused projection: the SDK switches
+  an event-focused cache into thread mode, so such a projection holds only the
+  thread's events and reports the thread's last reply as its live tail, which is
+  neither the room nor a stable anchor. This is the existing `Opening --> Idle`
+  (room/thread/date-jump/...) transition; no new state, transition, or reducer
+  action is introduced, a rejected or failed thread open is an explicit failure
+  rather than a silent live fallback, and a target without a thread root keeps the
+  Focused contract above. That sentence was already untrue for Activity rows before this
+  change: their existing `openActivityRow` -> `openThreadInRoom` path opens a
+  thread reply in the right panel.
 - TimelineManager never awaits the SDK `TimelineFocus::Event` build inline
   (#1146). The build is manager-owned preparation fenced by its actor
   generation; the manager keeps polling commands, navigation demand, and other

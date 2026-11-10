@@ -1875,6 +1875,25 @@ describe("desktop integration source guards", () => {
     expect(selectSearchResultSource).not.toContain("cssEscape");
   });
 
+  test("#1854: one Rust-state effect reveals the thread pane every navigation source can open", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const start = source.indexOf("const threadPaneIdentity = snapshot");
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf("const homeSelection", start);
+    expect(end).toBeGreaterThan(start);
+    const effect = source.slice(start, end);
+
+    // The reveal is driven by the Rust thread pane for the active room, so a
+    // reply-quote, pinned, notification, or Activity navigation gets the same
+    // behavior as a search hit.
+    expect(effect).toContain("threadPaneIdentityForActiveRoom(snapshot)");
+    expect(effect).toContain('setRightPanelMode("thread")');
+    // It never classifies the target itself: no source or event-content branch.
+    expect(effect).not.toContain("source ===");
+    expect(effect).not.toContain("thread_root");
+    expect(effect).not.toContain("event_navigation");
+  });
+
   test("message context menu reply uses the row's route, falling back to the room composer", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const actionStart = source.indexOf("function runContextMenuAction");

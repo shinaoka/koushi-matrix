@@ -6520,7 +6520,7 @@ impl AppActor {
         }
         response_rx
             .await
-            .map(|r| matches!(r, crate::account::RoomEventLookupResult::Located))
+            .map(|r| matches!(r, crate::account::RoomEventLookupResult::Located { .. }))
             .unwrap_or(false)
     }
 

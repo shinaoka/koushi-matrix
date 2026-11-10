@@ -739,38 +739,63 @@ impl AppActor {
         };
         stop_event_navigation_task(&mut self.event_navigation_task).await;
 
-        if !matches!(
-            prepared.result,
-            crate::account::RoomEventLookupResult::Located
-        ) {
-            let kind = match prepared.result {
-                crate::account::RoomEventLookupResult::Missing
-                    if matches!(
-                        self.state.navigation.event_navigation,
-                        koushi_state::EventNavigationState::Opening {
-                            source: koushi_state::EventNavigationSource::Activity
-                                | koushi_state::EventNavigationSource::Search,
-                            ..
-                        }
-                    ) =>
-                {
-                    self.settle_event_navigation_live_fallback(
-                        prepared.request_id,
-                        prepared.generation,
-                    )
-                    .await;
-                    return;
-                }
-                crate::account::RoomEventLookupResult::Missing => {
-                    koushi_state::EventNavigationFailureKind::TargetMissing
-                }
-                crate::account::RoomEventLookupResult::Failed => {
-                    koushi_state::EventNavigationFailureKind::Timeline
-                }
-                crate::account::RoomEventLookupResult::Located => unreachable!(),
-            };
-            self.settle_event_navigation_failure(prepared.request_id, prepared.generation, kind)
+        let thread_root_event_id = match prepared.result {
+            crate::account::RoomEventLookupResult::Located {
+                thread_root_event_id,
+            } => thread_root_event_id,
+            crate::account::RoomEventLookupResult::Missing
+                if matches!(
+                    self.state.navigation.event_navigation,
+                    koushi_state::EventNavigationState::Opening {
+                        source: koushi_state::EventNavigationSource::Activity
+                            | koushi_state::EventNavigationSource::Search,
+                        ..
+                    }
+                ) =>
+            {
+                self.settle_event_navigation_live_fallback(
+                    prepared.request_id,
+                    prepared.generation,
+                )
                 .await;
+                return;
+            }
+            crate::account::RoomEventLookupResult::Missing => {
+                self.settle_event_navigation_failure(
+                    prepared.request_id,
+                    prepared.generation,
+                    koushi_state::EventNavigationFailureKind::TargetMissing,
+                )
+                .await;
+                return;
+            }
+            crate::account::RoomEventLookupResult::Failed => {
+                self.settle_event_navigation_failure(
+                    prepared.request_id,
+                    prepared.generation,
+                    koushi_state::EventNavigationFailureKind::Timeline,
+                )
+                .await;
+                return;
+            }
+        };
+
+        // #1854: a target that is a reply inside a thread belongs to the thread
+        // pane. A main-pane focused projection of it is thread-filtered instead
+        // of room-shaped: the SDK switches the event-focused cache into thread
+        // mode, the room messages around the hit never arrive, and the view's
+        // live tail is the thread's last reply.
+        if let Some(root_event_id) = thread_root_event_id {
+            // #1554: the thread route reduces a whole thread-pane open, so its
+            // future is kept off the navigation handler's stack.
+            Box::pin(self.handle_event_navigation_thread_target(
+                prepared.request_id,
+                prepared.generation,
+                prepared.room_id,
+                prepared.event_id,
+                root_event_id,
+            ))
+            .await;
             return;
         }
 
@@ -831,6 +856,60 @@ impl AppActor {
             .await;
         }
         self.handle_app_effects(prepared.request_id, effects).await;
+    }
+
+    /// #1854: a located thread reply target opens the thread pane on that
+    /// reply. The lookup that already read the event reports its thread root, so
+    /// this costs no extra round trip; without a root the navigation keeps the
+    /// main-pane focused contract. A rejected thread open is a failure, never a
+    /// silent landing at the live edge.
+    async fn handle_event_navigation_thread_target(
+        &mut self,
+        request_id: RequestId,
+        generation: u64,
+        room_id: String,
+        event_id: String,
+        root_event_id: String,
+    ) {
+        let before_state = self.snapshot_tx.borrow().state.clone();
+        let replaced_thread_key =
+            self.unsubscribe_replaced_thread_timeline(&room_id, &root_event_id);
+        let (mut effects, deferred) = self.reduce_app_action_state(AppAction::OpenThread {
+            room_id,
+            root_event_id,
+            intent: koushi_state::ThreadOpenIntent::PinnedReply { event_id },
+        });
+        if !super::effects_open_thread_timeline(&effects) {
+            self.settle_event_navigation_failure(
+                request_id,
+                generation,
+                koushi_state::EventNavigationFailureKind::RoomUnavailable,
+            )
+            .await;
+            return;
+        }
+        self.pending_event_navigation.take();
+        stop_event_navigation_task(&mut self.event_navigation_deadline_task).await;
+        // The thread pane carries the target now, so the main pane keeps the
+        // room timeline and the navigation has nothing left to anchor.
+        effects.extend(reduce(&mut self.state, AppAction::EventNavigationCleared));
+        let published_generation = self
+            .publish_state_delta(&before_state)
+            .unwrap_or(self.state_generation);
+        self.emit(CoreEvent::IntentLifecycle {
+            request_id,
+            outcome: IntentOutcome::Committed,
+            published_generation,
+        });
+        self.apply_deferred_reducer_side_effects(deferred).await;
+        if let Some(key) = replaced_thread_key {
+            self.send_timeline_command_or_fail(
+                request_id,
+                koushi_protocol::command::TimelineCommand::Unsubscribe { request_id, key },
+            )
+            .await;
+        }
+        self.handle_app_effects(request_id, effects).await;
     }
 
     pub(super) async fn handle_focused_projection_commit(
