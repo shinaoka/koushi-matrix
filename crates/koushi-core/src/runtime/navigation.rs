@@ -22,8 +22,9 @@ pub(super) enum NavigationPersistenceStatus {
     LoadFailed(koushi_protocol::SessionKeyId),
 }
 
-/// #1848: 45 s, which outlives the 5 s lookup plus the 30 s focused build
-/// budget (`FOCUSED_TIMELINE_BUILD_TIMEOUT`), so the backstop never fires first.
+/// #1848: 45 s. It normally outlasts the 5 s lookup plus the 30 s focused build
+/// budget (`FOCUSED_TIMELINE_BUILD_TIMEOUT`); the selection and admission steps
+/// also run under this deadline.
 pub(super) const EVENT_NAVIGATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 
 /// #971: a scroll gesture updates the room scroll anchor about ten times a
@@ -58,6 +59,14 @@ async fn stop_event_navigation_task(task: &mut Option<super::AbortOnDrop<()>>) {
     let _ = task.take().await;
 }
 
+/// #1848: the Space and room a pending event navigation displaced. A cancel
+/// restores it; a superseding navigation keeps the earliest one.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct PriorSelection {
+    pub(super) space_id: Option<String>,
+    pub(super) room_id: Option<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PendingEventNavigation {
     pub(super) request_id: RequestId,
@@ -66,6 +75,7 @@ pub(super) struct PendingEventNavigation {
     pub(super) event_id: String,
     pub(super) source: EventNavigationSource,
     pub(super) generation: u64,
+    pub(super) prior_selection: PriorSelection,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -348,8 +358,13 @@ impl AppActor {
         .await;
     }
 
-    pub(super) async fn cancel_event_navigation_owner(&mut self) {
+    /// Clears the owner and returns the selection it displaced (#1848), which
+    /// only an explicit close restores.
+    pub(super) async fn cancel_event_navigation_owner(&mut self) -> Option<PriorSelection> {
         let pending = self.pending_event_navigation.take();
+        let prior_selection = pending
+            .as_ref()
+            .map(|pending| pending.prior_selection.clone());
         stop_event_navigation_task(&mut self.event_navigation_task).await;
         stop_event_navigation_task(&mut self.event_navigation_deadline_task).await;
 
@@ -400,6 +415,36 @@ impl AppActor {
                 // reduced, so it must not wait for AccountActor admission.
                 self.release_focused_foreground(&key);
             }
+        }
+        prior_selection
+    }
+
+    /// #1848: put back the Space and room a cancelled navigation displaced,
+    /// through the actions a user selection takes. A room is queued in
+    /// `pending_select` first, or the reducer drops it.
+    // shortcut: a prior Space with no open room is not restored when that Space has rooms, because SelectSpace auto-selects one and no action clears the room within a Space (reducer/navigation.rs:395-440, reducer/mod.rs:3023-3040); upgrade with a reducer action that sets Space and room together.
+    pub(super) async fn restore_prior_selection(&mut self, prior: PriorSelection) {
+        let current_space = self.state.navigation.active_space_id.clone();
+        // SelectSpace(None) is the only action that clears an open room in Home.
+        let needs_space_select = prior.space_id != current_space
+            || (prior.space_id.is_none() && self.state.navigation.active_room_id.is_some());
+        if needs_space_select {
+            self.commit_local_navigation(AppAction::SelectSpace {
+                space_id: prior.space_id.clone(),
+            })
+            .await;
+        }
+        if prior.room_id == self.state.navigation.active_room_id {
+            return;
+        }
+        if let Some(room_id) = prior.room_id {
+            let select_request_id = self.next_internal_request_id();
+            self.pending_select
+                .entry(room_id.clone())
+                .or_default()
+                .push_back(select_request_id);
+            self.commit_local_navigation(AppAction::SelectRoom { room_id })
+                .await;
         }
     }
 
@@ -494,6 +539,15 @@ impl AppActor {
             None
         };
 
+        // #1848: a superseding navigation inherits the selection the first
+        // one displaced; the room the first one opened is not the user's.
+        let prior_selection = match superseded.as_ref() {
+            Some(previous) => previous.prior_selection.clone(),
+            None => PriorSelection {
+                space_id: self.state.navigation.active_space_id.clone(),
+                room_id: self.state.navigation.active_room_id.clone(),
+            },
+        };
         let before_state = self.snapshot_tx.borrow().state.clone();
         let effects = reduce(
             &mut self.state,
@@ -525,6 +579,7 @@ impl AppActor {
             event_id: event_id.clone(),
             source,
             generation,
+            prior_selection,
         });
         self.event_navigation_deadline_task = Some(spawn_event_navigation_deadline(
             self.event_navigation_prepared_tx.clone(),

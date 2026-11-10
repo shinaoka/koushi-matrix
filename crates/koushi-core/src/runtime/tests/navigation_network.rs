@@ -602,6 +602,7 @@ async fn start_opening_focused() -> BlockedMailbox {
     };
     start_focused(state, |actor| {
         actor.pending_event_navigation = Some(PendingEventNavigation {
+            prior_selection: Default::default(),
             request_id: request(1),
             select_request_id: request(2),
             room_id: ROOM_A.to_owned(),

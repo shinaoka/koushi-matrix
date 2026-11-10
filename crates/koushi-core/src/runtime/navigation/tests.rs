@@ -373,6 +373,7 @@ fn navigation_preference_boundary_canonicalizes_empty_presentations() {
 #[test]
 fn internal_event_navigation_select_is_fenced_by_its_request_queue() {
     let pending = PendingEventNavigation {
+        prior_selection: Default::default(),
         request_id: RequestId {
             connection_id: RuntimeConnectionId(3),
             sequence: 30,

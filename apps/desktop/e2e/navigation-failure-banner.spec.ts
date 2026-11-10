@@ -158,8 +158,12 @@ test("the failure banner carries its own dismiss control", async ({ page }) => {
     .toBe(1);
 });
 
+// The target room is not in the harness room list, so the banner shows over a
+// pending jump away from the room the user had open (`HARNESS_ROOM_ID`).
+const HARNESS_JUMP_TARGET_ROOM_ID = "!harness-jump-target:example.invalid";
+
 async function publishNavigationOpening(page: Page): Promise<void> {
-  await page.evaluate(() => {
+  await page.evaluate((targetRoomId) => {
     const current = window.__harness.currentSnapshot();
     window.__harness.setSnapshot({
       ...current,
@@ -169,14 +173,15 @@ async function publishNavigationOpening(page: Page): Promise<void> {
           ...current.state.ui,
           navigation: {
             ...current.state.ui.navigation,
+            active_room_id: targetRoomId,
             event_navigation: { kind: "opening", generation: 1, source: "search" }
           }
         }
       }
     });
     window.__harness.pushStateUpdate();
-  });
-  await expect(page.getByRole("status")).toContainText(t("navigation.opening"));
+  }, HARNESS_JUMP_TARGET_ROOM_ID);
+  await expect(page.locator(".navigation-pending")).toContainText(t("navigation.opening"));
 }
 
 // #1848: a slow old-history jump can be abandoned from its pending banner. The
@@ -186,8 +191,9 @@ test("the pending navigation banner can be cancelled without a failure", async (
   await gotoReadyShell(page);
   await publishNavigationOpening(page);
 
-  // Rust settles the cancelled wait to Idle; the harness mirrors that reply.
-  await page.evaluate(() => {
+  // Rust restores the displaced room and settles the wait to Idle; the harness
+  // mirrors that reply (the restore itself is covered by the Rust tests).
+  await page.evaluate((roomId) => {
     window.__harness.setCommandResponse("close_focused_context", () => {
       const next = window.__harness.currentSnapshot();
       return {
@@ -196,17 +202,23 @@ test("the pending navigation banner can be cancelled without a failure", async (
           ...next.state,
           ui: {
             ...next.state.ui,
-            navigation: { ...next.state.ui.navigation, event_navigation: { kind: "idle" } }
+            navigation: {
+              ...next.state.ui.navigation,
+              active_room_id: roomId,
+              event_navigation: { kind: "idle" }
+            }
           }
         }
       };
     });
-  });
+  }, HARNESS_ROOM_ID);
 
-  await page.getByRole("status").getByRole("button", { name: t("action.cancel") }).click();
+  await page.locator(".navigation-pending").getByRole("button", { name: t("action.cancel") }).click();
   await expect
     .poll(() => page.evaluate(() => window.__harness.invocationsOf("close_focused_context").length))
     .toBe(1);
   await expect(page.getByText(t("navigation.opening"))).toHaveCount(0);
   await expect(page.getByRole("alert")).toHaveCount(0);
+  // The restored room renders again.
+  await expect(page.getByRole("main", { name: t("timeline.conversation") })).toBeVisible();
 });

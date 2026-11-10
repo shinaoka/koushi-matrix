@@ -1349,7 +1349,10 @@ owner across room, thread, date-jump, return-live, Activity, Search, Pinned, and
 reply-quote navigation; displaced work settles benignly and cannot mutate
 presentation, ownership, or the waiter. Rust publishes every terminal or clear
 state before releasing its public waiter. The operation is transient and is not
-persisted with navigation preferences.
+persisted with navigation preferences. A cancel from the pending banner
+(`CloseFocusedContext`) restores the Space and room the navigation displaced,
+and the close completes only after that restore is published (#1848); a user
+Space or room selection supersedes the navigation and keeps the user's choice.
 
 A reply quote's open-original activation is the same outer operation with source
 `ReplyQuote`. Rust projects the quote's canonical `matrix.to` permalink and a

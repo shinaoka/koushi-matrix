@@ -456,6 +456,7 @@ async fn accepted_send_cancels_an_in_flight_event_navigation() {
     let navigation_request_id = request(4);
     let key = focused_key(ROOM, EVENT);
     actor.pending_event_navigation = Some(PendingEventNavigation {
+        prior_selection: Default::default(),
         request_id: navigation_request_id,
         select_request_id: request(5),
         room_id: ROOM.to_owned(),

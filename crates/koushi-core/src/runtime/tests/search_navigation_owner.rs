@@ -13,6 +13,10 @@ use koushi_state::{EventNavigationFailureKind, EventNavigationSource, EventNavig
 const ROOM: &str = "!search-owner-room:example.invalid";
 const EVENT: &str = "$search-owner-target:example.invalid";
 const USER: &str = "@synthetic:example.invalid";
+const PREVIOUS_ROOM: &str = "!search-owner-previous:example.invalid";
+const OTHER_ROOM: &str = "!search-owner-other:example.invalid";
+const SPACE: &str = "!search-owner-space:example.invalid";
+const SPACE_ROOM: &str = "!search-owner-space-room:example.invalid";
 
 fn request(sequence: u64) -> RequestId {
     RequestId {
@@ -79,6 +83,38 @@ fn timeline_command_request_id(command: &koushi_protocol::command::TimelineComma
 }
 
 fn start() -> Harness {
+    start_with(selected_room_state())
+}
+
+/// A session whose rooms and Spaces are the given fixture, with `selected` open.
+fn state_with(
+    rooms: Vec<koushi_state::RoomSummary>,
+    spaces: Vec<koushi_state::SpaceSummary>,
+    selected: Option<&str>,
+) -> AppState {
+    let mut state = AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: USER.to_owned(),
+            device_id: "SYNTHETIC".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        rooms,
+        spaces,
+        ..AppState::default()
+    };
+    if let Some(room_id) = selected {
+        reduce(
+            &mut state,
+            AppAction::SelectRoom {
+                room_id: room_id.to_owned(),
+            },
+        );
+    }
+    state
+}
+
+fn start_with(state: AppState) -> Harness {
     let data_dir = tempfile::tempdir().expect("runtime data directory");
     let (
         actor,
@@ -90,7 +126,7 @@ fn start() -> Harness {
         navigation_projection_rx,
         _event_navigation_prepared_tx,
         focused_projection_tx,
-    ) = app_actor_event_navigation_fixture(data_dir.path(), selected_room_state());
+    ) = app_actor_event_navigation_fixture(data_dir.path(), state);
     let mut manager = crate::timeline::spawn_gated_focused_build_manager(
         navigation_projection_rx,
         focused_projection_tx.clone(),
@@ -151,6 +187,15 @@ impl Harness {
     }
 
     async fn navigate_from(&mut self, source: EventNavigationSource, request_id: RequestId) {
+        self.navigate_in(ROOM, source, request_id).await;
+    }
+
+    async fn navigate_in(
+        &mut self,
+        room_id: &str,
+        source: EventNavigationSource,
+        request_id: RequestId,
+    ) {
         use koushi_protocol::command::EventNavigationMissingTargetPolicy as Policy;
         let missing_target_policy = match source {
             EventNavigationSource::Activity | EventNavigationSource::Search => Policy::LiveFallback,
@@ -162,7 +207,7 @@ impl Harness {
             .send(CoreCommandEnvelope::Public {
                 command: CoreCommand::App(AppCommand::NavigateToEvent {
                     request_id,
-                    room_id: ROOM.to_owned(),
+                    room_id: room_id.to_owned(),
                     event_id: EVENT.to_owned(),
                     source,
                     missing_target_policy,
@@ -702,4 +747,188 @@ async fn cancelling_a_pending_navigation_publishes_no_failure() {
         ),
         "no late deadline may publish a failure after cancel"
     );
+}
+
+/// #1848: cancelling a pending navigation puts back the room it displaced, and
+/// the navigation settles Idle with no failure.
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_pending_navigation_restores_the_previous_room() {
+    let mut harness = start_with(state_with(
+        vec![
+            unread_diagnostic_room(ROOM),
+            unread_diagnostic_room(PREVIOUS_ROOM),
+        ],
+        Vec::new(),
+        Some(PREVIOUS_ROOM),
+    ));
+    harness.navigate(request(1)).await;
+    let release = harness.manager.build_started().await;
+    harness.close_focused_context(request(2)).await;
+    harness
+        .wait_for_state("cancel must restore the previous room", |state| {
+            state.navigation.active_room_id.as_deref() == Some(PREVIOUS_ROOM)
+                && matches!(
+                    state.navigation.event_navigation,
+                    EventNavigationState::Idle
+                )
+        })
+        .await;
+    assert!(
+        release.is_closed(),
+        "cancel must drop the held focused build"
+    );
+
+    tokio::time::advance(crate::runtime::navigation::EVENT_NAVIGATION_TIMEOUT).await;
+    let state = harness.snapshot_rx.borrow().state.clone();
+    assert_eq!(
+        state.navigation.active_room_id.as_deref(),
+        Some(PREVIOUS_ROOM)
+    );
+    assert!(
+        matches!(
+            state.navigation.event_navigation,
+            EventNavigationState::Idle
+        ),
+        "no late deadline may publish a failure after cancel"
+    );
+}
+
+/// #1848: a superseding navigation keeps the selection the first one displaced,
+/// so cancelling the second returns to the room the user had open.
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_superseded_navigation_restores_the_original_room() {
+    let mut harness = start_with(state_with(
+        vec![
+            unread_diagnostic_room(ROOM),
+            unread_diagnostic_room(PREVIOUS_ROOM),
+            unread_diagnostic_room(OTHER_ROOM),
+        ],
+        Vec::new(),
+        Some(PREVIOUS_ROOM),
+    ));
+    harness.navigate(request(1)).await;
+    let _first = harness.manager.build_started().await;
+    harness
+        .navigate_in(OTHER_ROOM, EventNavigationSource::Search, request(3))
+        .await;
+    let _second = harness.manager.build_started().await;
+    harness.close_focused_context(request(4)).await;
+    harness
+        .wait_for_state("cancel must restore the original room", |state| {
+            state.navigation.active_room_id.as_deref() == Some(PREVIOUS_ROOM)
+                && matches!(
+                    state.navigation.event_navigation,
+                    EventNavigationState::Idle
+                )
+        })
+        .await;
+}
+
+/// #1848: a room the user selects while a navigation is pending is the user's
+/// choice; cancelling later must not roll it back.
+#[tokio::test(start_paused = true)]
+async fn user_room_selection_supersedes_without_rollback() {
+    let mut harness = start_with(state_with(
+        vec![
+            unread_diagnostic_room(ROOM),
+            unread_diagnostic_room(PREVIOUS_ROOM),
+            unread_diagnostic_room(OTHER_ROOM),
+        ],
+        Vec::new(),
+        Some(PREVIOUS_ROOM),
+    ));
+    harness.navigate(request(1)).await;
+    let _held = harness.manager.build_started().await;
+    harness
+        .command_tx
+        .send(CoreCommandEnvelope::Public {
+            command: CoreCommand::Room(koushi_protocol::command::RoomCommand::SelectRoom {
+                request_id: request(2),
+                room_id: OTHER_ROOM.to_owned(),
+            }),
+            composer_permit: None,
+            admission: None,
+        })
+        .await
+        .expect("select room command");
+    harness
+        .wait_for_state("the user selection must settle the navigation", |state| {
+            state.navigation.active_room_id.as_deref() == Some(OTHER_ROOM)
+                && matches!(
+                    state.navigation.event_navigation,
+                    EventNavigationState::Idle
+                )
+        })
+        .await;
+
+    tokio::time::advance(crate::runtime::navigation::EVENT_NAVIGATION_TIMEOUT).await;
+    assert_eq!(
+        harness
+            .snapshot_rx
+            .borrow()
+            .state
+            .navigation
+            .active_room_id
+            .as_deref(),
+        Some(OTHER_ROOM),
+        "a later close must not roll the user's selection back"
+    );
+}
+
+/// #1848: a cancel from Home returns to Home (no Space, no room).
+#[tokio::test(start_paused = true)]
+async fn cancelling_from_home_returns_to_home() {
+    let mut harness = start_with(state_with(
+        vec![unread_diagnostic_room(ROOM)],
+        Vec::new(),
+        None,
+    ));
+    harness.navigate(request(1)).await;
+    let _held = harness.manager.build_started().await;
+    harness.close_focused_context(request(2)).await;
+    harness
+        .wait_for_state("cancel must return to Home", |state| {
+            state.navigation.active_room_id.is_none()
+                && state.navigation.active_space_id.is_none()
+                && matches!(
+                    state.navigation.event_navigation,
+                    EventNavigationState::Idle
+                )
+        })
+        .await;
+}
+
+/// #1848: a cancel restores the Space as well as the room, so a navigation
+/// that left a Space for a room outside it returns to that Space's room.
+#[tokio::test(start_paused = true)]
+async fn cancelling_restores_the_previous_space_and_room() {
+    let mut space_room = unread_diagnostic_room(SPACE_ROOM);
+    space_room.parent_space_ids = vec![SPACE.to_owned()];
+    let mut harness = start_with(state_with(
+        vec![space_room, unread_diagnostic_room(ROOM)],
+        vec![koushi_state::SpaceSummary {
+            space_id: SPACE.to_owned(),
+            raw_name: None,
+            display_name: "Synthetic space".to_owned(),
+            avatar: None,
+            join_rule: None,
+            topic: None,
+            child_room_ids: vec![SPACE_ROOM.to_owned()],
+            parent_side_child_room_ids: vec![SPACE_ROOM.to_owned()],
+        }],
+        Some(SPACE_ROOM),
+    ));
+    harness.navigate(request(1)).await;
+    let _held = harness.manager.build_started().await;
+    harness.close_focused_context(request(2)).await;
+    harness
+        .wait_for_state("cancel must restore the Space and its room", |state| {
+            state.navigation.active_space_id.as_deref() == Some(SPACE)
+                && state.navigation.active_room_id.as_deref() == Some(SPACE_ROOM)
+                && matches!(
+                    state.navigation.event_navigation,
+                    EventNavigationState::Idle
+                )
+        })
+        .await;
 }

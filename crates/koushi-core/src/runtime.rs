@@ -3324,9 +3324,13 @@ impl AppActor {
             }
             return false;
         }
-        if command_supersedes_event_navigation(&command) {
-            self.cancel_event_navigation_owner().await;
-        }
+        // #1848: only an explicit CloseFocusedContext restores the selection a
+        // cancelled navigation displaced; other supersessions keep their own.
+        let cancelled_prior_selection = if command_supersedes_event_navigation(&command) {
+            self.cancel_event_navigation_owner().await
+        } else {
+            None
+        };
 
         match command {
             CoreCommand::Account(account_command) => {
@@ -4321,6 +4325,11 @@ impl AppActor {
                             Box::pin(async move {
                                 self.pending_focused_navigation = None;
                                 let focused_key = self.current_focused_context_timeline_key();
+                                // #1848: restore before the close publishes, so the
+                                // close waiter observes the restored selection.
+                                if let Some(prior) = cancelled_prior_selection {
+                                    Box::pin(self.restore_prior_selection(prior)).await;
+                                }
                                 let effects = Box::pin(
                                     self.reduce_app_action(AppAction::CloseFocusedContext),
                                 )

@@ -4888,6 +4888,7 @@ async fn current_event_navigation_deadline_failure_clears_focused_owner_and_fenc
         _focused_projection_tx,
     ) = app_actor_event_navigation_fixture(data_dir.path(), state);
     let pending = PendingEventNavigation {
+        prior_selection: Default::default(),
         request_id,
         select_request_id: RequestId {
             connection_id: request_id.connection_id,
@@ -5014,6 +5015,7 @@ async fn current_event_navigation_deadline_failure_clears_focused_owner_and_fenc
         is_subscribed: true,
     };
     actor.pending_event_navigation = Some(PendingEventNavigation {
+        prior_selection: Default::default(),
         request_id: newer_request_id,
         select_request_id: RequestId {
             connection_id: newer_request_id.connection_id,
@@ -5111,6 +5113,7 @@ async fn focused_subscription_failure_settles_the_current_event_navigation_promp
         _focused_projection_tx,
     ) = app_actor_event_navigation_fixture(data_dir.path(), state);
     actor.pending_event_navigation = Some(PendingEventNavigation {
+        prior_selection: Default::default(),
         request_id,
         select_request_id: RequestId {
             connection_id: request_id.connection_id,
