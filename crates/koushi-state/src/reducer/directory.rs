@@ -194,7 +194,10 @@ pub(crate) fn handle_directory_join_succeeded(
         || state.thread_attention != ThreadAttentionState::Closed;
     let had_threads_list = state.threads_list != ThreadsListState::Closed;
     state.directory.join = DirectoryJoinState::Idle;
-    super::space_children::record_room_joined(state, &room_id);
+    // #1843: a directory join is the same local join decision as accept or
+    // direct join, so it clears the leave tombstone through the shared handler
+    // instead of only recording the join.
+    let mut effects = super::room::handle_room_joined_locally(state, room_id.clone());
     // #1160: a successful join leaves the directory and selects the joined room,
     // so it closes the scoped scheduled-sends panel like a room selection.
     state.scheduled_sends_list = ScheduledSendsListState::Closed;
@@ -221,7 +224,7 @@ pub(crate) fn handle_directory_join_succeeded(
     state.threads_list = ThreadsListState::Closed;
     state.focused_context = FocusedContextState::Closed;
 
-    let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::DirectoryChanged)];
+    effects.push(AppEffect::EmitUiEvent(UiEvent::DirectoryChanged));
     if previous_active_space_id.is_some() {
         effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
     }
