@@ -857,7 +857,10 @@ impl CoreConnection {
     /// The answer travels only on this caller's reply channel: no app action is
     /// reduced, no `CoreEvent` is emitted, and no timeline actor is mounted, so
     /// the GUI's selected room, scroll position, read markers, and unread counts
-    /// are untouched.
+    /// are untouched. A thread reply is the one exception (#1853): when its
+    /// thread belongs to the room the main pane displays, `AppActor` opens that
+    /// thread pane before it answers, and reports it in the outcome instead of
+    /// in an event.
     pub async fn direct_message_action(
         &self,
         request: crate::direct_operations::DirectMessageRequest,

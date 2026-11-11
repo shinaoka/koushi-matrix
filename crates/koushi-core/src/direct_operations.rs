@@ -108,6 +108,15 @@ pub struct DirectRedactOutcome {
 pub struct DirectThreadReplyOutcome {
     pub event_id: String,
     pub transaction_id: String,
+    /// #1853: the thread the reply belongs to: the requested event when it is a
+    /// thread root, otherwise the root it names. The send read the target once
+    /// before sending, so the runtime can open that thread's pane on this root
+    /// without a second read.
+    pub thread_root_event_id: String,
+    /// #1853: the runtime opened this thread's pane because the thread belongs
+    /// to the room the main pane displays. The account layer answers `false`;
+    /// `AppActor` stamps it when it opens the pane.
+    pub thread_pane_opened: bool,
 }
 
 /// `Debug` for these shapes records presence only: a body, a reaction key, a

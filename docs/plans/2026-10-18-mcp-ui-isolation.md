@@ -27,6 +27,13 @@ This is enforced by construction rather than by filtering: the direct calls
 below return their outcome on a per-request reply channel, so nothing enters the
 `CoreEvent` broadcast or the reducer.
 
+One bilateral exception was added later, in the rule text of
+`docs/architecture/overview.md`: `send_thread_reply` (#1853) may open the thread
+pane when the thread belongs to the room the main pane displays. It reduces the
+same `OpenThread` action the renderer uses, never changes the account, the
+selected Space or the selected room, and reports what it did in the reply
+outcome instead of in an event.
+
 ### Direct search
 
 `CoreConnection::direct_search(account_id, query, room_ids, limit)` sends an

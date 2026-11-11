@@ -2415,6 +2415,26 @@ Invariants:
   enqueued. Actions are bounded, per-account capped, and fenced
   on the account session, so a revoked grant is refused at submission while an
   already-submitted event is never rolled back.
+- **A thread reply may reveal the thread pane of the shown room (#1853).** This
+  is the one exception to the rule above, and it stays inside #1524: an agent
+  action may open the thread pane when the thread belongs to the room currently
+  displayed in the main pane. It opens on the thread root the action resolved —
+  the root the send already read before sending, never a second read — and never
+  changes the account, the selected Space or the selected room. Actions that
+  target a thread in another room report success without opening a pane. The
+  decision is Core's: `AppActor` holds the caller's answer until the send
+  settles, reduces the same `OpenThread` action the renderer's own thread open
+  uses — or changes nothing when that thread is already the open one, so a
+  reply never reinitializes the pane's composer or staged uploads — and answers
+  with the outcome's `thread_pane_opened`, which the MCP host
+  reports as `thread_pane` (`opened` or `not_opened`). The renderer
+  reveals the pane from that Rust state through the #1854 presentation effect and
+  never classifies the send itself. A root the timeline never loaded still opens,
+  because the send resolved it; a failed root read fails the call and opens no
+  pane. The reveal is per call, decided from the room displayed when the answer
+  is formed, so a replayed retry reveals the same way without acting again.
+  `draft_message` is unchanged: it hydrates the composer of a pane that is
+  already open and never opens one.
 - **The message-action retry key is Core retry policy (#1681, #1660).**
   `edit_message` and `send_thread_reply` carry the caller's `client_request_id`
   into the Core request, and the account runtime keeps one bounded ledger keyed

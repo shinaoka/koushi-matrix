@@ -1582,7 +1582,14 @@ function AccountContent({
   const threadPaneIdentity = snapshot ? threadPaneIdentityForActiveRoom(snapshot) : null;
   const revealedThreadPaneRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!threadPaneIdentity || threadPaneIdentity === revealedThreadPaneRef.current) {
+    if (!threadPaneIdentity) {
+      // #1853: a closed pane forgets it was revealed, so the next opener (an
+      // agent reply in this room, or a second navigation to the same thread)
+      // reveals it again instead of staying silent.
+      revealedThreadPaneRef.current = null;
+      return;
+    }
+    if (threadPaneIdentity === revealedThreadPaneRef.current) {
       return;
     }
     revealedThreadPaneRef.current = threadPaneIdentity;

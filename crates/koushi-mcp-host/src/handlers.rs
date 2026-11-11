@@ -869,6 +869,11 @@ async fn send_thread_reply(
             koushi_core::DirectMessageResponse::ThreadReply(outcome) => Ok(json!({
                 "event_id": outcome.event_id,
                 "transaction_id": outcome.transaction_id,
+                "thread_pane": if outcome.thread_pane_opened {
+                    "opened"
+                } else {
+                    "not_opened"
+                },
             })),
             _ => Err(WireError::new(
                 ErrorCode::Internal,

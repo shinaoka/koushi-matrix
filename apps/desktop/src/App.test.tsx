@@ -1888,6 +1888,9 @@ describe("desktop integration source guards", () => {
     // behavior as a search hit.
     expect(effect).toContain("threadPaneIdentityForActiveRoom(snapshot)");
     expect(effect).toContain('setRightPanelMode("thread")');
+    // #1853: closing the pane clears the once-per-thread guard, so the same
+    // thread reveals again when an agent reply or another navigation opens it.
+    expect(effect).toContain("revealedThreadPaneRef.current = null");
     // It never classifies the target itself: no source or event-content branch.
     expect(effect).not.toContain("source ===");
     expect(effect).not.toContain("thread_root");

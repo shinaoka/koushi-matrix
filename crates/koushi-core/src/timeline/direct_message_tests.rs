@@ -483,6 +483,10 @@ async fn a_plain_thread_reply_targets_the_root() {
         .await
         .expect("a thread root is a valid target");
     assert_eq!(outcome.event_id, "$sent");
+    // #1853: the reveal opens the thread the send resolved, so the outcome names
+    // it and starts without a pane the account layer cannot know about.
+    assert_eq!(outcome.thread_root_event_id, "$root");
+    assert!(!outcome.thread_pane_opened);
     assert_eq!(
         sent_content(&sent.await.expect("the send was captured")),
         json!({
@@ -531,6 +535,10 @@ async fn an_in_thread_event_names_its_thread_root() {
     .await
     .expect("an in-thread event resolves to its thread's root");
     assert_eq!(outcome.event_id, "$sent");
+    assert_eq!(
+        outcome.thread_root_event_id, "$root",
+        "the outcome names the thread's root, not the in-thread event it was asked for"
+    );
     assert_eq!(
         sent_content(&sent.await.expect("the send was captured"))["m.relates_to"],
         json!({
