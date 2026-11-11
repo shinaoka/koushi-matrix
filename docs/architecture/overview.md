@@ -2435,11 +2435,12 @@ Invariants:
   state through the #1854 presentation effect and never classifies the send
   itself. A root the timeline never loaded still opens, because the send
   resolved it; a failed root read fails the call and opens no pane. The reveal
-  itself reads nothing: a root the room's loaded timeline already holds costs no
-  read, and a root outside it makes the thread pane's own cache-first load read
-  that root once, exactly as the user opening the same thread would. The reveal
-  is per call, decided from the account and room displayed when the answer is
-  formed, so a replayed retry reveals the same way without acting again.
+  adds no read of its own: a reveal whose root the room's loaded timeline already
+  holds reads nothing, and a root outside it costs the thread pane's own
+  cache-first load one read, the same read a user opening that thread pays.
+  The reveal is per call, decided from the account and room displayed when the
+  answer is formed, so a replayed retry reveals the same way without acting
+  again.
   `draft_message` is unchanged: it hydrates the composer of a pane that is
   already open and never opens one.
 - **The message-action retry key is Core retry policy (#1681, #1660).**

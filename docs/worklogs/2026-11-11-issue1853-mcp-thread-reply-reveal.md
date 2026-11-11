@@ -28,8 +28,8 @@ before sending. That read resolves the thread root, so `DirectThreadReplyOutcome
 now carries `thread_root_event_id`. The reveal opens on that value and reads
 nothing itself.
 
-The thread pane's own cache-first root load still applies, measured rather than
-assumed: `timeline/manager/thread_hydration_tests.rs` pins that opening a thread
+The reveal adds no read of its own. The thread pane's own cache-first root load
+still applies, measured rather than assumed: `timeline/manager/thread_hydration_tests.rs` pins that opening a thread
 whose root the room's loaded timeline already holds issues no event read, and
 that a root outside it costs exactly one (the one the user opening the same
 thread would pay). Removing that last read would need an SDK way to store the
