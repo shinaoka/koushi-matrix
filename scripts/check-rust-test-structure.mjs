@@ -2605,15 +2605,6 @@ export function timelineProductionSources() {
 /// name. Rust has no top-level statements, so every write is inside one.
 function enclosingFunctionNames(tokens) {
   const names = [];
-  let name = null;
-  for (const token of tokens) {
-    if (token.kind === "identifier" && token.value === "fn" && tokens[tokens.indexOf(token) + 1]) {
-      // Filled below in the linear pass; `indexOf` is O(n) so keep this simple
-      // only for `fn` tokens (there are few).
-      name = name;
-    }
-    names.push(name);
-  }
   let current = null;
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
@@ -2801,10 +2792,15 @@ export function findUnprojectedDisplayRowPublishes(sources) {
     const tokens = lexRust(source).filter((token) => token.kind !== "comment");
     const owners = enclosingFunctionNames(tokens);
     const { openToClose, closeToOpen } = delimiterPairs(tokens);
-    // 4. The projection each function reaches, by owner name.
+    // 4. The projection each function actually calls (a definition is not a call).
     const projectedOwners = new Set();
     for (let index = 0; index < tokens.length; index += 1) {
-      if (tokens[index].kind === "identifier" && DISPLAY_PROJECTION_ENTRY_POINTS.has(tokens[index].value)) {
+      if (
+        tokens[index].kind === "identifier" &&
+        DISPLAY_PROJECTION_ENTRY_POINTS.has(tokens[index].value) &&
+        tokens[index + 1]?.value === "(" &&
+        tokens[index - 1]?.value !== "fn"
+      ) {
         projectedOwners.add(owners[index] ?? "");
       }
     }

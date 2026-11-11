@@ -340,6 +340,10 @@ test("the display-row gate rejects a publish that skips the projection", () => {
       "fn commit_without_projection(items: &[TimelineItem]) -> DisplayProjectionState {",
       "    let candidate = DisplayProjectionState::from_canonical_window(items, 0..items.len());",
       "    candidate",
+      "}",
+      // A function *named* after an entry point is not a call to one.
+      "fn reset_bounded(items: &[TimelineItem]) -> DisplayProjectionState {",
+      "    DisplayProjectionState::from_canonical_window(items, 0..items.len())",
       "}"
     ].join("\n")
   });
@@ -352,7 +356,8 @@ test("the display-row gate rejects a publish that skips the projection", () => {
     "relay.rs:6 (copy) assembles public rows outside the projection",
     "relay.rs:9 (rebuild) seeds the public row list outside the window constructors",
     "relay.rs:12 (context_for) builds a projection context without the send authority",
-    "relay.rs:16 (commit_without_projection) builds a window and never projects it"
+    "relay.rs:16 (commit_without_projection) builds a window and never projects it",
+    "relay.rs:20 (reset_bounded) builds a window and never projects it"
   ]);
 });
 

@@ -59,8 +59,7 @@ use super::item_projection::{
 };
 use super::manager::TimelineManagerActor;
 use super::navigation::{
-    InitialItemsRequestIdentity, PreparedInitialWindow,
-    commit_prepared_initial_window_for_generation,
+    InitialItemsRequestIdentity, PreparedInitialWindow, commit_prepared_initial_window_with_lease,
 };
 use super::thread_projection::{ThreadAttentionBatchProvenance, ThreadAttentionCounters};
 // END GENERATED SIBLING IMPORTS
@@ -2321,6 +2320,15 @@ impl TimelineActor {
             .await;
         }
         trace_timeline_items("send_queue_lagged_initial", &self.key, &items);
+        // #1851: the lease comes first, as in the room recovery path. Seeding the
+        // shared thread-root service before admission would leave a rejected
+        // recovery's summaries behind in state that outlives this actor.
+        let Some(lease) = self
+            .timeline_actor_generations
+            .try_acquire(&self.key, self.actor_generation)
+        else {
+            return;
+        };
         for item in &items {
             super::thread_projection::seed_thread_summary_item(
                 &self.thread_root_projection_service,
@@ -2342,11 +2350,11 @@ impl TimelineActor {
                 );
         candidate_display_projection.reproject(&context);
         let emitted_items = candidate_display_projection.display_items().to_vec();
-        let _ = commit_prepared_initial_window_for_generation(
+        commit_prepared_initial_window_with_lease(
             &mut self.navigation_items,
             &mut self.display_projection,
             &self.event_tx,
-            &self.timeline_actor_generations,
+            &lease,
             &self.key,
             self.actor_generation,
             InitialItemsRequestIdentity::recovery(),
@@ -2357,7 +2365,7 @@ impl TimelineActor {
                 navigation_items: Some(items),
                 emitted_items,
             },
-            Vec::new(),
+            || {},
         );
         self.publish_sender_device_window();
     }
