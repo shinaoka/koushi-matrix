@@ -33,7 +33,10 @@ fn send_text_debug_redacts_body_and_mentions() {
 
     let debug = format!("{command:?}");
     assert!(debug.contains("SendText"), "{debug}");
-    assert!(debug.contains("txn-text"), "{debug}");
+    assert!(!debug.contains("txn-text"), "{debug}");
+    assert!(debug.contains("TimelineKey(..)"), "{debug}");
+    assert!(debug.contains("TransactionId(..)"), "{debug}");
+    assert!(!debug.contains("!room:test"), "{debug}");
     assert!(!debug.contains("secret text body"), "{debug}");
     assert!(!debug.contains("@alice:example.test"), "{debug}");
     assert!(!debug.contains("Alice"), "{debug}");
@@ -51,7 +54,10 @@ fn send_reply_debug_redacts_body_and_event_ids() {
 
     let debug = format!("{command:?}");
     assert!(debug.contains("SendReply"), "{debug}");
-    assert!(debug.contains("txn-reply"), "{debug}");
+    assert!(!debug.contains("txn-reply"), "{debug}");
+    assert!(debug.contains("TimelineKey(..)"), "{debug}");
+    assert!(debug.contains("TransactionId(..)"), "{debug}");
+    assert!(!debug.contains("!room:test"), "{debug}");
     assert!(!debug.contains("secret reply body"), "{debug}");
     assert!(!debug.contains("$event:test"), "{debug}");
 }
@@ -170,7 +176,10 @@ fn upload_media_debug_redacts_filename_caption_and_bytes() {
 
     let debug = format!("{command:?}");
     assert!(debug.contains("UploadAndSendMedia"), "{debug}");
-    assert!(debug.contains("txn-media"), "{debug}");
+    assert!(!debug.contains("txn-media"), "{debug}");
+    assert!(debug.contains("TimelineKey(..)"), "{debug}");
+    assert!(debug.contains("TransactionId(..)"), "{debug}");
+    assert!(!debug.contains("!room:test"), "{debug}");
     assert!(debug.contains("image/png"), "{debug}");
     assert!(debug.contains("Compressed"), "{debug}");
     assert!(debug.contains("thumbnail"), "{debug}");
@@ -258,5 +267,43 @@ fn retry_and_cancel_send_debug_redacts_timeline_key_and_transaction_id() {
         assert!(!debug.contains("@a:test"), "{debug}");
         assert!(!debug.contains("txn-private"), "{debug}");
         assert!(debug.contains("TransactionId(..)"), "{debug}");
+    }
+}
+
+#[test]
+fn submit_text_and_reply_debug_redact_timeline_key_and_transaction_id() {
+    let key = TimelineKey::room(AccountKey("@a:test".to_owned()), "!room:test");
+    let submit_text = TimelineCommand::SubmitText {
+        request_id: fake_rid(11),
+        expected_account: test_session_key(),
+        submission_id: koushi_state::SubmissionId::new("submission"),
+        key: key.clone(),
+        transaction_id: "txn-submit-private".to_owned(),
+        document: koushi_state::ComposerDocument::from_plain_text("secret submit body".to_owned()),
+        draft_revision: 1.into(),
+    };
+    let submit_reply = TimelineCommand::SubmitReply {
+        request_id: fake_rid(12),
+        expected_account: test_session_key(),
+        submission_id: koushi_state::SubmissionId::new("submission"),
+        key,
+        transaction_id: "txn-submit-private".to_owned(),
+        in_reply_to_event_id: "$event:test".to_owned(),
+        document: koushi_state::ComposerDocument::from_plain_text("secret submit body".to_owned()),
+        draft_revision: 1.into(),
+    };
+
+    for (debug, variant) in [
+        (format!("{submit_text:?}"), "SubmitText"),
+        (format!("{submit_reply:?}"), "SubmitReply"),
+    ] {
+        assert!(debug.contains(variant), "{debug}");
+        assert!(!debug.contains("txn-submit-private"), "{debug}");
+        assert!(debug.contains("TimelineKey(..)"), "{debug}");
+        assert!(debug.contains("TransactionId(..)"), "{debug}");
+        assert!(!debug.contains("!room:test"), "{debug}");
+        assert!(!debug.contains("@a:test"), "{debug}");
+        assert!(!debug.contains("$event:test"), "{debug}");
+        assert!(!debug.contains("secret submit body"), "{debug}");
     }
 }

@@ -220,8 +220,9 @@ fn secret_bearing_commands_redact_debug() {
             );
         }
     }
-    // Non-secret correlation data stays visible.
-    assert!(format!("{send:?}").contains("txn-1"));
+    // Transaction ids are redacted; only the placeholder stays visible.
+    assert!(!format!("{send:?}").contains("txn-1"));
+    assert!(format!("{send:?}").contains("TransactionId(..)"));
 }
 
 #[test]
