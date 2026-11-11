@@ -1,7 +1,7 @@
 import { MessageCircle } from "lucide-react";
 
 import { t, tCount } from "../i18n/messages";
-import { uiNumberFormat } from "../domain/intlFormatCache";
+import { formatCappedUnread, uiNumberFormat } from "../domain/intlFormatCache";
 import { peopleFacingLabel } from "../app/uiShared";
 import type {
   ThreadOpenIntent,
@@ -124,7 +124,7 @@ function ThreadsListRow({
             className="threads-list-row-unread"
             aria-label={t("timeline.threadNotificationCount", { count: uiNumberFormat().format(item.unread_count) })}
           >
-            {item.unread_count > 99 ? "99+" : uiNumberFormat().format(item.unread_count)}
+            {formatCappedUnread(item.unread_count)}
           </span>
         ) : null}
       </button>
