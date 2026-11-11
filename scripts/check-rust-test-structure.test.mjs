@@ -288,11 +288,17 @@ test("the display-row gate rejects a publish that skips the projection", () => {
       "pub(super) struct DisplayProjectionState {",
       "    display_items: Vec<TimelineItem>,",
       "}",
+      "pub(super) struct Rows<T> {",
+      "    display_items: Vec<T>,",
+      "}",
       "impl DisplayProjectionState {",
       "    pub(super) fn from_canonical_window(items: &[TimelineItem]) -> Self {",
       "        let display_items = items.to_vec();",
       "        let mut state = Self { display_items, ..Default::default() };",
       "        state",
+      "    }",
+      "    pub(super) fn same_rows(&self, other: &Self) -> bool {",
+      "        self.display_items == other.display_items",
       "    }",
       "    pub(super) fn reproject(&mut self, context: &DisplayProjectionContext) -> Vec<TimelineDiff> {",
       "        self",
@@ -310,6 +316,10 @@ test("the display-row gate rejects a publish that skips the projection", () => {
       "fn context(kind: &TimelineKind, observation: &TimelineViewportObservation) -> DisplayProjectionContext {",
       "    DisplayProjectionContext::for_timeline(kind, observation)",
       "        .with_send_states(&HashMap::new())",
+      "}",
+      "fn rematerialized(items: &[TimelineItem], context: &DisplayProjectionContext) -> Self {",
+      "    let rebuilt = Self::from_canonical_window(items, 0..items.len());",
+      "    rebuilt.reproject(context)",
       "}"
     ].join("\n"),
     "crates/koushi-core/src/timeline/relay.rs": [
@@ -326,6 +336,10 @@ test("the display-row gate rejects a publish that skips the projection", () => {
       "fn context_for(kind: &TimelineKind, observation: &TimelineViewportObservation) -> DisplayProjectionContext {",
       "    DisplayProjectionContext::for_timeline(kind, observation)",
       "        .with_thread_roots(order, roots)",
+      "}",
+      "fn commit_without_projection(items: &[TimelineItem]) -> DisplayProjectionState {",
+      "    let candidate = DisplayProjectionState::from_canonical_window(items, 0..items.len());",
+      "    candidate",
       "}"
     ].join("\n")
   });
@@ -337,7 +351,8 @@ test("the display-row gate rejects a publish that skips the projection", () => {
     "relay.rs:6 (copy) writes the public row list without the projection",
     "relay.rs:6 (copy) assembles public rows outside the projection",
     "relay.rs:9 (rebuild) seeds the public row list outside the window constructors",
-    "relay.rs:12 (context_for) builds a projection context without the send authority"
+    "relay.rs:12 (context_for) builds a projection context without the send authority",
+    "relay.rs:16 (commit_without_projection) builds a window and never projects it"
   ]);
 });
 

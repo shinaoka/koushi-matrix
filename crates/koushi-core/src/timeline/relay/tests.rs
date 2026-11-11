@@ -543,7 +543,18 @@ async fn stale_generation_recovery_does_not_commit_candidate_or_publish() {
     let (actor_generations, stale_generation, _current_generation) =
         replacement_generation_fixture(&key).await;
     let original = timeline_item("$original:test", Some("original"), "@me:test", false);
-    let candidate = timeline_item("$candidate:test", Some("candidate"), "@me:test", false);
+    let mut candidate = timeline_item("$candidate:test", Some("candidate"), "@me:test", false);
+    // A canonical thread root is the only shape the shared thread-root service keeps,
+    // so it is the one seed a rejected recovery could leave behind (#1851).
+    candidate.thread_summary = Some(koushi_protocol::event::ThreadSummaryDto {
+        reply_count: 1,
+        unread_count: 0,
+        latest_event_id: Some("$reply:test".to_owned()),
+        latest_sender: Some("@me:test".to_owned()),
+        latest_sender_label: None,
+        latest_body_preview: Some("reply".to_owned()),
+        latest_timestamp_ms: Some(2_000),
+    });
     let mut navigation_items = vec![original.clone()];
     let mut display_projection =
         DisplayProjectionState::from_canonical_window(&navigation_items, 0..navigation_items.len());
@@ -572,6 +583,15 @@ async fn stale_generation_recovery_does_not_commit_candidate_or_publish() {
     assert_eq!(navigation_items, vec![original]);
     assert_eq!(display_projection, display_before);
     assert!(!synchronous_candidate_committed);
+    assert!(
+        !projection_service
+            .lock()
+            .expect("thread-root projection service lock must not be poisoned")
+            .display_data_for_room(key.room_id())
+            .iter()
+            .any(|root| root.root_event_id == "$candidate:test"),
+        "a rejected recovery leaves the shared thread-root service untouched"
+    );
     assert!(matches!(
         event_rx.try_recv(),
         Err(broadcast::error::TryRecvError::Empty)

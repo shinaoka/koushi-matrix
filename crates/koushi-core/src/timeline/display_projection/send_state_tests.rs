@@ -180,9 +180,19 @@ fn a_committed_window_and_its_pending_rows_keep_the_resolved_state() {
         DisplayProjectionState::from_canonical_window(&canonical, 0..canonical.len());
     // The SDK/Core reset commits a replacement snapshot over the same positions.
     projection.reset_bounded(&canonical, &scrolled_up);
+    assert_eq!(
+        rendered_send_state(projection.display_items(), "t2"),
+        Some(recoverable()),
+        "the committed replacement window renders the authority, not its rows"
+    );
     // A request the SDK has not bound yet joins the committed window.
     let pending = send_row("t3", Some(TimelineSendState::Sending));
     projection.replace_pending(vec![pending.clone()], HashSet::new(), &scrolled_up);
+    assert_eq!(
+        rendered_send_state(projection.display_items(), "t3"),
+        Some(recoverable()),
+        "a pending row joining the window is blocked by the same authority"
+    );
     // Returning to live republishes the same rows.
     projection.return_to_live_window(&canonical, &room_context(&statuses));
 

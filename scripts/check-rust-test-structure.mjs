@@ -2739,12 +2739,24 @@ export function findDiscardedSendStateDerivations(sources) {
 /// window constructors build `display_items` from the canonical window they were
 /// handed and every caller immediately projects over it.
 const DISPLAY_ROW_SEEDS = new Map([
-  ["display_projection.rs", new Set(["from_canonical_window", "new"])]
+  ["display_projection.rs", new Set(["from_canonical_window"])]
 ]);
 
 /// The only function allowed to assemble rows for publication.
 const DISPLAY_ROW_ASSEMBLERS = new Map([
   ["display_projection.rs", new Set(["project_display_items"])]
+]);
+
+/// Every call that turns slots and pending inputs into public rows. A window
+/// built by a constructor publishes nothing until one of these runs, so the
+/// function that builds one has to reach one of them.
+const DISPLAY_PROJECTION_ENTRY_POINTS = new Set([
+  "project_display_items",
+  "reproject",
+  "reset_bounded",
+  "return_to_live_window",
+  "replace_pending",
+  "rematerialize_window"
 ]);
 
 /// The innermost delimiter that encloses `index`, skipping over the groups
@@ -2761,10 +2773,16 @@ function enclosingDelimiterIndex(tokens, index, closeToOpen) {
 }
 
 /// True when the `{` at `index` opens a type body, where the same `field: Type`
-/// shape is a declaration rather than a value.
+/// shape is a declaration rather than a value. Walks back over the name and any
+/// generic parameters, because `struct Rows<T> {` puts `>` before the brace.
 function isTypeBodyBrace(tokens, index) {
-  const keyword = tokens[index - 2]?.value;
-  return tokens[index]?.value === "{" && ["struct", "enum", "union"].includes(keyword);
+  if (tokens[index]?.value !== "{") return false;
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const value = tokens[cursor]?.value;
+    if (["struct", "enum", "union"].includes(value)) return true;
+    if (["impl", "fn", ";", "}", "{"].includes(value)) return false;
+  }
+  return false;
 }
 
 /// #1851: the public row list comes from one boundary. Three shapes are refused,
@@ -2773,8 +2791,9 @@ function isTypeBodyBrace(tokens, index) {
 /// blind spot a text scan leaves open.
 ///  1. a display projection context built without the room's send authority, so
 ///     the rows it renders fall back to whatever the row itself carries,
-///  2. `display_items` written with anything but the projection, and
-///  3. rows assembled for publication anywhere but the projection.
+///  2. `display_items` written with anything but the projection,
+///  3. rows assembled for publication anywhere but the projection, and
+///  4. a window built by a constructor in a function that never projects it.
 export function findUnprojectedDisplayRowPublishes(sources) {
   const offenders = [];
   for (const [file, source] of Object.entries(sources)) {
@@ -2782,10 +2801,31 @@ export function findUnprojectedDisplayRowPublishes(sources) {
     const tokens = lexRust(source).filter((token) => token.kind !== "comment");
     const owners = enclosingFunctionNames(tokens);
     const { openToClose, closeToOpen } = delimiterPairs(tokens);
+    // 4. The projection each function reaches, by owner name.
+    const projectedOwners = new Set();
+    for (let index = 0; index < tokens.length; index += 1) {
+      if (tokens[index].kind === "identifier" && DISPLAY_PROJECTION_ENTRY_POINTS.has(tokens[index].value)) {
+        projectedOwners.add(owners[index] ?? "");
+      }
+    }
     for (let index = 0; index < tokens.length; index += 1) {
       const token = tokens[index];
       if (token.kind !== "identifier") continue;
       const owner = owners[index] ?? "";
+      // 4. A window that is built and never projected publishes the constructor's
+      //    copy of the canonical rows.
+      if (
+        token.value === "from_canonical_window" &&
+        tokens[index + 1]?.value === "(" &&
+        (tokens[index - 1]?.value === ":" || tokens[index - 1]?.value === ".")
+      ) {
+        if (!projectedOwners.has(owner)) {
+          offenders.push(
+            `${relative}:${token.line} (${owner || "unknown function"}) builds a window and never projects it`
+          );
+        }
+        continue;
+      }
       // 1. `DisplayProjectionContext::for_timeline(..).with_send_states(..)`. The
       //    authority is chained immediately, so a context that drops it cannot be
       //    mistaken for one that has it.
@@ -2821,8 +2861,8 @@ export function findUnprojectedDisplayRowPublishes(sources) {
         continue;
       }
       // 2a. `rows.display_items = ..` must be the projection.
-      if (previous?.value === "." && next?.value === "=") {
-        const projected = next.value === "=" && tokens[index + 2]?.value === "project_display_items" && tokens[index + 3]?.value === "(";
+      if (previous?.value === "." && next?.value === "=" && tokens[index + 2]?.value !== "=") {
+        const projected = tokens[index + 2]?.value === "project_display_items" && tokens[index + 3]?.value === "(";
         if (!projected) {
           offenders.push(
             `${relative}:${token.line} (${owner || "unknown function"}) writes the public row list without the projection`

@@ -4310,13 +4310,13 @@ current table, and rows keep only the report they were projected from.
 
 Two conditions follow from the described authority and are not stronger than it:
 
-- The projection that startup emits runs before the restored local echoes are
-  seeded, so its authority is still empty, and the table is rebuilt from
-  `RoomSendQueue::subscribe()` when an actor starts or a broadcast lag forces a
-  resync. That call carries the unrecoverable wedge flag but not a recoverable
-  failure, so after such a rebuild the failing row still renders `notSent` from
-  its own report while its successors render `sending` until the queue reports
-  that failure again through `RoomSendQueueUpdate`.
+- The projection that startup emits is built after `RoomSendQueue::subscribe()` has
+  replayed the restored local echoes into the table, so a request whose row lost its
+  report at startup still renders from the actor's record. That call carries the
+  unrecoverable wedge flag but not a recoverable failure, so after such a rebuild
+  the failing row still renders `notSent` from its own report while its successors
+  render `sending` until the queue reports that failure again through
+  `RoomSendQueueUpdate`.
 - A projected display row is never read back as input: its `send_state` is the
   derivation's own output. Admission reads the un-derived canonical or
   manager-owned pending row, so a resolved state cannot become sticky.
