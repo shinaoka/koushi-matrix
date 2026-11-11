@@ -33,6 +33,15 @@ fn navigation_actions_are_ignored_without_ready_session() {
     assert_eq!(
         reduce(
             &mut state,
+            AppAction::SelectSpaceWithoutRoom {
+                space_id: "space-a".to_owned(),
+            },
+        ),
+        Vec::new()
+    );
+    assert_eq!(
+        reduce(
+            &mut state,
             AppAction::SelectRoom {
                 room_id: "room-a".to_owned(),
             },
@@ -728,5 +737,49 @@ fn selecting_dm_room_preserves_current_space_scope() {
                 room_id: "dm-a".to_owned(),
             }),
         ]
+    );
+}
+
+/// #1850: the cancel-restore action puts back a Space the user had selected
+/// with no room open, even though the Space has a room `SelectSpace` would open.
+#[test]
+fn selecting_a_space_without_a_room_keeps_the_space_and_clears_the_room() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        spaces: spaces(),
+        rooms: rooms(),
+        navigation: koushi_state::NavigationState {
+            active_room_id: Some("dm-a".to_owned()),
+            ..Default::default()
+        },
+        timeline: TimelinePaneState {
+            room_id: Some("dm-a".to_owned()),
+            is_subscribed: true,
+            ..Default::default()
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SelectSpaceWithoutRoom {
+            space_id: "space-a".to_owned(),
+        },
+    );
+
+    assert_eq!(state.navigation.active_space_id.as_deref(), Some("space-a"));
+    assert_eq!(state.navigation.active_room_id, None);
+    assert_eq!(state.timeline, TimelinePaneState::default());
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::EmitUiEvent(UiEvent::SpaceMembersChanged),
+            AppEffect::EmitUiEvent(UiEvent::SpaceChildrenChanged),
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "dm-a".to_owned(),
+            }),
+        ],
+        "no room opens, so the action subscribes no timeline"
     );
 }

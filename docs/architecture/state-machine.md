@@ -1350,16 +1350,16 @@ reply-quote navigation; displaced work settles benignly and cannot mutate
 presentation, ownership, or the waiter. Rust publishes every terminal or clear
 state before releasing its public waiter. The operation is transient and is not
 persisted with navigation preferences. A cancel from the pending banner
-(`CloseFocusedContext`) restores the Space and room that the navigation
-displaced when the prior selection has both, and the close completes only after
-that restore is published (#1848). A prior selection with a Space and no open
-room is not guaranteed to restore that state: the reducer has no action that
-selects a Space without a room, except `SelectSpace` finding no eligible room
-(`crates/koushi-state/src/reducer/navigation.rs:420-434`,
-`crates/koushi-state/src/reducer/mod.rs:3012-3040`). Otherwise `SelectSpace`
-uses the preferred optional room, and when the Space is unchanged the
-navigation's room stays (#1850). A user Space or room selection supersedes the
-navigation and keeps the user's choice.
+(`CloseFocusedContext`) restores the selection the navigation displaced — the
+Space, the room, or a Space with no open room — and a prior Space that has since
+left the room list resolves to Home; the close completes only after that restore
+is published (#1848, #1850). A Space-without-a-room prior is
+restored by one action that selects the Space and opens no room
+(`SelectSpaceWithoutRoom`), so the displaced navigation's room is never
+published half-restored. `SelectSpace` instead opens the Space's preferred
+optional room, and an unchanged Space keeps the room the navigation selected. A
+user Space or room selection supersedes the navigation and keeps the user's
+choice.
 
 A reply quote's open-original activation is the same outer operation with source
 `ReplyQuote`. Rust projects the quote's canonical `matrix.to` permalink and a

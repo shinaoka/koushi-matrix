@@ -349,9 +349,36 @@ fn close_current_room_search_for_room_change(
     }
 }
 
+/// Which room a Space selection opens (#1850).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpaceRoomChoice {
+    /// `SelectSpace`: the Space's remembered selection or its first room.
+    Preferred,
+    /// `SelectSpaceWithoutRoom`: the Space is shown with no room open.
+    NoRoom,
+}
+
 pub(crate) fn handle_select_space(
     state: &mut AppState,
     space_id: Option<String>,
+) -> Vec<AppEffect> {
+    select_space(state, space_id, SpaceRoomChoice::Preferred)
+}
+
+/// #1850: the cancel-restore path puts back a prior Space that had no open
+/// room. Setting the Space and clearing the room in one action keeps the
+/// displaced navigation's room out of every published projection.
+pub(crate) fn handle_select_space_without_room(
+    state: &mut AppState,
+    space_id: String,
+) -> Vec<AppEffect> {
+    select_space(state, Some(space_id), SpaceRoomChoice::NoRoom)
+}
+
+fn select_space(
+    state: &mut AppState,
+    space_id: Option<String>,
+    room_choice: SpaceRoomChoice,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
@@ -409,7 +436,12 @@ pub(crate) fn handle_select_space(
         }
         return effects;
     }
-    let target_room_id = restored_selection.and_then(|(selection, _)| selection.room_id);
+    let target_room_id = match room_choice {
+        SpaceRoomChoice::Preferred => {
+            restored_selection.and_then(|(selection, _)| selection.room_id)
+        }
+        SpaceRoomChoice::NoRoom => None,
+    };
     let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
     if space_members_changed {
         effects.push(AppEffect::EmitUiEvent(UiEvent::SpaceMembersChanged));

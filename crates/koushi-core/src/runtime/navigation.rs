@@ -422,8 +422,17 @@ impl AppActor {
     /// #1848: put back the Space and room a cancelled navigation displaced,
     /// through the actions a user selection takes. A room is queued in
     /// `pending_select` first, or the reducer drops it.
-    // shortcut: a Space-only prior (no open room) is not guaranteed to restore that state; SelectSpace uses the preferred optional room, or the navigation's room when the Space is unchanged (reducer/navigation.rs:420-434, reducer/mod.rs:3012-3040); upgrade with a reducer action that sets Space and room together (#1850).
     pub(super) async fn restore_prior_selection(&mut self, prior: PriorSelection) {
+        // #1850: a prior Space with no open room comes back in one action. Two
+        // actions would publish the Space restored over the displaced
+        // navigation's room before the room is cleared.
+        if let Some(space_id) = prior.space_id.clone()
+            && prior.room_id.is_none()
+        {
+            self.commit_local_navigation(AppAction::SelectSpaceWithoutRoom { space_id })
+                .await;
+            return;
+        }
         let current_space = self.state.navigation.active_space_id.clone();
         // SelectSpace(None) is the only action that clears an open room in Home,
         // so a prior Home with no room needs it; a prior room is selected directly.
@@ -1483,13 +1492,15 @@ pub(super) fn navigation_replacement_room_for_cleanup(
         AppAction::SelectRoom { room_id } => {
             Some(NavigationReplacementRoomForCleanup::Room(room_id.clone()))
         }
-        AppAction::SelectSpace { .. } if active_room_before_reduce != active_room_after_reduce => {
+        AppAction::SelectSpace { .. } | AppAction::SelectSpaceWithoutRoom { .. }
+            if active_room_before_reduce != active_room_after_reduce =>
+        {
             Some(match active_room_after_reduce {
                 Some(room_id) => NavigationReplacementRoomForCleanup::Room(room_id.to_owned()),
                 None => NavigationReplacementRoomForCleanup::Cleared,
             })
         }
-        AppAction::SelectSpace { .. } => None,
+        AppAction::SelectSpace { .. } | AppAction::SelectSpaceWithoutRoom { .. } => None,
         _ => None,
     }
 }

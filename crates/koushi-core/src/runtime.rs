@@ -1983,7 +1983,9 @@ impl AppActor {
                     AppAction::SelectRoom { room_id } => {
                         local_navigation_target = Some(Some(room_id.clone()));
                     }
-                    AppAction::SelectSpace { .. } => local_navigation_target = Some(None),
+                    AppAction::SelectSpace { .. } | AppAction::SelectSpaceWithoutRoom { .. } => {
+                        local_navigation_target = Some(None)
+                    }
                     _ => {}
                 }
             }
@@ -2180,7 +2182,10 @@ impl AppActor {
             } else {
                 None
             };
-            if matches!(action_for_navigation_cleanup, AppAction::SelectSpace { .. }) {
+            if matches!(
+                action_for_navigation_cleanup,
+                AppAction::SelectSpace { .. } | AppAction::SelectSpaceWithoutRoom { .. }
+            ) {
                 record(
                     DiagnosticEvent::new(DiagnosticLevel::Debug, "core.space.transition", "reduce")
                         .field(DiagnosticField::boolean(

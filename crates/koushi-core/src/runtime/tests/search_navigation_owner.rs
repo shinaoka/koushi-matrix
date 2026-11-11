@@ -237,23 +237,44 @@ impl Harness {
     }
 
     /// The close is complete once its request-correlated `Committed` is
-    /// published, which follows the restore and the close.
-    async fn wait_for_close_committed(&mut self, request_id: RequestId) {
+    /// published, which follows the restore and the close. Returns the selection
+    /// of every published navigation slice, so a half-applied restore is visible
+    /// (#1850).
+    async fn wait_for_close_committed(
+        &mut self,
+        request_id: RequestId,
+    ) -> Vec<(Option<String>, Option<String>)> {
+        let mut published = Vec::new();
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
                 match self.event_rx.recv().await {
+                    Ok(CoreEvent::StateDelta(delta)) => {
+                        if let Some(navigation) = delta.changed.navigation.as_ref() {
+                            published.push((
+                                navigation.active_space_id.clone(),
+                                navigation.active_room_id.clone(),
+                            ));
+                        }
+                    }
                     Ok(CoreEvent::IntentLifecycle {
                         request_id: committed,
                         outcome: IntentOutcome::Committed,
                         ..
                     }) if committed == request_id => return,
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Ok(_) => {}
+                    // A dropped event would leave a gap in `published`, so the
+                    // recording could not prove that a half-applied selection was
+                    // never published.
+                    Err(broadcast::error::RecvError::Lagged(count)) => {
+                        panic!("event stream lagged by {count}; the recording is incomplete")
+                    }
                     Err(error) => panic!("event stream closed: {error:?}"),
                 }
             }
         })
         .await
         .expect("the close must publish its committed outcome");
+        published
     }
 
     /// The renderer's recovery `ensure_timeline_subscribed` for the same key.
@@ -964,13 +985,9 @@ async fn cancelling_restores_the_previous_space_and_room() {
         .await;
 }
 
-/// #1848 boundary, pinned, tracked by #1850. A prior selection that is a Space
-/// with no open room, where the Space has an eligible room: the cancel
-/// re-selects the Space (SelectSpace runs because the jump left it), and the
-/// room is SelectSpace's preferred optional room, not the prior's absent room.
-/// The assertions pin the current result; they do not state the intended one.
-#[tokio::test(start_paused = true)]
-async fn cancelling_a_space_only_prior_reselects_the_space_with_its_preferred_room() {
+/// A prior selection that is a Space with no open room, where the Space has an
+/// eligible room the ordinary Space selection would open (#1850).
+fn space_only_prior_state() -> AppState {
     let mut in_space = unread_diagnostic_room(SPACE_ROOM);
     in_space.parent_space_ids = vec![SPACE.to_owned()];
     let mut state = state_with(
@@ -989,23 +1006,72 @@ async fn cancelling_a_space_only_prior_reselects_the_space_with_its_preferred_ro
     );
     // The open room vanished while the Space stayed selected (reducer/room.rs).
     state.navigation.active_space_id = Some(SPACE.to_owned());
-    let mut harness = start_with(state);
+    state
+}
+
+/// #1850: cancelling a navigation that displaced a Space with no open room puts
+/// back the Space and leaves no room open, even though the Space has a room the
+/// ordinary Space selection would open.
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_space_only_prior_restores_the_space_without_a_room() {
+    let mut harness = start_with(space_only_prior_state());
 
     // ROOM has no Space, so the jump leaves the Space.
     harness.navigate(request(1)).await;
     let _held = harness.manager.build_started().await;
     harness.close_focused_context(request(2)).await;
-    harness.wait_for_close_committed(request(2)).await;
+    let published = harness.wait_for_close_committed(request(2)).await;
 
-    let state = harness.snapshot_rx.borrow().state.clone();
-    assert_eq!(state.navigation.active_space_id.as_deref(), Some(SPACE));
-    assert_eq!(
-        state.navigation.active_room_id.as_deref(),
-        Some(SPACE_ROOM),
-        "the room is SelectSpace's preferred optional room (#1850)"
+    harness
+        .wait_for_state("cancel must restore the Space with no open room", |state| {
+            state.navigation.active_space_id.as_deref() == Some(SPACE)
+                && state.navigation.active_room_id.is_none()
+                && matches!(
+                    state.navigation.event_navigation,
+                    EventNavigationState::Idle
+                )
+        })
+        .await;
+    assert!(
+        !published
+            .iter()
+            .any(|(space, room)| space.as_deref() == Some(SPACE) && room.is_some()),
+        "the restore is one transition, so no published projection may show the \
+         restored Space with a room still open: {published:?}"
     );
-    assert!(matches!(
-        state.navigation.event_navigation,
-        EventNavigationState::Idle
-    ));
+}
+
+/// #1850: the jump stays inside the Space the user had selected with no room
+/// open, so the Space needs no re-selection; the cancel must still close the
+/// pending navigation's room instead of leaving the user in it.
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_space_only_prior_in_the_same_space_clears_the_navigation_room() {
+    let mut state = space_only_prior_state();
+    // ROOM belongs to SPACE, so selecting it keeps the Space (#1850).
+    for room in &mut state.rooms {
+        if room.room_id == ROOM {
+            room.parent_space_ids = vec![SPACE.to_owned()];
+        }
+    }
+    if let Some(space) = state.spaces.first_mut() {
+        space.child_room_ids.clear();
+        space.child_room_ids.push(ROOM.to_owned());
+        space.parent_side_child_room_ids.clear();
+        space.parent_side_child_room_ids.push(ROOM.to_owned());
+    }
+    let mut harness = start_with(state);
+
+    harness.navigate(request(1)).await;
+    let _held = harness.manager.build_started().await;
+    harness.close_focused_context(request(2)).await;
+    harness
+        .wait_for_state("cancel must close the pending navigation's room", |state| {
+            state.navigation.active_space_id.as_deref() == Some(SPACE)
+                && state.navigation.active_room_id.is_none()
+                && matches!(
+                    state.navigation.event_navigation,
+                    EventNavigationState::Idle
+                )
+        })
+        .await;
 }
