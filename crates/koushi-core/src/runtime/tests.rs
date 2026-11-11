@@ -1339,6 +1339,7 @@ async fn committed_room_cleanup_bypasses_a_saturated_account_mailbox() {
         pending_composer_acceptances: HashMap::new(),
         pending_command_admissions: Vec::new(),
         pending_direct_thread_replies: Default::default(),
+        account_work: crate::account_work::AccountWorkScheduler::default(),
         account_actor,
         activity_projection: ActivityProjection::default(),
         activity_resolution_generation: 0,
@@ -1776,6 +1777,7 @@ async fn same_batch_select_room_settles_only_final_selection() {
         pending_composer_acceptances: HashMap::new(),
         pending_command_admissions: Vec::new(),
         pending_direct_thread_replies: Default::default(),
+        account_work: crate::account_work::AccountWorkScheduler::default(),
         account_actor,
         activity_projection: ActivityProjection::default(),
         activity_resolution_generation: 0,
@@ -3522,12 +3524,36 @@ fn app_actor_event_navigation_fixture(
     app_actor_fixture_with_account_capacity(data_dir, state, 8)
 }
 
+/// The same fixture with a chosen account-work scheduler, so a test can make
+/// this runtime a background account tab (#1853).
+pub(super) fn app_actor_event_navigation_fixture_with_account_work(
+    data_dir: &std::path::Path,
+    state: AppState,
+    account_work: crate::account_work::AccountWorkScheduler,
+) -> EventNavigationFixture {
+    app_actor_fixture_with_work(data_dir, state, 8, account_work)
+}
+
 /// AppActor fixture whose AccountActor mailbox has a caller-chosen capacity,
 /// so a test can hold it full while exercising local-only navigation (#1060).
 fn app_actor_fixture_with_account_capacity(
     data_dir: &std::path::Path,
     state: AppState,
     account_capacity: usize,
+) -> EventNavigationFixture {
+    app_actor_fixture_with_work(
+        data_dir,
+        state,
+        account_capacity,
+        crate::account_work::AccountWorkScheduler::default(),
+    )
+}
+
+fn app_actor_fixture_with_work(
+    data_dir: &std::path::Path,
+    state: AppState,
+    account_capacity: usize,
+    account_work: crate::account_work::AccountWorkScheduler,
 ) -> EventNavigationFixture {
     let (account_tx, account_rx) = mpsc::channel(account_capacity);
     let (navigation_projection, navigation_projection_rx) =
@@ -3595,6 +3621,7 @@ fn app_actor_fixture_with_account_capacity(
         pending_composer_acceptances: HashMap::new(),
         pending_command_admissions: Vec::new(),
         pending_direct_thread_replies: Default::default(),
+        account_work,
         account_actor,
         activity_projection: ActivityProjection::default(),
         activity_resolution_generation: 0,

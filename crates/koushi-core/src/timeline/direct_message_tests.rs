@@ -486,7 +486,10 @@ async fn a_plain_thread_reply_targets_the_root() {
     // #1853: the reveal opens the thread the send resolved, so the outcome names
     // it and starts without a pane the account layer cannot know about.
     assert_eq!(outcome.thread_root_event_id, "$root");
-    assert!(!outcome.thread_pane_opened);
+    assert_eq!(
+        outcome.thread_pane, None,
+        "the send layer opens no pane; the runtime stamps the decision"
+    );
     assert_eq!(
         sent_content(&sent.await.expect("the send was captured")),
         json!({

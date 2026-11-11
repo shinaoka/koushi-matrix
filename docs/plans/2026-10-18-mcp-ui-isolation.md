@@ -29,9 +29,10 @@ below return their outcome on a per-request reply channel, so nothing enters the
 
 One bilateral exception was added later, in the rule text of
 `docs/architecture/overview.md`: `send_thread_reply` (#1853) may open the thread
-pane when the thread belongs to the room the main pane displays. It reduces the
-same `OpenThread` action the renderer uses, never changes the account, the
-selected Space or the selected room, and reports what it did in the reply
+pane when the thread belongs to the room the main pane displays, and only in the
+account tab the app displays. It reduces the same `OpenThread` action the
+renderer uses, never changes the account, the selected Space or the selected
+room, and reports what it did — opened, or the reason it did not — in the reply
 outcome instead of in an event.
 
 ### Direct search

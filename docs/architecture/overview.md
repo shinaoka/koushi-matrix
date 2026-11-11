@@ -2417,22 +2417,29 @@ Invariants:
   already-submitted event is never rolled back.
 - **A thread reply may reveal the thread pane of the shown room (#1853).** This
   is the one exception to the rule above, and it stays inside #1524: an agent
-  action may open the thread pane when the thread belongs to the room currently
-  displayed in the main pane. It opens on the thread root the action resolved —
-  the root the send already read before sending, never a second read — and never
-  changes the account, the selected Space or the selected room. Actions that
-  target a thread in another room report success without opening a pane. The
-  decision is Core's: `AppActor` holds the caller's answer until the send
+  action may open the thread pane when the thread belongs to the room the main
+  pane displays, and only in the account tab the app displays. It opens on the
+  thread root the action resolved (the root the send already read before
+  sending) and never changes the account, the selected Space or the selected
+  room. Actions that target a thread in another room, and replies through an
+  account tab that is not the one on screen, report success without opening a
+  pane and leave that pane untouched.
+  The decision is Core's: `AppActor` holds the caller's answer until the send
   settles, reduces the same `OpenThread` action the renderer's own thread open
   uses — or changes nothing when that thread is already the open one, so a
-  reply never reinitializes the pane's composer or staged uploads — and answers
-  with the outcome's `thread_pane_opened`, which the MCP host
-  reports as `thread_pane` (`opened` or `not_opened`). The renderer
-  reveals the pane from that Rust state through the #1854 presentation effect and
-  never classifies the send itself. A root the timeline never loaded still opens,
-  because the send resolved it; a failed root read fails the call and opens no
-  pane. The reveal is per call, decided from the room displayed when the answer
-  is formed, so a replayed retry reveals the same way without acting again.
+  reply never reinitializes the pane's composer or staged uploads, and a failed
+  pane is retried rather than reported as open — and answers with the outcome's
+  `thread_pane`: `opened`, or one reason for leaving the pane alone
+  (`not_opened_other_room`, `not_opened_background_account`,
+  `not_opened_session_changed`). The renderer reveals the pane from that Rust
+  state through the #1854 presentation effect and never classifies the send
+  itself. A root the timeline never loaded still opens, because the send
+  resolved it; a failed root read fails the call and opens no pane. The reveal
+  itself reads nothing: a root the room's loaded timeline already holds costs no
+  read, and a root outside it makes the thread pane's own cache-first load read
+  that root once, exactly as the user opening the same thread would. The reveal
+  is per call, decided from the account and room displayed when the answer is
+  formed, so a replayed retry reveals the same way without acting again.
   `draft_message` is unchanged: it hydrates the composer of a pane that is
   already open and never opens one.
 - **The message-action retry key is Core retry policy (#1681, #1660).**

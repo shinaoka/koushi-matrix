@@ -989,6 +989,7 @@ impl CoreRuntime {
             pending_composer_acceptances: HashMap::new(),
             pending_command_admissions: Vec::new(),
             pending_direct_thread_replies: FuturesUnordered::new(),
+            account_work: account_work.clone(),
             account_actor,
             activity_projection: ActivityProjection::default(),
             activity_resolution_generation: 0,
@@ -1504,6 +1505,9 @@ struct AppActor {
     /// answer waits here, so the runtime can open the thread pane before it
     /// answers instead of holding the command loop on a send.
     pending_direct_thread_replies: FuturesUnordered<PendingDirectThreadReplyFuture>,
+    /// #1853: the scheduler's account-tab identity, so a reveal can tell whether
+    /// this account is the one the app displays.
+    account_work: crate::account_work::AccountWorkScheduler,
     account_actor: AccountActorHandle,
     activity_projection: ActivityProjection,
     activity_resolution_generation: u64,
@@ -3153,7 +3157,7 @@ impl AppActor {
     /// main pane displays: the account, the selected Space and the selected
     /// room stay untouched, so the user's view does not move. Every other case
     /// answers the send result unchanged, and the caller can tell the two apart
-    /// by `thread_pane_opened`.
+    /// by `thread_pane`.
     ///
     /// Returns a boxed future so the run loop's frame holds one pointer instead
     /// of this whole settlement (#1554 stack budget).
@@ -3170,31 +3174,48 @@ impl AppActor {
             } = settled;
             let result = match result {
                 Ok(crate::direct_operations::DirectMessageResponse::ThreadReply(mut outcome)) => {
-                    let root_event_id = outcome.thread_root_event_id.clone();
-                    let shown_room = session_revision == self.session_revision
-                        && self.state.timeline.room_id.as_deref() == Some(room_id.as_str());
-                    // A pane already on this thread keeps its composer and its
-                    // staged uploads: re-opening it would reinitialize both, and
-                    // the user is looking at the thread the reply went to.
-                    let already_targeted =
-                        shown_room && self.thread_pane_targets(&room_id, &root_event_id);
-                    let opened = already_targeted
-                        || (shown_room && {
-                            let request_id = self.next_internal_request_id();
-                            let opened = Box::pin(self.open_thread_pane(
-                                request_id,
-                                room_id,
-                                root_event_id,
-                                ThreadOpenIntent::ExistingThread,
-                            ))
-                            .await;
-                            if opened {
-                                let published_state = self.snapshot_tx.borrow().state.clone();
-                                self.publish_state_change(&published_state);
-                            }
-                            opened
-                        });
-                    outcome.thread_pane_opened = opened;
+                    use crate::direct_operations::DirectThreadPaneOutcome as Pane;
+                    let targeted =
+                        self.thread_pane_targets(&room_id, &outcome.thread_root_event_id);
+                    let shown_room =
+                        self.state.timeline.room_id.as_deref() == Some(room_id.as_str());
+                    let pane = if session_revision != self.session_revision {
+                        // The room this send was made for is no longer the one
+                        // the pane would cover.
+                        Pane::SessionChanged
+                    } else if !self.account_work.is_selected_account() {
+                        // Another account tab is the one on screen: this
+                        // account's hidden pane is left untouched.
+                        Pane::BackgroundAccount
+                    } else if targeted {
+                        // A pane already on this thread keeps its composer and
+                        // its staged uploads: re-opening it would reinitialize
+                        // both, and it already shows the thread replied to.
+                        Pane::Opened
+                    } else if !shown_room {
+                        Pane::OtherRoom
+                    } else {
+                        let request_id = self.next_internal_request_id();
+                        let opened = Box::pin(self.open_thread_pane(
+                            request_id,
+                            room_id.clone(),
+                            outcome.thread_root_event_id.clone(),
+                            ThreadOpenIntent::ExistingThread,
+                        ))
+                        .await;
+                        if opened {
+                            let published_state = self.snapshot_tx.borrow().state.clone();
+                            self.publish_state_change(&published_state);
+                            Pane::Opened
+                        } else if self.state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
+                            // The reducer refused the open with the room still
+                            // on screen, so the session admitted nothing.
+                            Pane::SessionChanged
+                        } else {
+                            Pane::OtherRoom
+                        }
+                    };
+                    outcome.thread_pane = Some(pane);
                     Ok(crate::direct_operations::DirectMessageResponse::ThreadReply(outcome))
                 }
                 other => other,
@@ -6701,12 +6722,10 @@ impl AppActor {
                 room_id: open_room,
                 root_event_id: open_root,
                 ..
-            }
-            | ThreadPaneState::Failed {
-                room_id: open_room,
-                root_event_id: open_root,
-                ..
             } => open_room == room_id && open_root == root_event_id,
+            // #1473: a failed pane is terminal until a user transition, so a
+            // reply retries the open instead of reporting a failed pane as open.
+            ThreadPaneState::Failed { .. } => false,
             ThreadPaneState::Closed => false,
         }
     }

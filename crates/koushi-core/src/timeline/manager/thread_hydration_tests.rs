@@ -239,3 +239,205 @@ fn existing_thread_initial_backfill_requires_items_or_authoritative_end() {
     assert!(super::initial_thread_backfill_is_authoritative(false, 1));
     assert!(!super::initial_thread_backfill_is_authoritative(false, 0));
 }
+
+/// The thread one hydration run reads, as the mock server saw it: the number of
+/// `/relations` queries and the number of single-event reads of the root.
+async fn thread_hydration_requests(
+    server: &matrix_sdk::test_utils::mocks::MatrixMockServer,
+) -> (usize, usize) {
+    let requests = server
+        .server()
+        .received_requests()
+        .await
+        .expect("the mock server recorded its requests");
+    let relations = requests
+        .iter()
+        .filter(|request| request.url.path().contains("/relations/"))
+        .count();
+    let event_reads = requests
+        .iter()
+        .filter(|request| request.url.path().contains("/event/"))
+        .count();
+    (relations, event_reads)
+}
+
+/// #1853: opening a thread whose root the room's loaded timeline never held
+/// costs the cache-first root read the thread hydration already performs, once.
+/// The reveal invents no read of its own on top of it.
+#[tokio::test]
+async fn an_uncached_thread_root_costs_one_cache_first_read() {
+    use matrix_sdk::{
+        ruma::{event_id, room_id, user_id},
+        test_utils::mocks::{MatrixMockServer, RoomRelationsResponseTemplate},
+    };
+    use matrix_sdk_base::ThreadingSupport;
+    use matrix_sdk_test::event_factory::EventFactory;
+    use matrix_sdk_ui::timeline::TimelineFocus;
+
+    let server = MatrixMockServer::new().await;
+    let client = server
+        .client_builder()
+        .on_builder(|b| {
+            b.with_threading_support(ThreadingSupport::Enabled {
+                with_subscriptions: true,
+            })
+        })
+        .build()
+        .await;
+    let room_id = room_id!("!uncached-root:example.test");
+    let room = server.sync_joined_room(&client, room_id).await;
+    let root = event_id!("$uncached-root:example.test");
+    let reply = event_id!("$uncached-reply:example.test");
+    let factory = EventFactory::new()
+        .room(room_id)
+        .sender(user_id!("@alice:example.test"));
+    // The root is not in the room's loaded timeline: the room cache only holds
+    // the reply, as a room that was scrolled past the root would.
+    server
+        .mock_room_relations()
+        .ok(RoomRelationsResponseTemplate::default().events(vec![
+            factory
+                .text_msg("reply")
+                .event_id(reply)
+                .in_thread(root, root),
+        ]))
+        .mount()
+        .await;
+    server
+        .mock_room_event()
+        .ok(factory.text_msg("root").event_id(root).into())
+        .mount()
+        .await;
+
+    let timeline = super::koushi_timeline_builder(
+        &room,
+        TimelineFocus::Thread {
+            thread_id: root.to_owned(),
+        },
+    )
+    .build()
+    .await
+    .unwrap();
+    assert!(timeline.subscribe().await.0.is_empty());
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            super::hydrate_initial_thread(&timeline, &client, room_id, root),
+        )
+        .await
+        .expect("an uncached root hydrates inside the opening deadline")
+        .unwrap()
+    );
+
+    let (relations, event_reads) = thread_hydration_requests(&server).await;
+    assert_eq!(relations, 1, "one relations page");
+    assert_eq!(
+        event_reads, 1,
+        "the thread open reads its uncached root exactly once"
+    );
+}
+
+/// #1853: the same thread open reads no root at all when the root is already in
+/// the room's event cache, which is the case for a room the user has in view.
+/// Opening on an already-resolved root therefore adds no network round trip.
+#[tokio::test]
+async fn a_cached_thread_root_is_never_read_again() {
+    use matrix_sdk::{
+        ruma::{event_id, room_id, user_id},
+        test_utils::mocks::{MatrixMockServer, RoomRelationsResponseTemplate},
+    };
+    use matrix_sdk_base::{
+        ThreadingSupport,
+        linked_chunk::{ChunkIdentifier, LinkedChunkId, Position, Update},
+    };
+    use matrix_sdk_test::event_factory::EventFactory;
+    use matrix_sdk_ui::timeline::TimelineFocus;
+
+    let server = MatrixMockServer::new().await;
+    let client = server
+        .client_builder()
+        .on_builder(|b| {
+            b.with_threading_support(ThreadingSupport::Enabled {
+                with_subscriptions: true,
+            })
+        })
+        .build()
+        .await;
+    let room_id = room_id!("!cached-root:example.test");
+    let room = server.sync_joined_room(&client, room_id).await;
+    let root = event_id!("$cached-root:example.test");
+    let reply = event_id!("$cached-reply:example.test");
+    let factory = EventFactory::new()
+        .room(room_id)
+        .sender(user_id!("@alice:example.test"));
+    // The root is in the room's loaded timeline, so the cache-first root read a
+    // thread open performs finds it without asking the server.
+    let chunk = ChunkIdentifier::new(0);
+    client
+        .event_cache_store()
+        .lock()
+        .await
+        .unwrap()
+        .as_clean()
+        .unwrap()
+        .handle_linked_chunk_updates(
+            LinkedChunkId::Room(room_id),
+            vec![
+                Update::NewItemsChunk {
+                    previous: None,
+                    new: chunk,
+                    next: None,
+                },
+                Update::PushItems {
+                    at: Position::new(chunk, 0),
+                    items: vec![factory.text_msg("root").event_id(root).into_event()],
+                },
+            ],
+        )
+        .await
+        .unwrap();
+    server
+        .mock_room_relations()
+        .ok(RoomRelationsResponseTemplate::default().events(vec![
+            factory
+                .text_msg("reply")
+                .event_id(reply)
+                .in_thread(root, root),
+        ]))
+        .mount()
+        .await;
+    // Mounted so a read would succeed, then asserted absent: the point is that
+    // hydration did not have to read it at all.
+    server
+        .mock_room_event()
+        .ok(factory.text_msg("root").event_id(root).into())
+        .mount()
+        .await;
+
+    let timeline = super::koushi_timeline_builder(
+        &room,
+        TimelineFocus::Thread {
+            thread_id: root.to_owned(),
+        },
+    )
+    .build()
+    .await
+    .unwrap();
+    assert!(timeline.subscribe().await.0.is_empty());
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            super::hydrate_initial_thread(&timeline, &client, room_id, root),
+        )
+        .await
+        .expect("a cached root hydrates inside the opening deadline")
+        .unwrap()
+    );
+
+    let (relations, event_reads) = thread_hydration_requests(&server).await;
+    assert_eq!(relations, 1, "one relations page");
+    assert_eq!(
+        event_reads, 0,
+        "a root the room cache holds is not read again"
+    );
+}

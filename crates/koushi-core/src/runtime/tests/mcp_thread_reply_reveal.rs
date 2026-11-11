@@ -9,7 +9,7 @@
 use super::*;
 use crate::direct_operations::{
     DirectMessageFailure, DirectMessageRequest, DirectMessageResponse, DirectRetryKey,
-    DirectThreadReplyOutcome,
+    DirectThreadPaneOutcome, DirectThreadReplyOutcome,
 };
 
 const ROOM: &str = "!mcp-thread-room:example.invalid";
@@ -74,7 +74,7 @@ fn answer_thread_reply(
                         event_id: REPLY.to_owned(),
                         transaction_id: "synthetic-transaction".to_owned(),
                         thread_root_event_id: ROOT.to_owned(),
-                        thread_pane_opened: false,
+                        thread_pane: None,
                     },
                 )));
             }
@@ -186,7 +186,7 @@ fn thread_reply_outcome(root_event_id: &str) -> DirectMessageResponse {
         event_id: REPLY.to_owned(),
         transaction_id: "synthetic-transaction".to_owned(),
         thread_root_event_id: root_event_id.to_owned(),
-        thread_pane_opened: false,
+        thread_pane: None,
     })
 }
 
@@ -195,6 +195,23 @@ fn thread_reply_outcome(root_event_id: &str) -> DirectMessageResponse {
 async fn drive_thread_reply(
     data_dir: &std::path::Path,
     state: AppState,
+    request: DirectMessageRequest,
+    script: ReplyScript,
+) -> (
+    Result<DirectMessageResponse, DirectMessageFailure>,
+    AppState,
+    tokio::task::JoinHandle<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    drive_thread_reply_with(data_dir, state, None, request, script).await
+}
+
+/// The same driver for a runtime whose account tab is or is not the selected
+/// one (#1853).
+async fn drive_thread_reply_with(
+    data_dir: &std::path::Path,
+    state: AppState,
+    account_work: Option<crate::account_work::AccountWorkScheduler>,
     request: DirectMessageRequest,
     script: ReplyScript,
 ) -> (
@@ -213,7 +230,12 @@ async fn drive_thread_reply(
         _navigation_projection_rx,
         _event_navigation_prepared_tx,
         _focused_projection_tx,
-    ) = app_actor_event_navigation_fixture(data_dir, state);
+    ) = match account_work {
+        Some(account_work) => {
+            app_actor_event_navigation_fixture_with_account_work(data_dir, state, account_work)
+        }
+        None => app_actor_event_navigation_fixture(data_dir, state),
+    };
     let actor_task = tokio::spawn(async move {
         let _ = actor.run().await;
     });
@@ -309,10 +331,126 @@ async fn a_thread_reply_to_the_open_thread_keeps_its_composer() {
     let DirectMessageResponse::ThreadReply(outcome) = outcome.expect("the reply was sent") else {
         panic!("a thread reply answers a thread reply");
     };
-    assert!(outcome.thread_pane_opened);
+    assert_eq!(outcome.thread_pane, Some(DirectThreadPaneOutcome::Opened));
     assert_eq!(
         state.thread, open_pane,
         "the pane the user already has open keeps its composer and staged uploads"
+    );
+    assert_eq!(pane_context(&state), context);
+}
+
+/// A shown room whose thread pane is in its terminal failed state (#1473) on
+/// `root_event_id`.
+fn failed_thread_state(root_event_id: &str) -> AppState {
+    let mut state = shown_room_state();
+    state.thread = koushi_state::ThreadPaneState::Failed {
+        room_id: ROOM.to_owned(),
+        root_event_id: root_event_id.to_owned(),
+        intent: koushi_state::ThreadOpenIntent::ExistingThread,
+        failure_kind: koushi_state::OperationFailureKind::NotFound,
+    };
+    state
+}
+
+#[tokio::test]
+async fn a_thread_reply_retries_a_failed_thread_pane() {
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let before = failed_thread_state(ROOT);
+    let context = pane_context(&before);
+    let (outcome, state, actor_task, account_task) = drive_thread_reply(
+        data_dir.path(),
+        before,
+        thread_reply_request_to(ROOM, ROOT),
+        ReplyScript {
+            answer: Some(Ok(thread_reply_outcome(ROOT))),
+            ..ReplyScript::default()
+        },
+    )
+    .await;
+    actor_task.abort();
+    account_task.abort();
+
+    let DirectMessageResponse::ThreadReply(outcome) = outcome.expect("the reply was sent") else {
+        panic!("a thread reply answers a thread reply");
+    };
+    assert_eq!(
+        outcome.thread_pane,
+        Some(DirectThreadPaneOutcome::Opened),
+        "a failed pane is retried, not reported as open"
+    );
+    assert!(
+        matches!(
+            &state.thread,
+            koushi_state::ThreadPaneState::Opening { room_id, root_event_id, .. }
+                if room_id == ROOM && root_event_id == ROOT
+        ),
+        "the reply reopens the failed pane: {:?}",
+        state.thread
+    );
+    assert_eq!(pane_context(&state), context);
+}
+
+#[tokio::test]
+async fn a_thread_reply_opens_only_in_the_selected_account_tab() {
+    // This runtime is the app's selected account tab: the pane opens.
+    let selected = crate::account_work::AccountWorkScheduler::default();
+    selected.set_selected_account(Some("app-tab"));
+    let foreground_work = selected.for_account("app-tab");
+    let foreground_dir = tempfile::tempdir().expect("runtime data directory");
+    let (outcome, state, actor_task, account_task) = drive_thread_reply_with(
+        foreground_dir.path(),
+        shown_room_state(),
+        Some(foreground_work),
+        thread_reply_request_to(ROOM, ROOT),
+        ReplyScript {
+            answer: Some(Ok(thread_reply_outcome(ROOT))),
+            ..ReplyScript::default()
+        },
+    )
+    .await;
+    actor_task.abort();
+    account_task.abort();
+    let DirectMessageResponse::ThreadReply(outcome) = outcome.expect("the reply was sent") else {
+        panic!("a thread reply answers a thread reply");
+    };
+    assert_eq!(outcome.thread_pane, Some(DirectThreadPaneOutcome::Opened));
+    assert!(matches!(
+        state.thread,
+        koushi_state::ThreadPaneState::Opening { .. }
+    ));
+
+    // The same runtime as a background tab: its hidden pane is untouched.
+    let background = crate::account_work::AccountWorkScheduler::default();
+    background.set_selected_account(Some("app-tab"));
+    let background_work = background.for_account("hidden-tab");
+    let background_dir = tempfile::tempdir().expect("runtime data directory");
+    let before = shown_room_state();
+    let context = pane_context(&before);
+    let (outcome, state, actor_task, account_task) = drive_thread_reply_with(
+        background_dir.path(),
+        before,
+        Some(background_work),
+        thread_reply_request_to(ROOM, ROOT),
+        ReplyScript {
+            answer: Some(Ok(thread_reply_outcome(ROOT))),
+            ..ReplyScript::default()
+        },
+    )
+    .await;
+    actor_task.abort();
+    account_task.abort();
+    let DirectMessageResponse::ThreadReply(outcome) = outcome.expect("the reply was sent") else {
+        panic!("a thread reply answers a thread reply");
+    };
+    assert_eq!(
+        outcome.thread_pane,
+        Some(DirectThreadPaneOutcome::BackgroundAccount),
+        "a background account reports why no pane opened"
+    );
+    assert_eq!(
+        state.thread,
+        koushi_state::ThreadPaneState::Closed,
+        "a background account's hidden thread pane is not touched"
     );
     assert_eq!(pane_context(&state), context);
 }
@@ -339,9 +477,10 @@ async fn a_thread_reply_to_another_room_sends_without_opening_a_pane() {
         panic!("a thread reply answers a thread reply");
     };
     assert_eq!(outcome.event_id, REPLY);
-    assert!(
-        !outcome.thread_pane_opened,
-        "a reply to another room reports that no pane opened"
+    assert_eq!(
+        outcome.thread_pane,
+        Some(DirectThreadPaneOutcome::OtherRoom),
+        "a reply to another room reports why no pane opened"
     );
     assert_eq!(state.thread, koushi_state::ThreadPaneState::Closed);
     assert_eq!(pane_context(&state), context, "the view did not move");
@@ -372,7 +511,7 @@ async fn a_thread_reply_opens_a_root_the_runtime_never_loaded() {
     let DirectMessageResponse::ThreadReply(outcome) = outcome.expect("the reply was sent") else {
         panic!("a thread reply answers a thread reply");
     };
-    assert!(outcome.thread_pane_opened);
+    assert_eq!(outcome.thread_pane, Some(DirectThreadPaneOutcome::Opened));
     assert!(
         matches!(
             &state.thread,
@@ -405,7 +544,7 @@ async fn a_thread_reply_reveal_keeps_the_account_space_and_room() {
     let DirectMessageResponse::ThreadReply(outcome) = outcome.expect("the reply was sent") else {
         panic!("a thread reply answers a thread reply");
     };
-    assert!(outcome.thread_pane_opened);
+    assert_eq!(outcome.thread_pane, Some(DirectThreadPaneOutcome::Opened));
     assert_eq!(
         pane_context(&state),
         context,
@@ -532,7 +671,10 @@ async fn a_thread_reply_settled_after_the_room_changed_opens_no_pane() {
     let DirectMessageResponse::ThreadReply(outcome) = outcome.expect("the reply was sent") else {
         panic!("a thread reply answers a thread reply");
     };
-    assert!(!outcome.thread_pane_opened);
+    assert_eq!(
+        outcome.thread_pane,
+        Some(DirectThreadPaneOutcome::OtherRoom)
+    );
     assert_eq!(state.thread, koushi_state::ThreadPaneState::Closed);
     assert_eq!(state.timeline.room_id.as_deref(), Some(OTHER_ROOM));
 }

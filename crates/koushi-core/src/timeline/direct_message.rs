@@ -786,8 +786,8 @@ pub(crate) async fn thread_reply_direct(
         event_id: event_id.to_string(),
         transaction_id: transaction_id.to_string(),
         thread_root_event_id: root_id.to_string(),
-        // Only `AppActor` knows which room the main pane displays (#1853).
-        thread_pane_opened: false,
+        // Only `AppActor` knows which account and room the app displays (#1853).
+        thread_pane: None,
     })
 }
 

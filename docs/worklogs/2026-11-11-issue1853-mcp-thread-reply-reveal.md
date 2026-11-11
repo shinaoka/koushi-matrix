@@ -25,8 +25,17 @@ exception clause: when an agent action may open a pane) and
 `send_thread_reply` already reads its target once with the bounded authoritative
 read (`timeline/direct_message.rs`, `load_event_authoritative`, `READ_TIMEOUT`)
 before sending. That read resolves the thread root, so `DirectThreadReplyOutcome`
-now carries `thread_root_event_id`. The pane opens on that value; it never reads
-the root again.
+now carries `thread_root_event_id`. The reveal opens on that value and reads
+nothing itself.
+
+The thread pane's own cache-first root load still applies, measured rather than
+assumed: `timeline/manager/thread_hydration_tests.rs` pins that opening a thread
+whose root the room's loaded timeline already holds issues no event read, and
+that a root outside it costs exactly one (the one the user opening the same
+thread would pay). Removing that last read would need an SDK way to store the
+resolved event in the room's event cache; `Room::load_or_fetch_event` is
+cache-first and deliberately does not save, and no public `RoomEventCache` insert
+exists, so it stays out of this change.
 
 ## How the pane opens
 
@@ -37,14 +46,20 @@ the run loop settles it. `handle_direct_thread_reply_settled` opens the pane wit
 the same `open_thread_pane` helper the renderer's `AppCommand::OpenThread` arm
 uses (reduce `AppAction::OpenThread`, release the pane it replaces, dispatch the
 effects), publishes the state change, and only then answers the caller with
-`thread_pane_opened`. The renderer reveals the panel from that Rust state through
-the #1854 presentation effect (`threadPaneIdentityForActiveRoom`).
+`thread_pane`. The renderer reveals the panel from that Rust state through the
+#1854 presentation effect (`threadPaneIdentityForActiveRoom`).
 
-The predicate is `state.timeline.room_id == the reply's room` (the reducer
-`handle_open_thread` enforces the same guard) plus the session revision the
-request was made in. Nothing else moves: no account, Space or room selection, and
-no reducer action or UI state is added. A reply to another room, a settlement
-after the session changed, and a failed root read all answer without a pane.
+The predicate is: the session revision the request was made in is unchanged,
+this account's tab is the one the app displays
+(`AccountWorkScheduler::is_selected_account`, the scheduler's existing
+selection, not a new signal), and `state.timeline.room_id` is the reply's room
+(the reducer `handle_open_thread` enforces the same guard). A thread that is
+already the open one is kept as it is, so its composer and staged uploads
+survive; a `Failed` pane is retried instead of reported as open. Nothing else
+moves: no account, Space or room selection, and no reducer action or UI state is
+added. A reply to another room, through a background account tab, after the
+session changed, or to a root that cannot be read all answer without a pane and
+name why in `thread_pane`.
 
 ## Fixing the reveal guard
 
@@ -56,12 +71,16 @@ pane is closed.
 ## Verification
 
 - `crates/koushi-core/src/runtime/tests/mcp_thread_reply_reveal.rs` (the
-  contributor's RED test plus six cases): the shown room opens; another room
-  sends and reports `not_opened`; a root the runtime never held opens; the
-  account, Space and room are unchanged; a failed root read fails and opens
+  contributor's RED test plus eight cases): the shown room opens; another room
+  sends and reports `not_opened_other_room`; a root the runtime never held opens;
+  the account, Space and room are unchanged; a failed root read fails and opens
   nothing; a settlement after the user switched rooms opens nothing; a reply to
   the thread the user already has open keeps that pane's composer and staged
-  uploads.
+  uploads; a `Failed` pane is retried; the selected account tab opens while a
+  background tab leaves its pane closed, untouched, and says
+  `not_opened_background_account`.
+- `timeline/manager/thread_hydration_tests.rs` pins the root read count: none for
+  a root the room cache holds, exactly one for a root it does not.
 - `timeline/direct_message_tests.rs` asserts the resolved root on the real
   mock-server send path, including a target that is a reply inside the thread.
 - `koushi-mcp` schema test pins `thread_pane`, `koushi-mcp-host` maps it.
@@ -77,15 +96,15 @@ pane is closed.
 
 ## Known limits
 
-The predicate is this account runtime's displayed room, as frozen in the issue.
-An MCP call naming a *background* account tab whose retained state still shows
-that room opens the pane in that (not displayed) tab and reports `opened`; no
-signal currently tells a runtime whether its tab is the selected one, and adding
-one is new state beyond this change's scope.
-
 The reveal rides the #1854 presentation effect, which reveals a thread identity
 once. A user who, while a thread is open, switches the right panel to pinned
 messages or the thread list keeps that panel: the agent reply marks that thread
 as open in Rust (`opened`) but does not override the user's own panel choice.
 That is the same behavior #1854 shipped with for a repeated navigation to one
 thread, and clearing the guard on close already covers the common case.
+
+The account predicate is the scheduler's selected tab, which the app sets on
+selection, not an observation of the rendered window. A second window or a
+tab whose selection is unknown to the manager is outside it; the reveal treats
+an unknown selection as selected, because such a runtime is the only account
+there is (headless QA, unit tests).

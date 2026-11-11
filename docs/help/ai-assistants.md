@@ -328,13 +328,15 @@ Tool calls run inside Koushi's own runtime, but they are not GUI actions:
   selection, read markers, or unread counts. `get_message` never marks a
   message read. A thread reply appears through normal sync, like a sent
   message. When the thread you reply to belongs to the room Koushi is showing,
-  the reply also opens that thread in the right panel, so you can see what was
-  sent; it opens on the thread's root even if that root was never loaded, and it
-  never switches the account, the Space, or the room. A reply to a thread in
-  another room is sent and leaves the window as it was: the result's
-  `thread_pane` says `not_opened` instead of `opened`. If your own panel
-  choice (pinned messages, the thread list) is showing something else while
-  that thread is open, Koushi does not override it.
+  and that account is the one on screen, the reply also opens that thread in the
+  right panel, so you can see what was sent; it opens on the thread's root even
+  if that root was never loaded, and it never switches the account, the Space,
+  or the room. Otherwise the reply is sent and the window is left as it was, and
+  the result's `thread_pane` says why (`not_opened_other_room`,
+  `not_opened_background_account`, or `not_opened_session_changed`) instead of
+  `opened`. If your own panel choice (pinned messages, the thread list) is
+  showing something else while that thread is open, Koushi does not override
+  it.
 - `draft_message` is the only other call that changes the GUI, and only the
   target composer's draft. It does not switch account or room, open a thread, move
   focus or scroll, or mark anything read. If that composer is open and empty,
