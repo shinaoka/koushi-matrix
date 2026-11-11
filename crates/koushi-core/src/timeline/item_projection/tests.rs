@@ -1605,8 +1605,12 @@ fn timeline_send_command_bodies_are_not_visible_in_debug() {
         "body leaked in Debug: {debug}"
     );
     assert!(
-        debug.contains("txn-vis"),
-        "txn_id should be visible: {debug}"
+        !debug.contains("txn-vis"),
+        "txn_id leaked in Debug: {debug}"
+    );
+    assert!(
+        debug.contains("TransactionId(..)"),
+        "txn_id placeholder missing: {debug}"
     );
 }
 

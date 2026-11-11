@@ -483,29 +483,19 @@ impl fmt::Debug for TimelineCommand {
                 .field("request_id", request_id)
                 .field("key", &"TimelineKey(..)")
                 .finish(),
-            Self::SendText {
-                request_id,
-                key,
-                transaction_id,
-                ..
-            } => formatter
+            Self::SendText { request_id, .. } => formatter
                 .debug_struct("SendText")
                 .field("request_id", request_id)
-                .field("key", key)
-                .field("transaction_id", transaction_id)
+                .field("key", &"TimelineKey(..)")
+                .field("transaction_id", &"TransactionId(..)")
                 .field("body", &"MessageBody(..)")
                 .field("mentions", &"MentionIntent(..)")
                 .finish(),
-            Self::SendReply {
-                request_id,
-                key,
-                transaction_id,
-                ..
-            } => formatter
+            Self::SendReply { request_id, .. } => formatter
                 .debug_struct("SendReply")
                 .field("request_id", request_id)
-                .field("key", key)
-                .field("transaction_id", transaction_id)
+                .field("key", &"TimelineKey(..)")
+                .field("transaction_id", &"TransactionId(..)")
                 .field("in_reply_to_event_id", &"EventId(..)")
                 .field("body", &"MessageBody(..)")
                 .field("mentions", &"MentionIntent(..)")
@@ -513,27 +503,25 @@ impl fmt::Debug for TimelineCommand {
             Self::SubmitText {
                 request_id,
                 submission_id,
-                transaction_id,
                 ..
             } => formatter
                 .debug_struct("SubmitText")
                 .field("request_id", request_id)
                 .field("submission_id", submission_id)
                 .field("key", &"TimelineKey(..)")
-                .field("transaction_id", transaction_id)
+                .field("transaction_id", &"TransactionId(..)")
                 .field("document", &"ComposerDocument(..)")
                 .finish(),
             Self::SubmitReply {
                 request_id,
                 submission_id,
-                transaction_id,
                 ..
             } => formatter
                 .debug_struct("SubmitReply")
                 .field("request_id", request_id)
                 .field("submission_id", submission_id)
                 .field("key", &"TimelineKey(..)")
-                .field("transaction_id", transaction_id)
+                .field("transaction_id", &"TransactionId(..)")
                 .field("in_reply_to_event_id", &"EventId(..)")
                 .field("document", &"ComposerDocument(..)")
                 .finish(),
@@ -576,15 +564,13 @@ impl fmt::Debug for TimelineCommand {
                 .finish(),
             Self::UploadAndSendMedia {
                 request_id,
-                key,
-                transaction_id,
                 request,
                 ..
             } => formatter
                 .debug_struct("UploadAndSendMedia")
                 .field("request_id", request_id)
-                .field("key", key)
-                .field("transaction_id", transaction_id)
+                .field("key", &"TimelineKey(..)")
+                .field("transaction_id", &"TransactionId(..)")
                 .field("mime_type", &request.mime_type)
                 .field("kind", &request.kind)
                 .field("filename", &"MediaFilename(..)")
