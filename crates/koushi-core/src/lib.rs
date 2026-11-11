@@ -76,8 +76,8 @@ pub use direct_operations::{
     AssistantDraftFailure, AssistantDraftRequest, AttachmentFetchFailure, DirectEditOutcome,
     DirectMessageEdit, DirectMessageFailure, DirectMessageReaction, DirectMessageRequest,
     DirectMessageResponse, DirectMessageView, DirectReactionOutcome, DirectRedactOutcome,
-    DirectRetryKey, DirectThreadReplyOutcome, FetchedAttachment, RoomMessagesFailure,
-    StagedAssistantDraft,
+    DirectRetryKey, DirectThreadPaneOutcome, DirectThreadReplyOutcome, FetchedAttachment,
+    RoomMessagesFailure, StagedAssistantDraft,
 };
 pub use koushi_protocol::command::*;
 pub use koushi_protocol::event::*;

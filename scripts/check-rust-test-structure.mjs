@@ -1498,7 +1498,9 @@ export function checkCoreRuntimeActivityMarkReadRoute() {
 
 export function checkCoreRuntimeThreadEffectExecution() {
   const rule = "core.runtime.thread_effect_execution";
-  const branch = sourceSection(coreSource("runtime.rs"), "AppCommand::OpenThread", "AppCommand::CloseThread");
+  // #1853: the renderer's OpenThread command and an agent's thread reply open a
+  // pane through one helper, so the guarantee lives in that helper.
+  const branch = coreItemBody("runtime.rs", "async fn open_thread_pane");
   const failures = [];
   if (branch?.includes("let _ = effects;")) failures.push(sourceContractFailure(rule, "OpenThread discards reducer effects"));
   if (!branch?.includes("handle_app_effects") && !branch?.includes("TimelineCommand::Subscribe")) failures.push(sourceContractFailure(rule, "OpenThread does not execute its timeline effect"));
@@ -1612,7 +1614,8 @@ export function checkCoreRuntimeSyncTrace() {
 
 export function checkCoreRuntimeThreadReplacement() {
   const rule = "core.runtime.thread_replacement";
-  const branch = sourceSection(coreSource("runtime.rs"), "AppCommand::OpenThread", "AppCommand::CloseThread");
+  // #1853: one thread-pane opener, so the replacement order is checked there.
+  const branch = coreItemBody("runtime.rs", "async fn open_thread_pane");
   const replacement = branch?.indexOf("unsubscribe_replaced_thread_timeline") ?? -1;
   const effects = branch?.indexOf("handle_app_effects") ?? -1;
   return replacement >= 0 && effects >= 0 && replacement < effects ? [] : [sourceContractFailure(rule, "thread replacement is not unsubscribed before the new subscription effect")];

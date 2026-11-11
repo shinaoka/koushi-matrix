@@ -350,6 +350,22 @@ impl AccountWorkScheduler {
         }
     }
 
+    /// Whether this account's tab is the one the app currently shows (#1853).
+    ///
+    /// This is the scheduler's existing selection, the same one that ranks
+    /// background work, not a new signal. A runtime started without the account
+    /// manager (the headless QA lane, unit tests) has no tab identity and is the
+    /// only account there is, so it counts as selected.
+    pub(crate) fn is_selected_account(&self) -> bool {
+        let Some(account_tab_id) = self.account_tab_id.as_deref() else {
+            return true;
+        };
+        match lock_state(&self.inner).selected_account_tab_id.as_deref() {
+            Some(selected) => selected == account_tab_id,
+            None => true,
+        }
+    }
+
     pub(crate) fn set_selected_account(&self, account_tab_id: Option<&str>) {
         {
             let mut state = lock_state(&self.inner);

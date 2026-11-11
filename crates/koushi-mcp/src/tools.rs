@@ -449,7 +449,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ),
         ToolDefinition {
             name: "send_thread_reply",
-            description: "Post a plain-text reply in a thread, using the same thread relation and reply fallback the composer sends, without opening the thread or changing any GUI state. thread_root_event_id names the thread: it may be the thread's root or any message already in that thread, and it may belong to another user. Pass reply_to_event_id to quote and mention the author of one message of the same thread; without it the call posts a plain thread message. A reply_to_event_id in another thread or in the main timeline fails with not_in_thread and nothing is sent; the error names the thread that event belongs to, so retry with thread_root_event_id set to that thread. An id no event in the room has fails with event_not_found and nothing is sent. Attachments are not supported here. Reusing the same client_request_id does not post twice. Needs the send permission. If the caller disconnects before the answer, the reply may already be posted and cannot be recalled.",
+            description: "Post a plain-text reply in a thread, using the same thread relation and reply fallback the composer sends, without changing the selected account, Space or room. thread_root_event_id names the thread: it may be the thread's root or any message already in that thread, and it may belong to another user. When the reply's thread belongs to the room the app is showing, in the account tab the app is showing, Core also opens the thread pane on the thread root the reply went to, loaded or not. thread_pane reports what Core did: opened when the reply's thread is in the thread pane (Core opened it, or that thread was already the open one); not_opened_other_room when the app is showing another room; not_opened_background_account when the reply's account is not the account tab the app is showing, so nothing in its hidden pane was touched; not_opened_session_changed when the account's session changed while the send was in flight. The reply is sent in every case, and the account, the Space and the selected room are never changed. Pass reply_to_event_id to quote and mention the author of one message of the same thread; without it the call posts a plain thread message. A reply_to_event_id in another thread or in the main timeline fails with not_in_thread and nothing is sent; the error names the thread that event belongs to, so retry with thread_root_event_id set to that thread. An id no event in the room has fails with event_not_found, nothing is sent, and no pane opens. Attachments are not supported here. Reusing the same client_request_id does not post twice. Needs the send permission. If the caller disconnects before the answer, the reply may already be posted and cannot be recalled.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -468,9 +468,13 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "event_id": { "type": "string" },
-                    "transaction_id": { "type": "string" }
+                    "transaction_id": { "type": "string" },
+                    "thread_pane": {
+                        "enum": ["opened", "not_opened_other_room", "not_opened_background_account", "not_opened_session_changed"],
+                        "description": "opened: this reply's thread is in the thread pane; Core opened it because its room is the room the app is showing, or that thread was already the open one. not_opened_other_room: the app is showing another room. not_opened_background_account: the reply's account is not the account tab the app is showing, so its hidden thread pane was left untouched. not_opened_session_changed: the account's session changed while the send was in flight. The reply is sent in every case."
+                    }
                 },
-                "required": ["event_id", "transaction_id"]
+                "required": ["event_id", "transaction_id", "thread_pane"]
             })),
         },
         ToolDefinition {

@@ -263,6 +263,20 @@ fn message_action_tools_declare_their_permission_and_idempotency_contract() {
     ] {
         assert!(reply.description.contains(phrase), "{phrase}");
     }
+    // #1853: a reply in the room the app shows also opens that thread pane, and
+    // the result names why it did not when it did not.
+    assert!(reply.description.contains("also opens the thread pane"));
+    assert!(reply.description.contains("not_opened"));
+    assert_eq!(
+        reply.output_schema.as_ref().expect("output schema")["properties"]["thread_pane"]["enum"],
+        json!([
+            "opened",
+            "not_opened_other_room",
+            "not_opened_background_account",
+            "not_opened_session_changed"
+        ]),
+        "the result names every reason Core can leave the pane alone"
+    );
     assert!(
         validate_arguments(
             "send_thread_reply",

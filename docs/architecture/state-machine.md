@@ -2295,6 +2295,21 @@ stateDiagram-v2
 - The thread pane is either closed, opening a root event, or open with a focused
   thread timeline. Every opening/open pane retains a Rust-owned
   `ThreadOpenIntent`: `ExistingThread`, `NewThreadDraft`, or `PinnedReply { event_id }`.
+- #1853: the renderer's own thread open and an MCP thread reply in the room on
+  screen are the two openers, and both reduce the same `AppAction::OpenThread`.
+  A direct thread reply is routed back through `AppActor`, which holds the
+  caller's answer until the send settles and opens the pane only when the
+  thread's resolved root belongs to the room `state.timeline.room_id` shows, in
+  the session the request was made in, and only while this account's tab is the
+  one the app displays (`AccountWorkScheduler::is_selected_account`, the
+  scheduler's existing selection). It opens as `ExistingThread`, retries a
+  `Failed` pane instead of treating it as open, and stamps the reply outcome
+  with `thread_pane` (`opened`, or `not_opened_other_room` /
+  `not_opened_background_account` / `not_opened_session_changed`), so the caller
+  never has to infer the pane. A reply to another room, a background account
+  tab, a changed session, or a failed root read answers without opening anything
+  and without moving the account, the Space or the room. No new state,
+  transition, or reducer action is introduced.
 - The Threads panel is a separate Rust-owned `ThreadsListState`. Its
   `ThreadsListScope` is `Room`, `Home`, or `Space`; `Home` and `Space` resolve
   their participating room IDs from Rust-owned room/space projections before

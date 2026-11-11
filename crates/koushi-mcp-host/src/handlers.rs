@@ -866,10 +866,28 @@ async fn send_thread_reply(
             .await
             .map_err(direct_message_failure)?
         {
-            koushi_core::DirectMessageResponse::ThreadReply(outcome) => Ok(json!({
-                "event_id": outcome.event_id,
-                "transaction_id": outcome.transaction_id,
-            })),
+            koushi_core::DirectMessageResponse::ThreadReply(outcome) => {
+                // #1853: Core stamps the pane decision before it answers, so a
+                // missing one is an answer from a different action.
+                let Some(thread_pane) = outcome.thread_pane else {
+                    return Err(WireError::new(
+                        ErrorCode::Internal,
+                        "Koushi answered a different action",
+                    ));
+                };
+                Ok(json!({
+                    "event_id": outcome.event_id,
+                    "transaction_id": outcome.transaction_id,
+                    "thread_pane": match thread_pane {
+                        koushi_core::DirectThreadPaneOutcome::Opened => "opened",
+                        koushi_core::DirectThreadPaneOutcome::OtherRoom => "not_opened_other_room",
+                        koushi_core::DirectThreadPaneOutcome::BackgroundAccount
+                            => "not_opened_background_account",
+                        koushi_core::DirectThreadPaneOutcome::SessionChanged
+                            => "not_opened_session_changed",
+                    },
+                }))
+            }
             _ => Err(WireError::new(
                 ErrorCode::Internal,
                 "Koushi answered a different action",

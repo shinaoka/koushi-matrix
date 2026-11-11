@@ -63,6 +63,7 @@ use std::sync::{Arc, atomic::AtomicU64};
 #[cfg(test)]
 use std::time::Duration;
 
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 #[cfg(any(test, feature = "test-hooks"))]
 use koushi_state::ComposerDraftStore;
@@ -987,6 +988,8 @@ impl CoreRuntime {
             composer_draft_rejected_rx,
             pending_composer_acceptances: HashMap::new(),
             pending_command_admissions: Vec::new(),
+            pending_direct_thread_replies: FuturesUnordered::new(),
+            account_work: account_work.clone(),
             account_actor,
             activity_projection: ActivityProjection::default(),
             activity_resolution_generation: 0,
@@ -1427,6 +1430,31 @@ impl ActiveSearchRequest {
     }
 }
 
+/// #1853: one direct thread reply awaiting its send result.
+///
+/// The session revision the request was made in travels with it: a settlement
+/// that arrives after the account's session changed answers without opening a
+/// pane.
+struct PendingDirectThreadReply {
+    room_id: String,
+    session_revision: Option<u64>,
+    caller: oneshot::Sender<
+        Result<
+            crate::direct_operations::DirectMessageResponse,
+            crate::direct_operations::DirectMessageFailure,
+        >,
+    >,
+    result: Result<
+        crate::direct_operations::DirectMessageResponse,
+        crate::direct_operations::DirectMessageFailure,
+    >,
+}
+
+/// Kept `Sync` as well as `Send`: the actor holds `&AppActor` across awaits, so
+/// one non-`Sync` field would make the whole run loop non-`Send`.
+type PendingDirectThreadReplyFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = PendingDirectThreadReply> + Send + Sync>>;
+
 struct AppActor {
     view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry,
     /// This runtime's diagnostics lane, so a runtime-level record names the
@@ -1473,6 +1501,13 @@ struct AppActor {
     composer_draft_rejected_rx: mpsc::UnboundedReceiver<RequestId>,
     pending_composer_acceptances: HashMap<RequestId, PendingComposerAcceptance>,
     pending_command_admissions: Vec<oneshot::Sender<CoreCommandAdmission>>,
+    /// #1853: direct thread replies whose send has not settled yet. The caller's
+    /// answer waits here, so the runtime can open the thread pane before it
+    /// answers instead of holding the command loop on a send.
+    pending_direct_thread_replies: FuturesUnordered<PendingDirectThreadReplyFuture>,
+    /// #1853: the scheduler's account-tab identity, so a reveal can tell whether
+    /// this account is the one the app displays.
+    account_work: crate::account_work::AccountWorkScheduler,
     account_actor: AccountActorHandle,
     activity_projection: ActivityProjection,
     activity_resolution_generation: u64,
@@ -1865,6 +1900,11 @@ impl AppActor {
                 ) => {
                     if let Some(focused_projection) = focused_projection {
                         Box::pin(self.handle_focused_projection_commit(focused_projection)).await;
+                    }
+                }
+                settled = self.pending_direct_thread_replies.next(), if !self.pending_direct_thread_replies.is_empty() => {
+                    if let Some(settled) = settled {
+                        self.handle_direct_thread_reply_settled(settled).await;
                     }
                 }
                 action_batch = receive_action_batch(
@@ -3044,7 +3084,9 @@ impl AppActor {
     ///
     /// The runtime decides session readiness and the session's send admission
     /// (#1737); the account actor owns the bounded execution, the reaction lane,
-    /// and the reply. No app action is reduced and no timeline actor is mounted.
+    /// and the reply. No app action is reduced and no timeline actor is mounted,
+    /// except the thread reply reveal below (#1853), which opens that thread's
+    /// pane in the room the main pane displays and marks the outcome.
     async fn handle_direct_message_action(
         &mut self,
         request: crate::direct_operations::DirectMessageRequest,
@@ -3072,6 +3114,31 @@ impl AppActor {
                 ));
                 return false;
             }
+            // #1853: a thread reply settles here instead of at the caller, so
+            // the runtime can open the thread's pane first when that thread
+            // belongs to the room this account's main pane displays.
+            let response = match &request {
+                crate::direct_operations::DirectMessageRequest::ThreadReply { room_id, .. } => {
+                    let (settled_tx, settled_rx) = oneshot::channel();
+                    let room_id = room_id.clone();
+                    let session_revision = self.session_revision;
+                    let caller = response;
+                    self.pending_direct_thread_replies
+                        .push(Box::pin(async move {
+                            let result = settled_rx.await.unwrap_or(Err(
+                                crate::direct_operations::DirectMessageFailure::AccountInactive,
+                            ));
+                            PendingDirectThreadReply {
+                                room_id,
+                                session_revision,
+                                caller,
+                                result,
+                            }
+                        }));
+                    settled_tx
+                }
+                _ => response,
+            };
             let _ = self
                 .account_actor
                 .send(AccountMessage::DirectMessageAction { request, response })
@@ -3082,6 +3149,79 @@ impl AppActor {
             ));
         }
         false
+    }
+
+    /// #1853: answer one settled direct thread reply.
+    ///
+    /// The pane opens only when the thread's room is the room this account's
+    /// main pane displays: the account, the selected Space and the selected
+    /// room stay untouched, so the user's view does not move. Every other case
+    /// answers the send result unchanged, and the caller can tell the two apart
+    /// by `thread_pane`.
+    ///
+    /// Returns a boxed future so the run loop's frame holds one pointer instead
+    /// of this whole settlement (#1554 stack budget).
+    fn handle_direct_thread_reply_settled<'a>(
+        &'a mut self,
+        settled: PendingDirectThreadReply,
+    ) -> futures_util::future::BoxFuture<'a, ()> {
+        Box::pin(async move {
+            let PendingDirectThreadReply {
+                room_id,
+                session_revision,
+                caller,
+                result,
+            } = settled;
+            let result = match result {
+                Ok(crate::direct_operations::DirectMessageResponse::ThreadReply(mut outcome)) => {
+                    use crate::direct_operations::DirectThreadPaneOutcome as Pane;
+                    let targeted =
+                        self.thread_pane_targets(&room_id, &outcome.thread_root_event_id);
+                    let shown_room =
+                        self.state.timeline.room_id.as_deref() == Some(room_id.as_str());
+                    let pane = if session_revision != self.session_revision {
+                        // The room this send was made for is no longer the one
+                        // the pane would cover.
+                        Pane::SessionChanged
+                    } else if !self.account_work.is_selected_account() {
+                        // Another account tab is the one on screen: this
+                        // account's hidden pane is left untouched.
+                        Pane::BackgroundAccount
+                    } else if targeted {
+                        // A pane already on this thread keeps its composer and
+                        // its staged uploads: re-opening it would reinitialize
+                        // both, and it already shows the thread replied to.
+                        Pane::Opened
+                    } else if !shown_room {
+                        Pane::OtherRoom
+                    } else {
+                        let request_id = self.next_internal_request_id();
+                        let opened = Box::pin(self.open_thread_pane(
+                            request_id,
+                            room_id.clone(),
+                            outcome.thread_root_event_id.clone(),
+                            ThreadOpenIntent::ExistingThread,
+                        ))
+                        .await;
+                        if opened {
+                            let published_state = self.snapshot_tx.borrow().state.clone();
+                            self.publish_state_change(&published_state);
+                            Pane::Opened
+                        } else if self.state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
+                            // The reducer refused the open with the room still
+                            // on screen, so the session admitted nothing.
+                            Pane::SessionChanged
+                        } else {
+                            Pane::OtherRoom
+                        }
+                    };
+                    outcome.thread_pane = Some(pane);
+                    Ok(crate::direct_operations::DirectMessageResponse::ThreadReply(outcome))
+                }
+                other => other,
+            };
+            let _ = caller.send(result);
+        })
     }
 
     async fn handle_direct_room_messages(
@@ -4044,25 +4184,13 @@ impl AppActor {
                             intent,
                         } => {
                             Box::pin(async move {
-                                let replaced_thread_key = self
-                                    .unsubscribe_replaced_thread_timeline(&room_id, &root_event_id);
-                                let effects =
-                                    Box::pin(self.reduce_app_action(AppAction::OpenThread {
-                                        room_id,
-                                        root_event_id,
-                                        intent,
-                                    }))
-                                    .await;
-                                if effects_open_thread_timeline(&effects)
-                                    && let Some(key) = replaced_thread_key
-                                {
-                                    Box::pin(self.send_timeline_command_or_fail(
-                                        request_id,
-                                        TimelineCommand::Unsubscribe { request_id, key },
-                                    ))
-                                    .await;
-                                }
-                                Box::pin(self.handle_app_effects(request_id, effects)).await;
+                                Box::pin(self.open_thread_pane(
+                                    request_id,
+                                    room_id,
+                                    root_event_id,
+                                    intent,
+                                ))
+                                .await;
                                 true
                             })
                             .await
@@ -6579,6 +6707,60 @@ impl AppActor {
             account_key,
             kind: TimelineKind::Room { room_id },
         })
+    }
+
+    /// Whether the thread pane already shows this thread, in any of its open
+    /// states. Such a pane keeps its composer and staged uploads.
+    fn thread_pane_targets(&self, room_id: &str, root_event_id: &str) -> bool {
+        match &self.state.thread {
+            ThreadPaneState::Opening {
+                room_id: open_room,
+                root_event_id: open_root,
+                ..
+            }
+            | ThreadPaneState::Open {
+                room_id: open_room,
+                root_event_id: open_root,
+                ..
+            } => open_room == room_id && open_root == root_event_id,
+            // #1473: a failed pane is terminal until a user transition, so a
+            // reply retries the open instead of reporting a failed pane as open.
+            ThreadPaneState::Failed { .. } => false,
+            ThreadPaneState::Closed => false,
+        }
+    }
+
+    /// Open the thread pane on one root: release the pane this replaces, reduce
+    /// the open, and dispatch its effects.
+    ///
+    /// Reports whether the reducer opened the pane. Both the renderer's
+    /// `OpenThread` command and the #1853 direct-reply reveal go through here, so
+    /// a thread pane opens one way whatever asked for it.
+    async fn open_thread_pane(
+        &mut self,
+        request_id: RequestId,
+        room_id: String,
+        root_event_id: String,
+        intent: ThreadOpenIntent,
+    ) -> bool {
+        let replaced_thread_key =
+            self.unsubscribe_replaced_thread_timeline(&room_id, &root_event_id);
+        let effects = Box::pin(self.reduce_app_action(AppAction::OpenThread {
+            room_id,
+            root_event_id,
+            intent,
+        }))
+        .await;
+        let opened = effects_open_thread_timeline(&effects);
+        if opened && let Some(key) = replaced_thread_key {
+            Box::pin(self.send_timeline_command_or_fail(
+                request_id,
+                TimelineCommand::Unsubscribe { request_id, key },
+            ))
+            .await;
+        }
+        Box::pin(self.handle_app_effects(request_id, effects)).await;
+        opened
     }
 
     fn unsubscribe_replaced_thread_timeline(

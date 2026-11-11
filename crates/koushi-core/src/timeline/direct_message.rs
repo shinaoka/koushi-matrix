@@ -785,6 +785,9 @@ pub(crate) async fn thread_reply_direct(
     Ok(crate::direct_operations::DirectThreadReplyOutcome {
         event_id: event_id.to_string(),
         transaction_id: transaction_id.to_string(),
+        thread_root_event_id: root_id.to_string(),
+        // Only `AppActor` knows which account and room the app displays (#1853).
+        thread_pane: None,
     })
 }
 

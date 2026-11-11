@@ -108,6 +108,44 @@ pub struct DirectRedactOutcome {
 pub struct DirectThreadReplyOutcome {
     pub event_id: String,
     pub transaction_id: String,
+    /// #1853: the thread the reply belongs to: the requested event when it is a
+    /// thread root, otherwise the root it names. The send read the target once
+    /// before sending, so the runtime can open that thread's pane on this root
+    /// without resolving it again.
+    pub thread_root_event_id: String,
+    /// #1853: what the runtime did about the thread pane. `None` until `AppActor`
+    /// decides: the send layer opens no pane, so it answers `None` and the
+    /// runtime stamps the decision before the caller sees it.
+    pub thread_pane: Option<DirectThreadPaneOutcome>,
+}
+
+/// #1853: what the runtime did about the thread pane for a direct thread reply.
+///
+/// `Debug` records the case only; no case carries a room or event id.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum DirectThreadPaneOutcome {
+    /// The reply's thread is in the thread pane: the runtime opened it on the
+    /// root the send resolved, or that thread was already the open one.
+    Opened,
+    /// The app is showing another room, so the pane was left alone.
+    OtherRoom,
+    /// The reply's account is not the one the app displays, so its hidden thread
+    /// pane was left alone.
+    BackgroundAccount,
+    /// The account's session changed while the send was in flight, so the room
+    /// the pane would cover is no longer the send's room.
+    SessionChanged,
+}
+
+impl std::fmt::Debug for DirectThreadPaneOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Opened => "DirectThreadPaneOutcome::Opened",
+            Self::OtherRoom => "DirectThreadPaneOutcome::OtherRoom",
+            Self::BackgroundAccount => "DirectThreadPaneOutcome::BackgroundAccount",
+            Self::SessionChanged => "DirectThreadPaneOutcome::SessionChanged",
+        })
+    }
 }
 
 /// `Debug` for these shapes records presence only: a body, a reaction key, a
