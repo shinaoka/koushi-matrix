@@ -2735,6 +2735,118 @@ export function findDiscardedSendStateDerivations(sources) {
   return offenders;
 }
 
+/// The functions allowed to seed a public row list before a projection: the
+/// window constructors build `display_items` from the canonical window they were
+/// handed and every caller immediately projects over it.
+const DISPLAY_ROW_SEEDS = new Map([
+  ["display_projection.rs", new Set(["from_canonical_window", "new"])]
+]);
+
+/// The only function allowed to assemble rows for publication.
+const DISPLAY_ROW_ASSEMBLERS = new Map([
+  ["display_projection.rs", new Set(["project_display_items"])]
+]);
+
+/// The innermost delimiter that encloses `index`, skipping over the groups
+/// already closed before it.
+function enclosingDelimiterIndex(tokens, index, closeToOpen) {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    if (closeToOpen.has(cursor)) {
+      cursor = closeToOpen.get(cursor);
+      continue;
+    }
+    if (isOpeningDelimiter(tokens[cursor])) return cursor;
+  }
+  return -1;
+}
+
+/// True when the `{` at `index` opens a type body, where the same `field: Type`
+/// shape is a declaration rather than a value.
+function isTypeBodyBrace(tokens, index) {
+  const keyword = tokens[index - 2]?.value;
+  return tokens[index]?.value === "{" && ["struct", "enum", "union"].includes(keyword);
+}
+
+/// #1851: the public row list comes from one boundary. Three shapes are refused,
+/// all token based so that a write split across lines, a `..`-free shorthand and
+/// a bare multi-line call are the same token sequence as a one-line one — the
+/// blind spot a text scan leaves open.
+///  1. a display projection context built without the room's send authority, so
+///     the rows it renders fall back to whatever the row itself carries,
+///  2. `display_items` written with anything but the projection, and
+///  3. rows assembled for publication anywhere but the projection.
+export function findUnprojectedDisplayRowPublishes(sources) {
+  const offenders = [];
+  for (const [file, source] of Object.entries(sources)) {
+    const relative = timelineRelative(file);
+    const tokens = lexRust(source).filter((token) => token.kind !== "comment");
+    const owners = enclosingFunctionNames(tokens);
+    const { openToClose, closeToOpen } = delimiterPairs(tokens);
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      if (token.kind !== "identifier") continue;
+      const owner = owners[index] ?? "";
+      // 1. `DisplayProjectionContext::for_timeline(..).with_send_states(..)`. The
+      //    authority is chained immediately, so a context that drops it cannot be
+      //    mistaken for one that has it.
+      if (
+        token.value === "for_timeline" &&
+        tokens[index + 1]?.value === "(" &&
+        tokens[index - 1]?.value === ":" &&
+        tokens[index - 2]?.value === ":" &&
+        tokens[index - 3]?.value === "DisplayProjectionContext"
+      ) {
+        const close = openToClose.get(index + 1);
+        const chained =
+          tokens[close + 1]?.value === "." && tokens[close + 2]?.value === "with_send_states";
+        if (!chained) {
+          offenders.push(
+            `${relative}:${token.line} (${owner || "unknown function"}) builds a projection context without the send authority`
+          );
+        }
+        continue;
+      }
+      if (token.value !== "display_items" && token.value !== "assemble_display_items") continue;
+      const previous = tokens[index - 1];
+      const next = tokens[index + 1];
+      // 3. Rows assembled for publication outside the projection.
+      if (token.value === "assemble_display_items") {
+        if (next?.value !== "(" || previous?.value === "fn") continue;
+        const assemblers = DISPLAY_ROW_ASSEMBLERS.get(relative) ?? new Set();
+        if (!assemblers.has(owner)) {
+          offenders.push(
+            `${relative}:${token.line} (${owner || "unknown function"}) assembles public rows outside the projection`
+          );
+        }
+        continue;
+      }
+      // 2a. `rows.display_items = ..` must be the projection.
+      if (previous?.value === "." && next?.value === "=") {
+        const projected = next.value === "=" && tokens[index + 2]?.value === "project_display_items" && tokens[index + 3]?.value === "(";
+        if (!projected) {
+          offenders.push(
+            `${relative}:${token.line} (${owner || "unknown function"}) writes the public row list without the projection`
+          );
+        }
+        continue;
+      }
+      // 2b. A struct-literal field seeds rows directly. Only the window
+      //     constructors may seed, and they are always projected over.
+      const seedsRows = next?.value === ":" || next?.value === "," || next?.value === "}";
+      if (!seedsRows || (previous?.value !== "{" && previous?.value !== ",")) continue;
+      const body = enclosingDelimiterIndex(tokens, index, closeToOpen);
+      if (tokens[body]?.value !== "{" || isTypeBodyBrace(tokens, body)) continue;
+      const seeds = DISPLAY_ROW_SEEDS.get(relative) ?? new Set();
+      if (!seeds.has(owner)) {
+        offenders.push(
+          `${relative}:${token.line} (${owner || "unknown function"}) seeds the public row list outside the window constructors`
+        );
+      }
+    }
+  }
+  return offenders;
+}
+
 /// #1846: one derivation, read at every publish boundary.
 export function checkCoreTimelineSendStateDerivation() {
   const rule = "core.timeline.send_state_derivation";
@@ -2796,6 +2908,13 @@ export function checkCoreTimelineSendStateDerivation() {
   const discarded = findDiscardedSendStateDerivations(sources);
   if (discarded.length > 0) {
     failures.push(sourceContractFailure(rule, `a send-state derivation is discarded (${discarded.join(", ")})`));
+  }
+  // 7. The published rows come from one boundary: a context carries the
+  //    authority, and the window constructors plus the projection are the only
+  //    writers of the row list.
+  const unprojected = findUnprojectedDisplayRowPublishes(sources);
+  if (unprojected.length > 0) {
+    failures.push(sourceContractFailure(rule, `a public row list is published outside the display projection (${unprojected.join(", ")})`));
   }
   return failures;
 }

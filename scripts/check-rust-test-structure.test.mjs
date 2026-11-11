@@ -43,6 +43,7 @@ import {
   checkSdkLibrarySourceManifest,
   findDiscardedSendStateDerivations,
   findForbiddenRowSendStateAssignments,
+  findUnprojectedDisplayRowPublishes,
   checkSdkRoomReadMarkerContract,
   checkSdkSessionBackupFence,
   checkStateFocusedContextReducerContract,
@@ -275,6 +276,68 @@ test("the send-state tripwire rejects a discarded derivation", () => {
     "relay.rs:6",
     "relay.rs:8",
     "relay.rs:9"
+  ]);
+});
+
+test("the display-row gate rejects a publish that skips the projection", () => {
+  // #1851: the public row list comes from one boundary. Every offender below is
+  // the same token sequence as its one-line spelling, including the bare
+  // multi-line call a text scan misses (`install_row(` was that blind spot).
+  const offenders = findUnprojectedDisplayRowPublishes({
+    "crates/koushi-core/src/timeline/display_projection.rs": [
+      "pub(super) struct DisplayProjectionState {",
+      "    display_items: Vec<TimelineItem>,",
+      "}",
+      "impl DisplayProjectionState {",
+      "    pub(super) fn from_canonical_window(items: &[TimelineItem]) -> Self {",
+      "        let display_items = items.to_vec();",
+      "        let mut state = Self { display_items, ..Default::default() };",
+      "        state",
+      "    }",
+      "    pub(super) fn reproject(&mut self, context: &DisplayProjectionContext) -> Vec<TimelineDiff> {",
+      "        self",
+      "            .display_items",
+      "            = project_display_items(self, context);",
+      "        Vec::new()",
+      "    }",
+      "}",
+      "fn assemble_display_items(state: &DisplayProjectionState) -> Vec<TimelineItem> { Vec::new() }",
+      "fn project_display_items(state: &DisplayProjectionState, context: &DisplayProjectionContext) -> Vec<TimelineItem> {",
+      "    let mut items = assemble_display_items(state, context);",
+      "    context.send_states.apply_all(&mut items);",
+      "    items",
+      "}",
+      "fn context(kind: &TimelineKind, observation: &TimelineViewportObservation) -> DisplayProjectionContext {",
+      "    DisplayProjectionContext::for_timeline(kind, observation)",
+      "        .with_send_states(&HashMap::new())",
+      "}"
+    ].join("\n"),
+    "crates/koushi-core/src/timeline/relay.rs": [
+      "fn publish(state: &DisplayProjectionState, context: &DisplayProjectionContext) {",
+      "    assemble_display_items",
+      "        (state, context);",
+      "}",
+      "fn copy(state: &DisplayProjectionState, context: &DisplayProjectionContext) {",
+      "    self.display_items = assemble_display_items(state, context);",
+      "}",
+      "fn rebuild(items: &[TimelineItem]) -> DisplayProjectionState {",
+      "    DisplayProjectionState { display_items: items.to_vec(), ..Default::default() }",
+      "}",
+      "fn context_for(kind: &TimelineKind, observation: &TimelineViewportObservation) -> DisplayProjectionContext {",
+      "    DisplayProjectionContext::for_timeline(kind, observation)",
+      "        .with_thread_roots(order, roots)",
+      "}"
+    ].join("\n")
+  });
+
+  // Each entry names the line that publishes, and the function that owns it. A
+  // copy that also assembles rows is refused by both rules, on the same line.
+  assert.deepEqual(offenders, [
+    "relay.rs:2 (publish) assembles public rows outside the projection",
+    "relay.rs:6 (copy) writes the public row list without the projection",
+    "relay.rs:6 (copy) assembles public rows outside the projection",
+    "relay.rs:9 (rebuild) seeds the public row list outside the window constructors",
+    "relay.rs:12 (context_for) builds a projection context without the send authority"
   ]);
 });
 

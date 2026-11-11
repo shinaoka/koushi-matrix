@@ -1,7 +1,7 @@
 //! #1846: a resolved send state is derived at projection time and never stored
 //! in a row, so no publish path can roll it back.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use koushi_protocol::event::{TimelineItemId, TimelineSendFailureReason};
 
@@ -157,6 +157,51 @@ fn batch_inserted_successor_joins_as_blocked() {
         authority.derive(Some(&TimelineSendState::Sending), Some("t2")),
         "the projection renders exactly the derivation"
     );
+}
+
+/// Path 3 at the commit boundary: the recovery-window replacement and the pending
+/// refresh publish through the same authority as the live path, so a committed row
+/// — or a manager-owned row joining the committed window — never renders what its
+/// own copy carries.
+#[test]
+fn a_committed_window_and_its_pending_rows_keep_the_resolved_state() {
+    let statuses = stopped_room();
+    let canonical = canonical_queue();
+    let authority = SendStateAuthority::new(&statuses);
+    let scrolled_up = DisplayProjectionContext::for_timeline(
+        &room_key().kind,
+        &TimelineViewportObservation {
+            at_bottom: false,
+            ..Default::default()
+        },
+    )
+    .with_send_states(&statuses);
+    let mut projection =
+        DisplayProjectionState::from_canonical_window(&canonical, 0..canonical.len());
+    // The SDK/Core reset commits a replacement snapshot over the same positions.
+    projection.reset_bounded(&canonical, &scrolled_up);
+    // A request the SDK has not bound yet joins the committed window.
+    let pending = send_row("t3", Some(TimelineSendState::Sending));
+    projection.replace_pending(vec![pending.clone()], HashSet::new(), &scrolled_up);
+    // Returning to live republishes the same rows.
+    projection.return_to_live_window(&canonical, &room_context(&statuses));
+
+    for transaction_id in ["t1", "t2", "t3"] {
+        assert_eq!(
+            rendered_send_state(projection.display_items(), transaction_id),
+            Some(recoverable()),
+            "{transaction_id} is not sending in a stopped room"
+        );
+    }
+    // The row the command names is the un-derived one, and admission accepts it
+    // exactly because it renders `not_sent`.
+    for un_derived in [canonical[1].clone(), pending] {
+        assert!(
+            retry_admission(&authority, &un_derived).is_ok(),
+            "a rendered Resend must be accepted: {:?}",
+            un_derived.id
+        );
+    }
 }
 
 /// #1846 B1: the blocking authority is the room table, never the rows a display
