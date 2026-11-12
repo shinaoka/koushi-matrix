@@ -1773,3 +1773,27 @@ as ancestors of the combined gitlink above. Publication remains blocked on
 Synapse Core QA, the final combined-state gates and integrated post-review;
 no final PR or merge is claimed. Cold-room retirement and child-task teardown
 remain parked; this merge does not claim to solve those ownership boundaries.
+
+## 2026-11-12 (#1871): Element Desktop key import is renderer-less until Phase B
+
+No SDK customization: the work is a Koushi desktop adapter plus a reuse of the
+public `import_room_keys` path. It does add two Tauri commands that no renderer
+calls yet, so they are recorded here instead of being silently registered — the
+exact shape the reachability guard exists to catch.
+
+| Command | Verdict | Note |
+| --- | --- | --- |
+| `migration_detect_sources` | **renderer-less in Phase A** | Reports local Element Desktop / Element X sources. Phase A is engine and IPC only; the settings surface that asks "move keys from another app?" is Phase B and becomes its caller. |
+| `migration_import_element_desktop` | **renderer-less in Phase A** | Drives Element Desktop's own `exportRoomKeys()` over a loopback Chrome DevTools port and hands the staged keys to `AccountCommand::ImportMigratedRoomKeys`. Same Phase B caller. |
+
+Both are exercised by `apps/desktop/src-tauri/src/migration/` tests and by the
+`koushi-sdk` staging-import test in this change, so they are live code with a
+missing UI, not dead code. Removal condition: the Phase B settings surface calls
+them (then delete these two entries from
+`scripts/check-retained-reachability.mjs`), or Phase B is abandoned (then delete
+the commands and the adapter module).
+
+Element X's `matrix-sdk-crypto.sqlite3` is not read at all: every value in it is
+encrypted under a passphrase the app keeps in its own keychain, so it is
+detected and reported as unimportable. See
+[element-key-import.md](../architecture/element-key-import.md).

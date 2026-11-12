@@ -83,10 +83,17 @@ const INVENTORY = [
  * Registered Tauri commands with no renderer caller, recorded as a verdict in
  * the inventory's reachability audit. Each is tracked for removal there.
  * `refresh_pinned_events` and `toggle_reaction` were the first two; #1409
- * removed them, so the set is empty. Add an entry only together with an audit
+ * removed them. Add an entry only together with an audit
  * verdict that names the removal.
  */
-const RENDERER_LESS_COMMANDS = new Set();
+const RENDERER_LESS_COMMANDS = new Set([
+  // #1871 Phase A ships the engine and IPC that move decryption keys out of
+  // another local Matrix app. The settings surface that calls them is Phase B;
+  // the verdict in docs/upstream/matrix-rust-sdk-feedback.md records that this
+  // is deliberate and names the Phase B caller as the removal condition.
+  "migration_detect_sources",
+  "migration_import_element_desktop",
+]);
 
 /** Surfaces removed by #1395; they must not reappear in product crates. */
 const REMOVED_SURFACES = [

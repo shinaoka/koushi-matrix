@@ -1167,6 +1167,73 @@ impl AccountActor {
         }
     }
 
+    /// Imports room keys the desktop adapter staged from another local Matrix
+    /// app (#1871). The staging file holds the adapter's extraction in this
+    /// workspace's format; it is deleted here whether the import succeeds or
+    /// fails, because it is the only plaintext copy of those keys on disk.
+    pub(super) async fn handle_import_migrated_room_keys(&mut self, request_id: RequestId) {
+        let staged_path = self
+            .native_artifacts
+            .take(request_id, NativeArtifactKind::RoomKeyImportSource);
+        let staged_path = match staged_path {
+            Ok(path) => path,
+            Err(_) => {
+                self.send_actions(vec![AppAction::RoomKeyImportFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }])
+                .await;
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                );
+                return;
+            }
+        };
+        let session = self.session.clone();
+        let Some(session) = session else {
+            let _ = std::fs::remove_file(&staged_path);
+            self.send_actions(vec![AppAction::RoomKeyImportFailed {
+                request_id: request_id.sequence,
+                kind: TrustOperationFailureKind::Sdk,
+            }])
+            .await;
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        let result = koushi_sdk::import_migrated_room_keys(&session, staged_path.clone()).await;
+        // The staged file is plaintext key material: never leave it behind.
+        let _ = std::fs::remove_file(&staged_path);
+
+        match result {
+            Ok(summary) => {
+                self.send_actions(vec![AppAction::RoomKeyImported {
+                    request_id: request_id.sequence,
+                    imported_count: summary.imported_keys,
+                    total_count: summary.attempted_keys,
+                }])
+                .await;
+            }
+            Err(error) => {
+                let kind = classify_e2ee_trust_error(&error);
+                self.send_actions(vec![AppAction::RoomKeyImportFailed {
+                    request_id: request_id.sequence,
+                    kind,
+                }])
+                .await;
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::AccountOperationFailed {
+                        kind: classify_e2ee_trust_auth_failure(&error),
+                    },
+                );
+            }
+        }
+    }
+
     pub(super) async fn handle_bootstrap_secure_backup(
         &mut self,
         request_id: RequestId,

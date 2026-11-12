@@ -126,6 +126,9 @@ pub use e2ee::export_room_keys_to_file;
 #[cfg(not(target_family = "wasm"))]
 pub use e2ee::import_room_keys_from_file;
 
+#[cfg(not(target_family = "wasm"))]
+pub use e2ee::{MigratedRoomKeysSummary, import_migrated_room_keys};
+
 pub use profile::{
     MatrixIgnoredUserListError, MatrixIgnoredUserListFailureKind, MatrixLocalUserAliases,
     MatrixOwnProfile, MatrixProfileError, MatrixProfileFailureKind, MatrixReportError,

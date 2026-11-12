@@ -2703,6 +2703,15 @@ mod e2ee_trust_tests;
 #[cfg(test)]
 mod recovery_key_reveal_tests;
 
+#[cfg(not(target_family = "wasm"))]
+mod migrated_room_keys;
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod migrated_room_keys_tests;
+
+#[cfg(not(target_family = "wasm"))]
+pub use migrated_room_keys::{MigratedRoomKeysSummary, import_migrated_room_keys};
+
 pub(super) const DESKTOP_SQLITE_STORE_POOL_MAX_SIZE: usize = 4;
 
 impl MatrixClientSession {

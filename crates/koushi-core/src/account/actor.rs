@@ -3595,6 +3595,9 @@ impl AccountActor {
             } => {
                 Box::pin(self.handle_import_room_keys(request_id, request)).await;
             }
+            AccountCommand::ImportMigratedRoomKeys { request_id } => {
+                Box::pin(self.handle_import_migrated_room_keys(request_id)).await;
+            }
             AccountCommand::BootstrapSecureBackup {
                 request_id,
                 request,

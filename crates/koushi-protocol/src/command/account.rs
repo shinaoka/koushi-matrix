@@ -423,6 +423,13 @@ pub enum AccountCommand {
         request_id: RequestId,
         request: RoomKeyImportRequest,
     },
+    /// Import room keys the desktop adapter extracted from another local Matrix
+    /// app into a `0600` staging file (#1871). The adapter hands over the
+    /// private path together with the command; Core reads, imports, and deletes
+    /// it.
+    ImportMigratedRoomKeys {
+        request_id: RequestId,
+    },
     BootstrapSecureBackup {
         request_id: RequestId,
         request: SecureBackupSetupRequest,
@@ -759,6 +766,10 @@ impl fmt::Debug for AccountCommand {
                 .debug_struct("ImportRoomKeys")
                 .field("request_id", request_id)
                 .field("request", request)
+                .finish(),
+            Self::ImportMigratedRoomKeys { request_id } => formatter
+                .debug_struct("ImportMigratedRoomKeys")
+                .field("request_id", request_id)
                 .finish(),
             Self::BootstrapSecureBackup {
                 request_id,

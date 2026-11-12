@@ -5294,6 +5294,11 @@ stateDiagram-v2
     Importing --> Failed: RoomKeyImportFailed [matching request_id]
 ```
 
+`RoomKeyImportRequested` has two producers: `AccountCommand::ImportRoomKeys` (an Element-format
+file the user picked) and `AccountCommand::ImportMigratedRoomKeys` (keys the desktop adapter staged
+from another local Matrix app, #1871). Both settle through the same transitions; see
+[element-key-import.md](element-key-import.md).
+
 ```mermaid
 stateDiagram-v2
     [*] --> Idle

@@ -186,6 +186,9 @@ pub(crate) fn native_artifact_for_account_command(
         AccountCommand::ImportRoomKeys { request_id, .. } => {
             Some((*request_id, NativeArtifactKind::RoomKeyImportSource))
         }
+        AccountCommand::ImportMigratedRoomKeys { request_id } => {
+            Some((*request_id, NativeArtifactKind::RoomKeyImportSource))
+        }
         AccountCommand::ExportHistory { request_id, .. } => {
             Some((*request_id, NativeArtifactKind::HistoryExportDirectory))
         }
@@ -400,6 +403,7 @@ fn account_command_requires_ready_session(command: &AccountCommand) -> bool {
             | AccountCommand::StopHistoryExport { .. }
             | AccountCommand::RetryHistoryExport { .. }
             | AccountCommand::ImportRoomKeys { .. }
+            | AccountCommand::ImportMigratedRoomKeys { .. }
             | AccountCommand::BootstrapSecureBackup { .. }
             | AccountCommand::RecoverSecureBackup { .. }
             | AccountCommand::RetrySecureBackupInspection { .. }

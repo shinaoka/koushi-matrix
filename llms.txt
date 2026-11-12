@@ -25,7 +25,7 @@ passwords, recovery keys, tokens, or private message content.
 - [Rooms and Spaces](docs/help/rooms-and-spaces.md): Join or create rooms, manage invitations, and navigate Spaces and direct messages.
 - [Messaging](docs/help/messaging.md): Send text and files, edit messages, reply, and use threads.
 - [Search](docs/help/search.md): Find past messages and manage local history indexing.
-- [Security and recovery](docs/help/security-and-recovery.md): Verify a session, recover encrypted history, and distinguish key backups from chat exports.
+- [Security and recovery](docs/help/security-and-recovery.md): Verify a session, recover encrypted history, move keys from another app, and distinguish key backups from chat exports.
 - [Connect an AI assistant (MCP)](docs/help/ai-assistants.md): Register Claude Code, Codex, pi, DeepSeek Harness, or another MCP client, approve it in Koushi, and use the message tools.
 - [Command-line access](docs/help/command-line.md): Read and search through the running Koushi app from a terminal or script.
 - [User trust model](docs/help/user-trust-model.md): Understand unverified users, verified identities, identity resets, and device trust.

@@ -100,6 +100,7 @@ pub(crate) mod history_export;
 pub(crate) mod live_signals;
 pub(crate) mod local_encryption;
 pub(crate) mod mcp;
+pub(crate) mod migration;
 pub(crate) mod native_attention;
 pub(crate) mod navigation;
 pub(crate) mod profile;

@@ -7126,6 +7126,11 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 request_id: request_id.sequence,
             })
         }
+        AccountCommand::ImportMigratedRoomKeys { request_id } => {
+            Some(AppAction::RoomKeyImportRequested {
+                request_id: request_id.sequence,
+            })
+        }
         AccountCommand::BootstrapSecureBackup {
             request_id,
             request,
