@@ -4640,11 +4640,6 @@ button:disabled {
   background: var(--surface-hover);
 }
 
-.reply-quote.has-thumbnail {
-  grid-template-columns: minmax(0, 1fr) auto;
-  column-gap: 8px;
-}
-
 .reply-quote-copy {
   display: grid;
   gap: 2px;
@@ -4711,6 +4706,18 @@ button.reply-quote-thumbnail:focus-visible {
 
 .reply-quote-thumbnail {
   position: relative;
+}
+
+/* #1874: in the timeline the image is the quote's content. The inline style
+   sets its width and aspect ratio from the media hints (at most 240 x 160 px),
+   so the box keeps its final shape while the thumbnail is pending. */
+.reply-quote-thumbnail.is-timeline {
+  display: grid;
+  justify-self: start;
+  block-size: auto;
+  max-inline-size: 100%;
+  margin-block-start: 4px;
+  border-radius: 6px;
 }
 
 /* #1592: only a Rust-openable quote gets pointer, hover, and focus

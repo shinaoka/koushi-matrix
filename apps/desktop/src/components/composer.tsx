@@ -918,6 +918,7 @@ export const Composer = memo(function Composer({
       })
     : undefined;
 
+  const replyQuoteText = replyQuote ? replyQuoteBody(replyQuote) : null;
   return (
     <section
       ref={sectionRef}
@@ -974,9 +975,11 @@ export const Composer = memo(function Composer({
                 <span className="composer-reply-quote-sender" dir="auto">
                   {peopleFacingLabel(replyQuote.sender_label)}
                 </span>
-                <span className="composer-reply-quote-body" dir="auto">
-                  {replyQuoteBody(replyQuote)}
-                </span>
+                {replyQuoteText !== null ? (
+                  <span className="composer-reply-quote-body" dir="auto">
+                    {replyQuoteText}
+                  </span>
+                ) : null}
               </div>
               <ReplyQuoteThumbnail
                 quote={replyQuote}

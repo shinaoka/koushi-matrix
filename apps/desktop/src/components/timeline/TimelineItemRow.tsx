@@ -882,9 +882,14 @@ export function TimelineItemRow({
       onOpenReplyQuote(roomId, replyQuote.event_id);
     }
   };
+  const replyQuoteText = replyQuote
+    ? replyQuote.formatted
+      ? ""
+      : replyQuoteBody(replyQuote)
+    : null;
   const replyQuoteContent = replyQuote ? (
     <div
-      className={`reply-quote${replyQuoteOpenable ? " is-openable" : ""}${replyQuote.media && replyQuote.state === "ready" ? " has-thumbnail" : ""}`}
+      className={`reply-quote${replyQuoteOpenable ? " is-openable" : ""}`}
       data-reply-state={replyQuote.state}
       onClick={
         replyQuoteOpenable
@@ -953,6 +958,7 @@ export function TimelineItemRow({
           {t("timeline.openOriginalMessage")}
         </a>
       ) : null}
+      {replyQuoteText !== null ? (
       <div className="reply-quote-body" dir="auto">
         {replyQuote.formatted
           ? renderFormattedBody(
@@ -972,14 +978,16 @@ export function TimelineItemRow({
                 room: false
               }
             )
-          : replyQuoteBody(replyQuote)}
+          : replyQuoteText}
       </div>
-      </div>
+      ) : null}
+      {/* #1874: the image is the quote's content, under the sender and caption. */}
       <ReplyQuoteThumbnail
         quote={replyQuote}
         state={replyQuoteThumbnail}
         onOpen={onOpenQuotedMedia}
       />
+      </div>
     </div>
   ) : null;
   const bodyContent = isRedacted ? (
