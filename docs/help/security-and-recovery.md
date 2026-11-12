@@ -125,25 +125,58 @@ room keys.
 
 ## Move keys from Element or Element X
 
-Keys received in another Matrix client stay usable here only when that client
-can still give them up. Do this before you sign out of the old client or
-uninstall it.
+Encryption keys stay with the client that received them. Once the old app is
+signed out or uninstalled, whatever it did not share or back up is gone, so act
+while it is still in place. Every route below also needs the **same account** in
+both apps: keys from a different account open nothing here.
 
-**Element Web or Element Desktop.** In Element, open
-**Settings → Security** and use **Export E2E room keys**, choosing a passphrase.
-Then, in Koushi, open **Account Settings → Encryption → Key management**, select
-**Import room keys**, choose the file, and supply the same passphrase.
+There are three routes, in the order that usually works:
 
-**Element X on a phone or on this Mac.** Its local keys are protected by a key
-inside the app itself and cannot be handed to Koushi. Sign in to Element Web or
-Element Desktop with the same account, wait for the keys to arrive there, and use
-the export above. If the account has an existing recovery key or security phrase,
-entering it in Koushi under **Open recovery** does the same job, and so does
-verifying from the phone that still holds the keys.
+1. **Verify from the old device.** This needs Element or Element X still
+   installed and signed in, with the history you want still readable in it. In
+   Koushi, open **Account Settings → Sessions**, choose **Verify this session**,
+   then **Verify with another device**, and confirm the request in the old app.
+   It needs no recovery key and no file, so it also works when the account has no
+   secure backup. Open an affected room in Koushi and confirm its history
+   decrypts before you sign out of the old app.
+2. **Enter your recovery key or security phrase.** This needs an existing secure
+   backup on the account, or a recovery key you recorded earlier. Open
+   **Account Settings → Encryption → Open recovery** and enter it in the
+   **Encryption Recovery** form. It works when the old device is already gone.
+3. **Import an exported key file.** This needs a file you exported from the old
+   client earlier, plus the passphrase that protected it. In Koushi, open
+   **Account Settings → Encryption → Key management**, select **Import room
+   keys**, choose the file, supply its passphrase, and confirm. It works only for
+   keys the file actually contains.
 
-Without a recovery key and without a device that still holds the keys, history
-received in the old client cannot be recovered. Set up secure backup in Koushi
-so that future messages stay readable on your other devices.
+**Element X.** Its local data is encrypted with a key Element X keeps in its own
+Keychain, which Koushi cannot read, so a phone that still has your history has to
+give the keys up itself: use route 1. If that phone is no longer available, sign
+in to Element Web or Element Desktop with the same account, let the keys arrive
+there, and then use route 2 or route 3 from that client.
+
+**Before you create a new secure backup.** A new backup starts empty. Once it
+replaces the previous one, history that only the old backup held cannot be
+restored from the new one, and this is easy to do by accident while trying to fix
+a missing-history problem. If the old device or phone still exists, take route 1
+first; if a recovery key exists, record it before anything replaces the backup.
+
+**Accounts you only use on the web.** If there is no Element Desktop or Element X
+on this computer — a matrix.org account used through `app.element.io`, for
+example — open `https://app.element.io/#/settings/security` in a browser, sign in
+to the same account, and check **Secure Backup** there. If the account has a
+recovery key you no longer hold, that page can reset the backup and show a new
+key; a reset abandons history that only the previous key could open, so try
+route 1 first and record the new key before returning to Koushi and entering it
+under **Open recovery**.
+
+Some history cannot be recovered in Koushi: messages whose keys no remaining
+client and no backup holds stay unreadable, and resetting identity or erasing
+local data does not bring them back. This is a property of how encrypted history
+is shared, not a fault in this app. Setting up secure backup in Koushi keeps
+future messages readable on your other devices; for a single message you can also
+choose **Request decryption keys for past messages** as described in
+[Request missing historical keys](rooms-and-spaces.md#request-missing-historical-keys).
 
 ## Understand trust labels
 

@@ -89,10 +89,14 @@ which is not parsed directly. Instead the adapter asks Element's own web app:
    running before step 1.
 
 While that instance runs, `<port>` is a local attack surface: any same-user
-process can reach it, and it stays open until the adapter quits Element (bounded
-at 90 s). This is the mechanism the issue prescribes for a local tool, and it is
-why the port binds loopback only and the target allowlist rejects anything that is
-not the Element webapp.
+process can reach it. The export itself is bounded — the adapter waits at most
+90 s for the webapp target and the DevTools round trip, and 10 s per quit
+request — but the port closes only when that Element process exits. The adapter
+never force-kills it: if Element ignores the quit request, the process keeps
+running with the debugging port until the user quits or restarts Element, and the
+second quit's failure is not escalated. This is the mechanism the issue
+prescribes for a local tool, and it is why the port binds loopback only and the
+target allowlist rejects anything that is not the Element webapp.
 
 New dependencies for this path: `tokio-tungstenite` (WebSocket frames) and
 `futures-util` (already in the workspace lock).
