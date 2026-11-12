@@ -41,6 +41,10 @@ import { AppearanceControls, LanguageControls } from "./user-settings/Appearance
 import { EmojiPickerSizeRow } from "./user-settings/EmojiPickerSizeRow";
 import { DetailRow } from "./user-settings/SettingsStatusPrimitives";
 import type { DisplayDensity } from "../domain/types";
+import {
+  notificationPermissionPrompt,
+  type NotificationPermission
+} from "../domain/desktopNotification";
 import type { ShortcutLabelProfile } from "../domain/shortcuts";
 import { renderableThumbnailSourceUrl } from "../backend/linkMediaRuntime";
 import { avatarInitial } from "../app/uiShared";
@@ -146,6 +150,7 @@ export function UserSettingsPanel({
   accountNotificationActions = noopAccountNotificationActions,
   notificationDelivery = defaultNotificationDeliveryState,
   notificationDeliveryActions = noopNotificationDeliveryActions,
+  notificationPermission,
   rooms,
   spaces,
   accountTabs = []
@@ -226,6 +231,8 @@ export function UserSettingsPanel({
   /** #1427: the selected account's runtime state for this device's notification delivery. */
   notificationDelivery?: NotificationDeliveryState;
   notificationDeliveryActions?: NotificationDeliveryActions;
+  /** #1868: what the OS actually authorizes; the switch only stores the preference. */
+  notificationPermission?: NotificationPermission;
   rooms?: RoomSummary[];
   spaces?: SpaceSummary[];
   /** App scope: the account tabs that label MCP assistant permissions (#1536). */
@@ -712,6 +719,11 @@ export function UserSettingsPanel({
                       current={selectedNotifications}
                       onSelect={onUpdateSettings}
                       icon={<Bell size={15} aria-hidden="true" />}
+                    />
+                    {/* #1868: the switch is the stored preference; this says what the OS will do. */}
+                    <NotificationOsPermissionNotice
+                      notificationPermission={notificationPermission}
+                      desktopNotificationsEnabled={selectedNotifications.desktop_notifications}
                     />
                     <NotificationSettingToggle
                       label={t("settings.notificationMessagePreviews")}
@@ -1211,6 +1223,60 @@ function NotificationSettingToggle({
         <span className="settings-switch-thumb" />
       </span>
     </button>
+  );
+}
+
+function NotificationOsPermissionNotice({
+  notificationPermission,
+  desktopNotificationsEnabled
+}: {
+  notificationPermission?: NotificationPermission;
+  desktopNotificationsEnabled: boolean;
+}) {
+  const prompt = notificationPermissionPrompt(
+    notificationPermission?.authorization ?? null,
+    desktopNotificationsEnabled
+  );
+  if (!prompt || !notificationPermission) {
+    return null;
+  }
+  const openSystemSettings = prompt === "open_settings";
+  return (
+    <div className="settings-notification-permission" data-testid="notification-os-permission">
+      <p className={`profile-settings-hint${openSystemSettings ? " error" : ""}`}>
+        {t(
+          openSystemSettings
+            ? "settings.notificationOsPermissionDenied"
+            : "settings.notificationOsPermissionNotDetermined"
+        )}
+      </p>
+      <div className="profile-settings-actions">
+        <button
+          className="profile-settings-action"
+          type="button"
+          onClick={() => {
+            if (openSystemSettings) {
+              notificationPermission.openSystemSettings();
+            } else {
+              notificationPermission.request();
+            }
+          }}
+        >
+          {openSystemSettings ? (
+            <ExternalLink size={14} aria-hidden="true" />
+          ) : (
+            <Bell size={14} aria-hidden="true" />
+          )}
+          <span>
+            {t(
+              openSystemSettings
+                ? "settings.notificationOsPermissionOpenSettings"
+                : "settings.notificationOsPermissionAllow"
+            )}
+          </span>
+        </button>
+      </div>
+    </div>
   );
 }
 

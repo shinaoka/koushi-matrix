@@ -88,6 +88,39 @@ impl NativeNotificationOutcome {
     }
 }
 
+/// OS-level authorization for this app's desktop banners.
+///
+/// The persisted Desktop notifications switch is the user's preference; this is
+/// whether the operating system will actually show a banner for it. The wire
+/// tokens are the same on every platform so the settings UI has one shape.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) enum NativeNotificationAuthorization {
+    Authorized,
+    Provisional,
+    Ephemeral,
+    Denied,
+    NotDetermined,
+    /// The platform has no OS-level notification grant to report.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    Unsupported,
+    /// The OS could not answer: an unbundled dev build, or a failed query.
+    Unavailable,
+}
+
+impl NativeNotificationAuthorization {
+    /// Whether the OS will show a banner for this app.
+    ///
+    /// The delivery gate is macOS-only today, but the answer is the same on
+    /// every platform, so the platforms that never call it keep the method for
+    /// the shared tests instead of hiding it behind a cfg.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn allows_delivery(self) -> bool {
+        matches!(self, Self::Authorized | Self::Provisional | Self::Ephemeral)
+    }
+}
+
 /// Target handed to the webview after a completed notification click.
 ///
 /// Carries only identifiers the webview already holds; the notification body
@@ -600,6 +633,66 @@ pub(crate) async fn request_native_attention_notification_permission() -> bool {
     return mac_usernotifications::request_auth().await.unwrap_or(false);
     #[cfg(not(target_os = "macos"))]
     true
+}
+
+/// Report what the OS currently authorizes for this app's banners.
+#[tauri::command]
+pub(crate) async fn native_attention_notification_authorization() -> NativeNotificationAuthorization
+{
+    current_authorization().await
+}
+
+/// Open the OS settings page where the user can allow this app's banners.
+#[tauri::command]
+pub(crate) async fn open_native_attention_notification_settings() -> Result<(), &'static str> {
+    open_notification_settings()
+}
+
+#[cfg(target_os = "macos")]
+fn authorization_from_status(
+    status: mac_usernotifications::AuthorizationStatus,
+) -> NativeNotificationAuthorization {
+    use mac_usernotifications::AuthorizationStatus;
+    match status {
+        AuthorizationStatus::Authorized => NativeNotificationAuthorization::Authorized,
+        AuthorizationStatus::Provisional => NativeNotificationAuthorization::Provisional,
+        AuthorizationStatus::Ephemeral => NativeNotificationAuthorization::Ephemeral,
+        AuthorizationStatus::Denied => NativeNotificationAuthorization::Denied,
+        AuthorizationStatus::NotDetermined => NativeNotificationAuthorization::NotDetermined,
+        // A status this build does not know is not a grant.
+        AuthorizationStatus::Unknown => NativeNotificationAuthorization::Unavailable,
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn current_authorization() -> NativeNotificationAuthorization {
+    if mac_usernotifications::check_bundle().is_err() {
+        return NativeNotificationAuthorization::Unavailable;
+    }
+    match mac_usernotifications::get_notification_settings().await {
+        Ok(settings) => authorization_from_status(settings.authorization_status),
+        Err(_) => NativeNotificationAuthorization::Unavailable,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn current_authorization() -> NativeNotificationAuthorization {
+    NativeNotificationAuthorization::Unsupported
+}
+
+#[cfg(target_os = "macos")]
+fn open_notification_settings() -> Result<(), &'static str> {
+    // A fixed, user-input-free URL: the pane macOS uses for this app's banners.
+    std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.Notifications-Settings.extension")
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| "could not open System Settings")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_notification_settings() -> Result<(), &'static str> {
+    Err("opening OS notification settings is not supported on this platform")
 }
 
 #[cfg(test)]

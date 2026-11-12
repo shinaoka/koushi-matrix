@@ -1812,7 +1812,18 @@ activates; dismissal and other actions do not navigate. A notification request
 accepted for dispatch does not prove the OS displayed it; asynchronous send
 errors produce `show_failed`. The explicit Desktop notifications switch requests
 macOS authorization when enabled; passive dispatch checks existing authorization
-without prompting. Clearing read attention targets only the owning account and
+without prompting. Because the switch is a persisted preference and the OS grant
+is separate, the adapter also reports the grant itself
+(`authorized`, `provisional`, `ephemeral`, `denied`, `not_determined`,
+`unsupported`, `unavailable`; an unbundled dev build reports `unavailable`) and
+can open the OS notification settings page. When the switch was already ON at
+launch — the migrated-install case — and the OS has still not decided, the
+webview asks once per launch and re-reads the answer; it never repeats that ask
+per render, mount, or account switch, and does not ask where the OS cannot
+answer (`unsupported`, `unavailable`). macOS prompts at most once per install,
+so a denial is never retried: Settings shows the switch's stored value plus the
+missing grant and an Open System Settings action, and the persisted value is
+never rewritten. Clearing read attention targets only the owning account and
 waits until each submitted banner is at least five seconds old. Clicks remain usable
 during that interval. Newer notifications are excluded from an earlier clear.
 Session loss or notification/preview privacy disablement removes that account's

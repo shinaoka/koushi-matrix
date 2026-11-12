@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { UserSettingsPanel, AppSettingsDialog } from "./UserSettingsPanel";
 import { readyDesktopSnapshotFixture } from "../test/desktopApiFixture";
+import type { NotificationAuthorization } from "../domain/desktopNotification";
 import type {
   E2eeTrustState,
   NotificationDeliverySettings,
@@ -1967,6 +1968,101 @@ describe("UserSettingsPanel", () => {
       expect(screen.getByTestId("notification-homeserver-source").textContent).toContain(
         "アカウントのすべての端末に適用されます"
       );
+    } finally {
+      setActiveLocaleProfile("en", "none");
+    }
+  });
+
+  // #1868: an ON switch is a stored preference, not proof that the OS will show
+  // a banner. The OS authorization must be visible where the switch is.
+  const renderOsPermission = (
+    notificationAuthorization: NotificationAuthorization | null,
+    options: { desktopNotifications?: boolean; settingsScope?: "account" | "app" } = {}
+  ) => {
+    const request = vi.fn();
+    const openSystemSettings = vi.fn();
+    render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        settingsScope={options.settingsScope ?? "account"}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="macos"
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={
+          options.desktopNotifications === false
+            ? {
+                ...settings,
+                values: {
+                  ...settings.values,
+                  notifications: { ...settings.values.notifications, desktop_notifications: false }
+                }
+              }
+            : settings
+        }
+        {...handlers}
+        notificationPermission={{
+          authorization: notificationAuthorization,
+          request,
+          openSystemSettings,
+          refresh: vi.fn()
+        }}
+      />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: t("settings.notifications") }));
+    return { request, openSystemSettings };
+  };
+
+  test("warns under the switch and offers System Settings when macOS denied notifications", () => {
+    const { request, openSystemSettings } = renderOsPermission("denied");
+    const warning = screen.getByTestId("notification-os-permission");
+
+    expect(warning.textContent).toContain("macOS");
+    expect(warning.textContent).toContain("System Settings");
+    expect(within(warning).queryByRole("button", { name: "Allow notifications" })).toBeNull();
+
+    fireEvent.click(within(warning).getByRole("button", { name: "Open System Settings" }));
+    expect(openSystemSettings).toHaveBeenCalledTimes(1);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  test("offers to ask macOS when the OS never decided, and asks on click", () => {
+    const { request, openSystemSettings } = renderOsPermission("not_determined");
+    const warning = screen.getByTestId("notification-os-permission");
+
+    expect(warning.textContent).toContain("has not confirmed");
+    fireEvent.click(within(warning).getByRole("button", { name: "Allow notifications" }));
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(openSystemSettings).not.toHaveBeenCalled();
+  });
+
+  test.each(["authorized", "provisional", "ephemeral", "unsupported", "unavailable", null] as const)(
+    "keeps the OS warning out of the way when authorization is %s",
+    (authorization) => {
+      renderOsPermission(authorization);
+      expect(screen.queryByTestId("notification-os-permission")).toBeNull();
+    }
+  );
+
+  test("says nothing about the OS while Desktop notifications is off", () => {
+    renderOsPermission("denied", { desktopNotifications: false });
+    expect(screen.queryByTestId("notification-os-permission")).toBeNull();
+  });
+
+  test("ships the OS warning in Japanese", () => {
+    setActiveLocaleProfile("ja", "none");
+    try {
+      renderOsPermission("denied");
+      const warning = screen.getByTestId("notification-os-permission");
+      expect(warning.textContent).toContain("システム設定で許可");
+      expect(within(warning).getByRole("button", { name: "システム設定を開く" })).toBeTruthy();
     } finally {
       setActiveLocaleProfile("en", "none");
     }

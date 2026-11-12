@@ -432,7 +432,12 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   capability DTO; do not trigger them from every unread/badge snapshot refresh.
 - Passive native notification dispatch checks the current OS permission state
   only. It must not call permission-prompt APIs; permission prompts belong to an
-  explicit user/onboarding action.
+  explicit user/onboarding action. One launch-time migration action is also
+  explicit: when the persisted Desktop notifications switch is already ON and
+  the OS reports `not_determined`, one request per launch is allowed, followed by
+  a re-read. The OS grant is shown beside that switch with its own request or
+  Open System Settings action; a `denied` grant is never re-requested, and the
+  persisted switch value is never rewritten to match the grant (#1868).
 - Native notification clearing is adapter-only and best-effort. When Rust-owned
   attention state drops the badge count to zero (including logout/account clear),
   React may call the native transport clear hook, but it must not mutate Matrix

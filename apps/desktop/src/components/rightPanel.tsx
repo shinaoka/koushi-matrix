@@ -73,6 +73,7 @@ import { UserSettingsPanel } from "./UserSettingsPanel";
 import { AccountTabStrip, type AccountTabAction, type RuntimeAlert } from "./Shell";
 import type { AccountNotificationActions } from "./user-settings/AccountNotificationsSections";
 import type { NotificationDeliveryActions } from "./user-settings/NotificationDeliverySection";
+import type { NotificationPermission } from "../domain/desktopNotification";
 import { PeoplePanel, ProfilePanel } from "./PeoplePanel";
 import type { ContactSecurityActions } from "./ContactSecurityDetails";
 import {
@@ -241,6 +242,7 @@ export function ContextualRightPanel({
   onChangePassword = () => undefined,
   accountNotificationActions,
   notificationDeliveryActions,
+  notificationPermission,
   contactSecurityActions,
   onDeactivateAccount = () => undefined,
   onSubmitAccountManagementUia = () => undefined,
@@ -420,6 +422,7 @@ export function ContextualRightPanel({
   onChangePassword?: (newPassword: string) => void;
   accountNotificationActions?: AccountNotificationActions;
   notificationDeliveryActions?: NotificationDeliveryActions;
+  notificationPermission?: NotificationPermission;
   contactSecurityActions?: ContactSecurityActions;
   onDeactivateAccount?: (eraseData: boolean, password: string) => void;
   onSubmitAccountManagementUia?: (flowId: number, password: string) => void;
@@ -795,6 +798,7 @@ export function ContextualRightPanel({
           accountNotificationActions={accountNotificationActions}
           notificationDelivery={snapshot.state.domain.notification_delivery}
           notificationDeliveryActions={notificationDeliveryActions}
+          notificationPermission={notificationPermission}
           onDeactivateAccount={onDeactivateAccount ?? (() => undefined)}
           onSubmitAccountManagementUia={onSubmitAccountManagementUia ?? (() => undefined)}
           onStartCrawlRoom={onStartCrawlRoom}

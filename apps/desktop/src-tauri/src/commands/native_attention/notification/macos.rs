@@ -185,12 +185,7 @@ pub(super) fn dispatch(
         let authorized = mac_usernotifications::get_notification_settings()
             .await
             .is_ok_and(|settings| {
-                matches!(
-                    settings.authorization_status,
-                    mac_usernotifications::AuthorizationStatus::Authorized
-                        | mac_usernotifications::AuthorizationStatus::Provisional
-                        | mac_usernotifications::AuthorizationStatus::Ephemeral
-                )
+                authorization_from_status(settings.authorization_status).allows_delivery()
             });
         if !authorized {
             record_show_failed();

@@ -234,6 +234,106 @@ fn activation_event_carries_its_account_and_target_without_preview_text() {
 }
 
 #[test]
+fn notification_authorization_serializes_the_wire_state() {
+    let wire = [
+        (NativeNotificationAuthorization::Authorized, "authorized"),
+        (NativeNotificationAuthorization::Provisional, "provisional"),
+        (NativeNotificationAuthorization::Ephemeral, "ephemeral"),
+        (NativeNotificationAuthorization::Denied, "denied"),
+        (
+            NativeNotificationAuthorization::NotDetermined,
+            "not_determined",
+        ),
+        (NativeNotificationAuthorization::Unsupported, "unsupported"),
+        (NativeNotificationAuthorization::Unavailable, "unavailable"),
+    ];
+    for (state, token) in wire {
+        assert_eq!(
+            serde_json::to_value(state).expect("authorization serializes"),
+            serde_json::json!(token)
+        );
+    }
+}
+
+#[test]
+fn only_granted_authorization_allows_delivery() {
+    for granted in [
+        NativeNotificationAuthorization::Authorized,
+        NativeNotificationAuthorization::Provisional,
+        NativeNotificationAuthorization::Ephemeral,
+    ] {
+        assert!(granted.allows_delivery(), "{granted:?} delivers");
+    }
+    for blocked in [
+        NativeNotificationAuthorization::Denied,
+        NativeNotificationAuthorization::NotDetermined,
+        NativeNotificationAuthorization::Unsupported,
+        NativeNotificationAuthorization::Unavailable,
+    ] {
+        assert!(!blocked.allows_delivery(), "{blocked:?} must not deliver");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_authorization_status_maps_to_the_wire_state() {
+    use mac_usernotifications::AuthorizationStatus as Status;
+
+    for (status, expected) in [
+        (
+            Status::Authorized,
+            NativeNotificationAuthorization::Authorized,
+        ),
+        (
+            Status::Provisional,
+            NativeNotificationAuthorization::Provisional,
+        ),
+        (
+            Status::Ephemeral,
+            NativeNotificationAuthorization::Ephemeral,
+        ),
+        (Status::Denied, NativeNotificationAuthorization::Denied),
+        (
+            Status::NotDetermined,
+            NativeNotificationAuthorization::NotDetermined,
+        ),
+        // An OS status this build does not know cannot be treated as a grant.
+        (
+            Status::Unknown,
+            NativeNotificationAuthorization::Unavailable,
+        ),
+    ] {
+        assert_eq!(authorization_from_status(status), expected);
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn an_unbundled_process_reports_unavailable() {
+    // `cargo test` has no application bundle, so UNUserNotificationCenter has
+    // nothing to authorize.
+    assert_eq!(
+        current_authorization().await,
+        NativeNotificationAuthorization::Unavailable
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tokio::test]
+async fn a_platform_without_an_os_grant_reports_unsupported() {
+    assert_eq!(
+        current_authorization().await,
+        NativeNotificationAuthorization::Unsupported
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn opening_the_os_notification_settings_is_unsupported_off_macos() {
+    assert!(open_notification_settings().is_err());
+}
+
+#[test]
 fn outcome_tokens_stay_stable_for_diagnostics() {
     assert_eq!(NativeNotificationOutcome::Delivered.token(), "delivered");
     assert_eq!(
