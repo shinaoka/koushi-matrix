@@ -456,22 +456,32 @@ async fn an_already_cached_full_file_answers_the_quote_thumbnail_without_a_fetch
             .expect("cached full file");
 
     assert_eq!(ready.source_ref, source_ref);
-    assert!(!ready.source_ref.contains("96x96"));
+    assert!(!ready.source_ref.contains("480x360"));
     assert_eq!(ready.byte_count, b"binaryjpegfullimagedata".len() as u64);
     assert_eq!(ready.width, Some(640));
     assert_eq!(ready.height, Some(480));
 }
 
+/// #1874: the quote renders a preview up to 240x160 CSS px, so the fetch is
+/// 2x that box for HiDPI screens; a smaller fetch would be upscaled and blurry.
 #[tokio::test]
-async fn a_reply_quote_thumbnail_downloads_at_96_by_96() {
+async fn a_reply_quote_thumbnail_downloads_at_the_hidpi_preview_size() {
     use koushi_protocol::command::MediaDownloadSelection;
     use matrix_sdk::ruma::api::client::media::get_content_thumbnail::v3::Method;
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
 
+    assert_eq!(
+        super::REPLY_QUOTE_PREVIEW_SELECTION,
+        MediaDownloadSelection::Thumbnail {
+            width: 480,
+            height: 360,
+        }
+    );
+
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
     server
-        .mock_authed_media_thumbnail(Method::Scale, 96, 96, false)
+        .mock_authed_media_thumbnail(Method::Scale, 480, 360, false)
         .ok()
         .mount()
         .await;
@@ -485,20 +495,21 @@ async fn a_reply_quote_thumbnail_downloads_at_96_by_96() {
         },
     ));
     let data_dir = tempfile::tempdir().expect("data dir");
-    let selection = MediaDownloadSelection::Thumbnail {
-        width: 96,
-        height: 96,
-    };
 
-    let ready = download_cached(&session, data_dir.path(), &selection).await;
+    let ready = download_cached(
+        &session,
+        data_dir.path(),
+        &super::REPLY_QUOTE_PREVIEW_SELECTION,
+    )
+    .await;
 
     assert_eq!(
         ready.source_ref,
         super::media_download_thumbnail_ref(
             &super::sanitize_matrix_id_for_path("!room:example.invalid"),
             &super::sanitize_matrix_id_for_path("$media:example.invalid"),
-            96,
-            96,
+            480,
+            360,
         )
         .expect("thumbnail ref")
     );
@@ -506,6 +517,41 @@ async fn a_reply_quote_thumbnail_downloads_at_96_by_96() {
         std::fs::read(&ready.path).expect("thumbnail bytes"),
         b"binaryjpegthumbnaildata"
     );
+}
+
+/// #1874: an edit that swaps the quoted image must clear the preview-size
+/// cache entry, or the old picture would keep answering the new source.
+#[tokio::test]
+async fn an_edit_swapping_the_image_removes_the_cached_preview() {
+    use koushi_protocol::command::MediaDownloadSelection;
+
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let room_id = "!room:example.invalid";
+    let event_id = "$edited:example.invalid";
+    let room_hash = super::sanitize_matrix_id_for_path(room_id);
+    let event_hash = super::sanitize_matrix_id_for_path(event_id);
+    let mut cached = Vec::new();
+    for selection in [
+        MediaDownloadSelection::File,
+        super::REPLY_QUOTE_PREVIEW_SELECTION,
+    ] {
+        let (_, path) = super::managed_media_download_entry(
+            data_dir.path(),
+            &room_hash,
+            &event_hash,
+            &selection,
+        )
+        .expect("cache entry");
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("cache dir");
+        std::fs::write(&path, b"old image").expect("cache file");
+        cached.push(path);
+    }
+
+    super::remove_reply_quote_cached_media(data_dir.path(), room_id, event_id).await;
+
+    for path in cached {
+        assert!(!path.exists(), "{} must be removed", path.display());
+    }
 }
 
 #[test]
