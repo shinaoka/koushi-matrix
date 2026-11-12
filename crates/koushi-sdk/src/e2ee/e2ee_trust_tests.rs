@@ -46,7 +46,7 @@ impl Drop for FakeIncomingDelivery {
         }
     }
 }
-const ELEMENT_COMPATIBLE_KEY_EXPORT: &str = "\
+pub(super) const ELEMENT_COMPATIBLE_KEY_EXPORT: &str = "\
 -----BEGIN MEGOLM SESSION DATA-----\n\
 Af7mGhlzQ+eGvHu93u0YXd3D/+vYMs3E7gQqOhuCtkvGAAAAASH7pEdWvFyAP1JUisAcpEo\n\
 Xke2Q7Kr9hVl/SCc6jXBNeJCZcrUbUV4D/tRQIl3E9L4fOk928YI1J+3z96qiH0uE7hpsCI\n\

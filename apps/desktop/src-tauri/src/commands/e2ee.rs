@@ -500,6 +500,14 @@ pub(super) fn build_import_room_keys_command(
     })
 }
 
+/// Imports room keys the adapter staged from another local Matrix app (#1871).
+/// The staging path travels as the room-key import native artifact.
+pub(super) fn build_import_migrated_room_keys_command(
+    request_id: koushi_protocol::RequestId,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ImportMigratedRoomKeys { request_id })
+}
+
 pub(super) fn build_accept_verification_command(
     request_id: koushi_protocol::RequestId,
     flow_id: u64,

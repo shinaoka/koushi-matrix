@@ -207,6 +207,7 @@ only because older issues link to them; they do not govern current work.
 
 | Area | Plans |
 | --- | --- |
+| Local Element / Element X key import (#1871) | [Phase A](../plans/2026-10-29-issue1871-element-key-import.md) |
 | Media / file timeline | [Phase A](../superpowers/plans/2026-06-15-media-phase-a.md) |
 | Right-panel/composer containment (#1119, #1121 Phase B) | [Phase B](../superpowers/plans/2026-10-05-issue1119-panel-containment.md) |
 | History export archive: room and Space folders with HTML, attachments, resume | [Phase A](../superpowers/plans/2026-09-25-history-export-archive.md), [spec](../superpowers/specs/2026-09-25-history-export-archive-design.md) |

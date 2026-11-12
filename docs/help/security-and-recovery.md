@@ -123,6 +123,28 @@ copy of a room's messages, use **Room info → Download history** instead; see
 folder holds encrypted messages and attachments unencrypted and contains no
 room keys.
 
+## Move keys from Element or Element X
+
+Keys received in another Matrix client stay usable here only when that client
+can still give them up. Do this before you sign out of the old client or
+uninstall it.
+
+**Element Web or Element Desktop.** In Element, open
+**Settings → Security** and use **Export E2E room keys**, choosing a passphrase.
+Then, in Koushi, open **Account Settings → Encryption → Key management**, select
+**Import room keys**, choose the file, and supply the same passphrase.
+
+**Element X on a phone or on this Mac.** Its local keys are protected by a key
+inside the app itself and cannot be handed to Koushi. Sign in to Element Web or
+Element Desktop with the same account, wait for the keys to arrive there, and use
+the export above. If the account has an existing recovery key or security phrase,
+entering it in Koushi under **Open recovery** does the same job, and so does
+verifying from the phone that still holds the keys.
+
+Without a recovery key and without a device that still holds the keys, history
+received in the old client cannot be recovered. Set up secure backup in Koushi
+so that future messages stay readable on your other devices.
+
 ## Understand trust labels
 
 User verification, device verification, and whether sending is allowed describe

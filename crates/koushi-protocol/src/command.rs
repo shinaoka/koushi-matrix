@@ -113,6 +113,7 @@ impl CoreCommand {
                 | AccountCommand::StopHistoryExport { request_id, .. }
                 | AccountCommand::RetryHistoryExport { request_id, .. }
                 | AccountCommand::ImportRoomKeys { request_id, .. }
+                | AccountCommand::ImportMigratedRoomKeys { request_id }
                 | AccountCommand::BootstrapSecureBackup { request_id, .. }
                 | AccountCommand::RecoverSecureBackup { request_id, .. }
                 | AccountCommand::RetrySecureBackupInspection { request_id }

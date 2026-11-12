@@ -11,6 +11,7 @@ pub mod keyring_backend;
 mod mcp;
 mod media_download;
 mod media_save;
+mod migration;
 mod oidc_browser;
 mod process_memory;
 mod spell_checking;
@@ -1485,6 +1486,7 @@ pub fn run() {
             let data_dir = app_data_dir().unwrap_or_else(|_| PathBuf::from("koushi-desktop-data"));
             let _ = cleanup_legacy_plaintext_thumbnail_dirs(&data_dir);
             let _ = cleanup_legacy_media_downloads(&data_dir);
+            migration::sweep_stale_staging_at_startup();
             let mcp_data_dir = data_dir.clone();
             // Enter Tauri's tokio runtime so `executor::spawn` (tokio::task::spawn)
             // can find a runtime handle from this non-tokio-worker thread.
@@ -1834,6 +1836,8 @@ pub fn run() {
             commands::e2ee::confirm_secure_backup_recovery_key_saved,
             commands::e2ee::export_room_keys,
             commands::e2ee::import_room_keys,
+            commands::migration::migration_detect_sources,
+            commands::migration::migration_import_element_desktop,
             commands::history_export::history_export_time_zone,
             commands::room_key_files::choose_room_key_export_destination,
             commands::room_key_files::choose_room_key_import_source,
