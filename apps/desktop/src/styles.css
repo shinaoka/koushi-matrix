@@ -8701,6 +8701,13 @@ dialog.media-viewer-backdrop::backdrop { background: transparent; }
   gap: 8px;
 }
 
+/* #1868: the OS grant under the Desktop notifications switch. */
+.settings-notification-permission {
+  display: grid;
+  gap: 6px;
+  padding: 0 10px 4px;
+}
+
 .settings-toggle-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 42px;

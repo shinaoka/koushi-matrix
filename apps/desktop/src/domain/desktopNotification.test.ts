@@ -4,6 +4,7 @@ import {
   clearDesktopAttentionNotifications,
   desktopNotificationActivationPlan,
   desktopNotificationTargetPlan,
+  notificationPermissionPrompt,
   sendDesktopAttentionNotification,
   type DesktopNotificationActivation,
   type DesktopNotificationTransport
@@ -126,5 +127,32 @@ describe("desktop notification activation plan", () => {
         target({ event_id: null, thread_root_event_id: "$root:example.invalid" })
       )
     ).toEqual({ kind: "room", roomId: "!room:example.invalid" });
+  });
+});
+
+describe("OS notification permission", () => {
+  // #1868: an ON switch is the stored preference, not proof that the OS will
+  // show a banner, so the panel asks or points at System Settings.
+  test("asks while the OS never decided, and points at System Settings after a denial", () => {
+    expect(notificationPermissionPrompt("not_determined", true)).toBe("request");
+    expect(notificationPermissionPrompt("denied", true)).toBe("open_settings");
+  });
+
+  test("owes the user nothing once the OS allows banners or cannot be asked", () => {
+    for (const authorization of [
+      "authorized",
+      "provisional",
+      "ephemeral",
+      "unsupported",
+      "unavailable",
+      null
+    ] as const) {
+      expect(notificationPermissionPrompt(authorization, true)).toBeNull();
+    }
+  });
+
+  test("says nothing while the switch is off", () => {
+    expect(notificationPermissionPrompt("denied", false)).toBeNull();
+    expect(notificationPermissionPrompt("not_determined", false)).toBeNull();
   });
 });

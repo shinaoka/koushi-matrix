@@ -1042,6 +1042,10 @@ export type MessageId =
   | "settings.updateCheckFailed"
   | "settings.updateInstallFailed"
   | "settings.notificationDesktopDescription"
+  | "settings.notificationOsPermissionDenied"
+  | "settings.notificationOsPermissionNotDetermined"
+  | "settings.notificationOsPermissionAllow"
+  | "settings.notificationOsPermissionOpenSettings"
   | "settings.notificationRetry"
   | "settings.notificationLoading"
   | "settings.notificationCategories"
@@ -3388,6 +3392,10 @@ const en: Catalog = {
   "timeline.linkPreviewFailed": "Could not load preview",
   "timeline.linkPreviewLoading": "Loading preview…",
   "settings.notificationDesktopDescription": "Only on this device. Email notifications are not affected.",
+  "settings.notificationOsPermissionDenied": "macOS has not allowed notifications for Koushi, so banners will not appear. Allow them in System Settings.",
+  "settings.notificationOsPermissionNotDetermined": "macOS has not confirmed notification permissions for Koushi yet.",
+  "settings.notificationOsPermissionAllow": "Allow notifications",
+  "settings.notificationOsPermissionOpenSettings": "Open System Settings",
   "settings.notificationRetry": "Retry",
   "settings.notificationLoading": "Loading notification settings…",
   "settings.notificationCategories": "What to notify about",
@@ -5756,6 +5764,10 @@ const ja: Catalog = {
   "timeline.linkPreviewFailed": "プレビューを読み込めませんでした",
   "timeline.linkPreviewLoading": "プレビューを読み込み中…",
   "settings.notificationDesktopDescription": "この端末だけの設定です。メール通知には影響しません。",
+  "settings.notificationOsPermissionDenied": "macOS で Koushi の通知が許可されていないため、通知は表示されません。システム設定で許可すると届くようになります。",
+  "settings.notificationOsPermissionNotDetermined": "macOS で Koushi の通知の許可がまだ確認されていません。許可すると通知が届くようになります。",
+  "settings.notificationOsPermissionAllow": "通知を許可する",
+  "settings.notificationOsPermissionOpenSettings": "システム設定を開く",
   "settings.notificationRetry": "再試行",
   "settings.notificationLoading": "通知設定を読み込み中…",
   "settings.notificationCategories": "通知する内容",

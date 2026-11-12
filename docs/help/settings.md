@@ -172,6 +172,15 @@ immediately. Turning badges off does not dismiss notifications.
 **Sound** and **Badges** apply only to this account. The app icon combines badge
 counts from the accounts whose Badges switch is on.
 
+A **Desktop notifications** switch that is ON is your saved preference. macOS
+decides separately whether Koushi may show banners, so when it has not allowed
+them, the switch says so underneath: **Allow notifications** asks macOS (it can
+ask only once per install), and **Open System Settings** takes you to the pane
+where a denied app can be allowed again. On a computer that was migrated from an
+older install, Koushi also asks macOS once at startup when the switch was already
+ON and the system never answered. Koushi keeps your saved switch value either
+way; it does not turn the switch off for you.
+
 **Show message content in notifications** is **off** by default, so a banner
 names the room and the sender without the message. Turned on, a banner also shows
 the start of the message, and your operating system may keep that text in its

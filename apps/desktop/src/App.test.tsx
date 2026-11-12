@@ -2215,6 +2215,22 @@ describe("desktop integration source guards", () => {
     expect(appSource).toContain("desktopAttentionWindowTitle");
   });
 
+  // #1868: the switch is a stored preference, so the account surface has to
+  // read and show what the OS actually authorizes.
+  test("reads the OS notification grant for the account settings surface", () => {
+    const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const panelSource = readFileSync(
+      new URL("./components/UserSettingsPanel.tsx", import.meta.url),
+      "utf8"
+    );
+
+    expect(appSource).toContain("useNotificationPermission({");
+    expect(appSource).toContain("settingsOpen: settingsScope === \"account\"");
+    expect(appSource).toContain("notificationPermission={notificationPermission}");
+    expect(panelSource).toContain("notificationPermissionPrompt(");
+    expect(panelSource).toContain("settings.notificationOsPermissionOpenSettings");
+  });
+
   test("room selection appends private-data-free transition diagnostics around the API call", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const fnStart = source.indexOf("async function selectRoom(roomId: string,");

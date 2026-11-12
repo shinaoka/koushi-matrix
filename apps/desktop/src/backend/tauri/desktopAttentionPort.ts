@@ -4,7 +4,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { DesktopAttentionPort } from "../desktopAttentionPort";
 import { isRendererSelectedAccountTabId } from "../client";
-import type { DesktopNotificationActivation } from "../../domain/desktopNotification";
+import type {
+  DesktopNotificationActivation,
+  NotificationAuthorization
+} from "../../domain/desktopNotification";
 
 /** Tauri event emitted by the Rust adapter after a notification click. */
 const NOTIFICATION_ACTIVATED_EVENT_NAME = "koushi-desktop://notification-activated";
@@ -25,6 +28,10 @@ export function createTauriDesktopAttentionPort(accountTabId?: string): DesktopA
         await invokeAccount("show_native_attention_notification");
       },
       requestPermission: () => invoke<boolean>("request_native_attention_notification_permission"),
+      authorization: () =>
+        invoke<NotificationAuthorization>("native_attention_notification_authorization"),
+      openSystemSettings: () =>
+        invoke<void>("open_native_attention_notification_settings"),
       async clear() {
         await invokeAccount("clear_native_attention_notifications");
       },

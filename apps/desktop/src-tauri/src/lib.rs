@@ -1790,6 +1790,8 @@ pub fn run() {
             commands::native_attention::notification::show_native_attention_notification,
             commands::native_attention::notification::clear_native_attention_notifications,
             commands::native_attention::notification::request_native_attention_notification_permission,
+            commands::native_attention::notification::native_attention_notification_authorization,
+            commands::native_attention::notification::open_native_attention_notification_settings,
             commands::room::select_room_list_filter,
             commands::room::mark_room_as_read,
             commands::room::mark_room_as_unread,

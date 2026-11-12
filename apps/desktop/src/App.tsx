@@ -178,6 +178,10 @@ import {
   timelineDiagnosticsLogMessage
 } from "./app/qaDiagnostics";
 import { useDesktopAttentionEffects } from "./app/useDesktopAttentionEffects";
+import {
+  claimLaunchNotificationRequest,
+  useNotificationPermission
+} from "./app/useNotificationPermission";
 import { useUiLatencyDiagnostics } from "./app/useUiLatencyDiagnostics";
 import { useRoomAddressPreview } from "./app/useRoomAddressPreview";
 import {
@@ -1171,6 +1175,14 @@ function AccountContent({
   );
   const snapshot = useAppStore(selectSnapshot);
   const sendingAccount = composerSendingAccount(accountTabs?.tabs, accountTabId);
+  // #1868: the stored switch cannot prove the OS will show a banner, so the
+  // account's OS grant is read here and shown beside that switch.
+  const notificationPermission = useNotificationPermission({
+    accountTabId,
+    desktopNotificationsEnabled:
+      snapshot?.state.domain.settings.values.notifications.desktop_notifications === true,
+    settingsOpen: settingsScope === "account"
+  });
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -3434,9 +3446,14 @@ function AccountContent({
       patch.notifications?.desktop_notifications === true &&
       snapshot?.state.domain.settings.values.notifications.desktop_notifications !== true
     ) {
+      // The explicit switch spends the same one-per-launch request the startup
+      // path would otherwise use, so the two cannot prompt at once.
+      claimLaunchNotificationRequest();
       const permission = desktopAttentionPortForAccount(accountTabId ?? undefined)
         ?.notifications.requestPermission;
-      if (permission && !(await permission())) return;
+      const granted = permission ? await permission() : true;
+      notificationPermission.refresh();
+      if (!granted) return;
     }
     await settleCommand(api.updateSettings({ ...patch, scope }));
   }
@@ -8246,6 +8263,7 @@ function AccountContent({
           onUpdateSettings={(patch) => {
             runInBackground(updateSettings(patch));
           }}
+          notificationPermission={notificationPermission}
           onSetRoomUrlPreviewOverride={(roomId, enabled) => {
             runInBackground(setRoomUrlPreviewOverride(roomId, enabled));
           }}
