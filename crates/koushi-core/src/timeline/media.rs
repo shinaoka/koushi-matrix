@@ -89,6 +89,15 @@ pub(super) enum MediaDownloadOutcome {
 /// The image sniffers need at most 12 bytes; 32 leaves room for a future kind.
 const MEDIA_DOWNLOAD_MIME_SNIFF_BYTES: usize = 32;
 
+/// #1874: the timeline renders an image reply quote as a preview of at most
+/// 240x160 CSS px, so the quote thumbnail is fetched at 2x that box for HiDPI
+/// screens (server `Scale` semantics keep the aspect ratio inside it).
+pub(super) const REPLY_QUOTE_PREVIEW_SELECTION: MediaDownloadSelection =
+    MediaDownloadSelection::Thumbnail {
+        width: 480,
+        height: 360,
+    };
+
 /// A cached download has no event metadata to copy a mime type from, so read
 /// just the header. Renderable images must carry their type for the platform
 /// protocol that serves them (#1619).
@@ -370,6 +379,20 @@ fn media_download_selection_metadata(
             entry.thumbnail_width,
             entry.thumbnail_height,
         ),
+    }
+}
+
+/// Remove every cache entry a reply-quote thumbnail can be answered from, so
+/// an edit that swaps the quoted media cannot leave the old picture behind.
+async fn remove_reply_quote_cached_media(data_dir: &Path, room_id: &str, quoted_event_id: &str) {
+    let room_hash = sanitize_matrix_id_for_path(room_id);
+    let event_hash = sanitize_matrix_id_for_path(quoted_event_id);
+    for selection in [MediaDownloadSelection::File, REPLY_QUOTE_PREVIEW_SELECTION] {
+        if let Some((_, path)) =
+            managed_media_download_entry(data_dir, &room_hash, &event_hash, &selection)
+        {
+            let _ = tokio::fs::remove_file(path).await;
+        }
     }
 }
 
@@ -695,7 +718,7 @@ impl TimelineActor {
             return;
         };
 
-        // A full file already for this event is a usable 40 px thumbnail and
+        // A full file already cached for this event is a usable preview and
         // must not cost another fetch.
         if let Some(data_dir) = self.data_dir.clone()
             && let Some(ready) = reply_quote_thumbnail_from_cached_file(
@@ -711,10 +734,7 @@ impl TimelineActor {
             return;
         }
 
-        let selection = MediaDownloadSelection::Thumbnail {
-            width: 96,
-            height: 96,
-        };
+        let selection = REPLY_QUOTE_PREVIEW_SELECTION;
         let Some(request) = media_request_for_download(&entry, &selection) else {
             self.emit_reply_quote_thumbnail_failed(
                 request_id,
@@ -767,21 +787,7 @@ impl TimelineActor {
         self.emit_reply_quote_thumbnail_cleared(quoted_event_id)
             .await;
         if let Some(data_dir) = self.data_dir.clone() {
-            let room_hash = sanitize_matrix_id_for_path(self.key.room_id());
-            let event_hash = sanitize_matrix_id_for_path(quoted_event_id);
-            for selection in [
-                MediaDownloadSelection::File,
-                MediaDownloadSelection::Thumbnail {
-                    width: 96,
-                    height: 96,
-                },
-            ] {
-                if let Some((_, path)) =
-                    managed_media_download_entry(&data_dir, &room_hash, &event_hash, &selection)
-                {
-                    let _ = tokio::fs::remove_file(path).await;
-                }
-            }
+            remove_reply_quote_cached_media(&data_dir, self.key.room_id(), quoted_event_id).await;
         }
     }
 

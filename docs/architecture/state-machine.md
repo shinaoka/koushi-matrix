@@ -3159,9 +3159,11 @@ settles.
   keyed by the quoted event id so several replies share one fetch state.
   `TimelineCommand::RequestReplyQuoteThumbnail` coalesces while a fetch for that
   quoted event is in flight, reuses an already-cached image `File` entry, and
-  otherwise downloads `Thumbnail { 96, 96 }` through the same
+  otherwise downloads `REPLY_QUOTE_PREVIEW_SELECTION` (`Thumbnail { 480, 360 }`,
+  2× the 240×160 CSS preview box for HiDPI) through the same
   `download_media_for` path (decryption, timeout, managed cache, and the
-  selection-keyed ref grammar above). React requests it for visible rows only,
+  selection-keyed ref grammar above). An edit that swaps the media removes the
+  cached `File` and preview-size entries for that event. React requests it for visible rows only,
   renders the 40 px slot from `ReplyQuote.media` plus the thumbnail state, and
   opens the full file in the existing media viewer; the composer reply strip uses
   the same quote projection and a 32 px slot. Text, redacted, loading, failed,
