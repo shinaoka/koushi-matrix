@@ -1570,6 +1570,12 @@ pub(super) fn commit_authoritative_recovery_window<F>(
 where
     F: FnOnce(),
 {
+    // #1851: the lease comes first. Seeding the shared thread-root service before
+    // it would leave a rejected recovery's summaries behind in state that outlives
+    // this actor, which is the one write a replacement cannot undo.
+    let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
+        return false;
+    };
     for item in &authoritative_items {
         super::thread_projection::seed_thread_summary_item(
             thread_root_projection_service,
@@ -1601,9 +1607,6 @@ where
         candidate_display.reproject(&context);
     }
     let emitted_items = candidate_display.display_items().to_vec();
-    let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
-        return false;
-    };
     commit_prepared_initial_window_with_lease(
         navigation_items,
         display_projection,

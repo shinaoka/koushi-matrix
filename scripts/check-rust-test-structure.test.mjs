@@ -43,6 +43,7 @@ import {
   checkSdkLibrarySourceManifest,
   findDiscardedSendStateDerivations,
   findForbiddenRowSendStateAssignments,
+  findUnprojectedDisplayRowPublishes,
   checkSdkRoomReadMarkerContract,
   checkSdkSessionBackupFence,
   checkStateFocusedContextReducerContract,
@@ -171,6 +172,50 @@ test("runs representative migrated timeline source-contract rules", () => {
   ]) assert.deepEqual(check(), []);
 });
 
+test("the startup projection is pinned after the send queue replay", () => {
+  // #1851: rule 1 only requires the projection's call chain, so moving the
+  // subscribe back below `initial_display_context` would keep every rule and
+  // test green while the canon claim ("the startup projection is built after
+  // `subscribe()` replayed the echoes") became false. This fixture inverts the
+  // real spawn path, leaving the send-status tables declared above the
+  // projection, and requires the ordering failure.
+  const actor = fs.readFileSync(
+    new URL("../crates/koushi-core/src/timeline/actor.rs", import.meta.url),
+    "utf8"
+  );
+  assert.deepEqual(checkCoreTimelineSendStateDerivation({ actorSource: actor }), []);
+
+  const subscribeStart = actor.indexOf(
+    "        if let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&room_id)\n"
+  );
+  const subscribeEndMarker = "            send_queue_updates = Some(update_rx);\n        }\n";
+  const subscribeEnd = actor.indexOf(subscribeEndMarker, subscribeStart) + subscribeEndMarker.length;
+  const projectionStart = actor.indexOf(
+    "        let initial_display_context = DisplayProjectionContext::for_timeline("
+  );
+  const projectionEndMarker = "\n        );\n";
+  const projectionEnd = actor.indexOf(projectionEndMarker, projectionStart) + projectionEndMarker.length;
+  assert.ok(
+    subscribeStart >= 0
+      && subscribeEnd > subscribeStart
+      && projectionEnd > projectionStart
+      && subscribeStart < projectionStart,
+    "the fixture anchors must still match the spawn path"
+  );
+
+  const reordered =
+    actor.slice(0, subscribeStart)
+    + actor.slice(subscribeEnd, projectionEnd)
+    + actor.slice(subscribeStart, subscribeEnd)
+    + actor.slice(projectionEnd);
+  const failures = checkCoreTimelineSendStateDerivation({ actorSource: reordered });
+  assert.ok(
+    failures.some(({ message }) =>
+      message === "the startup projection is built before the send queue replayed its local echoes"),
+    `the inverted order must be refused, got ${JSON.stringify(failures)}`
+  );
+});
+
 test("the send-state tripwire rejects a row write outside the derivation", () => {
   // #1846: a rendered send state is derived at projection time. The scan is token
   // based, so a multi-line write, a write buried in a long function, a copied
@@ -275,6 +320,88 @@ test("the send-state tripwire rejects a discarded derivation", () => {
     "relay.rs:6",
     "relay.rs:8",
     "relay.rs:9"
+  ]);
+});
+
+test("the display-row gate rejects a publish that skips the projection", () => {
+  // #1851: the public row list comes from one boundary. Every offender below is
+  // the same token sequence as its one-line spelling, including the bare
+  // multi-line call a text scan misses (`install_row(` was that blind spot).
+  const offenders = findUnprojectedDisplayRowPublishes({
+    "crates/koushi-core/src/timeline/display_projection.rs": [
+      "pub(super) struct DisplayProjectionState {",
+      "    display_items: Vec<TimelineItem>,",
+      "}",
+      "pub(super) struct Rows<T> {",
+      "    display_items: Vec<T>,",
+      "}",
+      "impl DisplayProjectionState {",
+      "    pub(super) fn from_canonical_window(items: &[TimelineItem]) -> Self {",
+      "        let display_items = items.to_vec();",
+      "        let mut state = Self { display_items, ..Default::default() };",
+      "        state",
+      "    }",
+      "    pub(super) fn same_rows(&self, other: &Self) -> bool {",
+      "        self.display_items == other.display_items",
+      "    }",
+      "    pub(super) fn reproject(&mut self, context: &DisplayProjectionContext) -> Vec<TimelineDiff> {",
+      "        self",
+      "            .display_items",
+      "            = project_display_items(self, context);",
+      "        Vec::new()",
+      "    }",
+      "}",
+      "fn assemble_display_items(state: &DisplayProjectionState) -> Vec<TimelineItem> { Vec::new() }",
+      "fn project_display_items(state: &DisplayProjectionState, context: &DisplayProjectionContext) -> Vec<TimelineItem> {",
+      "    let mut items = assemble_display_items(state, context);",
+      "    context.send_states.apply_all(&mut items);",
+      "    items",
+      "}",
+      "fn context(kind: &TimelineKind, observation: &TimelineViewportObservation) -> DisplayProjectionContext {",
+      "    DisplayProjectionContext::for_timeline(kind, observation)",
+      "        .with_send_states(&HashMap::new())",
+      "}",
+      "fn rematerialized(items: &[TimelineItem], context: &DisplayProjectionContext) -> Self {",
+      "    let rebuilt = Self::from_canonical_window(items, 0..items.len());",
+      "    rebuilt.reproject(context)",
+      "}"
+    ].join("\n"),
+    "crates/koushi-core/src/timeline/relay.rs": [
+      "fn publish(state: &DisplayProjectionState, context: &DisplayProjectionContext) {",
+      "    assemble_display_items",
+      "        (state, context);",
+      "}",
+      "fn copy(state: &DisplayProjectionState, context: &DisplayProjectionContext) {",
+      "    self.display_items = assemble_display_items(state, context);",
+      "}",
+      "fn rebuild(items: &[TimelineItem]) -> DisplayProjectionState {",
+      "    DisplayProjectionState { display_items: items.to_vec(), ..Default::default() }",
+      "}",
+      "fn context_for(kind: &TimelineKind, observation: &TimelineViewportObservation) -> DisplayProjectionContext {",
+      "    DisplayProjectionContext::for_timeline(kind, observation)",
+      "        .with_thread_roots(order, roots)",
+      "}",
+      "fn commit_without_projection(items: &[TimelineItem]) -> DisplayProjectionState {",
+      "    let candidate = DisplayProjectionState::from_canonical_window(items, 0..items.len());",
+      "    candidate",
+      "}",
+      // A function *named* after an entry point is not a call to one.
+      "fn reset_bounded(items: &[TimelineItem]) -> DisplayProjectionState {",
+      "    DisplayProjectionState::from_canonical_window(items, 0..items.len())",
+      "}"
+    ].join("\n")
+  });
+
+  // Each entry names the line that publishes, and the function that owns it. A
+  // copy that also assembles rows is refused by both rules, on the same line.
+  assert.deepEqual(offenders, [
+    "relay.rs:2 (publish) assembles public rows outside the projection",
+    "relay.rs:6 (copy) writes the public row list without the projection",
+    "relay.rs:6 (copy) assembles public rows outside the projection",
+    "relay.rs:9 (rebuild) seeds the public row list outside the window constructors",
+    "relay.rs:12 (context_for) builds a projection context without the send authority",
+    "relay.rs:16 (commit_without_projection) builds a window and never projects it",
+    "relay.rs:20 (reset_bounded) builds a window and never projects it"
   ]);
 });
 

@@ -1666,6 +1666,22 @@ impl TimelineActor {
             None => None,
         };
         let room_id = key.room_id().to_owned();
+        // #1851: subscribe to the room's send queue before the first projection.
+        // The echoes it replays are the only record the actor has of a request the
+        // SDK snapshot no longer reports, so seeding the authority afterwards would
+        // leave the initial rows rendered from whatever each row carries.
+        let mut send_statuses = HashMap::new();
+        let mut send_handles = HashMap::new();
+        let mut send_queue_updates = None;
+        if let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&room_id)
+            && let Some(room) = session.client().get_room(&room_id)
+            && let Ok((local_echoes, update_rx)) = room.send_queue().subscribe().await
+        {
+            for echo in &local_echoes {
+                remember_local_echo(&mut send_statuses, &mut send_handles, echo);
+            }
+            send_queue_updates = Some(update_rx);
+        }
 
         let mut media_sources = HashMap::new();
         let mut initial_reply_quote_sources = HashMap::new();
@@ -1706,6 +1722,7 @@ impl TimelineActor {
             &key.kind,
             &TimelineViewportObservation::default(),
         )
+        .with_send_states(&send_statuses)
         .with_thread_roots(
             thread_root_order,
             thread_root_projection_service
@@ -1762,8 +1779,6 @@ impl TimelineActor {
         let (actor_cleanup_tx, actor_cleanup_rx) = TimelineActorCleanupIngress::channel();
         let (relay_control_tx, relay_control_rx) = mpsc::channel(1);
         let (relay_data_tx, relay_data_rx) = mpsc::channel(256);
-        let mut send_statuses = HashMap::new();
-        let mut send_handles = HashMap::new();
         if let Some(mut receipt_changes) = initial_read_receipt_changes.take() {
             use futures_util::StreamExt;
             let receipt_tx = actor_tx.clone();
@@ -1949,10 +1964,7 @@ impl TimelineActor {
             && let Some(room) = session.client().get_room(&room_id)
         {
             let sq_tx = actor_tx.clone();
-            if let Ok((local_echoes, update_rx)) = room.send_queue().subscribe().await {
-                for echo in &local_echoes {
-                    remember_local_echo(&mut send_statuses, &mut send_handles, echo);
-                }
+            if let Some(update_rx) = send_queue_updates.take() {
                 auxiliary_tasks.push(executor::spawn(run_send_queue_monitor(sq_tx, update_rx)));
             }
 
