@@ -3355,7 +3355,7 @@ dependencies = [
 
 [[package]]
 name = "koushi-desktop"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "dirs 6.0.0",
  "futures-util",
