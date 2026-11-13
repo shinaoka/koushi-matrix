@@ -1051,7 +1051,10 @@ impl fmt::Debug for TimelineItem {
                 "reply_quote",
                 &self.reply_quote.as_ref().map(|quote| quote.state.as_str()),
             )
-            .field("thread_root", &self.thread_root)
+            .field(
+                "thread_root",
+                &self.thread_root.as_ref().map(|_| "EventId(..)"),
+            )
             .field(
                 "thread_summary",
                 &self.thread_summary.as_ref().map(|_| "ThreadSummary(..)"),
@@ -1231,7 +1234,7 @@ impl fmt::Debug for TimelineDisplayMetadata {
             .finish()
     }
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReactionGroup {
     pub key: String,
     pub count: u32,
@@ -1239,10 +1242,39 @@ pub struct ReactionGroup {
     pub my_reaction_event_id: Option<String>,
     pub sender_preview: Vec<ReactionSender>,
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+impl fmt::Debug for ReactionGroup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReactionGroup")
+            // A reaction key is free-form sender text, so it is redacted like a
+            // body even though it is usually a public emoji (#1878).
+            .field("key", &"ReactionKey(..)")
+            .field("count", &self.count)
+            .field("reacted_by_me", &self.reacted_by_me)
+            .field(
+                "my_reaction_event_id",
+                &self.my_reaction_event_id.as_ref().map(|_| "EventId(..)"),
+            )
+            .field("sender_preview", &self.sender_preview)
+            .finish()
+    }
+}
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReactionSender {
     pub user_id: String,
     pub display_label: Option<String>,
+}
+impl fmt::Debug for ReactionSender {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReactionSender")
+            .field("user_id", &"UserId(..)")
+            .field(
+                "display_label",
+                &self.display_label.as_ref().map(|_| "SenderLabel(..)"),
+            )
+            .finish()
+    }
 }
 /// `VectorDiff`-shaped update preserving positional operations so the UI can
 /// distinguish prepend pagination from live append/update/remove.
@@ -1257,3 +1289,6 @@ pub enum TimelineDiff {
     Clear,
     Reset { items: Vec<TimelineItem> },
 }
+
+#[cfg(test)]
+mod tests;
