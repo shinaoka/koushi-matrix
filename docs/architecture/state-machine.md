@@ -3149,7 +3149,9 @@ settles.
 - **Quoted media (#1769).** `ReplyQuote.media` is public metadata only: the
   media kind, an animated hint, width/height hints, and whether the event names
   an explicit thumbnail source. It carries no MXC URI, encryption key, or cache
-  ref, and React renders its kind label and thumbnail slot from this DTO. Each
+  ref, and React renders its thumbnail slot from this DTO. A captionless image,
+  sticker, or video quote shows no kind label, because the thumbnail already
+  shows the media (#1874); file and audio quotes keep their file name. Each
   settled ledger entry also keeps the original's actor-private
   `PrivateMediaEntry`; learning a `Ready` original stores it, an edit that
   swaps the media replaces it, a redaction clears it, and eviction releases it.
@@ -3160,14 +3162,16 @@ settles.
   `TimelineCommand::RequestReplyQuoteThumbnail` coalesces while a fetch for that
   quoted event is in flight, reuses an already-cached image `File` entry, and
   otherwise downloads `REPLY_QUOTE_PREVIEW_SELECTION` (`Thumbnail { 480, 360 }`,
-  2× the 240×160 CSS preview box for HiDPI) through the same
+  which covers 2× the 240×160 CSS preview box for HiDPI) through the same
   `download_media_for` path (decryption, timeout, managed cache, and the
   selection-keyed ref grammar above). An edit that swaps the media removes the
-  cached `File` and preview-size entries for that event. React requests it for visible rows only,
-  renders the 40 px slot from `ReplyQuote.media` plus the thumbnail state, and
-  opens the full file in the existing media viewer; the composer reply strip uses
-  the same quote projection and a 32 px slot. Text, redacted, loading, failed,
-  missing, and unsupported quotes render no slot.
+  cached `File` and preview-size entries for that event. React requests it for
+  visible rows only, renders it as the quote's content under the sender and
+  caption, in a box of at most 240 x 160 px whose aspect ratio comes from the
+  `ReplyQuote.media` hints in every thumbnail state (#1874), and opens the full
+  file in the existing media viewer; the composer reply strip uses the same
+  quote projection and a 32 px slot. Text, redacted, loading, failed, missing,
+  and unsupported quotes render no slot.
 
 `AppState.room_interactions[room_id]` carries the room's pinned-event
 projection plus the current pin/unpin operation state:

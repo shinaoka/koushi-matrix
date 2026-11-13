@@ -617,9 +617,9 @@ describe("TimelineView", () => {
       view({
         [quotedEventId]: {
           kind: "ready",
-          source_ref: "download/1234567890123456/6543210987654321/96x96",
-          width: 96,
-          height: 96,
+          source_ref: "download/1234567890123456/6543210987654321/480x360",
+          width: 480,
+          height: 360,
           mime_type: "image/jpeg"
         }
       })
@@ -629,7 +629,7 @@ describe("TimelineView", () => {
     for (const slot of slots) {
       expect(slot.getAttribute("data-thumbnail-state")).toBe("ready");
       expect(slot.querySelector("img")?.getAttribute("src")).toBe(
-        "koushi-media://localhost/download/jpg/1234567890123456/6543210987654321/96x96"
+        "koushi-media://localhost/download/jpg/1234567890123456/6543210987654321/480x360"
       );
     }
   });

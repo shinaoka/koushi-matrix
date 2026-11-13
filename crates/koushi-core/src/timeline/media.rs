@@ -421,7 +421,7 @@ async fn reply_quote_thumbnail_from_cached_file(
         None => sniff_image_mime(&path).await,
     };
     // A cached video or audio original is not a renderable quote thumbnail;
-    // only a still image may stand in for the 40 px slot. An animated GIF or
+    // only a still image may stand in for the preview box. An animated GIF or
     // WebP must go through the thumbnail selection so the quote stays static.
     if !mimetype.as_deref().is_some_and(|mimetype| {
         mimetype.starts_with("image/") && !matches!(mimetype, "image/gif" | "image/webp")

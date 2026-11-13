@@ -36,7 +36,7 @@ afterEach(() => {
 });
 
 describe("composer reply quote", () => {
-  it("shows the sender, the localized kind label, and a 32 px thumbnail strip", () => {
+  it("shows the sender and a 32 px thumbnail strip without a redundant kind label", () => {
     const { container } = render(
       <Composer
         composerMode={{ kind: "reply", in_reply_to_event_id: quote.event_id }}
@@ -52,16 +52,18 @@ describe("composer reply quote", () => {
         replyQuote={quote}
         replyQuoteThumbnail={{
           kind: "ready",
-          source_ref: "download/1234567890123456/6543210987654321/96x96",
-          width: 96,
-          height: 96,
+          source_ref: "download/1234567890123456/6543210987654321/480x360",
+          width: 480,
+          height: 360,
           mime_type: "image/jpeg"
         }}
       />
     );
 
     expect(screen.getByText("Alice")).toBeTruthy();
-    expect(screen.getByText(t("timeline.replyQuoteKindImage"))).toBeTruthy();
+    // #1874: the thumbnail already shows the media, so no "Image" label.
+    expect(screen.queryByText(t("timeline.replyQuoteKindImage"))).toBeNull();
+    expect(container.querySelector(".composer-reply-quote-body")).toBeNull();
     const slot = container.querySelector(".composer-reply-quote .reply-quote-thumbnail.is-composer");
     expect(slot).not.toBeNull();
     expect(slot?.querySelector("img")).not.toBeNull();

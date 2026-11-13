@@ -882,9 +882,11 @@ export function TimelineItemRow({
       onOpenReplyQuote(roomId, replyQuote.event_id);
     }
   };
+  // The quote's text line: the formatted body wins when the quote has one.
+  const replyQuoteText = replyQuote && !replyQuote.formatted ? replyQuoteBody(replyQuote) : null;
   const replyQuoteContent = replyQuote ? (
     <div
-      className={`reply-quote${replyQuoteOpenable ? " is-openable" : ""}${replyQuote.media && replyQuote.state === "ready" ? " has-thumbnail" : ""}`}
+      className={`reply-quote${replyQuoteOpenable ? " is-openable" : ""}`}
       data-reply-state={replyQuote.state}
       onClick={
         replyQuoteOpenable
@@ -906,8 +908,33 @@ export function TimelineItemRow({
       }
     >
       <div className="reply-quote-copy">
-      {replyQuoteShowsSender(replyQuote) ? (
-        replyQuoteOpenable ? (
+        {replyQuoteShowsSender(replyQuote) ? (
+          replyQuoteOpenable ? (
+            <a
+              className="reply-quote-sender reply-quote-link"
+              href={replyQuote.permalink ?? undefined}
+              aria-label={t("timeline.openOriginalMessage")}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                openReplyQuote();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  openReplyQuote();
+                }
+              }}
+            >
+              {peopleFacingLabel(replyQuote.sender_label)}
+            </a>
+          ) : (
+            <div className="reply-quote-sender" dir="auto">
+              {peopleFacingLabel(replyQuote.sender_label)}
+            </div>
+          )
+        ) : replyQuoteOpenable ? (
           <a
             className="reply-quote-sender reply-quote-link"
             href={replyQuote.permalink ?? undefined}
@@ -925,61 +952,39 @@ export function TimelineItemRow({
               }
             }}
           >
-            {peopleFacingLabel(replyQuote.sender_label)}
+            {t("timeline.openOriginalMessage")}
           </a>
-        ) : (
-          <div className="reply-quote-sender" dir="auto">
-            {peopleFacingLabel(replyQuote.sender_label)}
+        ) : null}
+        {replyQuote.formatted || replyQuoteText !== null ? (
+          <div className="reply-quote-body" dir="auto">
+            {replyQuote.formatted
+              ? renderFormattedBody(
+                  replyQuote.formatted,
+                  [],
+                  codeBlockWrap,
+                  onCopyText,
+                  [],
+                  spoilerState,
+                  onOpenMatrixTarget,
+                  // #1328: a quote previews the quoted message, so it pills that
+                  // message's mentions instead of rendering bare matrix.to links.
+                  {
+                    userIds: new Set(replyQuote.mentioned_user_ids ?? []),
+                    // A formatted body pills only `matrix.to` anchors, so a quote
+                    // has no room-mention form to mark.
+                    room: false
+                  }
+                )
+              : replyQuoteText}
           </div>
-        )
-      ) : replyQuoteOpenable ? (
-        <a
-          className="reply-quote-sender reply-quote-link"
-          href={replyQuote.permalink ?? undefined}
-          aria-label={t("timeline.openOriginalMessage")}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            openReplyQuote();
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              event.stopPropagation();
-              openReplyQuote();
-            }
-          }}
-        >
-          {t("timeline.openOriginalMessage")}
-        </a>
-      ) : null}
-      <div className="reply-quote-body" dir="auto">
-        {replyQuote.formatted
-          ? renderFormattedBody(
-              replyQuote.formatted,
-              [],
-              codeBlockWrap,
-              onCopyText,
-              [],
-              spoilerState,
-              onOpenMatrixTarget,
-              // #1328: a quote previews the quoted message, so it pills that
-              // message's mentions instead of rendering bare matrix.to links.
-              {
-                userIds: new Set(replyQuote.mentioned_user_ids ?? []),
-                // A formatted body pills only `matrix.to` anchors, so a quote
-                // has no room-mention form to mark.
-                room: false
-              }
-            )
-          : replyQuoteBody(replyQuote)}
+        ) : null}
+        {/* #1874: the image is the quote's content, under the sender and caption. */}
+        <ReplyQuoteThumbnail
+          quote={replyQuote}
+          state={replyQuoteThumbnail}
+          onOpen={onOpenQuotedMedia}
+        />
       </div>
-      </div>
-      <ReplyQuoteThumbnail
-        quote={replyQuote}
-        state={replyQuoteThumbnail}
-        onOpen={onOpenQuotedMedia}
-      />
     </div>
   ) : null;
   const bodyContent = isRedacted ? (

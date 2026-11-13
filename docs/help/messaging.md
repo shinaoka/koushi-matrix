@@ -91,12 +91,13 @@ message. Koushi shows it in a focused context and briefly highlights it. Links
 inside the preview still open their own targets. If the original is unavailable,
 Koushi explains that instead of jumping elsewhere.
 
-When a reply quotes an image, sticker, or video, the preview also shows a small
-thumbnail. Select the thumbnail to open the original in the media viewer; select
-the rest of the preview to jump to the message as before. A pending thumbnail
-keeps a neutral placeholder, and a failed thumbnail keeps that placeholder
-without an error or retry control. The composer's reply strip shows the same
-sender, caption or media kind, and thumbnail while you write.
+When a reply quotes an image, sticker, or video, the preview shows the picture
+itself under the sender and any caption, at up to 240 × 160 pixels in its
+original shape. Select the picture to open the original in the media viewer;
+select the rest of the preview to jump to the message as before. A pending
+picture keeps a neutral placeholder of the same size, and a failed one keeps
+that placeholder without an error or retry control. The composer's reply strip
+shows the same sender, any caption, and a small thumbnail while you write.
 
 ## Edit or remove a message
 
