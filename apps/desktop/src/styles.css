@@ -4724,6 +4724,13 @@ button.reply-quote-thumbnail:focus-visible {
   border-radius: 6px;
 }
 
+/* #1874: an image wider or taller than the clamped box scales down to fit,
+   centered, instead of losing its edges (a wide formula stays readable). */
+.reply-quote-thumbnail.is-timeline .reply-quote-thumbnail-image {
+  object-fit: contain;
+  object-position: center;
+}
+
 /* #1592: only a Rust-openable quote gets pointer, hover, and focus
    affordances; loading and terminal quotes stay inert. */
 .reply-quote.is-openable {

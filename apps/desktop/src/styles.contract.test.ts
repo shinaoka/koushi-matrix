@@ -690,6 +690,14 @@ describe("styles.css token system", () => {
     );
   });
 
+  test("a timeline reply-quote preview fits the whole image, centered (#1874)", () => {
+    // The preview box clamps an extreme panorama to 3:1, so a wide formula
+    // or screenshot must scale down inside it rather than lose its sides.
+    const image = lastSelectorBlock(".reply-quote-thumbnail.is-timeline .reply-quote-thumbnail-image");
+    expect(image).toContain("object-fit: contain");
+    expect(image).toContain("object-position: center");
+  });
+
   test("fixed Lucide icon sizes stay centralized in ICON_SIZE", () => {
     expect(uiSharedSource).toContain("const ICON_SIZE");
     // No icon-rendering module may hard-code a numeric `size={N}`; all fixed sizes
