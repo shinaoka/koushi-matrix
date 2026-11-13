@@ -2884,7 +2884,9 @@ export function findUnprojectedDisplayRowPublishes(sources) {
 }
 
 /// #1846: one derivation, read at every publish boundary.
-export function checkCoreTimelineSendStateDerivation() {
+/// `options.actorSource` replaces `timeline/actor.rs` so a fixture can pin the
+/// startup ordering; the repository source is the default.
+export function checkCoreTimelineSendStateDerivation(options = {}) {
   const rule = "core.timeline.send_state_derivation";
   const converter = timelineItemBody("item_projection.rs", "fn sdk_item_to_timeline_item_with_send_states");
   const authority = timelineItemBody("item_projection.rs", "impl SendStateAuthority");
@@ -2894,7 +2896,9 @@ export function checkCoreTimelineSendStateDerivation() {
   const applyAll = timelineItemBody("item_projection.rs", "fn apply_all(");
   const admission = timelineItemBody("item_projection.rs", "fn retry_admission(");
   const projection = timelineItemBody("display_projection.rs", "fn project_display_items(");
-  const status = timelineItemBody("actor.rs", "fn update_send_status(");
+  const actor = options.actorSource ?? timelineSource("actor.rs");
+  const status = rustItemBody(actor, "fn update_send_status(");
+  const spawn = rustItemBody(actor, "pub(super) async fn spawn(");
   const retry = timelineSection("outbound_send.rs", "async fn handle_retry_send", "async fn handle_cancel_send");
   const findRow = timelineItemBody("outbound_send.rs", "fn send_state_row(");
   const failures = [];
@@ -2951,6 +2955,17 @@ export function checkCoreTimelineSendStateDerivation() {
   const unprojected = findUnprojectedDisplayRowPublishes(sources);
   if (unprojected.length > 0) {
     failures.push(sourceContractFailure(rule, `a public row list is published outside the display projection (${unprojected.join(", ")})`));
+  }
+  // 8. #1851: the first projection is built after the send queue replayed its
+  //    local echoes. The order is the invariant, not the call chain: a replayed
+  //    echo is the only record the actor has of a request the SDK snapshot no
+  //    longer reports, so subscribing below the projection would render the
+  //    startup rows from whatever each row carries while every other rule and
+  //    test still passes.
+  const replayedEcho = spawn?.indexOf("remember_local_echo(") ?? -1;
+  const startupProjection = spawn?.indexOf("initial_display_context") ?? -1;
+  if (replayedEcho < 0 || startupProjection < 0 || replayedEcho > startupProjection) {
+    failures.push(sourceContractFailure(rule, "the startup projection is built before the send queue replayed its local echoes"));
   }
   return failures;
 }

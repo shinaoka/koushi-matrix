@@ -172,6 +172,50 @@ test("runs representative migrated timeline source-contract rules", () => {
   ]) assert.deepEqual(check(), []);
 });
 
+test("the startup projection is pinned after the send queue replay", () => {
+  // #1851: rule 1 only requires the projection's call chain, so moving the
+  // subscribe back below `initial_display_context` would keep every rule and
+  // test green while the canon claim ("the startup projection is built after
+  // `subscribe()` replayed the echoes") became false. This fixture inverts the
+  // real spawn path, leaving the send-status tables declared above the
+  // projection, and requires the ordering failure.
+  const actor = fs.readFileSync(
+    new URL("../crates/koushi-core/src/timeline/actor.rs", import.meta.url),
+    "utf8"
+  );
+  assert.deepEqual(checkCoreTimelineSendStateDerivation({ actorSource: actor }), []);
+
+  const subscribeStart = actor.indexOf(
+    "        if let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&room_id)\n"
+  );
+  const subscribeEndMarker = "            send_queue_updates = Some(update_rx);\n        }\n";
+  const subscribeEnd = actor.indexOf(subscribeEndMarker, subscribeStart) + subscribeEndMarker.length;
+  const projectionStart = actor.indexOf(
+    "        let initial_display_context = DisplayProjectionContext::for_timeline("
+  );
+  const projectionEndMarker = "\n        );\n";
+  const projectionEnd = actor.indexOf(projectionEndMarker, projectionStart) + projectionEndMarker.length;
+  assert.ok(
+    subscribeStart >= 0
+      && subscribeEnd > subscribeStart
+      && projectionEnd > projectionStart
+      && subscribeStart < projectionStart,
+    "the fixture anchors must still match the spawn path"
+  );
+
+  const reordered =
+    actor.slice(0, subscribeStart)
+    + actor.slice(subscribeEnd, projectionEnd)
+    + actor.slice(subscribeStart, subscribeEnd)
+    + actor.slice(projectionEnd);
+  const failures = checkCoreTimelineSendStateDerivation({ actorSource: reordered });
+  assert.ok(
+    failures.some(({ message }) =>
+      message === "the startup projection is built before the send queue replayed its local echoes"),
+    `the inverted order must be refused, got ${JSON.stringify(failures)}`
+  );
+});
+
 test("the send-state tripwire rejects a row write outside the derivation", () => {
   // #1846: a rendered send state is derived at projection time. The scan is token
   // based, so a multi-line write, a write buried in a long function, a copied
