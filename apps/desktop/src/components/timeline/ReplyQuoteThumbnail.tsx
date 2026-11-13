@@ -72,7 +72,8 @@ export function replyQuoteThumbnailLabel(quote: ReplyQuote): string {
 }
 
 // #1874: the timeline preview keeps the original's shape inside a
-// 240 x 160 px box; an extreme panorama or strip is cropped to these bounds.
+// 240 x 160 px box. An extreme panorama or strip gets a box clamped to these
+// ratios, and the stylesheet scales the image down to fit inside it, centered.
 const PREVIEW_MAX_INLINE_PX = 240;
 const PREVIEW_MAX_BLOCK_PX = 160;
 const PREVIEW_MIN_RATIO = 1 / 2;

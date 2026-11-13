@@ -3168,10 +3168,11 @@ settles.
   cached `File` and preview-size entries for that event. React requests it for
   visible rows only, renders it as the quote's content under the sender and
   caption, in a box of at most 240 x 160 px whose aspect ratio comes from the
-  `ReplyQuote.media` hints in every thumbnail state (#1874), and opens the full
-  file in the existing media viewer; the composer reply strip uses the same
-  quote projection and a 32 px slot. Text, redacted, loading, failed, missing,
-  and unsupported quotes render no slot.
+  `ReplyQuote.media` hints in every thumbnail state, clamped to 1:2..3:1 with
+  the image scaled to fit and centered rather than cropped (#1874), and opens
+  the full file in the existing media viewer; the composer reply strip uses the
+  same quote projection and a 32 px slot. Text, redacted, loading, failed,
+  missing, and unsupported quotes render no slot.
 
 `AppState.room_interactions[room_id]` carries the room's pinned-event
 projection plus the current pin/unpin operation state:

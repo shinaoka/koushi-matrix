@@ -240,9 +240,8 @@ test("an off-ratio thumbnail is centered in the reserved box and the quote keeps
   expect(readyPreview.width).toBeCloseTo(reservedPreview.width, 1);
   expect(readyPreview.y).toBeCloseTo(reservedPreview.y, 1);
 
-  // (b) The image fills the box's padding box, so `object-fit: cover` crops it
-  // symmetrically instead of letting its intrinsic height overflow the box and
-  // anchoring the visible part at the top.
+  // (b) The image element fills the box's padding box instead of letting its
+  // intrinsic height overflow the box and anchoring the visible part at the top.
   const { contentBox, imageBox } = await preview.evaluate((element) => {
     const img = element.querySelector("img");
     if (!img) {
@@ -272,4 +271,12 @@ test("an off-ratio thumbnail is centered in the reserved box and the quote keeps
   expect(imageBox.width).toBeCloseTo(contentBox.width, 1);
   expect(imageBox.top).toBeCloseTo(contentBox.top, 1);
   expect(imageBox.left).toBeCloseTo(contentBox.left, 1);
+
+  // (c) The picture is scaled down and centered in that box, not cropped: a
+  // wider-than-3:1 formula or screenshot keeps its edges.
+  const fit = await preview.locator("img").evaluate((img) => {
+    const style = getComputedStyle(img);
+    return { objectFit: style.objectFit, objectPosition: style.objectPosition };
+  });
+  expect(fit).toEqual({ objectFit: "contain", objectPosition: "50% 50%" });
 });

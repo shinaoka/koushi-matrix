@@ -93,7 +93,8 @@ Koushi explains that instead of jumping elsewhere.
 
 When a reply quotes an image, sticker, or video, the preview shows the picture
 itself under the sender and any caption, at up to 240 × 160 pixels in its
-original shape. Select the picture to open the original in the media viewer;
+original shape. A very wide or very tall picture, such as a formula, is scaled
+down and centered so none of it is cut off. Select the picture to open the original in the media viewer;
 select the rest of the preview to jump to the message as before. A pending
 picture keeps a neutral placeholder of the same size, and a failed one keeps
 that placeholder without an error or retry control. The composer's reply strip
