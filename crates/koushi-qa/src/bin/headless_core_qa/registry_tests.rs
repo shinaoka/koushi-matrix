@@ -346,7 +346,12 @@ fn mcp_message_actions_is_registered_with_private_safe_final_token() {
     );
     assert_eq!(
         final_tokens_for_scenario(scenario),
-        ["safety=ok", "mcp_message_actions=ok"]
+        [
+            "safety=ok",
+            "mcp_thread_pane_other_room=ok",
+            "mcp_thread_pane_opened=ok",
+            "mcp_message_actions=ok",
+        ]
     );
     assert!(!QaScenario::All.should_run_stage(QaStage::McpMessageActions));
     let report = scenario_report("local", scenario);

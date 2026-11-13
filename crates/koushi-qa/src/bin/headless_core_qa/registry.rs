@@ -848,7 +848,11 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "notification_delivery_serverchan_secret_hygiene=ok",
             "notification_delivery=ok",
         ],
-        QaStage::McpMessageActions => &["mcp_message_actions=ok"],
+        QaStage::McpMessageActions => &[
+            "mcp_thread_pane_other_room=ok",
+            "mcp_thread_pane_opened=ok",
+            "mcp_message_actions=ok",
+        ],
         QaStage::AccountNotifications => &[
             "account_notifications_load=ok",
             "account_notifications_no_write_on_open=ok",
