@@ -77,7 +77,7 @@
   "settings.heading": "What you can configure",
   "settings.body": "Settings are split into App Settings, which apply to every account tab, and Account Settings for each account.",
   "settings.app.appearance": "App → Appearance: language, theme, density, UI font, and emoji style",
-  "settings.app.preferences": "App → Preferences: code-block wrapping, close to tray, loading older messages, thread placement",
+  "settings.app.preferences": "App → Preferences: code-block wrapping, hiding removed messages, close to tray where configurable, emoji picker size, and thread placement",
   "settings.app.keyboard": "App → Keyboard: the send shortcut and a list of shortcuts",
   "settings.app.search": "App → Search history: background indexing speed, shared by all accounts",
   "settings.account.account": "Account → Account: display name, avatar, and password",

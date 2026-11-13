@@ -312,8 +312,8 @@
     "source_hash": "61cbe5b3d7a0"
   },
   "settings.app.preferences": {
-    "text": "應用程式 → 偏好設定：程式碼區塊換行、關閉時縮到系統匣、載入較舊的訊息、討論串排列方式",
-    "source_hash": "ed8eef0149a8"
+    "text": "應用程式 → 偏好設定：程式碼區塊換行、隱藏已刪除的訊息、在可設定的環境中關閉時縮到系統匣、表情選擇器大小、討論串排列方式",
+    "source_hash": "b85ef58a7e88"
   },
   "settings.app.keyboard": {
     "text": "應用程式 → 鍵盤：傳送快速鍵與快速鍵清單",

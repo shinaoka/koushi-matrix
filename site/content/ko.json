@@ -312,8 +312,8 @@
     "source_hash": "61cbe5b3d7a0"
   },
   "settings.app.preferences": {
-    "text": "앱 → 환경설정: 코드 블록 줄바꿈, 트레이로 닫기, 이전 메시지 불러오기, 스레드 배치",
-    "source_hash": "ed8eef0149a8"
+    "text": "앱 → 환경설정: 코드 블록 줄바꿈, 삭제된 메시지 숨기기, 설정할 수 있는 환경에서 트레이로 닫기, 이모지 선택기 크기, 스레드 배치",
+    "source_hash": "b85ef58a7e88"
   },
   "settings.app.keyboard": {
     "text": "앱 → 키보드: 전송 단축키와 단축키 목록",

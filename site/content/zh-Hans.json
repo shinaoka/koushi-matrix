@@ -312,8 +312,8 @@
     "source_hash": "61cbe5b3d7a0"
   },
   "settings.app.preferences": {
-    "text": "应用 → 偏好设置：代码块换行、关闭到托盘、加载更早的消息、话题排列方式",
-    "source_hash": "ed8eef0149a8"
+    "text": "应用 → 偏好设置：代码块换行、隐藏已删除的消息、在可配置的环境中关闭到托盘、表情选择器大小、话题排列方式",
+    "source_hash": "b85ef58a7e88"
   },
   "settings.app.keyboard": {
     "text": "应用 → 键盘：发送快捷键和快捷键列表",
