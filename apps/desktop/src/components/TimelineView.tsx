@@ -362,6 +362,13 @@ type TimelineBackfillMetrics = {
 const TIMELINE_LINK_PREVIEW_OVERSCAN_ITEMS = 8;
 const TIMELINE_SCROLL_IDLE_FLUSH_MS = 100;
 const TIMELINE_SCROLL_MAX_DEFER_MS = 500;
+/**
+ * #1892: a scroll-observed room anchor is sent to the core only once the
+ * scroll has been quiet this long. Each update is a core command whose
+ * snapshot re-renders the shell, so one per scroll frame capped scrolling far
+ * below the display rate.
+ */
+const TIMELINE_SCROLL_ANCHOR_SETTLE_MS = 250;
 const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "noop";
 
 /** #1810: a quoted image opens in the viewer at its quoted media kind. */
@@ -761,6 +768,13 @@ export const TimelineView = memo(function TimelineView({
   }, []);
 
   const lastPersistedViewportAnchorSignatureRef = useRef<string | null>(null);
+  /** #1892: the newest scroll-observed anchor, waiting for the scroll to settle. */
+  const pendingScrollAnchorRef = useRef<{
+    transport: TimelineTransport;
+    roomId: string;
+    anchor: TimelineScrollAnchor;
+  } | null>(null);
+  const scrollAnchorSettleTimerRef = useRef<number | null>(null);
   const restoredRoomScrollAnchorSignatureRef = useRef<string | null>(null);
   const anchorAsyncGenerationRef = useRef(0);
   /** Tracks whether the current key already got its first live-edge scroll. */
@@ -1138,7 +1152,26 @@ export const TimelineView = memo(function TimelineView({
     return next;
   }, []);
 
-  const persistViewportAnchor = useCallback((options?: { allowSuppressed?: boolean }): boolean => {
+  /** Send the anchor a settling scroll left behind, if any. Reads no layout. */
+  const flushPendingScrollAnchor = useCallback(() => {
+    if (scrollAnchorSettleTimerRef.current !== null) {
+      window.clearTimeout(scrollAnchorSettleTimerRef.current);
+      scrollAnchorSettleTimerRef.current = null;
+    }
+    const pending = pendingScrollAnchorRef.current;
+    pendingScrollAnchorRef.current = null;
+    if (!pending?.transport.updateScrollAnchor) return;
+    void pending.transport.updateScrollAnchor(pending.roomId, pending.anchor).catch(() => undefined);
+  }, []);
+  // A room change or unmount sends what the reader last scrolled to, for the
+  // room it was taken in; the stored anchor needs no DOM read at that point.
+  useEffect(() => flushPendingScrollAnchor, [flushPendingScrollAnchor, roomId]);
+
+  const persistViewportAnchor = useCallback((options?: {
+    allowSuppressed?: boolean;
+    /** #1892: from a scroll event; send once the scroll settles. */
+    deferUntilScrollSettles?: boolean;
+  }): boolean => {
     if (!transport.updateScrollAnchor || roomTimelineRoomId !== roomId) {
       return false;
     }
@@ -1165,15 +1198,27 @@ export const TimelineView = memo(function TimelineView({
       return false;
     }
     lastPersistedViewportAnchorSignatureRef.current = stableSignature;
-    const updatedAtMs = Date.now();
-    void transport
-      .updateScrollAnchor(roomId, {
-        ...captured,
-        updated_at_ms: updatedAtMs
-      })
-      .catch(() => undefined);
+    const anchor = { ...captured, updated_at_ms: Date.now() };
+    if (options?.deferUntilScrollSettles) {
+      pendingScrollAnchorRef.current = { transport, roomId, anchor };
+      if (scrollAnchorSettleTimerRef.current !== null) {
+        window.clearTimeout(scrollAnchorSettleTimerRef.current);
+      }
+      scrollAnchorSettleTimerRef.current = window.setTimeout(
+        flushPendingScrollAnchor,
+        TIMELINE_SCROLL_ANCHOR_SETTLE_MS
+      );
+      return true;
+    }
+    // An immediate anchor supersedes a pending one for the same room; a
+    // pending anchor for another room is still sent first.
+    if (pendingScrollAnchorRef.current?.roomId === roomId) {
+      pendingScrollAnchorRef.current = null;
+    }
+    flushPendingScrollAnchor();
+    void transport.updateScrollAnchor(roomId, anchor).catch(() => undefined);
     return true;
-  }, [roomId, roomTimelineRoomId, transport]);
+  }, [flushPendingScrollAnchor, roomId, roomTimelineRoomId, transport]);
 
   const runWithScrollWriteReason = useCallback(
     (reason: TimelineScrollWriteReason, action: () => void, transactionId: number | null = null) => {
@@ -3769,7 +3814,7 @@ export const TimelineView = memo(function TimelineView({
       }
       evaluateAndMaybeRequestBackfillRef.current("user_scroll", isUserDrivenScroll);
       evaluateForwardFillRef.current(isUserDrivenScroll);
-      persistViewportAnchor();
+      persistViewportAnchor({ deferUntilScrollSettles: true });
     }
   }, [
     advanceViewportEpoch,

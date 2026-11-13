@@ -225,6 +225,13 @@ function viewportRectOf(element: Element | null): FloatingRect | null {
 }
 
 export interface FloatingPlacementOptions {
+  /**
+   * Whether the panel is open (default true). A closed panel performs no
+   * measurement and registers no listeners, so a hook owned by every timeline
+   * row costs nothing per render or per page scroll (#1892). Closing also
+   * forgets the placement, so the next open is hidden until it is measured.
+   */
+  enabled?: boolean;
   anchorRef?: RefObject<Element | null>;
   /**
    * `contentRef` measures the panel element, or null (the default). Sizing from
@@ -259,12 +266,13 @@ export interface FloatingPlacementOptions {
  * Remeasured on resize, on capture-phase scroll, and after every commit: an
  * ancestor re-render can move the anchor without firing either event (a pane
  * resize drag, a pane opening). Identical geometry keeps the previous state
- * object, so this cannot loop.
+ * object, so this cannot loop. All of it only while `enabled`.
  */
 export function useFloatingPlacement(
   options: FloatingPlacementOptions,
 ): FloatingPlacementResult | null {
   const {
+    enabled = true,
     anchorRef,
     contentRef,
     resolveBoundaryElement,
@@ -321,21 +329,36 @@ export function useFloatingPlacement(
     shrinkToAnchor,
   ]);
 
+  // Declared before the per-commit measurement, so an opening panel re-reads
+  // the titlebar inset that nothing kept current while every panel was closed.
   useLayoutEffect(() => {
-    measure();
+    if (enabled) {
+      invalidateNativeTitlebarSafeTop();
+    } else {
+      setResolved(null);
+    }
+  }, [enabled]);
+
+  useLayoutEffect(() => {
+    if (enabled) measure();
   });
 
   useEffect(() => {
-    const observer = new MutationObserver(measure);
+    if (!enabled) return undefined;
+    const remeasureAfterLayoutChange = () => {
+      invalidateNativeTitlebarSafeTop();
+      measure();
+    };
+    const observer = new MutationObserver(remeasureAfterLayoutChange);
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "data-platform", "dir"] });
-    window.addEventListener("resize", measure);
+    window.addEventListener("resize", remeasureAfterLayoutChange);
     document.addEventListener("scroll", measure, true);
     return () => {
       observer.disconnect();
-      window.removeEventListener("resize", measure);
+      window.removeEventListener("resize", remeasureAfterLayoutChange);
       document.removeEventListener("scroll", measure, true);
     };
-  }, [measure]);
+  }, [enabled, measure]);
 
   return resolved;
 }
@@ -439,14 +462,29 @@ export function pinnedPlacementStyle(
   };
 }
 
-/** Read the shared CSS length in CSS pixels (custom properties may be calc()). */
+let cachedNativeTitlebarSafeTop: number | null = null;
+
+/**
+ * Read the shared CSS length in CSS pixels (custom properties may be calc()).
+ *
+ * The probe inserts and removes an element, which invalidates layout, so the
+ * next rectangle read anywhere forces a full relayout. It is therefore read
+ * once and cached until something that can move it changes: a resize, or the
+ * root `style` / `data-platform` / `dir` the open panels observe (#1892).
+ */
 function nativeTitlebarSafeTop(): number {
+  if (cachedNativeTitlebarSafeTop !== null) return cachedNativeTitlebarSafeTop;
   const probe = document.createElement("span");
   probe.style.cssText = "position:fixed;visibility:hidden;pointer-events:none;height:var(--native-titlebar-safe-block, 0px)";
   document.body.append(probe);
   const height = probe.getBoundingClientRect().height;
   probe.remove();
+  cachedNativeTitlebarSafeTop = height;
   return height;
+}
+
+function invalidateNativeTitlebarSafeTop(): void {
+  cachedNativeTitlebarSafeTop = null;
 }
 
 /** Keep modal descendants in their top layer, where they are not inert. */

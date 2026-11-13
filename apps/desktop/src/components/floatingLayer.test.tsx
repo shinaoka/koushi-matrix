@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -269,6 +269,107 @@ describe("useFloatingPlacement with a content-measured panel", () => {
 
     expect(panelStyle().visibility).toBe("");
     expect(panelStyle().top).not.toBe("");
+  });
+});
+
+describe("useFloatingPlacement for a closed popup", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  // A fixed-size popup like the receipt readers: no content ref, so only
+  // `enabled` can tell the layer that nothing is open.
+  function Popup({ enabled }: { enabled: boolean }) {
+    const anchorRef = useRef<HTMLButtonElement>(null);
+    const placement = useFloatingPlacement({
+      align: "end",
+      anchorRef,
+      blockSize: 100,
+      enabled,
+      inlineSize: 200,
+      placement: "above"
+    });
+    return (
+      <>
+        <button ref={anchorRef} type="button" />
+        <div data-testid="panel" style={floatingPlacementStyle(placement)} />
+      </>
+    );
+  }
+
+  function panelStyle() {
+    return (screen.getByTestId("panel") as HTMLElement).style;
+  }
+
+  function scrollListeners(listen: { mock: { calls: unknown[][] } }) {
+    return listen.mock.calls.filter(([type]) => type === "scroll").length;
+  }
+
+  it("reads no layout and listens to nothing while closed (#1892)", () => {
+    // Every timeline row with read receipts owns one of these. While closed it
+    // must not force a layout on render or on any scroll in the page.
+    const rects = vi.spyOn(Element.prototype, "getBoundingClientRect");
+    const listen = vi.spyOn(document, "addEventListener");
+    const observe = vi.spyOn(MutationObserver.prototype, "observe");
+    const append = vi.spyOn(document.body, "append");
+
+    const { rerender } = render(<Popup enabled={false} />);
+    rerender(<Popup enabled={false} />);
+    act(() => {
+      fireEvent.scroll(document);
+    });
+
+    expect(rects).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
+    expect(scrollListeners(listen)).toBe(0);
+    expect(observe).not.toHaveBeenCalled();
+    expect(panelStyle().visibility).toBe("hidden");
+
+    rerender(<Popup enabled />);
+
+    expect(rects).toHaveBeenCalled();
+    expect(scrollListeners(listen)).toBe(1);
+    expect(panelStyle().visibility).toBe("");
+    expect(panelStyle().top).not.toBe("");
+  });
+
+  it("forgets its placement when it closes, so a reopen never draws a stale position", () => {
+    const { rerender } = render(<Popup enabled />);
+    expect(panelStyle().visibility).toBe("");
+
+    rerender(<Popup enabled={false} />);
+
+    expect(panelStyle().visibility).toBe("hidden");
+  });
+
+  it("reads the native titlebar inset once, not on every scroll (#1892)", () => {
+    // The inset probe is a DOM write followed by a read. Repeating it per
+    // measurement turns every later rectangle read into a forced layout.
+    const append = vi.spyOn(document.body, "append");
+    const probes = () => append.mock.calls.filter(([node]) => node instanceof HTMLSpanElement).length;
+
+    render(<Popup enabled />);
+    expect(probes()).toBe(1);
+
+    act(() => {
+      fireEvent.scroll(document);
+      fireEvent.scroll(document);
+    });
+    expect(probes()).toBe(1);
+
+    // A resize or a root platform/zoom change may move the inset.
+    act(() => {
+      fireEvent(window, new Event("resize"));
+    });
+    expect(probes()).toBe(2);
+    act(() => {
+      document.documentElement.setAttribute("data-platform", "macos");
+    });
+    return Promise.resolve().then(() => {
+      expect(probes()).toBe(3);
+      document.documentElement.removeAttribute("data-platform");
+    });
   });
 });
 

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   focusedTimelineKey,
+  roomTimelineKey,
   type CoreEventPayload,
   type PaginationState,
   type TimelineGapId,
@@ -1037,7 +1038,10 @@ describe("TimelineView", () => {
       fireEvent.scroll(timeline);
     });
 
-    expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
+    // #1892: persisted once the scroll settles, not from the scroll event.
+    await waitFor(() => {
+      expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
+    });
     expect(updateScrollAnchor).toHaveBeenCalledWith(
       "!room:example.invalid",
       expect.objectContaining({
@@ -1051,8 +1055,143 @@ describe("TimelineView", () => {
     act(() => {
       fireEvent.scroll(timeline);
     });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
 
     expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
+  });
+
+  async function renderTwoRowTimelineForAnchor(updateScrollAnchor: () => Promise<void>) {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 0;
+    });
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      updateScrollAnchor
+    });
+    // Rows follow scrollTop, so each scroll step observes a new anchor.
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(
+      {
+        "$first:example.invalid": { top: 1900, height: 48 },
+        "$second:example.invalid": { top: 2300, height: 48 }
+      },
+      { top: 0, height: 600 },
+      scrollContainerRef
+    );
+    const rendered = render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+    const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "scrollHeight", { value: 2400, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", { value: 0, writable: true, configurable: true });
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              message("$first:example.invalid", "First"),
+              message("$second:example.invalid", "Second")
+            ]
+          }
+        }
+      });
+    });
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(1800);
+    });
+    // Arriving at the live edge persists once, immediately; only scrolling is
+    // under test from here on.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    vi.mocked(updateScrollAnchor).mockClear();
+    return { ...rendered, timeline };
+  }
+
+  function userScroll(timeline: HTMLElement, steps: number) {
+    for (let step = 0; step < steps; step += 1) {
+      act(() => {
+        fireEvent.wheel(timeline, { deltaY: -30 });
+        timeline.scrollTop -= 30;
+        fireEvent.scroll(timeline);
+      });
+    }
+  }
+
+  it("sends no scroll anchor to the core while the user is still scrolling (#1892)", async () => {
+    // Each anchor update is a core command whose snapshot re-renders the
+    // shell. Sending one per scroll frame held scrolling under 20 fps.
+    const updateScrollAnchor = vi.fn(async () => undefined);
+    const { timeline } = await renderTwoRowTimelineForAnchor(updateScrollAnchor);
+
+    userScroll(timeline, 5);
+
+    expect(updateScrollAnchor).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
+    });
+    // The one update carries where the scroll ended (150px up), not where it began.
+    expect(updateScrollAnchor).toHaveBeenCalledWith(
+      "!room:example.invalid",
+      expect.objectContaining({ event_id: "$first:example.invalid", edge: "bottom", offset_px: -302 })
+    );
+  });
+
+  it("still persists a pending scroll anchor when the timeline unmounts mid-scroll (#1892)", async () => {
+    const updateScrollAnchor = vi.fn(async () => undefined);
+    const { timeline, unmount } = await renderTwoRowTimelineForAnchor(updateScrollAnchor);
+
+    userScroll(timeline, 2);
+    expect(updateScrollAnchor).not.toHaveBeenCalled();
+
+    unmount();
+
+    expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
+    expect(updateScrollAnchor).toHaveBeenCalledWith(
+      "!room:example.invalid",
+      expect.objectContaining({ event_id: "$second:example.invalid", edge: "bottom" })
+    );
+  });
+
+  it("persists a pending scroll anchor for the room it was taken in when the room changes (#1892)", async () => {
+    const updateScrollAnchor = vi.fn(async () => undefined);
+    const { timeline, rerender } = await renderTwoRowTimelineForAnchor(updateScrollAnchor);
+
+    userScroll(timeline, 2);
+    expect(updateScrollAnchor).not.toHaveBeenCalled();
+
+    rerender(
+      <TimelineView
+        timelineKey={roomTimelineKey("@alice:example.invalid", "!other:example.invalid")}
+        roomId="!other:example.invalid"
+        transport={baseTransport({ updateScrollAnchor })}
+        onReply={vi.fn()}
+      />
+    );
+
+    expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
+    expect(updateScrollAnchor).toHaveBeenCalledWith(
+      "!room:example.invalid",
+      expect.objectContaining({ event_id: "$second:example.invalid" })
+    );
   });
 
 
