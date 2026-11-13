@@ -783,3 +783,48 @@ fn selecting_a_space_without_a_room_keeps_the_space_and_clears_the_room() {
         "no room opens, so the action subscribes no timeline"
     );
 }
+
+/// #1850: the canon promises that a prior Space which has since left the room
+/// list resolves to Home, so the restore clears the room instead of selecting a
+/// Space this account no longer has.
+#[test]
+fn selecting_a_space_without_a_room_resolves_a_gone_space_to_home() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        spaces: spaces(),
+        rooms: rooms(),
+        navigation: koushi_state::NavigationState {
+            active_room_id: Some("dm-a".to_owned()),
+            ..Default::default()
+        },
+        timeline: TimelinePaneState {
+            room_id: Some("dm-a".to_owned()),
+            is_subscribed: true,
+            ..Default::default()
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SelectSpaceWithoutRoom {
+            space_id: "space-gone".to_owned(),
+        },
+    );
+
+    assert_eq!(state.navigation.active_space_id, None);
+    assert_eq!(state.navigation.active_room_id, None);
+    assert_eq!(state.timeline, TimelinePaneState::default());
+    assert!(
+        effects.contains(&AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+            room_id: "dm-a".to_owned(),
+        })),
+        "clearing the room publishes its TimelineChanged: {effects:?}"
+    );
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::SubscribeTimeline { .. })),
+        "Home opens no room: {effects:?}"
+    );
+}

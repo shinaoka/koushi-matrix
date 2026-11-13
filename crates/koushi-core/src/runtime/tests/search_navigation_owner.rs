@@ -1064,6 +1064,10 @@ async fn cancelling_a_space_only_prior_in_the_same_space_clears_the_navigation_r
     harness.navigate(request(1)).await;
     let _held = harness.manager.build_started().await;
     harness.close_focused_context(request(2)).await;
+    // Only the final state is asserted: the pending navigation's own selection
+    // publishes (SPACE, ROOM) as this coalesced turn's pre-publish, so a
+    // published-slice pin could not tell that apart from a half-applied restore.
+    // The Space-leaving test above carries that pin.
     harness
         .wait_for_state("cancel must close the pending navigation's room", |state| {
             state.navigation.active_space_id.as_deref() == Some(SPACE)
