@@ -720,6 +720,7 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "thread_room_badge_cleared=ok",
             "thread_room_badge_main_read_kept=ok",
             "thread_paginate=end_reached",
+            "thread_search_select=ok",
         ],
         QaStage::EditRedactSearch => &["edit_redact_search=ok"],
         QaStage::RedactEditConvergence => &[
@@ -934,6 +935,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "thread_room_badge_cleared=ok",
         "thread_room_badge_main_read_kept=ok",
         "thread_paginate=end_reached",
+        "thread_search_select=ok",
         "send_media=ok",
         "media_caption=ok",
         "image_compress=ok",

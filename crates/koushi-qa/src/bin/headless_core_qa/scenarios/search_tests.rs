@@ -104,3 +104,80 @@ fn search_crawl_backlog_summary_reads_only_the_latest_crawler_sample() {
         None
     );
 }
+
+/// #1880: the search-selection assertion is a pure predicate over the Thread
+/// pane, so the lane's pass/fail decision is checked without a live server.
+#[test]
+fn thread_pane_wait_outcome_requires_the_selected_reply_root_and_intent() {
+    use super::ThreadPaneWaitOutcome;
+    use super::thread_pane_wait_outcome;
+    use koushi_state::{ComposerState, ThreadOpenIntent, ThreadPaneState};
+
+    fn open(root: &str, intent: ThreadOpenIntent, is_subscribed: bool) -> ThreadPaneState {
+        ThreadPaneState::Open {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: root.to_owned(),
+            intent,
+            is_subscribed,
+            composer: ComposerState::default(),
+            staged_uploads: Vec::new(),
+        }
+    }
+
+    let pinned = ThreadOpenIntent::PinnedReply {
+        event_id: "$reply:example.invalid".to_owned(),
+    };
+    let selected = |pane: &ThreadPaneState| {
+        thread_pane_wait_outcome(
+            pane,
+            "!room:example.invalid",
+            "$root:example.invalid",
+            "$reply:example.invalid",
+        )
+    };
+
+    assert_eq!(
+        selected(&open("$root:example.invalid", pinned.clone(), true)),
+        ThreadPaneWaitOutcome::Ready
+    );
+    // Still resolving, and a pane that has not subscribed yet, are both waits.
+    assert_eq!(
+        selected(&ThreadPaneState::Closed),
+        ThreadPaneWaitOutcome::Waiting
+    );
+    assert_eq!(
+        selected(&ThreadPaneState::Opening {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$root:example.invalid".to_owned(),
+            intent: pinned.clone(),
+        }),
+        ThreadPaneWaitOutcome::Waiting
+    );
+    // A different root, a different intent and an unsubscribed pane cannot
+    // stand in for the selection.
+    assert!(matches!(
+        selected(&open("$other-root:example.invalid", pinned.clone(), true)),
+        ThreadPaneWaitOutcome::Failed(_)
+    ));
+    assert!(matches!(
+        selected(&open(
+            "$root:example.invalid",
+            ThreadOpenIntent::ExistingThread,
+            true
+        )),
+        ThreadPaneWaitOutcome::Failed(_)
+    ));
+    assert!(matches!(
+        selected(&open("$root:example.invalid", pinned, false)),
+        ThreadPaneWaitOutcome::Failed(_)
+    ));
+    assert!(matches!(
+        selected(&ThreadPaneState::Failed {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$root:example.invalid".to_owned(),
+            intent: ThreadOpenIntent::ExistingThread,
+            failure_kind: koushi_state::OperationFailureKind::NotFound,
+        }),
+        ThreadPaneWaitOutcome::Failed(_)
+    ));
+}

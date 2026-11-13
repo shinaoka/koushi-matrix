@@ -45,7 +45,7 @@ use super::scenario_rooms::{
 };
 use super::scenario_search::{
     poll_search_until_absent, poll_search_until_found, run_hide_redacted_stage,
-    run_search_crawler_stage, wait_for_paginate_end_reached,
+    run_search_crawler_stage, search_hit_opens_thread_pane, wait_for_paginate_end_reached,
 };
 use super::scenario_thread_late_joiner::run_thread_late_joiner_scenario;
 use super::scenario_timeline::{
@@ -1557,6 +1557,19 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
             }))
             .await
             .map_err(|e| format!("submit unsubscribe thread B: {e}"))?;
+
+        // #1880: a search hit for a thread reply must open the Thread pane on
+        // that reply's root through the same selection path the app uses.
+        search_hit_opens_thread_pane(
+            &mut conn_a,
+            &account_key_a,
+            &room_id,
+            &event1_id,
+            &thread_b_reply_event_id,
+            THREAD_REPLY_BODY,
+        )
+        .await?;
+        println!("thread_search_select=ok");
     }
 
     if scenario.should_run_stage(QaStage::ScheduledSend) {
