@@ -1,9 +1,12 @@
-use super::event_wait::projection_timeline_item;
+use super::event_wait::{
+    find_timeline_item_with_body, projection_timeline_item, subscribe_timeline_for_qa,
+};
+use super::registry::EVENT_TIMEOUT;
 use super::{
     AccountKey, AppCommand, AppState, CoreCommand, CoreConnection, CoreEvent, DisplaySettings,
     Duration, RequestId, SearchCommand, SearchCrawlerFailureKind, SearchCrawlerRoomState,
     SearchCrawlerSettings, SearchCrawlerSpeed, SearchEvent, SearchScope, SettingsPatch,
-    TimelineEvent, TimelineKey,
+    TimelineCommand, TimelineEvent, TimelineKey, TimelineKind,
 };
 
 /// Per-state crawler counts for the timeout diagnostic (#1198/#1199):
@@ -463,6 +466,147 @@ pub(super) async fn poll_search_until_absent(
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+}
+
+/// How a Thread pane observed after a search-result selection relates to the
+/// selection this lane made.
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum ThreadPaneWaitOutcome {
+    /// The pane has not left `Closed` yet: the navigation is still resolving.
+    Waiting,
+    /// The pane opened on the reply's root, pinned to the selected reply.
+    Ready,
+    /// The pane settled somewhere the selection cannot explain.
+    Failed(String),
+}
+
+/// #1880: decide whether the Thread pane settled on the search-selected reply.
+/// The pane is input to this predicate, so the lane's assertion is unit-tested
+/// instead of only being reachable through a live homeserver run.
+pub(super) fn thread_pane_wait_outcome(
+    pane: &koushi_state::ThreadPaneState,
+    room_id: &str,
+    root_event_id: &str,
+    reply_event_id: &str,
+) -> ThreadPaneWaitOutcome {
+    use koushi_state::{ThreadOpenIntent, ThreadPaneState};
+    match pane {
+        ThreadPaneState::Closed | ThreadPaneState::Opening { .. } => ThreadPaneWaitOutcome::Waiting,
+        ThreadPaneState::Open {
+            room_id: open_room,
+            root_event_id: open_root,
+            intent: ThreadOpenIntent::PinnedReply { event_id },
+            is_subscribed: true,
+            ..
+        } if open_room == room_id && open_root == root_event_id && event_id == reply_event_id => {
+            ThreadPaneWaitOutcome::Ready
+        }
+        ThreadPaneState::Open {
+            room_id: open_room,
+            root_event_id: open_root,
+            intent,
+            is_subscribed: false,
+            ..
+        } => ThreadPaneWaitOutcome::Failed(format!(
+            "the Thread pane opened on room/root {open_room:?}/{open_root:?} with intent {intent:?} but is not subscribed"
+        )),
+        ThreadPaneState::Failed { failure_kind, .. } => ThreadPaneWaitOutcome::Failed(format!(
+            "opening the selected reply's thread failed: {failure_kind:?}"
+        )),
+        other => ThreadPaneWaitOutcome::Failed(format!(
+            "the Thread pane settled as {other:?} instead of the selected reply's root"
+        )),
+    }
+}
+
+/// #1880: selecting a search hit for a thread reply must open the Thread pane
+/// on that reply's root with the reply showing, by the same path the app uses
+/// for a search-result click (source `Search`, `LiveFallback` policy).
+pub(super) async fn search_hit_opens_thread_pane(
+    conn: &mut CoreConnection,
+    account_key: &AccountKey,
+    room_id: &str,
+    root_event_id: &str,
+    reply_event_id: &str,
+    reply_body: &str,
+) -> Result<(), String> {
+    const LABEL: &str = "thread_search_select";
+    poll_search_until_found(
+        conn,
+        account_key,
+        reply_body,
+        reply_event_id,
+        room_id,
+        LABEL,
+    )
+    .await?;
+
+    let navigate_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::NavigateToEvent {
+        request_id: navigate_id,
+        room_id: room_id.to_owned(),
+        event_id: reply_event_id.to_owned(),
+        source: koushi_state::EventNavigationSource::Search,
+        missing_target_policy:
+            koushi_protocol::command::EventNavigationMissingTargetPolicy::LiveFallback,
+    }))
+    .await
+    .map_err(|e| format!("{LABEL}: submit search result selection: {e}"))?;
+
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    loop {
+        match thread_pane_wait_outcome(
+            &conn.snapshot().thread,
+            room_id,
+            root_event_id,
+            reply_event_id,
+        ) {
+            ThreadPaneWaitOutcome::Ready => break,
+            ThreadPaneWaitOutcome::Failed(violation) => {
+                return Err(format!("{LABEL}: {violation}"));
+            }
+            ThreadPaneWaitOutcome::Waiting => {}
+        }
+        tokio::time::timeout_at(deadline, conn.recv_event())
+            .await
+            .map_err(|_| {
+                format!(
+                    "{LABEL}: timed out waiting for the Thread pane to open on the selected reply"
+                )
+            })?
+            .map_err(|lag| format!("{LABEL}: event stream lagged (skipped={})", lag.skipped))?;
+    }
+
+    // The pane renders this thread timeline, so the reply showing there is the
+    // "reply is visible" half of the contract.
+    let thread_key = TimelineKey {
+        account_key: account_key.clone(),
+        kind: TimelineKind::Thread {
+            room_id: room_id.to_owned(),
+            root_event_id: root_event_id.to_owned(),
+        },
+    };
+    let thread_items = subscribe_timeline_for_qa(conn, &thread_key, LABEL).await?;
+    if find_timeline_item_with_body(&thread_items, reply_body).is_none() {
+        return Err(format!(
+            "{LABEL}: the opened Thread pane's timeline does not hold the selected reply"
+        ));
+    }
+    let unsubscribe_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
+        request_id: unsubscribe_id,
+        key: thread_key,
+    }))
+    .await
+    .map_err(|e| format!("{LABEL}: submit thread unsubscribe: {e}"))?;
+
+    let close_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::CloseThread {
+        request_id: close_id,
+    }))
+    .await
+    .map_err(|e| format!("{LABEL}: submit thread close: {e}"))?;
+    Ok(())
 }
 
 /// Submit one search query and wait for `SearchEvent::Results` with matching

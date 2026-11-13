@@ -212,6 +212,7 @@ fn redact_edit_convergence_is_registered_with_private_safe_final_token() {
             "thread_room_badge_cleared=ok",
             "thread_room_badge_main_read_kept=ok",
             "thread_paginate=end_reached",
+            "thread_search_select=ok",
             "edit_redact_search=ok",
             "redact_edit_convergence=ok",
             "thread_summary_convergence=ok",
@@ -660,6 +661,7 @@ fn implemented_final_tokens_include_thread() {
             "thread_room_badge_cleared=ok",
             "thread_room_badge_main_read_kept=ok",
             "thread_paginate=end_reached",
+            "thread_search_select=ok",
             "send_media=ok",
             "media_caption=ok",
             "image_compress=ok",
@@ -975,6 +977,7 @@ fn final_tokens_follow_the_requested_scenario_including_composer() {
             "thread_room_badge_cleared=ok",
             "thread_room_badge_main_read_kept=ok",
             "thread_paginate=end_reached",
+            "thread_search_select=ok",
             "restore_cleanup=ok",
         ]
     );
@@ -1116,6 +1119,7 @@ fn implemented_final_tokens_include_safety() {
             "thread_room_badge_cleared=ok",
             "thread_room_badge_main_read_kept=ok",
             "thread_paginate=end_reached",
+            "thread_search_select=ok",
             "send_media=ok",
             "media_caption=ok",
             "image_compress=ok",
