@@ -8,10 +8,20 @@
 //! redaction, and the thread relation is the proof that the effects reached the
 //! homeserver instead of only A's local store.
 //!
-//! Nothing here asserts GUI state. The one timeline this scenario subscribes is
-//! A's room timeline, and only because posting the fixture messages is a
-//! timeline send; the operations run off the account session, and the scenario
-//! never reads a timeline row, receipt, or unread value.
+//! Nothing here asserts GUI state, with one exception (#1853, #1870): a direct
+//! thread reply reports what the runtime did about the thread pane, and that is
+//! GUI state this lane can hold — the runtime's own displayed room. The lane
+//! sends the thread reply twice as live sends — with another room on screen, where
+//! it must report
+//! `not_opened_other_room` and leave the pane closed, and after selecting the
+//! replies room, where it must report `opened` and leave the pane showing that
+//! thread. Subscribing the replied room's timeline already displays it, so the
+//! first send needs the second room. The other two reason codes are not
+//! reproducible here: `not_opened_background_account` needs one runtime with a
+//! second account tab (covered by the `koushi-core` reveal tests), and
+//! `not_opened_session_changed` needs the session to change while the send is in
+//! flight (covered by neither). No timeline row, receipt, or unread value is read,
+//! and B never mounts a timeline.
 
 use super::cleanup::cleanup_logged_in_runtime;
 use super::event_wait::{
@@ -22,11 +32,14 @@ use super::fixtures::{accept_invite_for_qa, create_room_for_qa, invite_user_for_
 use super::participants::{
     QaParticipantLoginGate, QaParticipantLoginOutcome, login_synced_participant_for_qa, qa_data_dir,
 };
-use super::registry::QaConfig;
-use super::{AccountKey, CoreCommand, CoreConnection, TimelineCommand, TimelineKey, TimelineKind};
+use super::registry::{EVENT_TIMEOUT, QaConfig};
+use super::{
+    AccountKey, CoreCommand, CoreConnection, RoomCommand, TimelineCommand, TimelineKey,
+    TimelineKind,
+};
 use koushi_core::{
     DirectEditOutcome, DirectMessageRequest, DirectMessageResponse, DirectMessageView,
-    DirectReactionOutcome, DirectRedactOutcome, DirectThreadReplyOutcome,
+    DirectReactionOutcome, DirectRedactOutcome, DirectThreadPaneOutcome, DirectThreadReplyOutcome,
 };
 use koushi_protocol::event::RoomMessageKind;
 
@@ -34,6 +47,7 @@ const BODY: &str = "Synthetic MCP message actions body";
 const EDITED_BODY: &str = "Synthetic MCP message actions edited body";
 const DELETED_BODY: &str = "Synthetic MCP message actions deleted body";
 const THREAD_ROOT_BODY: &str = "Synthetic MCP message actions thread root";
+const OTHER_ROOM_NAME: &str = "Synthetic MCP Message Actions Other Room";
 const THREAD_REPLY_BODY: &str = "Synthetic MCP message actions thread reply";
 const REACTION_KEY: &str = "👍";
 
@@ -353,12 +367,35 @@ async fn run_mcp_message_actions_flow(
         "mcp message actions read deleted: the redacted message still carried a body",
     )?;
 
+    // #1853: the pane opens only for the room the main pane displays, so the other
+    // room has to be that room for this half. Subscribing the replied room already
+    // displays it, so the second room is what makes this not the replied room.
+    let other_room_id = create_room_for_qa(
+        conn_a,
+        OTHER_ROOM_NAME,
+        false,
+        "mcp message actions other room",
+    )
+    .await?;
+    wait_for_room_in_room_list(
+        conn_a,
+        &other_room_id,
+        "mcp message actions other room list",
+    )
+    .await?;
+    select_room_for_display(conn_a, &other_room_id).await?;
+    check(
+        conn_a.snapshot().thread == koushi_state::ThreadPaneState::Closed,
+        "mcp message actions other room: selecting a room opened a thread pane",
+    )?;
+
     let reply = thread_reply(
         conn_a,
         &room_id,
         &root_event_id,
         THREAD_REPLY_BODY,
         formatting,
+        "thread-reply",
         "mcp message actions thread reply",
     )
     .await?;
@@ -366,12 +403,28 @@ async fn run_mcp_message_actions_flow(
         !reply.event_id.is_empty(),
         "mcp message actions thread reply: the reply carried no event id",
     )?;
+    // #1853: another room is displayed, so the reply must leave the thread pane
+    // alone and say why. Before #1853 every reply was silent about the pane (#1870).
+    check(
+        reply.thread_pane == Some(DirectThreadPaneOutcome::OtherRoom),
+        &format!(
+            "mcp message actions thread reply: thread_pane was {:?} with another room displayed, expected not_opened_other_room",
+            reply.thread_pane
+        ),
+    )?;
+    check(
+        conn_a.snapshot().timeline.room_id.as_deref() == Some(other_room_id.as_str())
+            && conn_a.snapshot().thread == koushi_state::ThreadPaneState::Closed,
+        "mcp message actions thread reply: a reply to a room that is not displayed moved the view",
+    )?;
+    println!("mcp_thread_pane_other_room=ok");
     let reply_retry = thread_reply(
         conn_a,
         &room_id,
         &root_event_id,
         THREAD_REPLY_BODY,
         formatting,
+        "thread-reply",
         "mcp message actions thread reply retry",
     )
     .await?;
@@ -379,6 +432,17 @@ async fn run_mcp_message_actions_flow(
         reply_retry.event_id == reply.event_id
             && reply_retry.transaction_id == reply.transaction_id,
         "mcp message actions thread reply retry: the retry posted instead of replaying the first reply",
+    )?;
+    check(
+        reply_retry.thread_pane == Some(DirectThreadPaneOutcome::OtherRoom),
+        &format!(
+            "mcp message actions thread reply retry: the replayed retry reported thread_pane {:?}, expected the pane it left alone",
+            reply_retry.thread_pane
+        ),
+    )?;
+    check(
+        conn_a.snapshot().thread == koushi_state::ThreadPaneState::Closed,
+        "mcp message actions thread reply retry: the replay opened a thread pane",
     )?;
     let reply_view = read_message(
         conn_a,
@@ -395,6 +459,34 @@ async fn run_mcp_message_actions_flow(
         reply_view.thread_root_event_id.as_deref() == Some(root_event_id.as_str()),
         "mcp message actions read reply: the read did not report the thread root",
     )?;
+
+    // #1853: with the replied room displayed and this account's tab selected, the
+    // reply is the one case that may open the thread pane. It opens on the root
+    // the send resolved and leaves the room selection where it was.
+    select_room_for_display(conn_a, &room_id).await?;
+    let shown = thread_reply(
+        conn_a,
+        &room_id,
+        &root_event_id,
+        THREAD_REPLY_BODY,
+        formatting,
+        "thread-reply-shown",
+        "mcp message actions thread reply shown",
+    )
+    .await?;
+    check(
+        shown.thread_pane == Some(DirectThreadPaneOutcome::Opened),
+        &format!(
+            "mcp message actions thread reply shown: thread_pane was {:?} with the replied room displayed, expected opened",
+            shown.thread_pane
+        ),
+    )?;
+    wait_for_open_thread_pane(conn_a, &room_id, &root_event_id).await?;
+    check(
+        conn_a.snapshot().timeline.room_id.as_deref() == Some(room_id.as_str()),
+        "mcp message actions thread reply shown: opening the pane moved the displayed room",
+    )?;
+    println!("mcp_thread_pane_opened=ok");
 
     // Observer phase: another account runtime re-reads the same events, so every
     // effect below has to be on the homeserver, not in A's store.
@@ -627,6 +719,7 @@ async fn thread_reply(
     root_event_id: &str,
     body: &str,
     formatting: koushi_state::ComposerFormattingOptions,
+    client_request_id: &str,
     label: &str,
 ) -> Result<DirectThreadReplyOutcome, String> {
     direct(
@@ -637,7 +730,7 @@ async fn thread_reply(
             reply_to_event_id: None,
             body: body.to_owned(),
             formatting,
-            retry: Some(qa_retry_key("thread-reply")),
+            retry: Some(qa_retry_key(client_request_id)),
         },
         label,
         |response| match response {
@@ -646,4 +739,76 @@ async fn thread_reply(
         },
     )
     .await
+}
+
+/// #1870: display one room, the way the renderer's room selection does. The
+/// thread-pane reveal is decided from this Rust state, so the lane has to hold it
+/// to reach the `opened` case.
+async fn select_room_for_display(conn: &mut CoreConnection, room_id: &str) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::SelectRoom {
+        request_id,
+        room_id: room_id.to_owned(),
+    }))
+    .await
+    .map_err(|e| format!("mcp message actions select room: submit failed: {e}"))?;
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    loop {
+        if conn.snapshot().timeline.room_id.as_deref() == Some(room_id) {
+            return Ok(());
+        }
+        tokio::time::timeout_at(deadline, conn.recv_event())
+            .await
+            .map_err(|_| {
+                "mcp message actions select room: timed out waiting for the room".to_owned()
+            })?
+            .map_err(|lag| {
+                format!(
+                    "mcp message actions select room: event stream lagged (skipped={})",
+                    lag.skipped
+                )
+            })?;
+    }
+}
+
+/// #1870: the pane the `opened` outcome claims really shows that thread. A failed
+/// pane is reported as failed instead of waiting out the deadline.
+async fn wait_for_open_thread_pane(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    root_event_id: &str,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    loop {
+        match &conn.snapshot().thread {
+            koushi_state::ThreadPaneState::Open {
+                room_id: open_room_id,
+                root_event_id: open_root_event_id,
+                ..
+            } if open_room_id == room_id && open_root_event_id == root_event_id => return Ok(()),
+            koushi_state::ThreadPaneState::Failed {
+                room_id: failed_room_id,
+                root_event_id: failed_root_event_id,
+                failure_kind,
+                ..
+            } if failed_room_id == room_id && failed_root_event_id == root_event_id => {
+                return Err(format!(
+                    "mcp message actions thread pane: the revealed pane settled as Failed({failure_kind:?})"
+                ));
+            }
+            _ => {}
+        }
+        tokio::time::timeout_at(deadline, conn.recv_event())
+            .await
+            .map_err(|_| {
+                "mcp message actions thread pane: timed out waiting for the revealed pane"
+                    .to_owned()
+            })?
+            .map_err(|lag| {
+                format!(
+                    "mcp message actions thread pane: event stream lagged (skipped={})",
+                    lag.skipped
+                )
+            })?;
+    }
 }
