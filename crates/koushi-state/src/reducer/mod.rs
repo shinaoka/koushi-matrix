@@ -1499,6 +1499,9 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             navigation::handle_return_main_timeline_to_live(state, room_id)
         }
         AppAction::SelectSpace { space_id } => navigation::handle_select_space(state, space_id),
+        AppAction::SelectSpaceWithoutRoom { space_id } => {
+            navigation::handle_select_space_without_room(state, space_id)
+        }
         AppAction::ReorderSpaces { space_ids } => {
             navigation::handle_reorder_spaces(state, space_ids)
         }

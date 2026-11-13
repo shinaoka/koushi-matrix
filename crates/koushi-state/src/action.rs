@@ -1328,6 +1328,13 @@ pub enum AppAction {
     SelectSpace {
         space_id: Option<String>,
     },
+    /// #1850: select a Space and open no room in it, in one transition. The
+    /// cancel-restore path uses it to put back a prior Space-without-a-room
+    /// selection, so the pending navigation's room is never published
+    /// half-restored. `SelectSpace` instead opens the Space's preferred room.
+    SelectSpaceWithoutRoom {
+        space_id: String,
+    },
     ReorderSpaces {
         space_ids: Vec<String>,
     },

@@ -179,6 +179,17 @@ impl NavigationObservation {
                     None,
                 )
             }
+            // #1850: the cancel-restore re-selects the Space the displaced
+            // navigation left, with no room open.
+            AppAction::SelectSpaceWithoutRoom { space_id } => {
+                requested.space = Some(space_id.clone());
+                (
+                    NavigationCause::SelectSpace,
+                    true,
+                    !ready || !state.spaces.iter().any(|space| &space.space_id == space_id),
+                    None,
+                )
+            }
             // The legacy replacement handler passes authoritative=true to the
             // same reducer helper as RoomListSnapshotAuthoritative.
             AppAction::RoomListUpdated { .. } => (
@@ -286,6 +297,7 @@ impl NavigationObservation {
             action,
             AppAction::SelectRoom { .. }
                 | AppAction::SelectSpace { .. }
+                | AppAction::SelectSpaceWithoutRoom { .. }
                 | AppAction::EventNavigationStarted { .. }
                 | AppAction::EnterAnchoredTimeline { .. }
                 | AppAction::ReturnMainTimelineToLive { .. }
