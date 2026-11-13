@@ -14,6 +14,9 @@ mod media_save;
 mod migration;
 mod oidc_browser;
 mod process_memory;
+// macOS relaunch handoff, plus its platform-neutral wait/argument tests.
+#[cfg(any(target_os = "macos", test))]
+mod relaunch;
 mod spell_checking;
 mod tray;
 mod viewport_sync;
@@ -1015,6 +1018,15 @@ impl<R: tauri::Runtime> ApplicationExit for tauri::AppHandle<R> {
         self.exit(0);
     }
     fn final_restart(&self) {
+        // The replacement launch follows the old OS process's exit, not the
+        // shutdown barrier, so a bundled macOS app hands it to a detached
+        // helper and exits; only an unbundled build keeps Tauri's own relaunch,
+        // so a failed handoff can never fall back to the overlapping launch this
+        // exists to avoid (overview.md, "Desktop Application Updates").
+        #[cfg(target_os = "macos")]
+        if !relaunch::uses_tauri_relaunch(relaunch::hand_off_relaunch()) {
+            return self.exit(0);
+        }
         self.request_restart();
     }
 }
@@ -1418,6 +1430,13 @@ fn install_oidc_deep_link_handler(_app: &tauri::App) -> tauri::Result<()> {
     reason = "tauri::generate_context! generates a large closure (#1554)"
 )]
 pub fn run() {
+    // A detached relaunch helper is this same binary: it waits for this process
+    // to exit and then launches the bundle, so it must never start the app.
+    #[cfg(target_os = "macos")]
+    if let Some(code) = relaunch::run_helper_if_requested() {
+        std::process::exit(code);
+    }
+
     // #1344: the diagnostic memory audit reports elapsed time since this entry.
     process_memory::mark_process_start();
 

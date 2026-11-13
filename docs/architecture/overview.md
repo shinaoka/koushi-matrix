@@ -1728,12 +1728,64 @@ The update adapter owns one serialized lifecycle and one cancellable worker.
 Generation-fenced completions and candidate-specific download approval prevent
 overlapping triggers or channel changes from substituting an unapproved release.
 On macOS, successful installation requests an ordinary graceful shutdown first: join the
-updater worker, settle Core shutdown, and only then issue the native relaunch.
-Core exposes an event-based, cancellation-safe shutdown completion after its
+updater worker, settle Core shutdown, and only then hand the native relaunch to
+the relaunch handoff. Core exposes an event-based, cancellation-safe shutdown completion after its
 account and lifecycle cleanup. A failed/timed-out Core shutdown forces an
 explicitly diagnosed ordinary exit, suppressing relaunch; the bounded Core wait
 starts only after any active native installer has settled on macOS. On Windows,
 the Core deadline applies before native installation starts.
+
+The macOS replacement launch follows the old OS process's exit, not Core
+cleanup. Settling the barrier is not the same as this process having exited:
+launching the bundle while the old instance is still alive makes macOS give the
+replacement a second, unpinned Dock tile (tauri#16449). A bundled macOS build
+therefore never calls Tauri's own relaunch. It starts a detached helper and then
+exits ordinarily through the same barrier. The helper is this same binary
+re-executed in helper mode, in its own process group with null stdio, so it
+outlives the exiting process instead of sharing its group and open streams
+(tauri#15783). It waits for the old PID to disappear and then launches the
+bundle exactly once through LaunchServices (`open -n <bundle> --args …`), which
+keeps launchd as the owner of the replacement process. Bundle path and
+forwarded arguments travel as separate argv entries between the application,
+the helper, and `open`; nothing is joined into a command line, and no path or
+argv content is logged. That argv layout is a cross-version protocol, because
+the *next* installed build parses it rather than the one that wrote it, so it
+may not be renamed or reshaped silently. The wait is bounded by a fixed
+deadline with an injected poll interval. Expiring that deadline abandons the
+relaunch and exits instead of degrading into the concurrent launch this exists
+to prevent, leaving the user to reopen the application manually.
+
+A helper-spawn, timeout, or launch failure records one coarse
+`desktop.lifecycle` / `relaunch_failed` diagnostic with a reason token, and also
+writes that same reason token as one line to the macOS unified log (via
+`logger`, tag `koushi`), because the diagnostic ring dies with the process that
+recorded it and the helper has no UI and null stdio. The line carries the
+reason token only: no bundle path, no argv, no raw error. Unbundled
+(`tauri dev`) and non-macOS builds keep Tauri's own relaunch, so ordinary Quit,
+duplicate restart requests, and a failed or timed-out Core shutdown behave
+exactly as before.
+The correction applies to restarts initiated by a fixed build; an update *into*
+that build still runs the previous build's restart code. A handoff requires the
+installed build to carry helper mode, which the updater always satisfies because
+it installs only newer builds.
+
+Process lifecycle had no headless coverage before #1864: the restart-barrier
+tests pinned the updater/Core ordering only, so a concurrent replacement launch
+could not fail any test. Replacement-launch ordering is now gated by the
+desktop crate's own test suite in the macOS lane (`cargo test` in
+`apps/desktop/src-tauri`) with an injected launcher, an injected liveness probe,
+and an injected poll interval: the launcher is never called while the old
+process is alive, runs exactly once after it exits (against a real child
+process standing in for the old instance), does not run when the deadline
+expires, receives path and arguments as single argv entries including spaces
+and shell metacharacters (that test also pins the cross-version helper argv
+shape), writes one durable reason-token line for a helper-side failure, and a
+failed spawn or launch produces the coarse diagnostic instead of a concurrent
+relaunch; only an unbundled handoff keeps Tauri's own relaunch, so a failed one
+can never fall back to the overlapping launch. `restart_barrier_tests` still pin
+that a failed or timed-out Core shutdown suppresses the relaunch. Native
+bundled-app Dock confirmation remains a manual check and is not part of that
+gate.
 
 ### Desktop Viewport Synchronization
 
