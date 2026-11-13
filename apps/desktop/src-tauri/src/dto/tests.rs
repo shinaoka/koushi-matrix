@@ -2163,9 +2163,9 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
             m.insert(
                 "$quoted-picture:example.invalid".to_owned(),
                 TimelineMediaDownloadState::Ready {
-                    source_ref: "download/1234567890123456/6543210987654321/96x96".to_owned(),
-                    width: Some(96),
-                    height: Some(96),
+                    source_ref: "download/1234567890123456/6543210987654321/480x360".to_owned(),
+                    width: Some(480),
+                    height: Some(360),
                     mime_type: Some("image/jpeg".to_owned()),
                 },
             );

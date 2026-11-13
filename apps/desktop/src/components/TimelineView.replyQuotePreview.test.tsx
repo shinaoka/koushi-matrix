@@ -4,6 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ReplyQuote } from "../domain/coreEvents";
+import type { ReplyQuoteMedia } from "../domain/coreEvents";
 import {
   applyTimelineEvent,
   createTimelineStore,
@@ -13,6 +14,7 @@ import type { TimelineMediaDownloadState } from "../domain/types";
 import { setActiveLocaleProfile, t } from "../i18n/messages";
 import { TimelineStoreContext } from "./timelineStoreContext";
 import { clearTimelineViewportSessionMemoryForTests, TimelineView } from "./TimelineView";
+import { replyQuotePreviewStyle } from "./timeline/ReplyQuoteThumbnail";
 import { KEY, baseTransport, message } from "./timelineViewTestSupport";
 
 // Reply quotes of an image show the picture as a large inline preview (the
@@ -27,6 +29,12 @@ afterEach(() => {
 });
 
 const QUOTED = "$picture-root:example.invalid";
+
+// jsdom serializes `aspect-ratio: 1.5` as `1.5 / 1`, so compare numbers.
+function aspectRatioValue(value: unknown): number {
+  const [width, height = "1"] = String(value).split("/");
+  return Number(width) / Number(height);
+}
 
 function imageQuote(overrides: Partial<ReplyQuote> = {}): ReplyQuote {
   return {
@@ -85,9 +93,9 @@ function renderReply(
 
 const READY: TimelineMediaDownloadState = {
   kind: "ready",
-  source_ref: "download/1234567890123456/6543210987654321/96x96",
-  width: 96,
-  height: 96,
+  source_ref: "download/1234567890123456/6543210987654321/480x360",
+  width: 480,
+  height: 360,
   mime_type: "image/jpeg"
 };
 
@@ -101,7 +109,6 @@ describe("reply quote image preview", () => {
     const preview = screen.getByRole("button", { name: "Open image from Alice" });
     // The preview is the quote's body, under the sender, not a trailing chip.
     expect(quote.querySelector(".reply-quote-copy")?.contains(preview)).toBe(true);
-    expect(quote.classList.contains("has-thumbnail")).toBe(false);
     expect(preview.querySelector("img")).not.toBeNull();
   });
 
@@ -122,6 +129,7 @@ describe("reply quote image preview", () => {
   });
 
   it.each([
+    ["notRequested", undefined],
     ["pending", { kind: "pending", progress: null } as TimelineMediaDownloadState],
     ["failed", { kind: "failed", failure_kind: "network" } as TimelineMediaDownloadState],
     ["ready", READY]
@@ -129,6 +137,95 @@ describe("reply quote image preview", () => {
     renderReply(imageQuote(), state);
 
     const preview = screen.getByRole("button", { name: "Open image from Alice" });
-    expect(preview.style.aspectRatio.replace(/\s/g, "")).toBe("640/480");
+    expect(aspectRatioValue(preview.style.aspectRatio)).toBeCloseTo(640 / 480);
+    expect(preview.style.inlineSize).toBe("213px");
+  });
+
+  // #1874: a video has no label either, but it keeps its play glyph so the
+  // preview still reads as something to play rather than a still picture.
+  it("shows a captionless video without a label and with the play glyph", () => {
+    const quote = renderReply(
+      imageQuote({
+        media: {
+          kind: "video",
+          animated: false,
+          width: 640,
+          height: 480,
+          has_thumbnail_source: false
+        }
+      }),
+      READY
+    );
+
+    expect(quote.textContent).toContain("Alice");
+    expect(quote.textContent).not.toContain(t("timeline.replyQuoteKindVideo"));
+    expect(quote.querySelector(".reply-quote-thumbnail-play")).not.toBeNull();
+  });
+});
+
+// #1874 removed the kind label only where a thumbnail stands in for it; file
+// and audio quotes have no thumbnail, so their label or file name is the whole
+// quote body.
+describe("reply quote text line", () => {
+  it.each(["file", "audio"] as const)(
+    "keeps the kind label for a captionless %s quote",
+    (kind) => {
+      const quote = renderReply(
+        imageQuote({
+          media: {
+            kind,
+            animated: false,
+            width: null,
+            height: null,
+            has_thumbnail_source: false
+          }
+        }),
+        undefined
+      );
+
+      const label =
+        kind === "file"
+          ? t("timeline.replyQuoteKindFile")
+          : t("timeline.replyQuoteKindAudio");
+      expect(quote.querySelector(".reply-quote-body")?.textContent).toBe(label);
+      expect(quote.querySelector(".reply-quote-thumbnail")).toBeNull();
+    }
+  );
+
+  it("keeps a file name for a captionless file quote that has one", () => {
+    const quote = renderReply(
+      imageQuote({
+        body_preview: "spectrum.csv",
+        media: {
+          kind: "file",
+          animated: false,
+          width: null,
+          height: null,
+          has_thumbnail_source: false
+        }
+      }),
+      undefined
+    );
+
+    expect(quote.querySelector(".reply-quote-body")?.textContent).toBe("spectrum.csv");
+  });
+});
+
+describe("replyQuotePreviewStyle", () => {
+  function media(width: number | null, height: number | null): ReplyQuoteMedia {
+    return { kind: "image", animated: false, width, height, has_thumbnail_source: false };
+  }
+
+  it.each([
+    ["a 1:2 strip clamps to the minimum ratio", media(100, 400), 1 / 2, "80px"],
+    ["a 3:1 panorama clamps to the maximum ratio", media(1200, 400), 3, "240px"],
+    ["an in-range 4:3 image keeps its own ratio", media(640, 480), 640 / 480, "213px"],
+    ["missing hints fall back to 4:3", media(null, null), 4 / 3, "213px"],
+    ["zero hints fall back to 4:3", media(0, 0), 4 / 3, "213px"]
+  ])("%s", (_label, hints, ratio, inlineSize) => {
+    const style = replyQuotePreviewStyle(hints);
+
+    expect(aspectRatioValue(style.aspectRatio)).toBeCloseTo(ratio);
+    expect(style.inlineSize).toBe(inlineSize);
   });
 });

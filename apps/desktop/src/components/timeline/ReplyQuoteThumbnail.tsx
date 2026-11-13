@@ -92,7 +92,7 @@ export function replyQuotePreviewStyle(media: ReplyQuoteMedia): CSSProperties {
   );
   const inlineSize = Math.min(PREVIEW_MAX_INLINE_PX, PREVIEW_MAX_BLOCK_PX * ratio);
   return {
-    aspectRatio: hinted === ratio ? `${width} / ${height}` : `${ratio}`,
+    aspectRatio: `${ratio}`,
     inlineSize: `${Math.round(inlineSize)}px`
   };
 }

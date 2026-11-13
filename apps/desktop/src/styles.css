@@ -4650,6 +4650,10 @@ button:disabled {
    thumbnail is pending or after it fails. */
 .reply-quote-thumbnail {
   display: inline-grid;
+  /* The definite track stops the img's intrinsic height from sizing an
+     implicit `auto` row past the box, which would top-anchor the
+     `object-fit: cover` crop of an off-ratio thumbnail (#1874). */
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   place-items: center;
   inline-size: 40px;
   block-size: 40px;

@@ -1740,11 +1740,11 @@
         "media_gallery": [],
         "reply_quote_thumbnails": {
           "$quoted-picture:example.invalid": {
-            "height": 96,
+            "height": 360,
             "kind": "ready",
             "mime_type": "image/jpeg",
-            "source_ref": "download/1234567890123456/6543210987654321/96x96",
-            "width": 96
+            "source_ref": "download/1234567890123456/6543210987654321/480x360",
+            "width": 480
           }
         },
         "room_id": "!room:example.invalid",

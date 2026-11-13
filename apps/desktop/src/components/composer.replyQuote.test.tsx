@@ -52,9 +52,9 @@ describe("composer reply quote", () => {
         replyQuote={quote}
         replyQuoteThumbnail={{
           kind: "ready",
-          source_ref: "download/1234567890123456/6543210987654321/96x96",
-          width: 96,
-          height: 96,
+          source_ref: "download/1234567890123456/6543210987654321/480x360",
+          width: 480,
+          height: 360,
           mime_type: "image/jpeg"
         }}
       />
