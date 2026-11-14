@@ -42,12 +42,14 @@ import {
   captureFreeScrollAnchor,
   capturePrependAnchor,
   captureRoomScrollAnchor,
+  centerTimelineRow,
   findTimelineEventNode,
   measureAnchorDelta,
   wholePixelScrollTop,
   roomScrollAnchorSignature,
   roomScrollAnchorStableSignature,
   restoreRoomScrollAnchor,
+  timelineRowInsideViewport,
   timelineSessionAnchorAgeBucket,
   timelineViewportSessionMemory,
   type ScrollAnchor,
@@ -66,9 +68,11 @@ import {
 export { timelineRowsArePurePrependForTests } from "./timeline/TimelineEventProjection";
 import {
   buildTimelineHeightModel, calculateTimelineItemIndexRange, calculateTimelineVirtualRange,
-  EMPTY_TIMELINE_ITEM_INDEX_RANGE, EMPTY_TIMELINE_RANGE, measuredItemHeight,
+  EMPTY_TIMELINE_ITEM_INDEX_RANGE, EMPTY_TIMELINE_RANGE, FOCUSED_TARGET_PLACEMENT_ATTEMPTS,
+  measuredItemHeight,
   timelineItemHeightAtIndex, timelineItemIndexInRange, timelineItemIndexRangeEquals,
-  TIMELINE_ESTIMATED_ITEM_HEIGHT_PX, TIMELINE_VIRTUALIZATION_THRESHOLD, virtualRangeEquals,
+  timelineLiveEdgeScrollTop, timelineRangeIncludingIndex, TIMELINE_ESTIMATED_ITEM_HEIGHT_PX,
+  virtualRangeEquals,
   type TimelineItemIndexRange, type TimelineScheduledFrame,
   type TimelineViewportMetrics, type TimelineVirtualRangeState, type TimelineVirtualWindow
 } from "./timeline/TimelineViewportVirtualization";
@@ -781,6 +785,7 @@ export const TimelineView = memo(function TimelineView({
   const initialLiveEdgeScrollAppliedRef = useRef<string | null>(null);
   /** Tracks whether the current focused key already centered its target row. */
   const focusedTargetRestoreAppliedRef = useRef<string | null>(null);
+  const focusedTargetPlacementAttemptsRef = useRef(0);
   const initialThreadTargetRestoreAppliedRef = useRef<string | null>(null);
   /** Deduplicates privacy-safe focused-target restoration diagnostics. */
   const lastFocusedTargetRestoreDiagnosticRef = useRef<string | null>(null);
@@ -1987,6 +1992,7 @@ export const TimelineView = memo(function TimelineView({
     lastDiagnosticsEmissionRef.current = null;
     initialLiveEdgeScrollAppliedRef.current = null;
     focusedTargetRestoreAppliedRef.current = null;
+    focusedTargetPlacementAttemptsRef.current = 0;
     lastFocusedTargetRestoreDiagnosticRef.current = null;
     stickToBottomAfterMeasurementRef.current = false;
     resetActiveMeasurementDeferral({ clearMountedIds: true });
@@ -2199,13 +2205,31 @@ export const TimelineView = memo(function TimelineView({
   useLayoutEffect(() => {
     rangeModelEpochRef.current += 1;
   }, [timelineHeightModel, visibleRows]);
+  const timelineInitialized = Boolean(timelineKeyState && !timelineKeyState.awaitingResync);
+  // Stable, render-visible timeline generation for this key. Bumps when the
+  // store replaces the list for a new generation (InitialItems / resync), so
+  // tests can poll a concrete attribute instead of sleeping. 0 is a valid
+  // Core generation; use timelineInitialized to distinguish "not initialized".
+  const initialLiveEdgeScrollKey = timelineInitialized
+    ? `${timelineKeyHash}:${generation}`
+    : null;
   const commitVirtualRangeForMetrics = useCallback(
     (metrics: TimelineViewportMetrics) => {
       const transaction = viewportTransactionRef.current.active();
       const anchor = transaction?.anchor;
-      if (
+      // The virtual spacers keep scrollHeight at the modelled resident height,
+      // but before the opening live-edge snap the physical scrollTop still
+      // points at the top. Derive the edge from the model for that first commit
+      // so the room opens on the tail, not on its top screen. Later live-edge
+      // commits follow the physical scrollTop, so a jump away from the edge
+      // still recomposes the window and lets the snap correct it.
+      const openingLiveEdge =
+        viewportIntentRef.current.kind === "live-edge" &&
+        initialLiveEdgeScrollAppliedRef.current !== initialLiveEdgeScrollKey;
+      if (openingLiveEdge) {
+        metrics = { ...metrics, scrollTop: timelineLiveEdgeScrollTop(timelineHeightModel, metrics) };
+      } else if (
         transaction && anchor &&
-        viewportIntentRef.current.kind !== "live-edge" &&
         transaction.key === timelineKeyHash &&
         transaction.generation === generation
       ) {
@@ -2243,11 +2267,19 @@ export const TimelineView = memo(function TimelineView({
         setLinkPreviewRequestRange(nextLinkPreviewRequestRange);
       }
 
-      const next = calculateTimelineVirtualRange({
-        visibleItemsLength: visibleRows.length,
-        metrics,
-        model: timelineHeightModel
-      });
+      const next = timelineRangeIncludingIndex(
+        timelineHeightModel,
+        calculateTimelineVirtualRange({
+          visibleItemsLength: visibleRows.length,
+          metrics,
+          model: timelineHeightModel
+        }),
+        focusedTimelineTargetEventId === null
+          ? -1
+          : visibleRows.findIndex(
+              (row) => row.activity_event_id === focusedTimelineTargetEventId
+            )
+      );
       virtualRangeModelRef.current = timelineHeightModel;
       virtualRangeRowsRef.current = visibleRows;
       if (virtualRangeEquals(virtualRangeRef.current, next)) {
@@ -2258,7 +2290,14 @@ export const TimelineView = memo(function TimelineView({
       setVirtualRange(next);
       return next;
     },
-    [generation, timelineHeightModel, timelineKeyHash, updateScrollDiagnostics, visibleRows]
+    [
+      generation,
+      initialLiveEdgeScrollKey,
+      timelineHeightModel,
+      timelineKeyHash,
+      updateScrollDiagnostics,
+      visibleRows
+    ]
   );
   const updateViewportMetrics = useCallback(() => {
     const metrics = readViewportMetrics();
@@ -2267,15 +2306,7 @@ export const TimelineView = memo(function TimelineView({
   const virtualWindow = useMemo<TimelineVirtualWindow>(() => {
     const transaction = viewportTransactionRef.current.active();
     let range: TimelineVirtualRangeState;
-    if (visibleRows.length <= TIMELINE_VIRTUALIZATION_THRESHOLD) {
-      range = {
-        virtualized: false,
-        startIndex: 0,
-        endIndex: visibleRows.length,
-        paddingTop: 0,
-        paddingBottom: 0
-      };
-    } else if (virtualRange.virtualized && virtualRangeModelRef.current === timelineHeightModel) {
+    if (virtualRange.virtualized && virtualRangeModelRef.current === timelineHeightModel) {
       range = virtualRange;
     } else if (transaction || (virtualRange.virtualized && virtualRangeRowsRef.current !== visibleRows)) {
       // A prepend or height change can make the committed range refer to an
@@ -2348,8 +2379,7 @@ export const TimelineView = memo(function TimelineView({
     virtualWindow.startIndex,
     virtualWindow.virtualized
   ]);
-  const sideEffectRows =
-    visibleRows.length > TIMELINE_VIRTUALIZATION_THRESHOLD ? virtualWindow.items : visibleRows;
+  const sideEffectRows = virtualWindow.items;
   const sideEffectItems = useMemo(
     () => sideEffectRows.map((row) => row.item),
     [sideEffectRows]
@@ -2519,14 +2549,6 @@ export const TimelineView = memo(function TimelineView({
     roomId,
     viewportAtBottom
   ]);
-  const timelineInitialized = Boolean(timelineKeyState && !timelineKeyState.awaitingResync);
-  // Stable, render-visible timeline generation for this key. Bumps when the
-  // store replaces the list for a new generation (InitialItems / resync), so
-  // tests can poll a concrete attribute instead of sleeping. 0 is a valid
-  // Core generation; use timelineInitialized to distinguish "not initialized".
-  const initialLiveEdgeScrollKey = timelineInitialized
-    ? `${timelineKeyHash}:${generation}`
-    : null;
   const timelineDiagnosticKind = timelineKindDiagnosticLabel(timelineKey);
   const rowTransportActions = useTimelineRowTransportActions(
     transport,
@@ -3057,6 +3079,27 @@ export const TimelineView = memo(function TimelineView({
       // room timeline would immediately move the viewport to the window's
       // live edge and make older Activity results appear blank.
       releaseViewportIntent();
+      // Measuring the rows a placement reached can move the target out of the
+      // visible band, so recenter it while the jump still owns the viewport.
+      if (
+        container &&
+        jumpViewportControlRef.current &&
+        focusedTargetPlacementAttemptsRef.current < FOCUSED_TARGET_PLACEMENT_ATTEMPTS
+      ) {
+        const mountedTarget = findTimelineEventNode(
+          container,
+          "activity",
+          focusedTimelineTargetEventId
+        );
+        if (mountedTarget && !timelineRowInsideViewport(container, mountedTarget)) {
+          focusedTargetPlacementAttemptsRef.current += 1;
+          runWithScrollWriteReason("jumpToEvent", () => {
+            centerTimelineRow(container, mountedTarget);
+          });
+          updateViewportMetrics();
+          return;
+        }
+      }
       if (
         timelineInitialized &&
         items.length > 0 &&
@@ -3077,6 +3120,7 @@ export const TimelineView = memo(function TimelineView({
           });
           focusedTargetRestoreAppliedRef.current = initialLiveEdgeScrollKey;
           initialLiveEdgeScrollAppliedRef.current = initialLiveEdgeScrollKey;
+          focusedTargetPlacementAttemptsRef.current = 0;
           emitFocusedTargetRestoreDecision("dom", true);
           captureStableAnchor(container);
         } else {
@@ -3084,38 +3128,36 @@ export const TimelineView = memo(function TimelineView({
             (row) => row.activity_event_id === focusedTimelineTargetEventId
           );
           if (targetIndex >= 0 && virtualWindow.virtualized) {
-            const targetTop = timelineHeightModel.offsets[targetIndex] ?? 0;
-            const targetHeight = timelineItemHeightAtIndex(
-              timelineHeightModel,
-              targetIndex
-            );
-            runWithScrollWriteReason("jumpToEvent", () => {
-              container.scrollTop = Math.max(
-                0,
-                viewportMetricsRef.current.listOffsetTop +
-                  targetTop +
-                  targetHeight / 2 -
-                  container.clientHeight / 2
+            // Rows outside the mounted window carry estimated heights, so one
+            // placement can land short of the target. Commit the window it
+            // reached (which re-runs this effect) and place again against the
+            // re-measured offsets until the target row exists in the DOM.
+            if (
+              focusedTargetPlacementAttemptsRef.current <
+              FOCUSED_TARGET_PLACEMENT_ATTEMPTS
+            ) {
+              focusedTargetPlacementAttemptsRef.current += 1;
+              const targetTop = timelineHeightModel.offsets[targetIndex] ?? 0;
+              const targetHeight = timelineItemHeightAtIndex(
+                timelineHeightModel,
+                targetIndex
               );
-            });
-            focusedTargetRestoreAppliedRef.current = initialLiveEdgeScrollKey;
-            initialLiveEdgeScrollAppliedRef.current = initialLiveEdgeScrollKey;
-            emitFocusedTargetRestoreDecision("virtual_fallback", true);
-            scheduleScrollFollowUpFrame(() => {
-              const mountedTarget = findTimelineEventNode(
-                container,
-                "activity",
-                focusedTimelineTargetEventId
-              );
-              if (mountedTarget) {
-                runWithScrollWriteReason("jumpToEvent", () => {
-                  mountedTarget.scrollIntoView({ block: "center", inline: "nearest" });
-                });
-              }
-              captureStableAnchor(container);
+              jumpViewportControlRef.current = true;
+              advanceViewportEpoch();
+              runWithScrollWriteReason("jumpToEvent", () => {
+                container.scrollTop = Math.max(
+                  0,
+                  viewportMetricsRef.current.listOffsetTop +
+                    targetTop +
+                    targetHeight / 2 -
+                    container.clientHeight / 2
+                );
+              });
               updateViewportMetrics();
-              reportViewportObservation();
-            });
+            } else {
+              jumpViewportControlRef.current = false;
+              emitFocusedTargetRestoreDecision("pending", true);
+            }
           } else {
             jumpViewportControlRef.current = false;
             emitFocusedTargetRestoreDecision("pending", targetIndex >= 0);
@@ -3783,7 +3825,16 @@ export const TimelineView = memo(function TimelineView({
           return;
         }
         const metrics = readViewportMetrics();
+        const previousRange = virtualRangeRef.current;
         const nextRange = commitVirtualRangeForMetrics(metrics);
+        if (!virtualRangeEquals(previousRange, nextRange)) {
+          // The jump remounted the window, so the rows under the viewport are
+          // different DOM nodes now and no row was observed while the old
+          // window was still mounted. Report once the new rows exist.
+          scheduleScrollFollowUpFrame(() => {
+            reportViewportObservation();
+          });
+        }
         updateScrollDiagnostics((current) =>
           recordTimelineScrollFrame(current, {
             scrollActivity: "active",
@@ -3829,6 +3880,7 @@ export const TimelineView = memo(function TimelineView({
     releaseViewportIntent,
     timelineKeyHash,
     commitVirtualRangeForMetrics,
+    scheduleScrollFollowUpFrame,
     scheduleViewportFrame,
     updateScrollDiagnostics
   ]);

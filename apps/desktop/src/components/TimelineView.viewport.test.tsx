@@ -1075,12 +1075,15 @@ describe("TimelineView", () => {
       },
       updateScrollAnchor
     });
-    // Rows follow scrollTop, so each scroll step observes a new anchor.
+    // Rows follow scrollTop, so each scroll step observes a new anchor. The
+    // rows are 2,400 px tall together because the mounted window is derived
+    // from those measured heights: a fixture that places a 48 px row at
+    // offset 1,900 would model 96 px of content in a 2,400 px scroller.
     const scrollContainerRef: { current: HTMLElement | null } = { current: null };
     mockTimelineRects(
       {
-        "$first:example.invalid": { top: 1900, height: 48 },
-        "$second:example.invalid": { top: 2300, height: 48 }
+        "$first:example.invalid": { top: 0, height: 2350 },
+        "$second:example.invalid": { top: 2350, height: 50 }
       },
       { top: 0, height: 600 },
       scrollContainerRef
@@ -1148,10 +1151,12 @@ describe("TimelineView", () => {
     await waitFor(() => {
       expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
     });
-    // The one update carries where the scroll ended (150px up), not where it began.
+    // The one update carries where the scroll ended (150px up), not where it
+    // began: the tail row has left the viewport and the first row's bottom now
+    // sits 100 px below it.
     expect(updateScrollAnchor).toHaveBeenCalledWith(
       "!room:example.invalid",
-      expect.objectContaining({ event_id: "$first:example.invalid", edge: "bottom", offset_px: -302 })
+      expect.objectContaining({ event_id: "$first:example.invalid", edge: "bottom", offset_px: 100 })
     );
   });
 
@@ -1167,7 +1172,7 @@ describe("TimelineView", () => {
     expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
     expect(updateScrollAnchor).toHaveBeenCalledWith(
       "!room:example.invalid",
-      expect.objectContaining({ event_id: "$second:example.invalid", edge: "bottom" })
+      expect.objectContaining({ event_id: "$first:example.invalid", edge: "bottom" })
     );
   });
 
@@ -1190,7 +1195,7 @@ describe("TimelineView", () => {
     expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
     expect(updateScrollAnchor).toHaveBeenCalledWith(
       "!room:example.invalid",
-      expect.objectContaining({ event_id: "$second:example.invalid" })
+      expect.objectContaining({ event_id: "$first:example.invalid" })
     );
   });
 
@@ -1567,6 +1572,87 @@ describe("TimelineView", () => {
     await waitFor(() => {
       expect(liveEdgeTimeline.scrollTop).toBe(1400);
     });
+  });
+
+  it("opens a 100-row room at the live edge without mounting its first rows", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const rowHeight = 72;
+    const itemCount = 100;
+    const rects: Record<string, { top: number; height: number }> = {};
+    for (let index = 0; index < itemCount; index += 1) {
+      rects[`$row-${index}:example.invalid`] = { top: index * rowHeight, height: rowHeight };
+    }
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        listRefCallback={(element) => {
+          scrollContainerRef.current = element?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null;
+        }}
+      />
+    );
+    const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "scrollHeight", {
+      value: itemCount * rowHeight,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    // Every row ever mounted, not only the final window: a live-edge open that
+    // first mounts the top screen and then snaps to the bottom shows up here.
+    const everMounted = new Set<string>();
+    const record = () => {
+      for (const node of timeline.querySelectorAll<HTMLElement>("[data-event-id]")) {
+        everMounted.add(node.dataset["eventId"] ?? "");
+      }
+    };
+    const observer = new MutationObserver(record);
+    observer.observe(timeline, { childList: true, subtree: true });
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: Array.from({ length: itemCount }, (_, index) =>
+            message(`$row-${index}:example.invalid`, `message ${index}`)
+          )
+        }
+      }
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(itemCount * rowHeight - 600);
+    });
+    await waitFor(() => {
+      expect(
+        timeline.querySelector(`[data-event-id="$row-${itemCount - 1}:example.invalid"]`)
+      ).not.toBeNull();
+    });
+    record();
+    observer.disconnect();
+
+    expect([...everMounted]).not.toContain("$row-0:example.invalid");
+    expect(everMounted.size).toBeLessThanOrEqual(40);
   });
 
 

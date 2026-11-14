@@ -1,7 +1,8 @@
 import type { TimelineDisplayRow } from "../../domain/timelineDisplayProjection";
 
-export const TIMELINE_VIRTUALIZATION_THRESHOLD = 120;
-export const TIMELINE_VIRTUAL_OVERSCAN_ITEMS = 24;
+export const TIMELINE_VIRTUAL_OVERSCAN_SCREENS = 1;
+/** How often a focused navigation re-places a target that is still estimated. */
+export const FOCUSED_TARGET_PLACEMENT_ATTEMPTS = 4;
 export const TIMELINE_ESTIMATED_ITEM_HEIGHT_PX = 72;
 export const TIMELINE_MIN_ITEM_HEIGHT_PX = 36;
 const TIMELINE_MAX_ITEM_HEIGHT_PX = 480;
@@ -181,6 +182,16 @@ export function timelineItemIndexInRange(index: number, range: TimelineItemIndex
   return index >= range.startIndex && index < range.endIndex;
 }
 
+function timelineVisibleBounds(metrics: TimelineViewportMetrics): {
+  relativeScrollTop: number;
+  viewportHeight: number;
+} {
+  return {
+    relativeScrollTop: Math.max(0, metrics.scrollTop - metrics.listOffsetTop),
+    viewportHeight: metrics.clientHeight || 600
+  };
+}
+
 export function calculateTimelineItemIndexRange({
   visibleItemsLength,
   metrics,
@@ -196,8 +207,7 @@ export function calculateTimelineItemIndexRange({
     return EMPTY_TIMELINE_ITEM_INDEX_RANGE;
   }
 
-  const viewportHeight = metrics.clientHeight || 600;
-  const relativeScrollTop = Math.max(0, metrics.scrollTop - metrics.listOffsetTop);
+  const { relativeScrollTop, viewportHeight } = timelineVisibleBounds(metrics);
   const firstVisibleIndex = timelineIndexAtOffset(model.offsets, relativeScrollTop);
   const lastVisibleIndex = timelineIndexAtOffset(
     model.offsets,
@@ -212,6 +222,53 @@ export function calculateTimelineItemIndexRange({
   return { startIndex, endIndex };
 }
 
+/**
+ * Mounts the visible rows plus whole screens of overscan, so the mounted window
+ * follows screens rather than a fixed row count whose footprint depends on the
+ * reader's message lengths and font metrics.
+ */
+export function calculateTimelineIndexRangeForPixels({
+  visibleItemsLength,
+  metrics,
+  model,
+  overscanScreens
+}: {
+  visibleItemsLength: number;
+  metrics: TimelineViewportMetrics;
+  model: TimelineHeightModel;
+  overscanScreens: number;
+}): TimelineItemIndexRange {
+  if (visibleItemsLength <= 0) {
+    return EMPTY_TIMELINE_ITEM_INDEX_RANGE;
+  }
+
+  const { relativeScrollTop, viewportHeight } = timelineVisibleBounds(metrics);
+  // Measured heights can lag the physical layout, and then the real scrollTop
+  // sits past the modelled end. Clamp so the window still covers the tail of
+  // the model instead of collapsing to its last row.
+  const modelledScrollTop = Math.min(
+    relativeScrollTop,
+    Math.max(0, model.totalHeight - viewportHeight)
+  );
+  const overscanPx = Math.max(0, viewportHeight * overscanScreens);
+  const startIndex = timelineIndexAtOffset(model.offsets, modelledScrollTop - overscanPx);
+  const endIndex = Math.min(
+    visibleItemsLength,
+    timelineIndexAtOffset(model.offsets, modelledScrollTop + viewportHeight + overscanPx) + 1
+  );
+
+  return { startIndex, endIndex: Math.max(startIndex + 1, endIndex) };
+}
+
+/** Scroll top that puts the live edge at the bottom of the viewport. */
+export function timelineLiveEdgeScrollTop(
+  model: TimelineHeightModel,
+  metrics: TimelineViewportMetrics
+): number {
+  const viewportHeight = metrics.clientHeight || 600;
+  return Math.max(0, metrics.listOffsetTop + model.totalHeight - viewportHeight);
+}
+
 export function calculateTimelineVirtualRange({
   visibleItemsLength,
   metrics,
@@ -221,25 +278,39 @@ export function calculateTimelineVirtualRange({
   metrics: TimelineViewportMetrics;
   model: TimelineHeightModel;
 }): TimelineVirtualRangeState {
-  if (visibleItemsLength <= TIMELINE_VIRTUALIZATION_THRESHOLD) {
-    return {
-      virtualized: false,
-      startIndex: 0,
-      endIndex: visibleItemsLength,
-      paddingTop: 0,
-      paddingBottom: 0
-    };
-  }
-
-  const { startIndex, endIndex } = calculateTimelineItemIndexRange({
+  const { startIndex, endIndex } = calculateTimelineIndexRangeForPixels({
     visibleItemsLength,
     metrics,
     model,
-    overscanItems: TIMELINE_VIRTUAL_OVERSCAN_ITEMS
+    overscanScreens: TIMELINE_VIRTUAL_OVERSCAN_SCREENS
   });
 
   return {
     virtualized: true,
+    startIndex,
+    endIndex,
+    paddingTop: Math.round(model.offsets[startIndex] ?? 0),
+    paddingBottom: Math.round(model.totalHeight - (model.offsets[endIndex] ?? 0))
+  };
+}
+
+/**
+ * Widen a virtual range so `index` stays mounted. A focused timeline must keep
+ * its navigation target in the DOM: measurements of the rows a placement
+ * reached can otherwise shrink the window past it again.
+ */
+export function timelineRangeIncludingIndex(
+  model: TimelineHeightModel,
+  range: TimelineVirtualRangeState,
+  index: number
+): TimelineVirtualRangeState {
+  if (!range.virtualized || index < 0 || (index >= range.startIndex && index < range.endIndex)) {
+    return range;
+  }
+  const startIndex = Math.min(range.startIndex, index);
+  const endIndex = Math.max(range.endIndex, index + 1);
+  return {
+    ...range,
     startIndex,
     endIndex,
     paddingTop: Math.round(model.offsets[startIndex] ?? 0),

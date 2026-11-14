@@ -232,6 +232,26 @@ describe("TimelineView", () => {
       />
     );
 
+    // Describe the container before the first batch arrives: a real viewport
+    // overflows from the start, so the opening live-edge placement applies and
+    // a later programmatic scroll is not snapped back to it.
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "scrollHeight", {
+      value: 700 * 72,
+      writable: true,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "clientHeight", {
+      value: 600,
+      writable: true,
+      configurable: true
+    });
+
     act(() => {
       listener?.({
         kind: "Timeline",
@@ -248,22 +268,7 @@ describe("TimelineView", () => {
       });
     });
 
-    const timeline = screen.getByTestId("timeline-view");
-    Object.defineProperty(timeline, "scrollTop", {
-      value: 3000,
-      writable: true,
-      configurable: true
-    });
-    Object.defineProperty(timeline, "scrollHeight", {
-      value: 700 * 72,
-      writable: true,
-      configurable: true
-    });
-    Object.defineProperty(timeline, "clientHeight", {
-      value: 600,
-      writable: true,
-      configurable: true
-    });
+    timeline.scrollTop = 3000;
     const baselineDiagnostics = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
     const baselineHeightModelCommits = baselineDiagnostics?.heightModelCommits ?? 0;
     const baselineMeasurementFlushes = baselineDiagnostics?.measurementFlushes ?? 0;
@@ -391,7 +396,9 @@ describe("TimelineView", () => {
 
     const idleDiagnostics = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
     expect(idleDiagnostics.measurementFlushes - baselineMeasurementFlushes).toBe(1);
-    expect(idleDiagnostics.heightModelCommits - baselineHeightModelCommits).toBe(2);
+    // Every range commit measures the rows it just mounted, so a windowed list
+    // commits the height model more often than the two passes mutated here.
+    expect(idleDiagnostics.heightModelCommits - baselineHeightModelCommits).toBeGreaterThanOrEqual(2);
   });
 
   it("does not defer measurements from a programmatic scroll echo", async () => {
@@ -1084,6 +1091,11 @@ describe("TimelineView", () => {
       writable: true,
       configurable: true
     });
+    // One row's worth of resident content in a real 600 px viewport: the
+    // windowed path holds backfill until the modelled height and the physical
+    // scrollHeight agree, as they do in the browser.
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollHeight", { value: 72, configurable: true });
     fireEvent.wheel(timeline, { deltaY: -120 });
     fireEvent.scroll(timeline);
     act(() => scheduler.flushAll());
@@ -1108,7 +1120,8 @@ describe("TimelineView", () => {
         .filter((entry) => entry.source === "timeline.backfill")
         .map((entry) => entry.message);
       expect(backfillMessages[0]).toContain("stage=request trigger=scroll");
-      expect(backfillMessages[0]).toContain("threshold_px=80");
+      // Two screens of a 600 px viewport; the fixture is one 72 px row.
+      expect(backfillMessages[0]).toContain("threshold_px=1200");
       expect(backfillMessages).toEqual(
         expect.arrayContaining([expect.stringContaining("stage=complete reason=pagination_idle")])
       );

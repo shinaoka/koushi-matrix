@@ -60,12 +60,11 @@ async function seedThreadReplies(page: Page, count: number): Promise<void> {
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
             } as any);
             await new Promise((resolve) => setTimeout(resolve, 25));
-            return nextItems.every((item) =>
-              document.querySelector(
-                `[data-event-id="${CSS.escape(
-                  (item as { id: { Event: { event_id: string } } }).id.Event.event_id
-                )}"]`
-              )
+            // The pane virtualizes its rows, so the seeded count is its contract.
+            return Array.from(
+              document.querySelectorAll('[data-testid="timeline-view"]')
+            ).some(
+              (node) => node.getAttribute("data-total-items") === String(nextItems.length)
             );
           },
           { key: HARNESS_THREAD_KEY, nextItems: items }
@@ -112,8 +111,12 @@ test("a thread the client snapped to reports a programmatic bottom, a reader scr
   // The open-time snap is the client's own placement.
   await expect.poll(() => threadBottomArrival(page)).toBe("programmatic");
 
-  // The reader scrolling the pane to the live edge is theirs.
-  await page.locator('[data-event-id="$thread-reply-20:example.invalid"]').hover();
+  // The reader scrolling the pane to the live edge is theirs: leave the edge
+  // first, because a wheel at the edge does not move the pane.
+  await page
+    .locator('aside[aria-label="Context panel"] [data-testid="timeline-view"]')
+    .hover();
+  await page.mouse.wheel(0, -2000);
   await page.mouse.wheel(0, 4000);
   await expect.poll(() => threadBottomArrival(page)).toBe("user");
 });

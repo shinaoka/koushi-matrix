@@ -283,45 +283,34 @@ test("virtualized date dividers have the same modeled and physical height", asyn
   expect(pageErrors).toEqual([]);
 });
 
-test("crossing the virtualization threshold keeps the reading row mounted", async ({ page }) => {
+test("a backfill prepend keeps the reading row mounted inside a bounded window", async ({ page }) => {
   await gotoReadyApp(page);
+  // Every room is windowed now, including lists shorter than a page of
+  // history. This room used to mount all 79 rows because it was under the
+  // retired 120-row threshold.
   await seedTimelineWithItems(
     page,
     Array.from({ length: 79 }, (_, index) => makeEventItem(index + 52))
   );
 
   const timeline = page.locator("[data-testid=timeline-view]");
-  await expect(timeline).not.toHaveAttribute("data-virtualized", "true");
-  const anchorEventId = "$scroll-anchor-item-0070:example.invalid";
-  // Scroll the reading row to the viewport top from its measured position.
-  // Row height follows the host's resolved system font (e.g. Noto Sans CJK has
-  // a much taller `normal` line-height than DejaVu), so a fixed per-row pixel
-  // height would leave the row outside the viewport on some machines.
-  await timeline.evaluate((node, eventId) => {
-    const row = node.querySelector<HTMLElement>(`[data-event-id="${CSS.escape(eventId)}"]`);
-    if (!row) throw new Error("missing initial anchor");
-    const rowTop =
-      node.scrollTop + row.getBoundingClientRect().top - node.getBoundingClientRect().top;
-    node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -500 }));
-    node.scrollTop = Math.round(rowTop);
-    node.dispatchEvent(new Event("scroll", { bubbles: true }));
-  }, anchorEventId);
-  const anchor = page.locator(`[data-event-id="${anchorEventId}"]`);
-  await expect(anchor).toBeInViewport();
-  const originalOffset = await anchorOffsetFromContainer(page, anchorEventId);
-  expect(originalOffset).not.toBeNull();
+  await expect(timeline).toHaveAttribute("data-virtualized", "true");
+  await expect(timeline).toHaveAttribute("data-total-items", "79");
+  // Bring the reading row into the mounted window before the prepend: the room
+  // opens at the live edge, so row 70 is not mounted yet.
+  const { anchorEventId, originalOffset } = await placeAnchorInViewport(page, 70);
   await page.evaluate((eventId) => {
     const row = document.querySelector(`[data-event-id="${eventId}"]`);
     const list = document.querySelector(".timeline-item-list");
     if (!row || !list) throw new Error("missing initial anchor");
-    document.documentElement.dataset["anchorRemovedDuringThresholdCrossing"] = "false";
+    document.documentElement.dataset["anchorRemovedDuringPrepend"] = "false";
     let mountedRows = list.querySelectorAll(".timeline-item-frame").length;
     let peakMountedRows = mountedRows;
     new MutationObserver((records) => {
       for (const record of records) {
         for (const node of record.removedNodes) {
           if (node === row || (node instanceof Element && node.contains(row))) {
-            document.documentElement.dataset["anchorRemovedDuringThresholdCrossing"] = "true";
+            document.documentElement.dataset["anchorRemovedDuringPrepend"] = "true";
           }
           if (node instanceof Element && node.classList.contains("timeline-item-frame")) mountedRows -= 1;
         }
@@ -330,7 +319,7 @@ test("crossing the virtualization threshold keeps the reading row mounted", asyn
         }
         peakMountedRows = Math.max(peakMountedRows, mountedRows);
       }
-      document.documentElement.dataset["peakMountedRowsDuringThresholdCrossing"] = String(peakMountedRows);
+      document.documentElement.dataset["peakMountedRowsDuringPrepend"] = String(peakMountedRows);
     }).observe(list, { childList: true, subtree: true });
   }, anchorEventId);
 
@@ -355,10 +344,10 @@ test("crossing the virtualization threshold keeps the reading row mounted", asyn
   await expect(timeline).toHaveAttribute("data-total-items", "131");
   await expect(timeline).toHaveAttribute("data-virtualized", "true");
   await expect(page.getByRole("main", { name: "Conversation timeline" })).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.dataset["anchorRemovedDuringThresholdCrossing"])).toBe("false");
-  expect(Number(await page.evaluate(() => document.documentElement.dataset["peakMountedRowsDuringThresholdCrossing"]))).toBeLessThanOrEqual(100);
+  expect(await page.evaluate(() => document.documentElement.dataset["anchorRemovedDuringPrepend"])).toBe("false");
+  expect(Number(await page.evaluate(() => document.documentElement.dataset["peakMountedRowsDuringPrepend"]))).toBeLessThanOrEqual(100);
   expect(await timeline.locator("[data-frame-item-id]").count()).toBeLessThanOrEqual(80);
-  await expectAnchorStayedPut(page, anchorEventId, originalOffset!);
+  await expectAnchorStayedPut(page, anchorEventId, originalOffset);
 
   // Backfill again after virtualization is already active. The previous
   // window's indices now refer to older rows, so this transition must also
@@ -381,10 +370,10 @@ test("crossing the virtualization threshold keeps the reading row mounted", asyn
     items: Array.from({ length: 52 }, (_, index) => makeEventItem(index - 52)).reverse()
   });
   await expect(timeline).toHaveAttribute("data-total-items", "183");
-  expect(await page.evaluate(() => document.documentElement.dataset["anchorRemovedDuringThresholdCrossing"])).toBe("false");
-  expect(Number(await page.evaluate(() => document.documentElement.dataset["peakMountedRowsDuringThresholdCrossing"]))).toBeLessThanOrEqual(100);
+  expect(await page.evaluate(() => document.documentElement.dataset["anchorRemovedDuringPrepend"])).toBe("false");
+  expect(Number(await page.evaluate(() => document.documentElement.dataset["peakMountedRowsDuringPrepend"]))).toBeLessThanOrEqual(100);
   expect(await timeline.locator("[data-frame-item-id]").count()).toBeLessThanOrEqual(80);
-  await expectAnchorStayedPut(page, anchorEventId, originalOffset!);
+  await expectAnchorStayedPut(page, anchorEventId, originalOffset);
 
   await timeline.hover();
   for (let reversal = 0; reversal < 48; reversal += 1) {
@@ -522,3 +511,156 @@ test("a sub-pixel anchor leftover settles instead of rewriting the viewport", as
   await expect.poll(() => timelineScrollTop(page)).toBeGreaterThan(beforeScrollTop + 20);
 });
 
+
+/**
+ * #1890: the mounted window is sized in screens, not in rows. These three
+ * checks pin the consequences: what is mounted on open, when older history is
+ * requested, and that the reported visible set is the physical one.
+ */
+test("a live-edge open mounts the visible screen plus one screen of history", async ({ page }) => {
+  await gotoReadyApp(page);
+  // Record every row ever added, not only the final window: a live-edge open
+  // that mounts the top screen first and then snaps to the bottom shows up
+  // here even though the final DOM looks right.
+  await page.evaluate(() => {
+    const seen = new Set<string>();
+    (window as unknown as { __mountedRowIds: Set<string> }).__mountedRowIds = seen;
+    new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (!(node instanceof Element)) continue;
+          const rows = node.matches("[data-item-id]")
+            ? [node]
+            : Array.from(node.querySelectorAll("[data-item-id]"));
+          for (const row of rows) {
+            const id = row.getAttribute("data-item-id");
+            if (id) seen.add(id);
+          }
+        }
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+  await seedTimeline(page, 120);
+  const timeline = page.locator("[data-testid=timeline-view]");
+  await expect(timeline).toHaveAttribute("data-total-items", "120");
+  await waitAnimationFrames(page, 8);
+
+  const bound = await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]")!;
+    const containerRect = container.getBoundingClientRect();
+    const rows = Array.from(container.querySelectorAll<HTMLElement>("[data-item-id]"));
+    const visible = rows.filter((row) => {
+      const rect = row.getBoundingClientRect();
+      return rect.bottom > containerRect.top && rect.top < containerRect.bottom;
+    });
+    const rowHeight = rows[0]?.getBoundingClientRect().height || 1;
+    return {
+      visible: visible.length,
+      screensAbove: Math.ceil(container.clientHeight / rowHeight)
+    };
+  });
+  const everMounted = await page.evaluate(() =>
+    Array.from((window as unknown as { __mountedRowIds: Set<string> }).__mountedRowIds)
+  );
+
+  // Row height follows the host font, so the bound is computed from the
+  // rendered rows rather than assumed.
+  expect(everMounted.length).toBeLessThanOrEqual(bound.visible + bound.screensAbove + 2);
+  // The first row of a 120-row room was mounted here before windowing.
+  expect(everMounted).not.toContain("$scroll-anchor-item-0000:example.invalid");
+});
+
+test("older history is requested only near the top of the resident window", async ({ page }) => {
+  await gotoReadyApp(page);
+  await seedTimeline(page, 120);
+  const timeline = page.locator("[data-testid=timeline-view]");
+  await expect(timeline).toHaveAttribute("data-total-items", "120");
+
+  const backwardRequests = () =>
+    page.evaluate(() => window.__harness.invocationsOf("paginate_timeline_backwards").length);
+  const clientHeight = await timeline.evaluate((node) => node.clientHeight);
+  const threshold = Math.max(80, 2 * clientHeight);
+
+  await timeline.hover();
+  let requestedAboveThreshold = false;
+  for (let step = 0; step < 60; step += 1) {
+    if ((await backwardRequests()) > 0) break;
+    await page.mouse.wheel(0, -Math.round(clientHeight / 2));
+    await waitAnimationFrames(page, 2);
+    const scrollTop = await timeline.evaluate((node) => node.scrollTop);
+    if (scrollTop > threshold && (await backwardRequests()) > 0) {
+      requestedAboveThreshold = true;
+      break;
+    }
+  }
+
+  expect(requestedAboveThreshold).toBe(false);
+  await expect.poll(backwardRequests, { timeout: 5000 }).toBe(1);
+});
+
+test("the observed viewport matches the physically visible rows", async ({ page }) => {
+  await gotoReadyApp(page);
+  await seedTimeline(page, 120);
+  const timeline = page.locator("[data-testid=timeline-view]");
+  await expect(timeline).toHaveAttribute("data-total-items", "120");
+
+  const compareObservation = async () => {
+    const physical = await page.evaluate(() => {
+      const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]")!;
+      const containerRect = container.getBoundingClientRect();
+      const rows = Array.from(container.querySelectorAll<HTMLElement>("[data-event-id]")).filter(
+        (row) => {
+          const rect = row.getBoundingClientRect();
+          return rect.bottom > containerRect.top && rect.top < containerRect.bottom;
+        }
+      );
+      return {
+        first: rows[0]?.getAttribute("data-event-id") ?? null,
+        last: rows.at(-1)?.getAttribute("data-event-id") ?? null
+      };
+    });
+    const observed = await page.evaluate(() => {
+      const call = window.__harness.invocationsOf("observe_timeline_viewport").at(-1);
+      return {
+        first: (call?.args?.["firstVisibleEventId"] as string | null | undefined) ?? null,
+        last: (call?.args?.["lastVisibleEventId"] as string | null | undefined) ?? null
+      };
+    });
+    return { physical, observed };
+  };
+
+  // On open, after a user scroll, and after a prepend changes the window.
+  await expect
+    .poll(async () => (await compareObservation()).observed, { timeout: 10_000 })
+    .toEqual((await compareObservation()).physical);
+
+  await timeline.hover();
+  await page.mouse.wheel(0, -400);
+  await waitAnimationFrames(page, 4);
+  await expect
+    .poll(async () => (await compareObservation()).observed, { timeout: 10_000 })
+    .toEqual((await compareObservation()).physical);
+
+  await page.evaluate(({ key, items }) => {
+    window.__harness.pushCoreEvent({
+      kind: "Timeline",
+      event: {
+        ItemsUpdated: {
+          key,
+          generation: 2,
+          batch_id: 1,
+          diffs: items.map((item) => ({ PushFront: { item } }))
+        }
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+  }, {
+    key: TIMELINE_KEY,
+    items: Array.from({ length: 40 }, (_, index) => makeEventItem(index - 40))
+  });
+  await expect(timeline).toHaveAttribute("data-total-items", "160");
+  await waitAnimationFrames(page, 6);
+  await expect
+    .poll(async () => (await compareObservation()).observed, { timeout: 10_000 })
+    .toEqual((await compareObservation()).physical);
+});
