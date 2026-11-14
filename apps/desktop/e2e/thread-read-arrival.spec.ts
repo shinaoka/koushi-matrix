@@ -111,12 +111,14 @@ test("a thread the client snapped to reports a programmatic bottom, a reader scr
   // The open-time snap is the client's own placement.
   await expect.poll(() => threadBottomArrival(page)).toBe("programmatic");
 
-  // The reader scrolling the pane to the live edge is theirs: leave the edge
-  // first, because a wheel at the edge does not move the pane.
+  // The reader scrolling the pane is theirs. Leave the edge first, because a
+  // wheel at the edge does not move the pane, then stop inside the pane: a
+  // scroll that lands on the live edge is followed by the client's own re-pin,
+  // which legitimately reports the placement it just made.
   await page
     .locator('aside[aria-label="Context panel"] [data-testid="timeline-view"]')
     .hover();
   await page.mouse.wheel(0, -2000);
-  await page.mouse.wheel(0, 4000);
+  await page.mouse.wheel(0, 800);
   await expect.poll(() => threadBottomArrival(page)).toBe("user");
 });

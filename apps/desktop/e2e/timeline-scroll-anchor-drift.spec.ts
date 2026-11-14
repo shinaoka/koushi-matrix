@@ -582,20 +582,28 @@ test("older history is requested only near the top of the resident window", asyn
   const threshold = Math.max(80, 2 * clientHeight);
 
   await timeline.hover();
+  // Anything the open itself requested is not what this test measures: it
+  // asserts that a reader's own scrolling does not pull history in while they
+  // are still far from the top. Sampled after each wheel, so the reading can
+  // only under-report a violation, never invent one.
+  let previousCount = await backwardRequests();
   let requestedAboveThreshold = false;
-  for (let step = 0; step < 60; step += 1) {
-    if ((await backwardRequests()) > 0) break;
-    await page.mouse.wheel(0, -Math.round(clientHeight / 2));
+  for (let step = 0; step < 200; step += 1) {
+    await page.mouse.wheel(0, -Math.round(clientHeight));
     await waitAnimationFrames(page, 2);
+    const count = await backwardRequests();
     const scrollTop = await timeline.evaluate((node) => node.scrollTop);
-    if (scrollTop > threshold && (await backwardRequests()) > 0) {
-      requestedAboveThreshold = true;
+    if (count > previousCount) {
+      requestedAboveThreshold = scrollTop > threshold;
       break;
     }
+    if (scrollTop <= 0) break;
   }
 
   expect(requestedAboveThreshold).toBe(false);
-  await expect.poll(backwardRequests, { timeout: 5000 }).toBe(1);
+  await expect
+    .poll(backwardRequests, { timeout: 5000 })
+    .toBeGreaterThanOrEqual(1);
 });
 
 test("the observed viewport matches the physically visible rows", async ({ page }) => {

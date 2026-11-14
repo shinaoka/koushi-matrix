@@ -1657,6 +1657,90 @@ describe("TimelineView", () => {
   });
 
 
+  it("does not request older history while the opening live edge is still settling", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const paginateBackwards = vi.fn(async (_key: TimelineKey) => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      paginateBackwards
+    });
+    const rowHeight = 72;
+    const itemCount = 120;
+    const rects: Record<string, { top: number; height: number }> = {};
+    for (let index = 0; index < itemCount; index += 1) {
+      rects[`$row-${index}:example.invalid`] = { top: index * rowHeight, height: rowHeight };
+    }
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    const rectSpy = mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+
+    try {
+      render(
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+          listRefCallback={(element) => {
+            scrollContainerRef.current =
+              element?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null;
+          }}
+        />
+      );
+      const timeline = await screen.findByTestId("timeline-view");
+      scrollContainerRef.current = timeline;
+      // The resident window overflows, but the physical scrollTop still points
+      // at its top until the opening live-edge snap lands.
+      Object.defineProperty(timeline, "scrollHeight", {
+        value: itemCount * rowHeight,
+        configurable: true
+      });
+      Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+      Object.defineProperty(timeline, "scrollTop", {
+        value: 0,
+        writable: true,
+        configurable: true
+      });
+
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            InitialItems: {
+              request_id: null,
+              key: KEY,
+              generation: 1,
+              items: Array.from({ length: itemCount }, (_, index) =>
+                message(`$row-${index}:example.invalid`, `message ${index}`)
+              )
+            }
+          }
+        });
+      });
+
+      await waitFor(() => {
+        expect(timeline.scrollTop).toBe(itemCount * rowHeight - 600);
+      });
+      expect(paginateBackwards).not.toHaveBeenCalled();
+
+      // Once the reader scrolls up to the top of the resident window, the same
+      // policy does ask for older history.
+      act(() => {
+        timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -40 }));
+        timeline.scrollTop = 0;
+        fireEvent.scroll(timeline);
+      });
+      await waitFor(() => {
+        expect(paginateBackwards).toHaveBeenCalled();
+      });
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+
+
   it("drops a focused target from the window once the reader scrolls away", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({
