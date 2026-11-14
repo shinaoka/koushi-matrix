@@ -869,6 +869,11 @@ export const TimelineView = memo(function TimelineView({
     "Thread" in timelineKey.kind ? timelineKey.kind.Thread.root_event_id : null;
   const focusedTimelineTargetEventId =
     "Focused" in timelineKey.kind ? timelineKey.kind.Focused.event_id : null;
+  // The event this view exists to show: a Focused navigation target, or the
+  // pinned reply a thread pane was opened on.
+  const pinnedTargetEventId =
+    focusedTimelineTargetEventId ??
+    (presentationContext === "thread" ? initialTargetEventId : null);
   const items = getItems(store, timelineKey);
   const navigationSnapshot = store.keys.get(timelineKeyHash)?.navigation ?? null;
   const displayWindow = navigationSnapshot?.display_window ?? null;
@@ -2213,6 +2218,18 @@ export const TimelineView = memo(function TimelineView({
   const initialLiveEdgeScrollKey = timelineInitialized
     ? `${timelineKeyHash}:${generation}`
     : null;
+  // A jump places its target from the height model, and measuring the rows it
+  // reached can shrink the window past that target; keep the target inside the
+  // committed range while the jump owns the viewport. Once a real user scroll
+  // takes the viewport back, the target is history and the window follows the
+  // viewport like any other, so it must not stay pinned to the target index.
+  const pinnedTargetWideningIndex = useCallback(
+    (rows: readonly TimelineDisplayRow[]) =>
+      pinnedTargetEventId !== null && jumpViewportControlRef.current
+        ? rows.findIndex((row) => row.activity_event_id === pinnedTargetEventId)
+        : -1,
+    [pinnedTargetEventId]
+  );
   const commitVirtualRangeForMetrics = useCallback(
     (metrics: TimelineViewportMetrics) => {
       const transaction = viewportTransactionRef.current.active();
@@ -2274,11 +2291,7 @@ export const TimelineView = memo(function TimelineView({
           metrics,
           model: timelineHeightModel
         }),
-        focusedTimelineTargetEventId === null
-          ? -1
-          : visibleRows.findIndex(
-              (row) => row.activity_event_id === focusedTimelineTargetEventId
-            )
+        pinnedTargetWideningIndex(visibleRows)
       );
       virtualRangeModelRef.current = timelineHeightModel;
       virtualRangeRowsRef.current = visibleRows;
@@ -2291,6 +2304,7 @@ export const TimelineView = memo(function TimelineView({
       return next;
     },
     [
+      pinnedTargetWideningIndex,
       generation,
       initialLiveEdgeScrollKey,
       timelineHeightModel,
@@ -2320,16 +2334,20 @@ export const TimelineView = memo(function TimelineView({
         : -1;
       const scrollTop =
         viewportIntentRef.current.kind === "live-edge"
-          ? metrics.listOffsetTop + timelineHeightModel.totalHeight - metrics.clientHeight
+          ? timelineLiveEdgeScrollTop(timelineHeightModel, metrics)
           : anchorIndex >= 0 && anchor
             ? metrics.listOffsetTop +
               (timelineHeightModel.offsets[anchorIndex] ?? 0) - anchor.offsetTop
             : metrics.scrollTop;
-      range = calculateTimelineVirtualRange({
-        visibleItemsLength: visibleRows.length,
-        metrics: { ...metrics, scrollTop: Math.max(0, scrollTop) },
-        model: timelineHeightModel
-      });
+      range = timelineRangeIncludingIndex(
+        timelineHeightModel,
+        calculateTimelineVirtualRange({
+          visibleItemsLength: visibleRows.length,
+          metrics: { ...metrics, scrollTop: Math.max(0, scrollTop) },
+          model: timelineHeightModel
+        }),
+        pinnedTargetWideningIndex(visibleRows)
+      );
     } else {
       // An initial projection or a height-only update has no shifted row
       // indices to repair. Its viewport metrics settle in the layout effect.
@@ -2340,7 +2358,7 @@ export const TimelineView = memo(function TimelineView({
       ...range,
       items: visibleRows.slice(range.startIndex, range.endIndex)
     };
-  }, [stableAnchor, timelineHeightModel, virtualRange, visibleRows]);
+  }, [pinnedTargetWideningIndex, stableAnchor, timelineHeightModel, virtualRange, visibleRows]);
   useLayoutEffect(() => {
     commitVirtualRangeForMetrics(readViewportMetrics());
   }, [commitVirtualRangeForMetrics, readViewportMetrics]);
@@ -3359,13 +3377,45 @@ export const TimelineView = memo(function TimelineView({
         targetRow.scrollIntoView({ block: "center", inline: "nearest" });
       });
       initialThreadTargetRestoreAppliedRef.current = initialTargetEventId;
+      return;
     }
+    // The pane opens at the live edge, so a pinned reply above it is not
+    // mounted. Place it through the height model the way the Focused path does,
+    // bounded because a placement only lands short while rows are estimates.
+    const targetIndex = visibleRows.findIndex(
+      (row) => row.activity_event_id === initialTargetEventId
+    );
+    if (
+      !container ||
+      targetIndex < 0 ||
+      focusedTargetPlacementAttemptsRef.current >= FOCUSED_TARGET_PLACEMENT_ATTEMPTS
+    ) {
+      return;
+    }
+    focusedTargetPlacementAttemptsRef.current += 1;
+    const targetTop = timelineHeightModel.offsets[targetIndex] ?? 0;
+    const targetHeight = timelineItemHeightAtIndex(timelineHeightModel, targetIndex);
+    jumpViewportControlRef.current = true;
+    advanceViewportEpoch();
+    runWithScrollWriteReason("jumpToEvent", () => {
+      container.scrollTop = Math.max(
+        0,
+        viewportMetricsRef.current.listOffsetTop +
+          targetTop +
+          targetHeight / 2 -
+          container.clientHeight / 2
+      );
+    });
+    updateViewportMetrics();
   }, [
+    advanceViewportEpoch,
     initialTargetEventId,
     items,
     presentationContext,
     runWithScrollWriteReason,
+    timelineHeightModel,
     timelineInitialized,
+    updateViewportMetrics,
     virtualWindow.virtualized,
     visibleRows
   ]);

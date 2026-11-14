@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   focusedTimelineKey,
   roomTimelineKey,
+  threadTimelineKey,
   type CoreEventPayload,
   type PaginationState,
   type TimelineGapId,
@@ -1653,6 +1654,176 @@ describe("TimelineView", () => {
 
     expect([...everMounted]).not.toContain("$row-0:example.invalid");
     expect(everMounted.size).toBeLessThanOrEqual(40);
+  });
+
+
+  it("drops a focused target from the window once the reader scrolls away", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const rowHeight = 72;
+    const itemCount = 200;
+    const targetIndex = 5;
+    const targetEventId = `$row-${targetIndex}:example.invalid`;
+    const focusedKey = focusedTimelineKey(
+      "@alice:example.invalid",
+      "!room:example.invalid",
+      targetEventId
+    );
+    const rects: Record<string, { top: number; height: number }> = {};
+    for (let index = 0; index < itemCount; index += 1) {
+      rects[`$row-${index}:example.invalid`] = { top: index * rowHeight, height: rowHeight };
+    }
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+    // jsdom implements no scrollIntoView; the placement must not need it to
+    // reach the target, so a no-op is enough here.
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    render(
+      <TimelineView
+        timelineKey={focusedKey}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        listRefCallback={(element) => {
+          scrollContainerRef.current =
+            element?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null;
+        }}
+      />
+    );
+    const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "scrollHeight", {
+      value: itemCount * rowHeight,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: focusedKey,
+            generation: 1,
+            items: Array.from({ length: itemCount }, (_, index) =>
+              message(`$row-${index}:example.invalid`, `message ${index}`)
+            )
+          }
+        }
+      });
+    });
+
+    // The jump keeps its target mounted while it owns the viewport.
+    await waitFor(() => {
+      expect(timeline.querySelector(`[data-event-id="${targetEventId}"]`)).not.toBeNull();
+    });
+
+    // The reader then scrolls to the live edge; the focused target is history.
+    act(() => {
+      timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 40 }));
+      timeline.scrollTop = itemCount * rowHeight - 600;
+      fireEvent.scroll(timeline);
+    });
+    await waitFor(() => {
+      expect(
+        timeline.querySelector(`[data-event-id="$row-${itemCount - 1}:example.invalid"]`)
+      ).not.toBeNull();
+    });
+
+    expect(timeline.querySelector(`[data-event-id="${targetEventId}"]`)).toBeNull();
+    expect(timeline.querySelectorAll("[data-event-id]").length).toBeLessThanOrEqual(60);
+  });
+
+
+  it("places a thread pane's pinned reply that sits outside the mounted window", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const rowHeight = 72;
+    const itemCount = 100;
+    const targetIndex = 5;
+    const targetEventId = `$row-${targetIndex}:example.invalid`;
+    const threadKey = threadTimelineKey(
+      "@alice:example.invalid",
+      "!room:example.invalid",
+      "$thread-root:example.invalid"
+    );
+    const rects: Record<string, { top: number; height: number }> = {};
+    for (let index = 0; index < itemCount; index += 1) {
+      rects[`$row-${index}:example.invalid`] = { top: index * rowHeight, height: rowHeight };
+    }
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    render(
+      <TimelineView
+        presentationContext="thread"
+        timelineKey={threadKey}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        onOpenThread={vi.fn()}
+        initialTargetEventId={targetEventId}
+        listRefCallback={(element) => {
+          scrollContainerRef.current =
+            element?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null;
+        }}
+      />
+    );
+    const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "scrollHeight", {
+      value: itemCount * rowHeight,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: threadKey,
+            generation: 1,
+            items: Array.from({ length: itemCount }, (_, index) =>
+              message(`$row-${index}:example.invalid`, `reply ${index}`)
+            )
+          }
+        }
+      });
+    });
+
+    // The pane opens at the live edge, so the pinned reply starts outside the
+    // mounted window; the jump has to reach it through the height model.
+    await waitFor(() => {
+      expect(timeline.querySelector(`[data-event-id="${targetEventId}"]`)).not.toBeNull();
+    });
+    expect(scrollIntoView).toHaveBeenCalled();
   });
 
 
