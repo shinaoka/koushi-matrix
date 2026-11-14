@@ -1,9 +1,9 @@
 import type { TimelineDisplayRow } from "../../domain/timelineDisplayProjection";
 
 export const TIMELINE_VIRTUALIZATION_THRESHOLD = 120;
-const TIMELINE_VIRTUAL_OVERSCAN_ITEMS = 24;
+export const TIMELINE_VIRTUAL_OVERSCAN_ITEMS = 24;
 export const TIMELINE_ESTIMATED_ITEM_HEIGHT_PX = 72;
-const TIMELINE_MIN_ITEM_HEIGHT_PX = 36;
+export const TIMELINE_MIN_ITEM_HEIGHT_PX = 36;
 const TIMELINE_MAX_ITEM_HEIGHT_PX = 480;
 
 export type TimelineViewportMetrics = {
