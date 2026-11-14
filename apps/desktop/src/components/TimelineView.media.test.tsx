@@ -12,7 +12,14 @@ vi.mock("../backend/linkMediaRuntime", async (importOriginal) => ({
 
 import { type CoreEventPayload, type TimelineItem } from "../domain/coreEvents";
 import { setActiveLocaleProfile } from "../i18n/messages";
-import { KEY, baseTransport, fileMessage, imageMessage, message } from "./timelineViewTestSupport";
+import {
+  KEY,
+  baseTransport,
+  fileMessage,
+  imageMessage,
+  message,
+  mockTimelineRects
+} from "./timelineViewTestSupport";
 import {
   TimelineView,
   clearTimelineViewportSessionMemoryForTests,
@@ -924,7 +931,13 @@ describe("TimelineView", () => {
 
   it("requests only avatars whose rows intersect the viewport", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
-    const downloadAvatarThumbnail = vi.fn(async () => undefined);
+    const mountedWhenRequested: string[] = [];
+    const downloadAvatarThumbnail = vi.fn(async (mxcUri: string) => {
+      void mxcUri;
+      for (const node of document.querySelectorAll<HTMLElement>("[data-event-id]")) {
+        mountedWhenRequested.push(node.dataset["eventId"] ?? "");
+      }
+    });
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
         emit = nextListener;
@@ -939,6 +952,14 @@ describe("TimelineView", () => {
         thumbnail: { kind: "notRequested" as const }
       }
     }));
+    // Real row geometry, so the mounted window covers the rows whose avatars
+    // can be requested; jsdom reports zero heights otherwise.
+    const rects: Record<string, { top: number; height: number }> = {};
+    for (let index = 0; index < items.length; index += 1) {
+      rects[`$avatar-window-${index}`] = { top: index * 72, height: 72 };
+    }
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
 
     render(
       <TimelineView
@@ -963,16 +984,22 @@ describe("TimelineView", () => {
       }
     });
 
+    const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollHeight", {
+      value: items.length * 72,
+      configurable: true
+    });
     await triggerFirstAvatarObserver();
     await waitFor(() => {
-      expect(downloadAvatarThumbnail).toHaveBeenCalledWith(
-        "mxc://matrix.org/avatar-window-0"
-      );
+      expect(downloadAvatarThumbnail).toHaveBeenCalledTimes(1);
     });
-    expect(downloadAvatarThumbnail).not.toHaveBeenCalledWith(
-      "mxc://matrix.org/avatar-window-39"
-    );
-    expect(downloadAvatarThumbnail.mock.calls.length).toBe(1);
+    // Only mounted rows are asked for: the room opens at the live edge, so the
+    // first row of 40 is a screen or more above the mounted window.
+    const requested = String(downloadAvatarThumbnail.mock.calls[0]?.[0] ?? "");
+    expect(mountedWhenRequested).toContain(`$avatar-window-${requested.split("-").at(-1)}`);
+    expect(mountedWhenRequested).not.toContain("$avatar-window-0");
   });
 
   it("requests profile avatar thumbnails when the timeline item has no sender avatar", async () => {
@@ -1335,7 +1362,7 @@ describe("TimelineView", () => {
 
   it("emits private-data-free diagnostics when viewport pending link previews load", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
-    const loadLinkPreviews = vi.fn(async () => undefined);
+    const loadLinkPreviews = vi.fn(async (_roomId: string, _eventId: string) => undefined);
     const onDiagnosticLogEntry = vi.fn();
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
@@ -1435,7 +1462,7 @@ describe("TimelineView", () => {
 
   it("limits initial link preview requests to the current viewport window", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
-    const loadLinkPreviews = vi.fn(async () => undefined);
+    const loadLinkPreviews = vi.fn(async (_roomId: string, _eventId: string) => undefined);
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
         emit = nextListener;
@@ -1452,6 +1479,14 @@ describe("TimelineView", () => {
         }
       ]
     }));
+    // Real row geometry, so the mounted window and the preview request window
+    // agree; jsdom reports zero heights otherwise.
+    const rects: Record<string, { top: number; height: number }> = {};
+    for (let index = 0; index < items.length; index += 1) {
+      rects[`$preview-window-${index}`] = { top: index * 72, height: 72 };
+    }
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
 
     render(
       <TimelineView
@@ -1474,16 +1509,30 @@ describe("TimelineView", () => {
       }
     });
 
-    await waitFor(() => {
-      expect(loadLinkPreviews).toHaveBeenCalledWith(
-        "!room:example.invalid",
-        "$preview-window-0"
-      );
+    const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollHeight", {
+      value: items.length * 72,
+      configurable: true
     });
-    expect(loadLinkPreviews).not.toHaveBeenCalledWith(
-      "!room:example.invalid",
-      "$preview-window-39"
+    await waitFor(() => {
+      expect(loadLinkPreviews).toHaveBeenCalled();
+    });
+    // Requests follow the mounted window, not every resident row: the room
+    // opens at the live edge, so the first row is never in the request range.
+    const requestedEventIds = loadLinkPreviews.mock.calls.map(([, eventId]) =>
+      String(eventId)
     );
-    expect(loadLinkPreviews.mock.calls.length).toBeLessThan(items.length);
+    const mountedEventIds = new Set(
+      Array.from(timeline.querySelectorAll<HTMLElement>("[data-event-id]")).map(
+        (node) => node.dataset["eventId"]
+      )
+    );
+    for (const eventId of requestedEventIds) {
+      expect(mountedEventIds).toContain(eventId);
+    }
+    expect(requestedEventIds).not.toContain("$preview-window-0");
+    expect(requestedEventIds.length).toBeLessThan(items.length);
   });
 });

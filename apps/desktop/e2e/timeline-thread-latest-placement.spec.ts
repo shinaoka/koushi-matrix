@@ -231,6 +231,14 @@ test("Rust display updates keep an old root whole without room backfill", async 
     (_, index) => ordinaryItem(index + 10)
   );
   await pushInitialItems(page, 102, [rootItem(), ...freshWindow]);
+  // The room opens at the live edge, so the root row at index 0 has to be
+  // scrolled into the mounted window before its content can be asserted.
+  const roomTimeline = page.locator('[data-testid="timeline-view"]').first();
+  await roomTimeline.evaluate((node) => {
+    node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -40 }));
+    node.scrollTop = 0;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
   await expect(root).toHaveCount(1);
   await expect(page.locator(`[data-content-event-id="${LATEST_REPLY_EVENT_ID}"]`)).toHaveCount(0);
 
@@ -256,6 +264,12 @@ test("Rust display updates keep an old root whole without room backfill", async 
     ...freshWindow,
     rootItem(LATEST_REPLY_EVENT_ID, 1_800_200_100_000)
   ]);
+  // With the root placed at the latest reply it sits at the live edge again.
+  await roomTimeline.evaluate((node) => {
+    node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 40 }));
+    node.scrollTop = node.scrollHeight;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
   await expect(root).toHaveCount(1);
   await expect(root).toHaveAttribute("data-content-event-id", ROOT_EVENT_ID);
   await expect(root).toHaveAttribute("data-activity-event-id", LATEST_REPLY_EVENT_ID);

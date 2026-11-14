@@ -3396,6 +3396,14 @@ button:disabled {
    read-marker margins inside that box so physical and modeled offsets agree. */
 .timeline-item-frame {
   display: flow-root;
+  /* Keep a row's layout independent of its siblings so a mounted row cannot
+     force the whole list to relayout, and stop off-row style recalc from
+     escaping it. `paint` is deliberately absent: floating layers anchored to a
+     row must not be clipped. `layout` containment does make the row the
+     containing block for `position: fixed` descendants, so row-anchored
+     popovers go through `FloatingLayer` (a body-level portal) instead of
+     being positioned from inside a row. */
+  contain: layout style;
 }
 
 .timeline-virtual-spacer {

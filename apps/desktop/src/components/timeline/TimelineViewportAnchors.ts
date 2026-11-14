@@ -238,3 +238,31 @@ export function findTimelineEventNode(
     timelineEventIdentitySelector(identity, eventId)
   );
 }
+
+/** Put a mounted row at the middle of the container's visible band. */
+export function centerTimelineRow(container: HTMLElement, row: HTMLElement): void {
+  const containerRect = container.getBoundingClientRect();
+  const rowRect = row.getBoundingClientRect();
+  const centered =
+    container.scrollTop +
+    (rowRect.top - containerRect.top) -
+    Math.max(0, (container.clientHeight - rowRect.height) / 2);
+  container.scrollTop = Math.max(0, centered);
+}
+
+/** Whether a mounted row intersects the container's visible band. */
+export function timelineRowInsideViewport(
+  container: HTMLElement,
+  row: HTMLElement
+): boolean {
+  const containerRect = container.getBoundingClientRect();
+  const rowRect = row.getBoundingClientRect();
+  // Without a layout box there is no position to correct, so do not fight it.
+  if (rowRect.height === 0) {
+    return true;
+  }
+  return (
+    rowRect.bottom > containerRect.top &&
+    rowRect.top < containerRect.top + container.clientHeight
+  );
+}

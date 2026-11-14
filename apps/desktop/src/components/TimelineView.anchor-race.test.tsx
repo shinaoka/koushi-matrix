@@ -102,7 +102,10 @@ describe("TimelineView anchor settlement", () => {
       writable: true,
       configurable: true,
     });
-    timeline.scrollTop = 42_672;
+    timeline.scrollTop = 30_000;
+    // A wheel makes this a user free-scroll, so the held anchor below is the
+    // free-scroll one rather than the live-edge intent of the initial open.
+    fireEvent.wheel(timeline, { deltaY: -40 });
     fireEvent.scroll(timeline);
     act(() => {
       scheduler.flushAll();

@@ -320,12 +320,16 @@ describe("TimelineView", () => {
 
     await waitFor(() => {
       expect(timeline.getAttribute("data-virtualized")).toBe("true");
-      const row = document.querySelector<HTMLElement>(
-        '[data-event-id="$virtual-8:example.invalid"]'
+      // The first row of the mounted window has no rendered predecessor, so
+      // grouping has to come from the full visible row list, not the window.
+      const firstRow = document.querySelector<HTMLElement>("[data-item-id]");
+      expect(firstRow).not.toBeNull();
+      expect(firstRow?.classList.contains("is-continuation")).toBe(true);
+      const index = Number(
+        firstRow?.getAttribute("data-event-id")?.split("-").at(-1)?.split(":")[0]
       );
-      expect(row).not.toBeNull();
-      expect(row?.classList.contains("is-continuation")).toBe(true);
-      expect(screen.getByText("Virtual 8")).toBeTruthy();
+      expect(index).toBeGreaterThan(0);
+      expect(screen.getByText(`Virtual ${index}`)).toBeTruthy();
     });
     expect(timeline.getAttribute("data-total-items")).toBe("601");
   });

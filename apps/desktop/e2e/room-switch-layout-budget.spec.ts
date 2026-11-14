@@ -45,7 +45,8 @@ function items(prefix: string, count: number): unknown[] {
 
 const SMALL_PREFIX = "budget-small";
 const LARGE_PREFIX = "budget-large";
-const SMALL_FIRST = `$${SMALL_PREFIX}-0:example.invalid`;
+// The live edge of the windowed room: a receipt has to be on a mounted row.
+const SMALL_LAST = `$${SMALL_PREFIX}-${SMALL_ITEMS - 1}:example.invalid`;
 
 /** Waits out the switch, then the two frames the observation that follows it needs. */
 async function settleSwitch(page: Page): Promise<void> {
@@ -76,7 +77,12 @@ async function switchIntoSeededRoom(
 ): Promise<LayoutReadCounts> {
   await clickRoom(page, roomName);
   await seedTimelineItems(page, items(prefix, count), 2, switchableRoomKey(roomId));
-  await expect(page.locator(`[data-item-id="$${prefix}-0:example.invalid"]`)).toHaveCount(1);
+  // The room opens at the live edge inside a bounded window, so row 0 is not
+  // mounted; the store-side total proves the batch landed.
+  await expect(page.locator('[data-testid="timeline-view"]')).toHaveAttribute(
+    "data-total-items",
+    String(count)
+  );
   await settleSwitch(page);
   return layoutReads(page);
 }
@@ -200,7 +206,7 @@ test("a closed receipt popover does not measure during a room switch", async ({ 
     };
     window.__harness.setSnapshot(snapshot);
     window.__harness.pushStateUpdate();
-  }, { roomId: SMALL_ROOM_ID, firstEventId: SMALL_FIRST });
+  }, { roomId: SMALL_ROOM_ID, firstEventId: SMALL_LAST });
   await showHomeSections(page);
 
   const counts = await switchIntoSeededRoom(
@@ -210,7 +216,7 @@ test("a closed receipt popover does not measure during a room switch", async ({ 
     SMALL_PREFIX,
     SMALL_ITEMS
   );
-  await expect(page.locator(`[data-item-id="${SMALL_FIRST}"] .message-receipts`)).toHaveCount(1);
+  await expect(page.locator(`[data-item-id="${SMALL_LAST}"] .message-receipts`)).toHaveCount(1);
   // #1894: a closed popover stays off the measurement path (#1892).
   expect(counts.receipt).toBe(0);
 });
