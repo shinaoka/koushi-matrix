@@ -24,8 +24,7 @@ import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { t } from "../src/i18n/messages";
 import {
   TIMELINE_MIN_ITEM_HEIGHT_PX,
-  TIMELINE_VIRTUAL_OVERSCAN_ITEMS,
-  TIMELINE_VIRTUALIZATION_THRESHOLD
+  TIMELINE_VIRTUAL_OVERSCAN_SCREENS
 } from "../src/components/timeline/TimelineViewportVirtualization";
 import {
   expectBudget,
@@ -84,7 +83,7 @@ const ENGINE_BUDGETS: Record<
   chromium: {
     // 15 / 224 / 1 row / 78 nodes.
     startup: { commits: 18, layoutReads: 270, rows: 4, timelineSubtree: 100 },
-    // 1247 reads / 9 commits; the row count is asserted against the threshold.
+    // 1247 reads / 9 commits; the row count is derived from the viewport (#1890).
     openBusy: { layoutReads: 1500, commits: 12 },
     // Per switch, worst of five: 1489 / 14 commits. Refs #1889.
     switchRoom: { layoutReads: 1800, commits: 18 },
@@ -191,20 +190,32 @@ test("startup stays inside its commit and layout-read budget", async ({ page }, 
   await expectBudget(page, "startup", budgetsFor(testInfo).startup);
 });
 
-test("opening a room at the virtualization threshold mounts every row (#1890)", async ({
+/** Rows the window may hold: three screens of the shortest measurable row. */
+function windowRowBound(viewportHeight: number): number {
+  const screenRows = Math.ceil(viewportHeight / TIMELINE_MIN_ITEM_HEIGHT_PX);
+  return screenRows + 2 * TIMELINE_VIRTUAL_OVERSCAN_SCREENS * screenRows + 1;
+}
+
+test("opening a 120-row room mounts a window, not every row (#1890)", async ({
   page
 }, testInfo) => {
   await gotoBudgetApp(page);
   const read = await measure(page, () => openBudgetRoom(page, BUDGET_ROOMS.busy));
   report("open busy", read);
 
-  // At or below TIMELINE_VIRTUALIZATION_THRESHOLD every row mounts. This is the
-  // measured value, not a target: it is the ratchet #1890 has to lower, so the
-  // assertion is an equality against both numbers, not a ceiling.
-  expect(
+  const viewportHeight = await page.evaluate(
+    () => document.querySelector<HTMLElement>("[data-testid=timeline-view]")?.clientHeight ?? 0
+  );
+  expect(viewportHeight).toBeGreaterThan(0);
+  // Before #1890 every row of a room at the replay cap mounted; the ratchet is
+  // now the viewport, so a room of 120 rows and one of 200 mount alike.
+  expectWithinBudget(
+    "open busy rows",
     read.rows,
-    "every row must mount at the threshold: this is the ratchet #1890 lowers"
-  ).toBe(Math.min(TIMELINE_VIRTUALIZATION_THRESHOLD, BUDGET_ROOMS.busy.rowCount));
+    windowRowBound(viewportHeight),
+    read.layoutReadBuckets
+  );
+  expect(read.rows).toBeLessThan(BUDGET_ROOMS.busy.rowCount);
   await expectBudget(page, "open busy", {
     layoutReads: budgetsFor(testInfo).openBusy.layoutReads,
     commits: budgetsFor(testInfo).openBusy.commits
@@ -224,10 +235,7 @@ test("opening a virtualized room mounts one window plus overscan", async ({ page
   // measured; a measured row can be shorter (`measuredItemHeight` floors at
   // 1 px). The fixture's rows are two-line text, so this bound holds for them —
   // it is a derivation from the fixture, not a bound for any timeline.
-  const bound =
-    Math.ceil(viewportHeight / TIMELINE_MIN_ITEM_HEIGHT_PX) +
-    2 * TIMELINE_VIRTUAL_OVERSCAN_ITEMS +
-    1;
+  const bound = windowRowBound(viewportHeight);
   const read = await readRendererBudget(page);
   report("open long", read);
   const timeline = page.locator("[data-testid=timeline-view]");
