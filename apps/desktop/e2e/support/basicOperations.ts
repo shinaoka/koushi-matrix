@@ -19,7 +19,12 @@ export async function invocationCount(page: Page, command: string): Promise<numb
   return page.evaluate((cmd) => window.__harness.invocationsOf(cmd).length, command);
 }
 
-export async function seedTimelineItems(page: Page, items: unknown[], generation = 2): Promise<void> {
+export async function seedTimelineItems(
+  page: Page,
+  items: unknown[],
+  generation = 2,
+  key: unknown = HARNESS_ROOM_KEY
+): Promise<void> {
   await expect
     .poll(
       async () =>
@@ -51,7 +56,7 @@ export async function seedTimelineItems(page: Page, items: unknown[], generation
               document.querySelector(`[data-item-id="${CSS.escape(id)}"]`)
             );
           },
-          { key: HARNESS_ROOM_KEY, nextItems: items, nextGeneration: generation }
+          { key, nextItems: items, nextGeneration: generation }
         ),
       { timeout: 10_000, intervals: [25, 50, 100, 250] }
     )
