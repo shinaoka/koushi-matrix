@@ -1,72 +1,18 @@
 import type { KeyboardEvent } from "react";
 import type { TimelineGapId } from "../../domain/coreEvents";
-import { eventIdForTimelineIdentity } from "./TimelineViewportAnchors";
-
-const CANONICAL_UNSIGNED_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
-const MAX_U32 = 4_294_967_295;
-
-function isCanonicalUnsignedDecimal(value: string | undefined): value is string {
-  return value !== undefined && CANONICAL_UNSIGNED_DECIMAL.test(value);
-}
-
-function parseCanonicalU32(value: string | undefined): number | null {
-  if (!isCanonicalUnsignedDecimal(value)) {
-    return null;
-  }
-  let parsed = 0;
-  for (const digit of value) {
-    parsed = parsed * 10 + digit.charCodeAt(0) - "0".charCodeAt(0);
-    if (parsed > MAX_U32) {
-      return null;
-    }
-  }
-  return parsed;
-}
+import { readTimelineViewportFacts } from "./TimelineViewportRows";
 
 export function visibleTimelineViewportFacts(container: HTMLElement): {
   firstVisibleEventId: string | null;
   lastVisibleEventId: string | null;
   visibleGapIds: TimelineGapId[];
 } {
-  const containerRect = container.getBoundingClientRect();
-  const nodes = container.querySelectorAll<HTMLElement>("[data-activity-event-id]");
-  let firstVisibleEventId: string | null = null;
-  let lastVisibleEventId: string | null = null;
-  for (const node of nodes) {
-    const rect = node.getBoundingClientRect();
-    if (rect.bottom <= containerRect.top || rect.top >= containerRect.bottom) {
-      continue;
-    }
-    const eventId = eventIdForTimelineIdentity(node, "activity");
-    if (!eventId) {
-      continue;
-    }
-    firstVisibleEventId ??= eventId;
-    lastVisibleEventId = eventId;
-  }
-  const visibleGapIds: TimelineGapId[] = [];
-  const seenGapIds = new Set<string>();
-  const gapNodes = container.querySelectorAll<HTMLElement>(
-    "[data-gap-topology-revision][data-gap-ordinal]"
-  );
-  for (const node of gapNodes) {
-    const rect = node.getBoundingClientRect();
-    if (rect.bottom <= containerRect.top || rect.top >= containerRect.bottom) {
-      continue;
-    }
-    const topologyRevision = node.dataset["gapTopologyRevision"];
-    const ordinal = parseCanonicalU32(node.dataset["gapOrdinal"]);
-    if (!isCanonicalUnsignedDecimal(topologyRevision) || ordinal === null) {
-      continue;
-    }
-    const signature = `${topologyRevision}\u0000${ordinal}`;
-    if (seenGapIds.has(signature)) {
-      continue;
-    }
-    seenGapIds.add(signature);
-    visibleGapIds.push({ topology_revision: topologyRevision, ordinal });
-  }
-  return { firstVisibleEventId, lastVisibleEventId, visibleGapIds };
+  const facts = readTimelineViewportFacts(container);
+  return {
+    firstVisibleEventId: facts.firstVisibleEventId,
+    lastVisibleEventId: facts.lastVisibleEventId,
+    visibleGapIds: facts.visibleGapIds
+  };
 }
 
 export function isScrolledToBottom(container: HTMLElement): boolean {

@@ -1,6 +1,13 @@
 import type { TimelineItem, TimelineKey } from "../../domain/coreEvents";
 import type { TimelineScrollAnchor } from "../../domain/types";
 import { timelineStoreKeyId } from "../../domain/timelineStore";
+import {
+  cssEscape,
+  readTimelineViewportFacts,
+  timelineEventIdentitySelector,
+  timelineViewportBox,
+  visibleNodeSpan
+} from "./TimelineViewportRows";
 
 // ---------------------------------------------------------------------------
 // Scroll anchor
@@ -22,28 +29,29 @@ type ScrollAnchorCaptureOptions = {
   isEligible?: (node: HTMLElement) => boolean;
 };
 
-type TimelineEventIdentity = "content" | "activity";
-
 /** Capture the first eligible visible item as the anchor (id + pixel offset). */
 export function captureAnchor(
   container: HTMLElement,
   options: ScrollAnchorCaptureOptions = {}
 ): ScrollAnchor | null {
-  const containerRect = container.getBoundingClientRect();
-  const containerTop = containerRect.top;
-  const containerBottom = containerTop + (container.clientHeight || containerRect.height);
-  const nodes = container.querySelectorAll<HTMLElement>("[data-item-id]");
-  for (const node of nodes) {
+  const box = timelineViewportBox(container);
+  const nodes = Array.from(container.querySelectorAll<HTMLElement>("[data-item-id]"));
+  const span = visibleNodeSpan(box, nodes);
+  if (!span) {
+    return null;
+  }
+  // Only the visible run is scanned, so an ineligible row near the live edge no
+  // longer costs a read of every row above it.
+  for (let index = span.start; index <= span.end; index += 1) {
+    const node = nodes[index];
     if (options.isEligible && !options.isEligible(node)) {
       continue;
     }
     const rect = node.getBoundingClientRect();
-    if (rect.bottom > containerTop && rect.top < containerBottom) {
-      return {
-        itemId: node.dataset["itemId"] ?? "",
-        offsetTop: rect.top - containerTop
-      };
-    }
+    return {
+      itemId: node.dataset["itemId"] ?? "",
+      offsetTop: rect.top - box.top
+    };
   }
   return null;
 }
@@ -150,25 +158,15 @@ export function setTimelineViewportSessionAnchorForTests(
 }
 
 export function captureRoomScrollAnchor(container: HTMLElement): CapturedTimelineScrollAnchor | null {
-  const containerRect = container.getBoundingClientRect();
-  const nodes = container.querySelectorAll<HTMLElement>("[data-activity-event-id]");
-  let captured: CapturedTimelineScrollAnchor | null = null;
-  for (const node of nodes) {
-    const rect = node.getBoundingClientRect();
-    if (rect.bottom <= containerRect.top || rect.top >= containerRect.bottom) {
-      continue;
-    }
-    const eventId = eventIdForTimelineIdentity(node, "activity");
-    if (!eventId) {
-      continue;
-    }
-    captured = {
-      event_id: eventId,
-      edge: "bottom",
-      offset_px: Math.round(rect.bottom - containerRect.bottom)
-    };
+  const facts = readTimelineViewportFacts(container);
+  if (facts.lastVisibleEventId === null || facts.lastVisibleBottomOffset === null) {
+    return null;
   }
-  return captured;
+  return {
+    event_id: facts.lastVisibleEventId,
+    edge: "bottom",
+    offset_px: facts.lastVisibleBottomOffset
+  };
 }
 
 export function restoreRoomScrollAnchor(container: HTMLElement, anchor: TimelineScrollAnchor): boolean {
@@ -231,29 +229,12 @@ export function canonicalTimelineContainsActivityEventId(
   );
 }
 
-function timelineEventIdentityAttribute(identity: TimelineEventIdentity): string {
-  return identity === "activity" ? "data-activity-event-id" : "data-content-event-id";
-}
-
-export function eventIdForTimelineIdentity(
-  node: HTMLElement,
-  identity: TimelineEventIdentity
-): string | null {
-  return identity === "activity"
-    ? node.dataset["activityEventId"] ?? null
-    : node.dataset["contentEventId"] ?? null;
-}
-
 export function findTimelineEventNode(
   container: HTMLElement,
-  identity: TimelineEventIdentity,
+  identity: "content" | "activity",
   eventId: string
 ): HTMLElement | null {
   return container.querySelector<HTMLElement>(
-    `[${timelineEventIdentityAttribute(identity)}="${cssEscape(eventId)}"]`
+    timelineEventIdentitySelector(identity, eventId)
   );
-}
-
-function cssEscape(value: string): string {
-  return value.replace(/["\\]/g, "\\$&");
 }

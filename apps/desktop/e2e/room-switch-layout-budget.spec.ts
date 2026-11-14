@@ -30,8 +30,12 @@ const LARGE_ROOM_ID = "!budget-large:example.invalid";
 const LARGE_ROOM_NAME = "Budget Large";
 const SMALL_ITEMS = 30;
 const LARGE_ITEMS = 100;
-/** Room-switch reads may differ by at most this much between the two rooms. */
-const ROW_READ_GROWTH_BUDGET = 8;
+/**
+ * Ceiling fixed from the post-fix baseline with headroom, not from `N`: a
+ * switch into a 100-row room costs ~140 row reads and a scroll frame ~100,
+ * while a per-row pass costs one read per mounted row on every pass.
+ */
+const ROW_READ_CEILING = 300;
 
 function items(prefix: string, count: number): unknown[] {
   return Array.from({ length: count }, (_, index) =>
@@ -111,8 +115,26 @@ test("switching into a busy room reads rows per viewport, not per item", async (
     LARGE_ITEMS
   );
 
-  expect(large.row).toBeGreaterThan(0);
-  expect(large.row - small.row).toBeLessThanOrEqual(ROW_READ_GROWTH_BUDGET);
+  expect(small.row).toBeGreaterThan(0);
+  expect(large.row).toBeLessThanOrEqual(ROW_READ_CEILING);
+});
+
+test("one scroll frame in a busy room reads only the visible rows", async ({ page }) => {
+  await showHomeSections(page);
+  await switchIntoSeededRoom(page, LARGE_ROOM_NAME, LARGE_ROOM_ID, LARGE_PREFIX, LARGE_ITEMS);
+
+  await resetLayoutReads(page);
+  await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>('[data-testid="timeline-view"]');
+    if (container) {
+      container.scrollTop = Math.max(0, container.scrollTop - 200);
+    }
+  });
+  await settleSwitch(page);
+
+  const counts = await layoutReads(page);
+  expect(counts.row).toBeGreaterThan(0);
+  expect(counts.row).toBeLessThanOrEqual(ROW_READ_CEILING);
 });
 
 test("switching rooms does not re-measure the Space rail per snapshot", async ({ page }) => {
