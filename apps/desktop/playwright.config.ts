@@ -90,7 +90,10 @@ export default defineConfig({
         /workspace-rail-overflow\.spec\.ts$/,
         // The Space description's line clamp and per-line direction (#1661)
         // are engine layout features.
-        /space-description-preview\.spec\.ts$/
+        /space-description-preview\.spec\.ts$/,
+        // #1889/#1892 are engine layout costs: WebKit's own layout and resize
+        // deliveries decide how many reads and commits the same action costs.
+        /renderer-perf-budget\.spec\.ts$/
       ]
     }
   ],

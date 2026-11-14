@@ -397,6 +397,29 @@ The full-app harness (`apps/desktop/src/test/appHarnessMain.tsx`) must import
 `../styles.css`, matching production `main.tsx`. Otherwise visibility/layout
 assertions can pass against unstyled DOM and miss real production CSS issues.
 
+`e2e/renderer-perf-budget.spec.ts` is the renderer performance budget (#1895).
+It counts what the app does rather than how long the runner took: forced layout
+reads (bucketed by caller), React commits, `requestAnimationFrame`
+registrations, live `window`/`document` listeners and observers, mounted rows,
+and room-anchor writes per settled scroll. Frame times are deliberately absent —
+they measure the machine, and they were the flaky part. Every scenario brackets
+its action: `reset()`, the action, `settle()` (counters unchanged for ten frames,
+capped at 5 s; a window that will not settle is itself a failure), then `read()`.
+
+A breach prints one line: `renderer budget breach: <scenario> <counter>
+measured N, budget M, over by N-M; top callers: caller<-caller (count), …`. Start
+from that line: it names the code that measured, and a caller chain such as
+`captureRoomScrollAnchor<-TimelineView.tsx` says which pass paid. Every budget is
+a ceiling measured on the day it was written, with the value and date in a
+comment above it; raising one is a decision to state in the PR, naming the
+user-visible cost that grew. Three counters are zero targets, so a nonzero read
+there is a defect, not a cost: an idle app commits and registers nothing, a
+closed receipts popover reads no layout (#1892), and a spec-side measurement is
+never attributed to the app. Budgets are calibrated in
+`mcr.microsoft.com/playwright:v1.60.0-noble`, the image the CI lane uses, because
+fonts and engine builds decide how many rows fit one screen; set
+`KOUSHI_RENDERER_BUDGET_REPORT=1` to print the measured counts for a recalibration.
+
 The Space Members role contract is a Browser-headless gate, not a live-server
 scenario. Run the focused harness test with:
 
@@ -513,6 +536,10 @@ default action. These platform checks complement the typed-response unit tests.
 The former real-server startup-latency lane is retired. Local startup timing
 should use disposable homeservers and synthetic accounts; historical details
 remain in [the observability note](../qa/startup-latency-observability.md).
+The renderer performance budget's `startup` scenario covers the renderer half of
+the same question with counts: commits, layout reads and mounted rows on the way
+to a usable shell. It does not time anything, and it is not a Rust or sync
+measurement.
 
 ## Windows updater packaging validation
 
