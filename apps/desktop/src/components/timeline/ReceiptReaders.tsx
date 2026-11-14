@@ -372,6 +372,8 @@ export function ReceiptReaders({
   const placement = useFloatingPlacement({
     align: "end",
     anchorRef,
+    // Every row with receipts owns this hook; only an open popup measures.
+    enabled: open,
     blockSize: receiptPopupBlockSize(readerRows.length + (readerRemainingCount > 0 ? 1 : 0)),
     inlineSize: RECEIPT_POPUP_INLINE_SIZE_PX,
     placement: "above",

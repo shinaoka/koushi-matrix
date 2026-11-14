@@ -56,6 +56,23 @@ afterEach(() => {
 });
 
 describe("ReceiptReaders", () => {
+  it("does no layout work and adds no page scroll listener while its popup is closed (#1892)", () => {
+    const rects = vi.spyOn(Element.prototype, "getBoundingClientRect");
+    const listen = vi.spyOn(document, "addEventListener");
+    const receiptSource = source("@a:example.org", "3");
+
+    const { rerender } = renderReaders(receiptSource);
+    rerender(
+      <ReceiptReaders overflowCount={0} receipts={[]} source={receiptSource} totalCount={2} />
+    );
+    act(() => {
+      fireEvent.scroll(document);
+    });
+
+    expect(rects).not.toHaveBeenCalled();
+    expect(listen.mock.calls.filter(([type]) => type === "scroll")).toEqual([]);
+  });
+
   it("reports acknowledged visible rows and bounded nearby IDs without reopening on summary updates", async () => {
     const first = source("@a:example.org", "3");
     let offset = 0;
