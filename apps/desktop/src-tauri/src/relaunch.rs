@@ -284,7 +284,17 @@ fn spawn_helper(executable: &Path, plan: &RelaunchPlan) -> std::io::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn launch_bundle(plan: &RelaunchPlan) -> bool {
-    std::process::Command::new("/usr/bin/open")
+    launch_bundle_with(Path::new(LAUNCH_SERVICES_OPEN), plan)
+}
+
+/// LaunchServices' `open`, the one launcher production uses. It is a seam so the
+/// macOS-only helper path can be exercised against a stub that records its argv.
+#[cfg(target_os = "macos")]
+const LAUNCH_SERVICES_OPEN: &str = "/usr/bin/open";
+
+#[cfg(target_os = "macos")]
+fn launch_bundle_with(open: &Path, plan: &RelaunchPlan) -> bool {
+    std::process::Command::new(open)
         .args(plan.launch_arguments())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -306,18 +316,26 @@ pub(crate) fn run_helper_if_requested() -> Option<i32> {
 
 #[cfg(target_os = "macos")]
 fn run_helper(arguments: &[OsString]) -> i32 {
+    run_helper_with(arguments, RELAUNCH_WAIT, launch_bundle, log_failure_line)
+}
+
+/// Helper-mode body with its wait bounds, launcher and failure sink injected, so
+/// the macOS-only path runs against stubs. The liveness probe stays the real
+/// one: that is the behaviour the Dock fix depends on.
+#[cfg(target_os = "macos")]
+fn run_helper_with(
+    arguments: &[OsString],
+    wait: RelaunchWait,
+    launch: impl FnOnce(&RelaunchPlan) -> bool,
+    log: impl Fn(&str),
+) -> i32 {
     let Some(plan) = RelaunchPlan::from_helper_arguments(arguments) else {
-        record_handoff_failure("invalid_helper_arguments", log_failure_line);
+        record_handoff_failure("invalid_helper_arguments", log);
         return 2;
     };
-    let (code, reason) = helper_exit(relaunch_after_exit(
-        &plan,
-        RELAUNCH_WAIT,
-        process_is_alive,
-        launch_bundle,
-    ));
+    let (code, reason) = helper_exit(relaunch_after_exit(&plan, wait, process_is_alive, launch));
     if let Some(reason) = reason {
-        record_handoff_failure(reason, log_failure_line);
+        record_handoff_failure(reason, log);
     }
     code
 }

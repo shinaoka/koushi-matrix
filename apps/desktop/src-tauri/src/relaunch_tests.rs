@@ -441,3 +441,351 @@ async fn duplicate_restart_requests_hand_off_exactly_once() {
     request_application_restart_with(&stage, &restart, &exit);
     assert_eq!(*exit.0.lock().unwrap(), vec![std::process::id()]);
 }
+
+/// A `#!/bin/sh` stand-in for the macOS-only helper, launcher and helper-mode
+/// entry points (#1896). Nothing here reaches `/usr/bin/open`, `/usr/bin/logger`
+/// or LaunchServices: each stub records what it was handed and exits on its own,
+/// because a real helper is detached on purpose and must never linger.
+#[cfg(target_os = "macos")]
+fn write_stub(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    std::fs::write(&path, body).expect("write stub");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+    path
+}
+
+/// The stub's `$@`, one entry per NUL, as the strings it was really given.
+#[cfg(target_os = "macos")]
+fn recorded_arguments(path: &Path) -> Vec<String> {
+    let bytes = std::fs::read(path).expect("read recorded arguments");
+    bytes
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| String::from_utf8(entry.to_vec()).expect("utf-8 argument"))
+        .collect()
+}
+
+/// A launcher stub that records its argv once and exits with `status`.
+#[cfg(target_os = "macos")]
+fn recording_launcher(dir: &Path, status: u8) -> std::path::PathBuf {
+    let runs = dir.join("launched-runs");
+    let argv = dir.join("launched-argv");
+    write_stub(
+        dir,
+        "open-stub",
+        &format!(
+            "#!/bin/sh\nprintf '.' >> '{runs}'\nfor arg in \"$@\"; do printf '%s\\0' \"$arg\" >> '{argv}'; done\nexit {status}\n",
+            runs = runs.display(),
+            argv = argv.display()
+        ),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn launch_count(dir: &Path) -> usize {
+    std::fs::read(dir.join("launched-runs"))
+        .map(|runs| runs.len())
+        .unwrap_or(0)
+}
+
+#[cfg(target_os = "macos")]
+fn failure_sink() -> (Arc<Mutex<Vec<String>>>, impl Fn(&str)) {
+    let logged = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = {
+        let logged = Arc::clone(&logged);
+        move |line: &str| logged.lock().unwrap().push(line.to_owned())
+    };
+    (logged, sink)
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn the_helper_is_detached_in_its_own_group_with_null_stdio() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let observed = dir.path().join("observed");
+    let argv_log = dir.path().join("helper-argv");
+    let stub = write_stub(
+        dir.path(),
+        "helper-stub",
+        &format!(
+            // The three standard streams are duplicated first: a redirect or a
+            // command substitution of its own would otherwise be what `stat`
+            // sees on /dev/fd/N instead of the descriptor the spawn inherited.
+            "#!/bin/sh\nexec 3>&1 4>&0 5>&2\n: > '{argv_log}'\nfor arg in \"$@\"; do printf '%s\\0' \"$arg\" >> '{argv_log}'; done\n\
+             {{\n\
+             printf 'pid %s\\n' \"$$\"\n\
+             printf 'pgid %s\\n' \"$(ps -o pgid= -p $$ | tr -d ' ')\"\n\
+             printf 'null %s\\n' \"$(stat -L -f '%d:%i' /dev/null)\"\n\
+             printf 'fd 0 %s\\n' \"$(stat -L -f '%d:%i' /dev/fd/4)\"\n\
+             printf 'fd 1 %s\\n' \"$(stat -L -f '%d:%i' /dev/fd/3)\"\n\
+             printf 'fd 2 %s\\n' \"$(stat -L -f '%d:%i' /dev/fd/5)\"\n\
+             printf 'done\\n'\n\
+             }} >> '{observed}'\n",
+            observed = observed.display(),
+            argv_log = argv_log.display()
+        ),
+    );
+    let plan = RelaunchPlan {
+        old_pid: std::process::id(),
+        bundle: Path::new("/Applications/Koushi 2; $(id).app").to_path_buf(),
+        args: vec![OsString::from("--relaunched"), OsString::from("a b")],
+    };
+
+    spawn_helper(&stub, &plan).expect("spawn the helper stub");
+    assert!(
+        wait_until(Duration::from_secs(10), || std::fs::read_to_string(
+            &observed
+        )
+        .is_ok_and(|text| text.ends_with("done\n"))),
+        "the helper stub never finished recording"
+    );
+
+    // The helper's argv is the cross-version protocol, entry by entry.
+    assert_eq!(
+        recorded_arguments(&argv_log),
+        plan.helper_arguments()
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    );
+
+    let text = std::fs::read_to_string(&observed).expect("read observations");
+    let field = |name: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(&format!("{name} ")))
+            .unwrap_or_else(|| panic!("{name} in {text}"))
+            .to_owned()
+    };
+    let helper_pid: u32 = field("pid").parse().expect("helper pid");
+    assert_eq!(
+        field("pgid"),
+        helper_pid.to_string(),
+        "the helper leads its own process group"
+    );
+    // SAFETY: `getpgrp` takes no arguments and has no side effects.
+    let own_group = unsafe { libc::getpgrp() };
+    assert_ne!(
+        field("pgid").parse::<i32>().expect("pgid"),
+        own_group,
+        "the helper must not stay in the test's process group"
+    );
+    let null = field("null");
+    // fd 1 and fd 2 prove the null stdio on any harness, because the harness's
+    // own streams are a pipe or a file. fd 0 proves it only when this process's
+    // stdin is not itself /dev/null, as a terminal-less runner may arrange.
+    for fd in ["0", "1", "2"] {
+        assert_eq!(
+            text.lines()
+                .find_map(|line| line.strip_prefix(&format!("fd {fd} ")))
+                .unwrap_or_else(|| panic!("fd {fd} in {text}")),
+            null,
+            "fd {fd} must be /dev/null, not the harness's stream"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn launch_services_receives_bundle_and_arguments_as_separate_entries() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let launcher = recording_launcher(dir.path(), 0);
+    let argv_log = dir.path().join("launched-argv");
+    let plan = RelaunchPlan {
+        old_pid: std::process::id(),
+        bundle: Path::new("/Applications/Koushi 2; $(id).app").to_path_buf(),
+        args: vec![
+            OsString::from("--relaunched"),
+            OsString::from("a b"),
+            OsString::from("--flag=1 2"),
+        ],
+    };
+
+    assert!(
+        launch_bundle_with(&launcher, &plan),
+        "a zero exit from LaunchServices is a successful launch"
+    );
+    assert_eq!(
+        recorded_arguments(&argv_log),
+        vec![
+            "-n".to_owned(),
+            "/Applications/Koushi 2; $(id).app".to_owned(),
+            "--args".to_owned(),
+            "--relaunched".to_owned(),
+            "a b".to_owned(),
+            "--flag=1 2".to_owned(),
+        ]
+    );
+
+    let failing = tempfile::tempdir().expect("tempdir");
+    let failing_launcher = recording_launcher(failing.path(), 1);
+    assert!(
+        !launch_bundle_with(&failing_launcher, &plan),
+        "a non-zero exit from LaunchServices is a failed launch"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn helper_mode_launches_once_after_the_real_old_process_exits() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let launcher = recording_launcher(dir.path(), 0);
+    let mut child = ChildGuard(
+        std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap(),
+    );
+    let plan = RelaunchPlan {
+        old_pid: child.0.id(),
+        bundle: Path::new("/Applications/Koushi 2; $(id).app").to_path_buf(),
+        args: vec![OsString::from("--relaunched")],
+    };
+    let arguments = plan.helper_arguments();
+    let (logged, sink) = failure_sink();
+    let helper_dir = dir.path().to_path_buf();
+    let helper = std::thread::spawn(move || {
+        run_helper_with(
+            &arguments,
+            RelaunchWait {
+                timeout: Duration::from_secs(20),
+                poll: Duration::from_millis(2),
+            },
+            |plan| launch_bundle_with(&launcher, plan),
+            sink,
+        )
+    });
+
+    // The old process is alive: no replacement may start yet. An early launch
+    // would also make the final count two, which the last assertion catches.
+    assert!(
+        !wait_until(Duration::from_millis(200), || launch_count(&helper_dir) > 0),
+        "helper mode launched while the old process was alive"
+    );
+
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    assert_eq!(helper.join().expect("helper thread"), 0);
+    assert_eq!(
+        launch_count(&helper_dir),
+        1,
+        "exactly one replacement launch"
+    );
+    assert_eq!(*logged.lock().unwrap(), Vec::<String>::new());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn helper_mode_reports_coarse_exit_codes() {
+    let mut lines: Vec<String> = Vec::new();
+    let bundle = "/Applications/Koushi 2; $(id).app";
+
+    // Invalid helper argv: exit before any wait or launch.
+    let (logged, sink) = failure_sink();
+    let exit = run_helper_with(
+        &[
+            OsString::from(RELAUNCH_HELPER_FLAG),
+            OsString::from("not-a-pid"),
+            OsString::from(bundle),
+        ],
+        RELAUNCH_WAIT,
+        |_| panic!("invalid arguments must not launch"),
+        sink,
+    );
+    assert_eq!(exit, 2, "invalid helper arguments exit without launching");
+    let invalid = logged.lock().unwrap().clone();
+    assert_eq!(
+        invalid,
+        vec!["relaunch_failed invalid_helper_arguments".to_owned()]
+    );
+    lines.extend(invalid);
+
+    // A dead old process and a launcher that fails: one ordinary exit code,
+    // its own coarse reason.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let failing_launcher = recording_launcher(dir.path(), 1);
+    let dead = ChildGuard(
+        std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap(),
+    );
+    let dead_pid = dead.0.id();
+    drop(dead);
+    let (logged, sink) = failure_sink();
+    let exit = run_helper_with(
+        &RelaunchPlan {
+            old_pid: dead_pid,
+            bundle: Path::new(bundle).to_path_buf(),
+            args: Vec::new(),
+        }
+        .helper_arguments(),
+        RELAUNCH_WAIT,
+        |plan| launch_bundle_with(&failing_launcher, plan),
+        sink,
+    );
+    assert_eq!(exit, 1, "a failed launch exits ordinarily");
+    let failed = logged.lock().unwrap().clone();
+    assert_eq!(failed, vec!["relaunch_failed launch_failed".to_owned()]);
+    lines.extend(failed);
+    assert_eq!(launch_count(dir.path()), 1, "the launcher ran once");
+
+    // A live old process and an expired deadline: no launch at all.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let launcher = recording_launcher(dir.path(), 0);
+    let mut child = ChildGuard(
+        std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap(),
+    );
+    let arguments = RelaunchPlan {
+        old_pid: child.0.id(),
+        bundle: Path::new(bundle).to_path_buf(),
+        args: Vec::new(),
+    }
+    .helper_arguments();
+    let (logged, sink) = failure_sink();
+    let exit = run_helper_with(
+        &arguments,
+        RelaunchWait {
+            timeout: Duration::from_millis(50),
+            poll: Duration::from_millis(2),
+        },
+        |plan| launch_bundle_with(&launcher, plan),
+        sink,
+    );
+    assert_eq!(exit, 1, "an expired wait exits ordinarily");
+    let timed_out = logged.lock().unwrap().clone();
+    assert_eq!(timed_out, vec!["relaunch_failed wait_timeout".to_owned()]);
+    lines.extend(timed_out);
+    assert_eq!(
+        launch_count(dir.path()),
+        0,
+        "a timed-out wait never launches concurrently"
+    );
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+
+    for line in lines {
+        assert!(
+            !line.contains("/Applications") && !line.contains("Koushi"),
+            "the durable line carries a reason token, never a path or argv: {line}"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn an_unbundled_test_binary_never_spawns_a_helper() {
+    // The test binary lives under `target-*/ci/deps`, not in an app bundle, so
+    // the real macOS entry point stops before spawning anything.
+    let handoff = hand_off_relaunch();
+    assert_eq!(handoff, RelaunchHandoff::Unbundled);
+    assert!(uses_tauri_relaunch(handoff));
+    assert_eq!(
+        run_helper_if_requested(),
+        None,
+        "the harness argv does not start with the helper flag"
+    );
+}
