@@ -1772,20 +1772,31 @@ it installs only newer builds.
 Process lifecycle had no headless coverage before #1864: the restart-barrier
 tests pinned the updater/Core ordering only, so a concurrent replacement launch
 could not fail any test. Replacement-launch ordering is now gated by the
-desktop crate's own test suite in the macOS lane (`cargo test` in
-`apps/desktop/src-tauri`) with an injected launcher, an injected liveness probe,
-and an injected poll interval: the launcher is never called while the old
-process is alive, runs exactly once after it exits (against a real child
+`macOS relaunch handoff tests` step of the `macos-cargo-check` job (#1896),
+which runs `relaunch::` and `restart_barrier_tests::` in the desktop crate's own
+lib suite; before #1896 that job selected only `process_memory` and `mcp::`. The
+step also fails when a rename makes its filters select nothing, because libtest
+is green on an empty selection.
+
+The platform-neutral tests drive an injected launcher, an injected liveness
+probe, and an injected poll interval: the launcher is never called while the
+old process is alive, runs exactly once after it exits (against a real child
 process standing in for the old instance), does not run when the deadline
 expires, receives path and arguments as single argv entries including spaces
 and shell metacharacters (that test also pins the cross-version helper argv
 shape), writes one durable reason-token line for a helper-side failure, and a
 failed spawn or launch produces the coarse diagnostic instead of a concurrent
 relaunch; only an unbundled handoff keeps Tauri's own relaunch, so a failed one
-can never fall back to the overlapping launch. `restart_barrier_tests` still pin
-that a failed or timed-out Core shutdown suppresses the relaunch. Native
-bundled-app Dock confirmation remains a manual check and is not part of that
-gate.
+can never fall back to the overlapping launch. The macOS-only tests spawn the
+real helper and run the real helper-mode exit handling against stub executables
+in a temp directory: the helper lands in its own process group, and its standard
+output and error are `/dev/null` rather than this process's streams. The argv
+`open` would receive, and the exit code and reason token helper mode returns,
+are checked through injected `open` and log seams, so no test runs the real
+`/usr/bin/open`, `/usr/bin/logger` or LaunchServices.
+`restart_barrier_tests` still pin that a failed or timed-out Core shutdown
+suppresses the relaunch. Native bundled-app Dock confirmation remains a manual
+check and is not part of that gate.
 
 ### Desktop Viewport Synchronization
 

@@ -418,6 +418,16 @@ jobs:
         run: cargo test --profile ci -p koushi-mcp --locked
       - name: macOS MCP registration tests
         run: cargo test --profile ci -p koushi-desktop 'mcp::' --lib --locked
+      # #1864/#1896: run the relaunch handoff and restart-barrier tests on the
+      # platform whose Dock behavior they gate, including the macOS-only helper
+      # path (detached spawn, LaunchServices argv, helper-mode exit codes).
+      # libtest exits green when a filter matches nothing, so the grep fails the
+      # step if a module rename ever makes this run vacuous.
+      - name: macOS relaunch handoff tests
+        shell: bash
+        run: |
+          cargo test --profile ci -p koushi-desktop --lib --locked -- relaunch:: restart_barrier_tests:: 2>&1 | tee "$RUNNER_TEMP/relaunch-tests.log"
+          grep -Eq '^test result: ok\. ([1-9][0-9]+) passed' "$RUNNER_TEMP/relaunch-tests.log"
 
   core-invites:
     # Prove invitation projection through the sole Simplified Sliding Sync

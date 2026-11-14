@@ -66,3 +66,43 @@ test("ordinary Rust CI runs exactly one feature-unified workspace test command",
   assert.doesNotMatch(commands[0], /--(?:test|lib|no-run)\b/);
   assert.match(rustJob, /node --test[^\n]*scripts\/rust-test-suites\.test\.mjs/);
 });
+
+test("the macOS lane runs the relaunch and restart-barrier tests", () => {
+  // #1896: the Dock fix's own macOS-only behaviour was gated by tests no lane
+  // ran. The step, its vacuous-run guard and the module paths its filters name
+  // are one contract: libtest exits green when a filter selects nothing.
+  const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
+  const macosJob = workflow.match(/\n  macos-cargo-check:\n([\s\S]*?)(?=\n  [a-z0-9_-]+:\n)/)?.[1];
+  assert.ok(macosJob, "macOS CI job exists");
+  assert.match(
+    macosJob,
+    /name: macOS relaunch handoff tests[\s\S]*cargo test --profile ci -p koushi-desktop --lib --locked -- relaunch:: restart_barrier_tests::/
+  );
+  assert.match(macosJob, /grep -Eq '\^test result: ok\\\. \(\[1-9\]\[0-9\]\+\) passed'/);
+  const lib = readFileSync(join(root, "apps/desktop/src-tauri/src/lib.rs"), "utf8");
+  const relaunch = readFileSync(join(root, "apps/desktop/src-tauri/src/relaunch.rs"), "utf8");
+  assert.match(lib, /#\[cfg\(any\(target_os = "macos", test\)\)\]\nmod relaunch;/);
+  assert.match(relaunch, /#\[path = "relaunch_tests\.rs"\]\nmod relaunch_tests;/);
+  assert.match(lib, /#\[path = "app_updates\/restart_barrier_tests\.rs"\]\nmod restart_barrier_tests;/);
+});
+
+test("production still receives the relaunch seams the tests exercise", () => {
+  // The macOS-only tests call the injected seams, because running the real
+  // `/usr/bin/open` or `/usr/bin/logger` is not a test. That leaves the
+  // production one-liners unexecuted anywhere, so pin them here: whichever
+  // constant or function the wrapper hands over is what production runs.
+  const relaunch = readFileSync(join(root, "apps/desktop/src-tauri/src/relaunch.rs"), "utf8");
+  assert.match(relaunch, /const LAUNCH_SERVICES_OPEN: &str = "\/usr\/bin\/open";/);
+  assert.match(
+    relaunch,
+    /fn launch_bundle\(plan: &RelaunchPlan\) -> bool \{\n\s+launch_bundle_with\(Path::new\(LAUNCH_SERVICES_OPEN\), plan\)\n\}/
+  );
+  assert.match(
+    relaunch,
+    /fn run_helper\(arguments: &\[OsString\]\) -> i32 \{\n\s+run_helper_with\(arguments, RELAUNCH_WAIT, launch_bundle, log_failure_line\)\n\}/
+  );
+  assert.match(
+    relaunch,
+    /Command::new\("\/usr\/bin\/logger"\)\s*\.arg\("-t"\)\s*\.arg\("koushi"\)/
+  );
+});
