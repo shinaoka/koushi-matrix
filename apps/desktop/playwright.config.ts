@@ -67,6 +67,8 @@ export default defineConfig({
         /upload-preview-heic\.spec\.ts$/,
         // #1574: short-image overlay clipping was reported in macOS WebKit.
         /media-attachments\.spec\.ts$/,
+        // #1889: the layout-read budget is a browser layout fact.
+        /room-switch-layout-budget\.spec\.ts$/,
         /inline-math-baseline\.spec\.ts$/,
         /activity-shell-scroll\.spec\.ts$/,
         /timeline-scroll-anchor-drift\.spec\.ts$/,

@@ -6,6 +6,7 @@ import {
   capturePrependAnchor,
   wholePixelScrollTop
 } from "./TimelineViewportAnchors";
+import { linearVisibleNodeSpan, visibleNodeSpan } from "./TimelineViewportRows";
 
 function viewport(tops: number[]) {
   const container = document.createElement("div");
@@ -57,5 +58,54 @@ describe("pure prepend anchor (#1604)", () => {
       itemId: "row-0",
       offsetTop: -30
     });
+  });
+});
+
+describe("visible range search (#1889)", () => {
+  const box = { top: 10, bottom: 210 };
+  const rows = (tops: number[]) => {
+    const container = document.createElement("div");
+    for (const [index, top] of tops.entries()) {
+      const row = document.createElement("div");
+      row.dataset.itemId = `row-${index}`;
+      row.getBoundingClientRect = () => ({ top, bottom: top + 72, height: 72 } as DOMRect);
+      container.appendChild(row);
+    }
+    return Array.from(container.children) as HTMLElement[];
+  };
+
+  it("finds the visible run without reading every row", () => {
+    const nodes = rows(Array.from({ length: 200 }, (_, index) => index * 72 - 7000));
+    let reads = 0;
+    for (const node of nodes) {
+      const rect = node.getBoundingClientRect.bind(node);
+      node.getBoundingClientRect = () => {
+        reads += 1;
+        return rect();
+      };
+    }
+    const span = visibleNodeSpan(box, nodes);
+    expect(span).not.toBeNull();
+    expect(span!.end - span!.start).toBeLessThan(5);
+    expect(nodes.slice(span!.start, span!.end + 1).every((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.bottom > box.top && rect.top < box.bottom;
+    })).toBe(true);
+    expect(reads).toBeLessThan(nodes.length);
+  });
+
+  it("matches the linear scan when a moved row breaks DOM order", () => {
+    // The latest-reply projection can leave a row at its old position while a
+    // later row moves above it, so bottoms do not increase down the list.
+    const tops = Array.from({ length: 60 }, (_, index) => index * 72 - 2000);
+    tops[30] = -4000;
+    const nodes = rows(tops);
+    expect(visibleNodeSpan(box, nodes)).toEqual(linearVisibleNodeSpan(box, nodes));
+    expect(visibleNodeSpan(box, nodes)).toEqual({ start: 27, end: 29 });
+  });
+
+  it("reports nothing when every row is outside the viewport", () => {
+    expect(visibleNodeSpan(box, rows([-200, 900]))).toBeNull();
+    expect(visibleNodeSpan(box, [])).toBeNull();
   });
 });
