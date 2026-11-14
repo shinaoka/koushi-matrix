@@ -14,7 +14,9 @@ account and each permission.
 | Tool | What it does | Permission |
 | --- | --- | --- |
 | `list_accounts` | Lists the signed-in accounts and whether each is ready. | none |
-| `list_rooms` | Lists rooms and direct messages with names, encryption state, unread counts, and the latest event's sender and time. | read |
+| `list_rooms` | Lists rooms and direct messages with names, encryption state, unread counts, the Spaces each room belongs to, and the latest event's sender and time. | read |
+| `list_spaces` | Lists the Spaces this account is in, with their ids, names, and which Space holds which, so a room name that repeats can be resolved to the right Space. | read |
+| `list_space_rooms` | Lists what one Space contains: its rooms and sub-Spaces, with whether each is joined and whether the Space marks it suggested. | read |
 | `read_room_messages` | Reads a room's recent messages, newest first, with sender, time, and text. | read |
 | `search_messages` | Searches decrypted history and returns room, event id, sender, timestamp, and a snippet. | read |
 | `get_attachment` | Downloads one attachment into Koushi's media cache and returns its path. | attachments |
@@ -42,6 +44,27 @@ event's sender, time, and preview. Pass `unread_only: true` to get only rooms
 with something waiting. `read_room_messages` then reads a room whether or not it
 is open, and `search_messages` returns a timestamp for every hit, so an assistant
 can date a conversation instead of guessing.
+
+Room names repeat: two Spaces can both hold a room displayed as `all`. Every
+room `list_rooms` returns carries `parent_space_ids`, the Spaces it belongs to,
+and `list_rooms` takes `space_id` to narrow the list to one of them. To pick a
+Space's room by name instead, call `list_spaces` to get the Space's `space_id`,
+then `list_space_rooms` for what that Space contains; `name` there is the same
+label the room list shows, and `is_space` tells a sub-Space from a room. Pass
+`max_depth` up to 3 to look inside sub-Spaces. Neither call opens anything or
+moves the account, Space or room you are looking at.
+
+The two routes read the relation from its two sides, so they can disagree for a
+few seconds after a room is added to a Space: `list_space_rooms` shows it under
+the Space, while `list_rooms` with that `space_id` only matches once the room's
+own side has synced too. Each reply carries at most 500 entries and a
+`truncated` flag when there were more.
+
+`suggested` in `list_space_rooms` is the Space's own suggested flag, and is
+`null` for a Space whose child list Koushi has not loaded, which means unknown
+rather than not suggested. `is_space` is true only when Koushi knows the child
+is a Space. `alias` in `list_spaces` is always `null` in this version: Koushi
+keeps no canonical alias for a Space and never turns an alias into a name.
 
 ## Before you start
 

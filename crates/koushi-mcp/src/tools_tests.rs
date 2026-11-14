@@ -6,7 +6,7 @@ use super::*;
 #[test]
 fn definitions_are_unique_and_valid() {
     let tools = definitions();
-    assert_eq!(tools.len(), 16);
+    assert_eq!(tools.len(), 18);
     let mut names: Vec<&str> = tools.iter().map(|tool| tool.name).collect();
     names.sort_unstable();
     names.dedup();
@@ -21,6 +21,8 @@ fn definitions_are_unique_and_valid() {
 fn account_scoped_tools_require_account_id() {
     for name in [
         "list_rooms",
+        "list_spaces",
+        "list_space_rooms",
         "search_messages",
         "wait_for_events",
         "read_room_messages",
@@ -37,6 +39,53 @@ fn account_scoped_tools_require_account_id() {
         let required = tool.input_schema["required"].as_array().expect("required");
         assert!(required.iter().any(|value| value == "account_id"), "{name}");
     }
+}
+
+#[test]
+fn space_tools_are_read_only_and_name_their_inputs() {
+    let spaces = find("list_spaces").expect("list_spaces");
+    assert!(spaces.read_only, "listing Spaces changes nothing");
+    assert_eq!(spaces.input_schema["required"], json!(["account_id"]));
+    assert_eq!(spaces.input_schema["additionalProperties"], false);
+    assert!(
+        spaces.description.contains("alias is always null"),
+        "{}: an absent alias must be documented, not guessed",
+        spaces.description
+    );
+
+    let space_rooms = find("list_space_rooms").expect("list_space_rooms");
+    assert!(
+        space_rooms.read_only,
+        "listing a Space's children changes nothing"
+    );
+    assert_eq!(
+        space_rooms.input_schema["required"],
+        json!(["account_id", "space_id"])
+    );
+    assert_eq!(space_rooms.input_schema["additionalProperties"], false);
+    assert_eq!(
+        space_rooms.input_schema["properties"]["max_depth"]["maximum"],
+        3
+    );
+    assert!(
+        space_rooms.description.contains("not a Space"),
+        "{}: an unknown space_id must be an error, not an empty list",
+        space_rooms.description
+    );
+}
+
+#[test]
+fn list_rooms_names_the_spaces_a_room_belongs_to() {
+    let rooms = find("list_rooms").expect("list_rooms");
+    assert!(
+        rooms.input_schema["properties"].get("space_id").is_some(),
+        "list_rooms narrows to one Space"
+    );
+    assert!(
+        rooms.description.contains("parent_space_ids"),
+        "{}: the assistant must learn a room's Spaces from the call",
+        rooms.description
+    );
 }
 
 #[test]

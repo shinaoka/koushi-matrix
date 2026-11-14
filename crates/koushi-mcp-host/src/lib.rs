@@ -17,6 +17,7 @@ mod handlers;
 mod recent_activity;
 pub mod registration;
 mod server;
+mod spaces;
 
 pub use grants::{Need, StoreStatus};
 pub use server::{BridgeHandle, start};

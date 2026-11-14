@@ -21,6 +21,7 @@ use koushi_state::{ComposerDocument, SessionInfo, SessionState};
 
 use super::events;
 use super::grants::Need;
+use super::spaces;
 
 /// One `tools/call` request.
 pub(crate) async fn dispatch_tool_call(
@@ -42,6 +43,8 @@ pub(crate) async fn dispatch_tool_call(
     let result = match name {
         "list_accounts" => list_accounts(shared, client),
         "list_rooms" => list_rooms(shared, client, &arguments).await,
+        "list_spaces" => list_spaces(shared, client, &arguments).await,
+        "list_space_rooms" => list_space_rooms(shared, client, &arguments).await,
         "search_messages" => search_messages(shared, client, &arguments).await,
         "send_message" => send_message(shared, client, &arguments).await,
         "wait_for_events" => wait_for_events(shared, client, &arguments).await,
@@ -208,6 +211,11 @@ async fn list_rooms(
         .get("unread_only")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let in_space = arguments
+        .get("space_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|space_id| !space_id.is_empty());
 
     let snapshot = connection.snapshot();
     // The rooms of this very snapshot: a sign-out or lock while the approval
@@ -217,12 +225,17 @@ async fn list_rooms(
         .rooms
         .iter()
         .filter(|room| {
-            !unread_only
+            (!unread_only
                 || room.unread_count > 0
                 || room.notification_count > 0
                 || room.highlight_count > 0
                 || room.thread_unread_count > 0
-                || room.marked_unread
+                || room.marked_unread)
+                && in_space.is_none_or(|space_id| {
+                    room.parent_space_ids
+                        .iter()
+                        .any(|parent| parent == space_id)
+                })
         })
         .map(|room| {
             json!({
@@ -236,6 +249,7 @@ async fn list_rooms(
                 "thread_unread_messages": room.thread_unread_count,
                 "thread_unread_mentions": room.thread_highlight_count,
                 "marked_unread": room.marked_unread,
+                "parent_space_ids": room.parent_space_ids,
                 "recency_stamp": room.recency_stamp,
                 "last_event": room.latest_event.as_ref().map(|event| json!({
                     "event_id": event.event_id,
@@ -254,6 +268,72 @@ async fn list_rooms(
         "rooms": page,
         "next_cursor": (next < total).then(|| next.to_string()),
     }))
+}
+
+async fn list_spaces(
+    shared: &Shared,
+    client: &ClientIdentity,
+    arguments: &Value,
+) -> Result<Value, WireError> {
+    let account_id = required_account_id(arguments)?;
+    let connection = authorize(
+        shared,
+        client,
+        &account_id,
+        Need::Read,
+        ConsentContext::default(),
+    )
+    .await?;
+    let snapshot = connection.snapshot();
+    ready_account_key(&snapshot.session)?;
+    Ok(spaces::list_spaces(&snapshot.spaces))
+}
+
+async fn list_space_rooms(
+    shared: &Shared,
+    client: &ClientIdentity,
+    arguments: &Value,
+) -> Result<Value, WireError> {
+    let account_id = required_account_id(arguments)?;
+    let connection = authorize(
+        shared,
+        client,
+        &account_id,
+        Need::Read,
+        ConsentContext::default(),
+    )
+    .await?;
+    let space_id = arguments
+        .get("space_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|space_id| !space_id.is_empty())
+        .ok_or_else(|| {
+            WireError::new(
+                ErrorCode::Unsupported,
+                "space_id must be a non-empty Space id",
+            )
+        })?
+        .to_owned();
+    let max_depth = arguments
+        .get("max_depth")
+        .and_then(Value::as_u64)
+        .unwrap_or(1) as usize;
+    let snapshot = connection.snapshot();
+    ready_account_key(&snapshot.session)?;
+    spaces::space_rooms(
+        &snapshot.spaces,
+        &snapshot.rooms,
+        &snapshot.space_children,
+        &space_id,
+        max_depth,
+    )
+    .ok_or_else(|| {
+        WireError::new(
+            ErrorCode::RoomNotFound,
+            format!("{space_id} is not a Space this account can see"),
+        )
+    })
 }
 
 fn direct_search_failure(failure: koushi_core::search::DirectSearchFailure) -> WireError {

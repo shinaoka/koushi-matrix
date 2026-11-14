@@ -6,3 +6,4 @@ mod consent_broker;
 mod draft_message;
 mod message_actions;
 mod send_attachments;
+mod spaces;

@@ -194,11 +194,19 @@ fn shell_word(text: &str, windows: bool) -> String {
 }
 
 /// The tools the bridge offers, as the MCPB manifest lists them.
-const TOOLS: [(&str, &str); 16] = [
+const TOOLS: [(&str, &str); 18] = [
     ("list_accounts", "List the signed-in Koushi accounts"),
     (
         "list_rooms",
         "List rooms and direct messages with unread counts",
+    ),
+    (
+        "list_spaces",
+        "List the Spaces, so repeated room names resolve",
+    ),
+    (
+        "list_space_rooms",
+        "List what one Space contains, one level by default",
     ),
     ("read_room_messages", "Read a room's recent messages"),
     (

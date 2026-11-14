@@ -98,3 +98,42 @@ pub fn room(room_id: &str) -> koushi_state::RoomSummary {
         joined_members: 2,
     }
 }
+
+/// A joined room summary with a human name and the Spaces it belongs to.
+pub fn named_room(
+    room_id: &str,
+    display_label: &str,
+    parent_space_ids: &[&str],
+) -> koushi_state::RoomSummary {
+    koushi_state::RoomSummary {
+        display_name: display_label.to_owned(),
+        display_label: display_label.to_owned(),
+        original_display_label: display_label.to_owned(),
+        parent_space_ids: parent_space_ids
+            .iter()
+            .map(|space_id| (*space_id).to_owned())
+            .collect(),
+        ..room(room_id)
+    }
+}
+
+/// A joined Space whose displayed children are `child_room_ids` (#1883).
+pub fn space(
+    space_id: &str,
+    display_name: &str,
+    child_room_ids: &[&str],
+) -> koushi_state::SpaceSummary {
+    koushi_state::SpaceSummary {
+        space_id: space_id.to_owned(),
+        raw_name: Some(display_name.to_owned()),
+        display_name: display_name.to_owned(),
+        avatar: None,
+        join_rule: None,
+        topic: None,
+        child_room_ids: child_room_ids
+            .iter()
+            .map(|child| (*child).to_owned())
+            .collect(),
+        parent_side_child_room_ids: Vec::new(),
+    }
+}

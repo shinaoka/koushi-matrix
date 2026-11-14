@@ -206,16 +206,47 @@ pub fn definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "list_rooms",
-            description: "List rooms and direct messages the account can see, with encryption state, display name, unread counts, and the latest event's sender and timestamp. unread_only restricts the list to rooms with something unread. Requires account_id.",
+            description: "List rooms and direct messages the account can see, with encryption state, display name, unread counts, and the latest event's sender and timestamp. Each room carries parent_space_ids, the Spaces that hold it, and space_id narrows the list to the rooms whose parent_space_ids contain that Space, so two rooms displayed with the same name can be told apart. unread_only restricts the list to rooms with something unread. Requires account_id.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "account_id": account_id_property(),
                     "limit": limit_property(200),
                     "cursor": { "type": "string", "description": "Opaque cursor from the previous page." },
-                    "unread_only": { "type": "boolean", "description": "Return only rooms with unread messages, notifications, mentions, or a manual unread mark. Defaults to false." }
+                    "unread_only": { "type": "boolean", "description": "Return only rooms with unread messages, notifications, mentions, or a manual unread mark. Defaults to false." },
+                    "space_id": { "type": "string", "description": "Return only rooms whose parent_space_ids contain this Space id." }
                 },
                 "required": ["account_id"],
+                "additionalProperties": false
+            }),
+            read_only: true,
+            output_schema: None,
+        },
+        ToolDefinition {
+            name: "list_spaces",
+            description: "List the Spaces this account is in, so a room name can be resolved to the right Space: room names repeat across Spaces, and list_rooms alone cannot tell two rooms called the same apart. Each Space carries space_id, name, raw_name, alias, child_count, is_subspace, parent_space_ids and joined. alias is always null in this version: Koushi keeps no canonical Space alias and never promotes an alias into the name. parent_space_ids lists the Spaces that hold this Space as a child. At most 500 Spaces are listed and truncated says whether any were left out. Follow with list_space_rooms for one Space's contents, or list_rooms with space_id. Changes nothing the app shows. Requires account_id.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id_property()
+                },
+                "required": ["account_id"],
+                "additionalProperties": false
+            }),
+            read_only: true,
+            output_schema: None,
+        },
+        ToolDefinition {
+            name: "list_space_rooms",
+            description: "List what one Space contains, in room-id order rather than the sidebar's order: each child carries room_id, name, is_space, joined, suggested, parent_space_ids and depth. name is the room's display label, the sub-Space's name, or the name the Space's own loaded child list reports; it is null for a child this account has not joined and nothing names, and is never guessed. is_space is true only when the child is known to be a Space, so false means not known to be one rather than known to be a room. suggested is the Space's suggested flag for that child when Koushi has loaded that Space's child list, and null when it has not, which is unknown rather than false. max_depth expands child Spaces that many levels deep (default 1, and a value outside 1 to 3 is clamped to the nearest end); each entry's depth says which level it came from, a child listed by two parents appears once at the shallowest depth, and at most 500 entries are listed with truncated saying whether some were left out. A room can appear here under a Space that list_rooms with that space_id does not match until both sides of the child relation have synced. An id that is not a Space this account can see fails with room_not_found instead of returning an empty list. Changes nothing the app shows. Requires account_id and space_id.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id_property(),
+                    "space_id": { "type": "string", "description": "Space id from list_spaces." },
+                    "max_depth": { "type": "integer", "minimum": 1, "maximum": 3, "description": "How many levels of child Spaces to expand. Defaults to 1." }
+                },
+                "required": ["account_id", "space_id"],
                 "additionalProperties": false
             }),
             read_only: true,

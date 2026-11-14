@@ -469,6 +469,8 @@ async function main() {
     const expectedTools = [
       "list_accounts",
       "list_rooms",
+      "list_spaces",
+      "list_space_rooms",
       "read_room_messages",
       "read_recent_activity",
       "search_messages",
