@@ -5863,6 +5863,13 @@ stateDiagram-v2
   unread/highlight flags, and low-priority exclusions from `AppState`; React
   must not infer Activity rows from timeline DOM, browser-local state, or IPC
   mock convenience data.
+- While Activity is open, `AppActor` derives both streams from a per-room
+  profile table whose entries carry revisions (#1915). After each action it
+  refreshes only rooms whose inputs changed, rebuilds the streams only when a
+  profile, the cached rows, the session user, or a shown avatar changed, and
+  emits `Open --> Open: ActivityRowsUpdated` only when the rebuilt rows differ
+  from `AppState.activity`. An action that touches no Activity input emits
+  nothing.
 - Activity Unread presents one room-level summary for every non-muted,
   non-low-priority room with a positive SDK-local
   `unread_count + thread_unread_count`. It never labels a particular event,
