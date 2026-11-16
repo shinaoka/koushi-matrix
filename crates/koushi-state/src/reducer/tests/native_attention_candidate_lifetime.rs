@@ -102,7 +102,8 @@ fn state_with_published_candidate() -> AppState {
             .notification
             .as_ref()
             .map(|payload| payload.body.as_str()),
-        Some("Synthetic body"),
+        // #1907: a room banner names the sender in front of the verified preview.
+        Some("Bob: Synthetic body"),
         "precondition: the payload carries the verified preview"
     );
     assert_eq!(

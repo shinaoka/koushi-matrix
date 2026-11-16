@@ -2361,6 +2361,7 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
         notification: Some(koushi_state::NativeNotificationPayload {
             title: "Mention in Fixture Room".to_owned(),
             body: "Alice: private fixture body".to_owned(),
+            sender_avatar: Some("avatar/0123456789abcdef".to_owned()),
             target: koushi_state::NativeNotificationTarget {
                 room_id: "!room:example.invalid".to_owned(),
                 event_id: Some("$fixture:example.invalid".to_owned()),
