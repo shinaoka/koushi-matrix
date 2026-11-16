@@ -253,13 +253,17 @@ it("holds the anchor when a prepend lands after the terminal has closed the epoc
     }
   });
 
+  // The anchor half covers the prepend join, which runs for any backfill
+  // prepend, epoch or not; the epoch-specific half is the request count below.
   await waitFor(() => {
     const restored = timeline.querySelector<HTMLElement>(`[data-item-id="${anchorId}"]`);
     expect(restored).not.toBeNull();
     expect(restored!.getBoundingClientRect().top).toBe(anchorTop);
   });
   // The closed epoch lets the deferred re-evaluation ask once more; the late
-  // prepend must neither suppress that nor turn it into a retry loop.
+  // prepend must neither suppress that (a stall) nor repeat it on its own
+  // (a loop, which would need another terminal to fire and this test sends
+  // none).
   await waitFor(() => expect(paginateBackwards).toHaveBeenCalledTimes(2));
   await new Promise((resolve) => setTimeout(resolve, 300));
   expect(paginateBackwards).toHaveBeenCalledTimes(2);
