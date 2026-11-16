@@ -136,6 +136,8 @@ describe("scheduled message editing", () => {
         ]}
         onCancel={() => undefined}
         onReschedule={onReschedule}
+        mathModeEnabled={false}
+        onMathModeChange={() => undefined}
       />
     );
 
