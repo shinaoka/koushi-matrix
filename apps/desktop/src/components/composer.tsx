@@ -125,7 +125,7 @@ export const Composer = memo(function Composer({
   onCancelReply,
   replyQuote = null,
   replyQuoteThumbnail,
-  onAttachFiles = async () => undefined,
+  onAttachFiles,
   onDocumentChange,
   onMathModeChange = () => undefined,
   onRecentEmojisChange = () => undefined,
@@ -288,6 +288,10 @@ export const Composer = memo(function Composer({
       ? `${autocompleteListboxId}-option-${Math.min(activeMentionIndex, activeMentionSuggestions.length - 1)}`
       : undefined;
   const sendEnabled = canEdit && !isSending && localValue.trim().length > 0;
+  // #1904: editor-only surfaces cannot carry attachments, so none of them may
+  // draw the drop target or swallow a drop/paste it cannot act on. A composer
+  // without an attach handler is attachment-free in the same way.
+  const canAttach = canEdit && !editorOnly && onAttachFiles !== undefined;
   const preferSendFirst = preferSendOnForwardTab && surface === "main" && !editorOnly;
   const effectiveOnTabToSend =
     onTabToSend ??
@@ -508,7 +512,7 @@ export const Composer = memo(function Composer({
     event.currentTarget.value = "";
     // #1748: the picker trigger is disabled in a read-only composer, but the
     // handler closes the write path itself rather than relying on that.
-    if (!canEdit) {
+    if (!canAttach) {
       return;
     }
     try {
@@ -519,7 +523,7 @@ export const Composer = memo(function Composer({
   }
 
   async function attachDroppedOrPastedFiles(files: File[]) {
-    if (!canEdit) {
+    if (!canAttach) {
       return;
     }
     try {
@@ -540,7 +544,7 @@ export const Composer = memo(function Composer({
   }
 
   function onAttachmentDragEnter(event: DragEvent<HTMLElement>) {
-    if (!canEdit || !attachmentTransferHasFiles(event.dataTransfer)) {
+    if (!canAttach || !attachmentTransferHasFiles(event.dataTransfer)) {
       return;
     }
     event.preventDefault();
@@ -548,7 +552,7 @@ export const Composer = memo(function Composer({
   }
 
   function onAttachmentDragOver(event: DragEvent<HTMLElement>) {
-    if (!canEdit || !attachmentTransferHasFiles(event.dataTransfer)) {
+    if (!canAttach || !attachmentTransferHasFiles(event.dataTransfer)) {
       return;
     }
     event.preventDefault();
@@ -567,6 +571,9 @@ export const Composer = memo(function Composer({
   function onAttachmentDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     setFileDragActive(false);
+    if (!canAttach) {
+      return;
+    }
     void attachDroppedOrPastedFiles(filesFromAttachmentTransfer(event.dataTransfer));
   }
 
@@ -575,7 +582,7 @@ export const Composer = memo(function Composer({
     const rect = event.kind === "leave" ? null : sectionRef.current?.getBoundingClientRect();
     const inside =
       event.kind !== "leave" &&
-      canEdit &&
+      canAttach &&
       !!rect &&
       event.x >= rect.left &&
       event.x <= rect.right &&
@@ -1154,10 +1161,19 @@ export const Composer = memo(function Composer({
         onKeyDown={onComposerKeyDown}
         onPaste={(event) => {
           const files = filesFromAttachmentTransfer(event.clipboardData);
+          if (!canAttach) {
+            // #1904: swallow an image paste an editor cannot stage, but leave a
+            // text paste to the editor. Reading the native clipboard here would
+            // hand the files to a surface that has nowhere to put them.
+            if (files.length > 0 || attachmentPasteNeedsNativeImageRead(event.clipboardData)) {
+              event.preventDefault();
+            }
+            return;
+          }
           if (files.length > 0) {
             event.preventDefault();
             void attachDroppedOrPastedFiles(files);
-          } else if (canEdit && attachmentPasteNeedsNativeImageRead(event.clipboardData)) {
+          } else if (attachmentPasteNeedsNativeImageRead(event.clipboardData)) {
             event.preventDefault();
             void attachNativeClipboardImage();
           }

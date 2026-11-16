@@ -138,14 +138,17 @@ and on a not-yet-sent local message.
 ## Send files and images
 
 1. Choose **Attach file**, or drop a file onto the composer.
-2. Review the staged attachment. If an image compression choice appears, choose
-   the desired image quality.
+2. Review the staged attachment. Drop more files onto the staging dialog to add
+   them. If an image compression choice appears, choose the desired image quality.
 3. Add or edit a caption if needed, then send. When no attachment is staged yet,
    adding one file starts its caption with whatever the composer already held, so
    text and file can go out as one message. If that caption is still the composer's
    text when you send the only attachment, the composer is cleared with it;
    otherwise your text stays. Remove an unwanted staged file with **Remove
    attachment** before sending.
+
+Editing a message or a scheduled send takes text only; a file dropped on that
+editor is ignored rather than silently attached.
 
 An attachment appearing in the composer is not yet an uploaded message. Server
 upload limits and network failures can prevent a send. Open an attachment from

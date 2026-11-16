@@ -428,6 +428,143 @@ describe("Composer", () => {
     expect(onAttachFiles).not.toHaveBeenCalled();
   });
 
+  it("does not invite a file drop into an editor-only composer (#1904)", () => {
+    // An inline message edit, a scheduled-send edit and an upload caption are
+    // all editor-only: none of them can carry an attachment, so none of them
+    // may advertise the composer's drop target. Passing a handler must not
+    // turn the affordance back on either.
+    const onAttachFiles = vi.fn(async (_files: File[]) => undefined);
+    const { container } = render(
+      <Composer
+        editorOnly
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        roomName="Direct room"
+        document={documentFromText("edited body")}
+        onAttachFiles={onAttachFiles}
+        onCancelReply={() => undefined}
+        onSend={textSend(() => undefined)}
+        onDocumentChange={textChange(() => undefined)}
+      />
+    );
+    const section = container.querySelector<HTMLElement>(".composer")!;
+    const file = new File(["png"], "dropped.png", { type: "image/png" });
+    const dataTransfer = {
+      files: [file],
+      items: [{ kind: "file", type: file.type }],
+      types: ["Files"]
+    };
+
+    fireEvent.dragEnter(section, { dataTransfer });
+    fireEvent.dragOver(section, { dataTransfer });
+
+    expect(section.dataset.fileDragOver).toBe("false");
+    expect(
+      container.querySelector(".composer-drop-overlay")?.getAttribute("aria-hidden")
+    ).toBe("true");
+
+    fireEvent.drop(section, { dataTransfer });
+
+    expect(onAttachFiles).not.toHaveBeenCalled();
+  });
+
+  it("leaves a native drop over an editor-only composer unclaimed (#1904)", async () => {
+    const onAttachFiles = vi.fn(async (_files: File[]) => undefined);
+    const { container } = render(
+      <Composer
+        editorOnly
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        roomName="Direct room"
+        document={documentFromText("edited body")}
+        onAttachFiles={onAttachFiles}
+        onCancelReply={() => undefined}
+        onSend={textSend(() => undefined)}
+        onDocumentChange={textChange(() => undefined)}
+      />
+    );
+    const section = placeComposer(container);
+
+    emitNativeFileDrop({ kind: "over", x: 300, y: 550 });
+    emitNativeFileDrop({ kind: "drop", x: 300, y: 550 });
+
+    await act(async () => undefined);
+    expect(section.dataset.fileDragOver).toBe("false");
+    expect(claimNativeDroppedFiles).not.toHaveBeenCalled();
+    expect(onAttachFiles).not.toHaveBeenCalled();
+  });
+
+  it("swallows an image paste in an editor-only composer without staging it (#1904)", async () => {
+    const onAttachFiles = vi.fn(async (_files: File[]) => undefined);
+    const { container } = render(
+      <Composer
+        editorOnly
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        roomName="Direct room"
+        document={documentFromText("edited body")}
+        onAttachFiles={onAttachFiles}
+        onCancelReply={() => undefined}
+        onSend={textSend(() => undefined)}
+        onDocumentChange={textChange(() => undefined)}
+      />
+    );
+    const editor = container.querySelector(".composer-inline-editor")!;
+    const image = new File(["png"], "pasted.png", { type: "image/png" });
+
+    fireEvent.paste(editor, {
+      clipboardData: {
+        files: [image],
+        items: [{ kind: "file", type: image.type }],
+        types: ["Files"],
+        getData: () => ""
+      }
+    });
+    // A WebKit clipboard that offers neither files nor text is an image only
+    // the native read can see; an editor that cannot attach must not read it.
+    fireEvent.paste(editor, {
+      clipboardData: {
+        files: [],
+        items: [],
+        types: [],
+        getData: () => ""
+      }
+    });
+
+    await act(async () => undefined);
+    expect(onAttachFiles).not.toHaveBeenCalled();
+    expect(readClipboardImageFile).not.toHaveBeenCalled();
+  });
+
+  it("never advertises a file drop it has no handler for (#1904)", () => {
+    // The old default was a no-op handler, which drew the overlay and then
+    // discarded the files. A composer without an attach handler has to look
+    // like one that cannot take files.
+    const { container } = render(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        roomName="Direct room"
+        document={documentFromText("")}
+        onCancelReply={() => undefined}
+        onSend={textSend(() => undefined)}
+        onDocumentChange={textChange(() => undefined)}
+      />
+    );
+    const section = container.querySelector<HTMLElement>(".composer")!;
+    const file = new File(["pdf"], "document.pdf", { type: "application/pdf" });
+
+    fireEvent.dragEnter(section, {
+      dataTransfer: {
+        files: [file],
+        items: [{ kind: "file", type: file.type }],
+        types: ["Files"]
+      }
+    });
+
+    expect(section.dataset.fileDragOver).toBe("false");
+  });
+
   it("ignores non-file drops on the composer surface", () => {
     const onAttachFiles = vi.fn();
     const { container } = render(

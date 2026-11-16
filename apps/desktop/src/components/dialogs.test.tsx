@@ -1,12 +1,17 @@
 // @vitest-environment jsdom
 
 import { renderToStaticMarkup } from "react-dom/server";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ComposerDocument, CreateRoomAccessPreview, StagedUploadItem } from "../domain/types";
 import type { MentionCandidate } from "../domain/projectionTypes";
 import { documentFromText } from "../domain/composerDocument";
+import {
+  claimNativeDroppedFiles,
+  subscribeNativeFileDrops,
+  type NativeFileDropEvent
+} from "../backend/nativeFileDropRuntime";
 import { t } from "../i18n/messages";
 import {
   inlineMentionEditorSelection,
@@ -27,9 +32,27 @@ import type {
   SpaceLeaveCandidate
 } from "../domain/types";
 
+const nativeFileDropHandlers = new Set<(event: NativeFileDropEvent) => void>();
+vi.mock("../backend/nativeFileDropRuntime", () => ({
+  claimNativeDroppedFiles: vi.fn(async () => []),
+  subscribeNativeFileDrops: vi.fn((handler: (event: NativeFileDropEvent) => void) => {
+    nativeFileDropHandlers.add(handler);
+    return () => nativeFileDropHandlers.delete(handler);
+  })
+}));
+
+function emitNativeFileDrop(event: NativeFileDropEvent) {
+  act(() => {
+    for (const handler of Array.from(nativeFileDropHandlers)) handler(event);
+  });
+}
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  nativeFileDropHandlers.clear();
+  vi.mocked(claimNativeDroppedFiles).mockClear();
+  vi.mocked(subscribeNativeFileDrops).mockClear();
 });
 
 function stagedImage(
@@ -77,7 +100,11 @@ function changeEditorText(editor: Element, text: string) {
   );
 }
 
-function dialog(items: StagedUploadItem[], onUpdateCaption = vi.fn()) {
+function dialog(
+  items: StagedUploadItem[],
+  onUpdateCaption = vi.fn(),
+  onAttachFiles?: (files: File[]) => void | Promise<void>
+) {
   return (
     <UploadStagingDialog
       items={items}
@@ -90,8 +117,18 @@ function dialog(items: StagedUploadItem[], onUpdateCaption = vi.fn()) {
       loadPreview={vi.fn(async () => [])}
       resolveComposerKeyAction={vi.fn(async () => "noop" as const)}
       surface="main"
+      onAttachFiles={onAttachFiles}
     />
   );
+}
+
+/** #1904: the staging dialog owns the drop target for its captions. */
+function attachmentTransfer(file: File) {
+  return {
+    files: [file],
+    items: [{ kind: "file", type: file.type }],
+    types: ["Files"]
+  };
 }
 
 describe("ResetLocalDataConfirmationDialog", () => {
@@ -573,6 +610,99 @@ describe("UploadStagingDialog", () => {
       expect(modifiedTab.defaultPrevented).toBe(false);
     }
     expect(send.disabled).toBe(true);
+  });
+  it("does not invite a second file into a caption field (#1904)", () => {
+    const second = new File(["png"], "second.png", { type: "image/png" });
+    render(dialog([stagedImage("", { kind: "preparing" })], vi.fn(), vi.fn()));
+    const caption = screen
+      .getByRole("textbox", { name: "Caption for synthetic.png" })
+      .closest("section.composer") as HTMLElement;
+
+    fireEvent.dragEnter(caption, { dataTransfer: attachmentTransfer(second) });
+    fireEvent.dragOver(caption, { dataTransfer: attachmentTransfer(second) });
+
+    expect(caption.dataset.fileDragOver).toBe("false");
+    expect(
+      caption.querySelector(".composer-drop-overlay")?.getAttribute("aria-hidden")
+    ).toBe("true");
+  });
+
+  it("keeps a file dropped on a caption field in the staging dialog (#1904)", async () => {
+    const onAttachFiles = vi.fn(async (_files: File[]) => undefined);
+    const second = new File(["pdf"], "second.pdf", { type: "application/pdf" });
+    render(dialog([stagedImage("", { kind: "preparing" })], vi.fn(), onAttachFiles));
+    const caption = screen.getByRole("textbox", { name: "Caption for synthetic.png" });
+
+    fireEvent.drop(caption, { dataTransfer: attachmentTransfer(second) });
+
+    await waitFor(() => expect(onAttachFiles).toHaveBeenCalledWith([second]));
+  });
+
+  it("stages a file dropped anywhere on the dialog body, not only on a caption (#1904)", async () => {
+    const onAttachFiles = vi.fn(async (_files: File[]) => undefined);
+    const second = new File(["zip"], "second.zip", { type: "application/zip" });
+    render(dialog([stagedImage("", { kind: "preparing" })], vi.fn(), onAttachFiles));
+    const header = screen
+      .getByRole("dialog", { name: t("upload.dialogTitle") })
+      .querySelector(".upload-staging-header") as HTMLElement;
+
+    fireEvent.drop(header, { dataTransfer: attachmentTransfer(second) });
+
+    await waitFor(() => expect(onAttachFiles).toHaveBeenCalledWith([second]));
+  });
+
+  it("stages a native (Linux) drop that lands on the open dialog (#1904)", async () => {
+    const onAttachFiles = vi.fn(async (_files: File[]) => undefined);
+    const second = new File(["pdf"], "second.pdf", { type: "application/pdf" });
+    vi.mocked(claimNativeDroppedFiles).mockResolvedValueOnce([second]);
+    render(dialog([stagedImage("", { kind: "preparing" })], vi.fn(), onAttachFiles));
+    const dialogSection = document.querySelector<HTMLElement>(".upload-staging-dialog")!;
+    dialogSection.getBoundingClientRect = () => new DOMRect(200, 200, 600, 400);
+
+    emitNativeFileDrop({ kind: "over", x: 300, y: 300 });
+    emitNativeFileDrop({ kind: "drop", x: 300, y: 300 });
+
+    await waitFor(() => expect(onAttachFiles).toHaveBeenCalledWith([second]));
+  });
+
+  it("drops a native claim that resolves after the dialog closed (#1904)", async () => {
+    const onAttachFiles = vi.fn(async (_files: File[]) => undefined);
+    const second = new File(["pdf"], "second.pdf", { type: "application/pdf" });
+    let resolveClaim!: (files: File[]) => void;
+    vi.mocked(claimNativeDroppedFiles).mockReturnValueOnce(
+      new Promise<File[]>((resolve) => {
+        resolveClaim = resolve;
+      })
+    );
+    const { unmount } = render(
+      dialog([stagedImage("", { kind: "preparing" })], vi.fn(), onAttachFiles)
+    );
+    const dialogSection = document.querySelector<HTMLElement>(".upload-staging-dialog")!;
+    dialogSection.getBoundingClientRect = () => new DOMRect(200, 200, 600, 400);
+
+    emitNativeFileDrop({ kind: "drop", x: 300, y: 300 });
+    expect(claimNativeDroppedFiles).toHaveBeenCalledTimes(1);
+    // Closing the dialog (or switching rooms, which unmounts it with the room's
+    // staging list) must not let the pending claim stage into what replaced it.
+    unmount();
+    await act(async () => {
+      resolveClaim([second]);
+    });
+
+    expect(onAttachFiles).not.toHaveBeenCalled();
+  });
+
+  it("leaves a native drop outside the dialog unclaimed (#1904)", async () => {
+    const onAttachFiles = vi.fn(async (_files: File[]) => undefined);
+    render(dialog([stagedImage("", { kind: "preparing" })], vi.fn(), onAttachFiles));
+    const dialogSection = document.querySelector<HTMLElement>(".upload-staging-dialog")!;
+    dialogSection.getBoundingClientRect = () => new DOMRect(200, 200, 600, 400);
+
+    emitNativeFileDrop({ kind: "drop", x: 20, y: 20 });
+
+    await act(async () => undefined);
+    expect(claimNativeDroppedFiles).not.toHaveBeenCalled();
+    expect(onAttachFiles).not.toHaveBeenCalled();
   });
 });
 

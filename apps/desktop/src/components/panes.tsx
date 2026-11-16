@@ -1415,6 +1415,7 @@ export function TimelinePane({
       {stagedUploads.length > 0 ? (
         <UploadStagingDialog
           items={stagedUploads}
+          onAttachFiles={onAttachFilesStable}
           onClear={onClearUploadStagingStable}
           onUpdateCaption={onUpdateStagedUploadCaptionStable}
           onSelectOutput={onSelectStagedUploadOutputStable}
