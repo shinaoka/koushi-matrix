@@ -8,6 +8,7 @@ import test from "node:test";
 
 import {
   homeserverFixtureCapabilities,
+  minimalEnvironment,
   selectedServers,
   synapseDockerfile,
   synapseEntrypoint,
@@ -46,6 +47,30 @@ function mockReadiness(t, probe) {
     syncBuiltinESMExports();
   });
 }
+
+test("minimalEnvironment forwards the kache miss-diagnostics switch unchanged", (t) => {
+  const saved = process.env.KACHE_EXPLAIN_MISS;
+  t.after(() => {
+    if (saved === undefined) {
+      delete process.env.KACHE_EXPLAIN_MISS;
+    } else {
+      process.env.KACHE_EXPLAIN_MISS = saved;
+    }
+  });
+
+  process.env.KACHE_EXPLAIN_MISS = "";
+  assert.equal(
+    minimalEnvironment().KACHE_EXPLAIN_MISS,
+    "",
+    "the value must pass through as-is, so even an empty one survives a copy that only tests presence"
+  );
+  delete process.env.KACHE_EXPLAIN_MISS;
+  assert.equal(
+    "KACHE_EXPLAIN_MISS" in minimalEnvironment(),
+    false,
+    "an unset variable must not become an empty one"
+  );
+});
 
 test("Synapse readiness waits for its native membership-table migrations", async (t) => {
   const runPython = spawnSync;

@@ -420,6 +420,18 @@ never attributed to the app. Budgets are calibrated in
 fonts and engine builds decide how many rows fit one screen; set
 `KOUSHI_RENDERER_BUDGET_REPORT=1` to print the measured counts for a recalibration.
 
+`e2e/room-switch-layout-budget.spec.ts` is the layout-read budget (#1889): a
+room switch must read rows by viewport, not by item count. It is normalised by
+observation pass, on the same principle as the renderer budget — count what the
+app does, not how long the runner took: row reads divided by the reads of the
+`timeline-view` container, which every observation pass measures (19.2 on the
+100-row room against a ceiling of 32, measured 2026-11-16 on WebKit), plus a
+loose absolute guard (600) for a pass count that ran away. Do not replace it
+with a fixed total: how many passes a switch runs varies with the runner, so a
+total that is stable locally crosses on a slower machine while the per-pass cost
+is unchanged. The scroll-frame test in the same spec keeps an absolute ceiling,
+because one frame runs too few passes for the ratio to mean anything.
+
 The Space Members role contract is a Browser-headless gate, not a live-server
 scenario. Run the focused harness test with:
 

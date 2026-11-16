@@ -22,6 +22,15 @@ export interface LayoutReadCounts {
   rail: number;
   /** Receipt chrome; closed popovers must not measure (#1892). */
   receipt: number;
+  /**
+   * Reads of the `timeline-view` container itself. Every observation pass reads
+   * this box (via `timelineViewportBox`), so the count tracks the passes a
+   * switch ran, which is what a per-pass cost has to be divided by. It is not
+   * exactly the pass count: the anchor paths read the container too, each once,
+   * so an added container read on the pass path loosens the ratio by its factor.
+   * The spec mounts exactly one such container, so nothing is double counted.
+   */
+  box: number;
   total: number;
 }
 
@@ -35,13 +44,14 @@ declare global {
 /** Installs the counter before any application script runs. */
 export async function installLayoutReadProbe(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    const counts = { row: 0, frame: 0, rail: 0, receipt: 0, total: 0 };
+    const counts = { row: 0, frame: 0, rail: 0, receipt: 0, box: 0, total: 0 };
     window.__layoutReads = counts;
     window.__resetLayoutReads = () => {
       counts.row = 0;
       counts.frame = 0;
       counts.rail = 0;
       counts.receipt = 0;
+      counts.box = 0;
       counts.total = 0;
     };
     const original = Element.prototype.getBoundingClientRect;
@@ -53,6 +63,9 @@ export async function installLayoutReadProbe(page: Page): Promise<void> {
         this.matches("[data-item-id], [data-activity-event-id], [data-content-event-id]")
       ) {
         counts.row += 1;
+      }
+      if (this.matches('[data-testid="timeline-view"]')) {
+        counts.box += 1;
       }
       if (this.closest("[data-space-id]") !== null) {
         counts.rail += 1;

@@ -34,6 +34,11 @@ only through the task table below.
   miss records dependency-level digests for `kache why-miss`, for example
   `KACHE_EXPLAIN_MISS=1 cargo build`. Keep it scoped to the invocation; see
   [environment](docs/agents/environment.md#kache-miss-diagnostics).
+- Never use `env!("CARGO_MANIFEST_DIR")` in test code. It records the absolute
+  checkout path in dep-info, so kache rebuilds the crate in every checkout.
+  For compile-time fixtures, use `include_bytes!`/`include_str!` with a path
+  relative to the source file. For run-time paths, read
+  `std::env::var_os("CARGO_MANIFEST_DIR")`; `cargo test` sets it.
 
 ## Read by task
 

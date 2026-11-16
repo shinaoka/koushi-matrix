@@ -573,20 +573,21 @@ fn the_frontend_bound_fixture_matches_the_rust_projection() {
         "cases": cases,
     });
 
-    let artifact_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../apps/desktop/src/test/sidebarSectionBounds.generated.json"
-    );
+    // Runtime lookup: `env!` would key the test build on the checkout path.
+    let artifact_path = std::path::Path::new(
+        &std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo test sets CARGO_MANIFEST_DIR"),
+    )
+    .join("../../apps/desktop/src/test/sidebarSectionBounds.generated.json");
     if std::env::var("UPDATE_SIDEBAR_SECTION_BOUNDS_GOLDEN").as_deref() == Ok("1") {
         std::fs::write(
-            artifact_path,
+            &artifact_path,
             serde_json::to_string_pretty(&actual).expect("format sidebar section bounds") + "\n",
         )
         .expect("write sidebar section bounds fixture");
         return;
     }
     let checked_in: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(artifact_path).expect("read sidebar section bounds fixture"),
+        &std::fs::read_to_string(&artifact_path).expect("read sidebar section bounds fixture"),
     )
     .expect("checked-in sidebar section bounds fixture must be valid JSON");
     assert_eq!(actual, checked_in);

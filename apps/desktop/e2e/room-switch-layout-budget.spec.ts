@@ -15,11 +15,13 @@ import {
  * #1889 gate: a room switch must cost reads bounded by the viewport and the
  * rail size, not by the number of timeline rows.
  *
- * The assertion is a fixed ceiling on reads per switch with roughly 2x headroom
- * over the measured baseline, not a comparison between two item counts: the
- * number of observation passes a switch makes is not perfectly repeatable, so a
- * difference-based budget measured frames rather than scaling. Nothing here
- * asserts milliseconds.
+ * The budget is reads *per observation pass*: every pass reads the
+ * `timeline-view` box, so that count divides the row reads into a per-pass cost,
+ * which is the property that scales with the viewport instead of the item count.
+ * A fixed total was flaky for the opposite reason: how many passes a switch runs
+ * is not repeatable across runners (a slower one runs more within the same
+ * two-frame window), so an unchanged per-pass cost could still cross a fixed
+ * total. Nothing here asserts milliseconds.
  * `.timeline-item-frame` reads belong to the virtual height model (#1890), so
  * they are counted separately and never asserted.
  */
@@ -31,11 +33,32 @@ const LARGE_ROOM_NAME = "Budget Large";
 const SMALL_ITEMS = 30;
 const LARGE_ITEMS = 100;
 /**
- * Ceiling fixed from the post-fix baseline with headroom, not from `N`: a
- * switch into a 100-row room costs ~140 row reads and a scroll frame ~100,
- * while a per-row pass costs one read per mounted row on every pass.
+ * Row reads one container measurement may cost. Measured 2026-11-16 on WebKit at
+ * 1280x800 (macOS): 19.2 on the 100-row room, 22.8 on the 30-row room, against
+ * ~100 per pass before #1898's viewport window. A pass reads the rows it is
+ * about to paint, so the value is set from the viewport, not from `N`; the
+ * headroom is for the small-room exact-scan path and for a pass that also
+ * re-measures what it scrolls into view. Numbers and their derivation:
+ * docs/worklogs/2026-11-16-issue1889-layout-budget-normalised.md.
  */
-const ROW_READ_CEILING = 300;
+const ROW_READS_PER_PASS = 32;
+/**
+ * Insurance on the same assertion, not a second claim: the ratio above accepts
+ * a switch whose per-pass cost is fine but whose pass count ran away, and a run
+ * that is 100 passes deep is a defect whatever each pass costs. Deliberately
+ * loose, so it fails only on a runaway rather than on the runner's speed.
+ */
+const ROW_READ_GUARD = 600;
+/**
+ * The scroll-frame test keeps an absolute ceiling, because there the divisor is
+ * not to be trusted: one frame runs ~2 container measurements (measured
+ * 2026-11-16, WebKit 1280x800: 74 row reads over 2 box reads, i.e. 37 per
+ * measurement, above the switch's 19.2) since the frame also re-measures the
+ * rows it scrolls into view. What that test asserts is that a frame reads the
+ * visible rows rather than all 100 mounted ones, which an absolute ceiling
+ * states directly.
+ */
+const SCROLL_FRAME_ROW_CEILING = 300;
 
 function items(prefix: string, count: number): unknown[] {
   return Array.from({ length: count }, (_, index) =>
@@ -116,7 +139,27 @@ test("switching into a busy room reads rows per viewport, not per item", async (
   );
 
   expect(small.row).toBeGreaterThan(0);
-  expect(large.row).toBeLessThanOrEqual(ROW_READ_CEILING);
+  expect(large.row).toBeGreaterThan(0);
+
+  // Normalised, and multiplied rather than divided: `row / box` is a float, so
+  // `expect(19.200000000000003).toBeLessThanOrEqual(32)` would pass or fail on
+  // rounding rather than on the reads. The message names the room and both
+  // counts, because the bare numbers alone cannot say whether the pass cost grew
+  // or the pass count did.
+  expect(small.box, "small room measured no container reads").toBeGreaterThan(0);
+  expect(large.box, "large room measured no container reads").toBeGreaterThan(0);
+  expect(
+    small.row,
+    `small room: ${small.row} row reads over ${small.box} measurements`
+  ).toBeLessThanOrEqual(small.box * ROW_READS_PER_PASS);
+  expect(
+    large.row,
+    `large room: ${large.row} row reads over ${large.box} measurements`
+  ).toBeLessThanOrEqual(large.box * ROW_READS_PER_PASS);
+  expect(
+    large.row,
+    `large room: ${large.row} row reads, ${large.box} measurements`
+  ).toBeLessThanOrEqual(ROW_READ_GUARD);
 });
 
 test("one scroll frame in a busy room reads only the visible rows", async ({ page }) => {
@@ -134,7 +177,10 @@ test("one scroll frame in a busy room reads only the visible rows", async ({ pag
 
   const counts = await layoutReads(page);
   expect(counts.row).toBeGreaterThan(0);
-  expect(counts.row).toBeLessThanOrEqual(ROW_READ_CEILING);
+  // Absolute, for the reason at SCROLL_FRAME_ROW_CEILING: with ~2 passes in the
+  // window the ratio is 37 rather than the switch's 19.2, so normalising here
+  // would assert a different fact, not a stricter one.
+  expect(counts.row).toBeLessThanOrEqual(SCROLL_FRAME_ROW_CEILING);
 });
 
 test("switching rooms does not re-measure the Space rail per snapshot", async ({ page }) => {

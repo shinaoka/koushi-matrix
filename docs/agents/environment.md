@@ -285,7 +285,9 @@ The setting is scoped to that invocation. Do not change global Cargo or kache
 configuration, build profiles, or cache contents to diagnose a miss. Routine
 builds do not need the variable; enable it when the source, compiler, and
 argument digests are unchanged but a miss still occurs, or when a `why-miss`
-report asks for dependency recording.
+report asks for dependency recording. The local headless QA runner forwards it
+to the Cargo build it starts, so `KACHE_EXPLAIN_MISS=1 node
+scripts/desktop-headless-local-qa.mjs --run ...` records the digests too.
 
 ## Reusing a debug build
 

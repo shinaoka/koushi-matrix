@@ -184,6 +184,51 @@ describe("scheduled messages right panel", () => {
     expect(screen.getByText(t("scheduled.localFallbackNotice"))).toBeTruthy();
   });
 
+  it("shows the app math-formatting setting in the panel editor's switch", () => {
+    const snapshot = openSnapshot([scheduledItem({})]);
+    // App-scoped, not account-scoped: the panel editor reads the same value as
+    // the main composer.
+    snapshot.state.domain.settings.values.composer.math_mode = false;
+    render(<ContextualRightPanel {...panelProps({ snapshot })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: t("scheduled.edit") }));
+
+    // #1903: the panel mounts the list, so it has to hand over the setting;
+    // without it the editor falls back to its "on" default.
+    const mathSwitch = screen.getByRole("switch", { name: t("composer.mathModeOff") });
+    expect(mathSwitch.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("toggles the app-scoped setting from the panel editor and follows it back", () => {
+    const onUpdateSettings = vi.fn();
+    const snapshot = openSnapshot([scheduledItem({})]);
+    snapshot.state.domain.settings.values.composer.math_mode = false;
+    const { rerender } = render(
+      <ContextualRightPanel {...panelProps({ snapshot, onUpdateSettings })} />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: t("scheduled.edit") }));
+    fireEvent.click(screen.getByRole("switch", { name: /math formatting/i }));
+
+    // The same app-scoped patch the main composer sends (#1244): one setting,
+    // not a second copy inside the panel.
+    expect(onUpdateSettings).toHaveBeenCalledTimes(1);
+    expect(onUpdateSettings).toHaveBeenCalledWith({
+      scope: "app",
+      composer: { ...snapshot.state.domain.settings.values.composer, math_mode: true }
+    });
+
+    // Re-rendering from the patched value moves the panel's switch (the
+    // mounted-App test in e2e/scheduled-messages-panel.spec.ts covers the main
+    // composer's switch moving with it).
+    const patched = openSnapshot([scheduledItem({})]);
+    patched.state.domain.settings.values.composer.math_mode = true;
+    rerender(<ContextualRightPanel {...panelProps({ snapshot: patched, onUpdateSettings })} />);
+    expect(
+      screen.getByRole("switch", { name: t("composer.mathModeOn") }).getAttribute("aria-checked")
+    ).toBe("true");
+  });
+
   it("forwards cancel and reschedule to the account-bound handlers", () => {
     const onCancelScheduledSend = vi.fn();
     const onRescheduleScheduledSend = vi.fn();

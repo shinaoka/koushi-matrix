@@ -10,10 +10,7 @@ use crate::native_image_decoder::{
     DecodeLimits, DecodedRgbaImage, NativeImageDecodeError, NativeStillImageDecoder,
 };
 
-const FIXTURE: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../koushi-media/tests/fixtures/heif/opaque.heic"
-));
+const FIXTURE: &[u8] = include_bytes!("../../../koushi-media/tests/fixtures/heif/opaque.heic");
 
 /// Fake platform decoder. Its output dimensions deliberately differ from the
 /// 64x64 fixture so every assertion proves which decoder produced the pixels.
