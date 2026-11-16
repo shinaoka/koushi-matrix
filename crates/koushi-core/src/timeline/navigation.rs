@@ -987,8 +987,13 @@ fn backward_pagination_changed_oldest_edge(
     oldest_after.is_some() && oldest_before != oldest_after
 }
 
+/// The oldest event in the SDK items Koushi projects from. #1916: this must be
+/// the unskipped `subscribe_filter_map` view the relay reads (`relay.rs`), not
+/// `subscribe()`: that view hides the oldest loaded items behind the SDK's lazy
+/// skip count, and a backward page that only lowers the skip would look like a
+/// prepend that the projection never receives.
 async fn oldest_observable_event_id(timeline: &Timeline) -> Option<String> {
-    let (items, _updates) = timeline.subscribe().await;
+    let (items, _updates) = timeline.subscribe_filter_map(Some).await;
     items.iter().find_map(|item| {
         item.as_event()
             .and_then(|event| event.event_id())

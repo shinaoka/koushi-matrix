@@ -3163,5 +3163,9 @@ mod tests;
 mod issue_1692_tests;
 
 #[cfg(test)]
+#[path = "actor/issue_1916_tests.rs"]
+mod issue_1916_tests;
+
+#[cfg(test)]
 #[path = "actor/issue_1783_tests.rs"]
 mod issue_1783_tests;
