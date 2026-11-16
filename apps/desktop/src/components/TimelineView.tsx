@@ -122,7 +122,8 @@ type Dispatch,
 type FormEvent,
 type KeyboardEvent,
 type PointerEvent as ReactPointerEvent,
-type SetStateAction
+type SetStateAction,
+type WheelEvent as ReactWheelEvent
 } from "react";
 import { flushSync } from "react-dom";
 
@@ -3911,6 +3912,27 @@ export const TimelineView = memo(function TimelineView({
     scheduleViewportFrame,
     updateScrollDiagnostics
   ]);
+  // #1916: at the top, input that asks for older history scrolls nothing, so
+  // no `scroll` event follows to carry it to the backfill policy. Evaluate it
+  // here as the genuine user scroll it is; otherwise a request fenced on "a new
+  // user scroll" (a failed or empty page) can never retry while the reader
+  // keeps asking for more.
+  const requestOlderHistoryFromInputAtTop = useCallback(() => {
+    const container = containerRef.current;
+    if (!container || container.scrollTop > 0) return;
+    if (backfillRetryFenceRef.current === "external_transition") {
+      backfillRetryFenceRef.current = null;
+      cancelBackfillFenceAutoRetry(backfillFenceAutoRetryRef.current, true);
+    }
+    evaluateAndMaybeRequestBackfillRef.current("user_scroll", true);
+  }, []);
+  const onTimelineWheel = useCallback(
+    (event: ReactWheelEvent<HTMLDivElement>) => {
+      markUserScrollInput({ keepLiveEdgeAtBottom: event.deltaY > 0 });
+      if (event.deltaY < 0) requestOlderHistoryFromInputAtTop();
+    },
+    [markUserScrollInput, requestOlderHistoryFromInputAtTop]
+  );
   const onTimelinePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       if (event.target === event.currentTarget) {
@@ -3923,9 +3945,12 @@ export const TimelineView = memo(function TimelineView({
     (event: KeyboardEvent<HTMLDivElement>) => {
       if (timelineKeyShouldReleaseViewportIntent(event)) {
         markUserScrollInput();
+        if (event.key === "PageUp" || event.key === "Home" || event.key === "ArrowUp") {
+          requestOlderHistoryFromInputAtTop();
+        }
       }
     },
-    [markUserScrollInput]
+    [markUserScrollInput, requestOlderHistoryFromInputAtTop]
   );
   const jumpToBottom = useCallback(() => {
     if (!windowReachesLiveEndRef.current) {
@@ -4019,7 +4044,7 @@ export const TimelineView = memo(function TimelineView({
         onPointerDown={onTimelinePointerDown}
         onScroll={onTimelineScroll}
         onTouchMove={() => markUserScrollInput()}
-        onWheel={(event) => markUserScrollInput({ keepLiveEdgeAtBottom: event.deltaY > 0 })}
+        onWheel={onTimelineWheel}
       >
       {canRenderRoomNavigation ? (
         <div
