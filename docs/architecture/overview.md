@@ -2556,7 +2556,15 @@ Invariants:
   the staged document hydrates it at once (the `ComposerDraftsLoaded` rule),
   and the renderer adopts it through the composer synchronization key without
   moving focus; otherwise the draft appears when the user next opens that
-  composer. The marker survives edits, is removed with the content (an
+  composer. #1905: `replace` is the one widening of that refusal, and it is
+  opt-in. It writes only into a target that still holds exactly the draft an
+  assistant staged there — the marker names the stored revision, which is the
+  state `get_draft` reports as `assistant` — as a new revision under the same
+  permission, command-permit, and pending-send guards. Every other case stays a
+  `conflict` that changes nothing, so text the user typed, edited, or whose
+  **Drafted by** label the user hid is never replaced. An open composer holding
+  the older revision hydrates the replacement the same way a first stage does.
+  The marker survives edits, is removed with the content (an
   accepted send, a clear to empty, a pruned room), and is removed by the
   user's explicit dismissal (`dismiss_assistant_draft_marker`). If the user
   starts typing in the renderer's 350 ms persistence debounce window just as

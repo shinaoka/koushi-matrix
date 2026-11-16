@@ -2900,36 +2900,54 @@ impl AppActor {
             account,
             target: request.target.clone(),
         };
-        if !self.state.composer_drafts.target_is_empty(&request.target)
+        // #1905: `replace` overwrites only a target that still holds exactly the
+        // draft an assistant staged; the user's own text never reaches here.
+        let replaceable = request.replace
+            && self
+                .state
+                .composer_drafts
+                .assistant_draft_is_untouched(&request.target);
+        if (!self.state.composer_drafts.target_is_empty(&request.target) && !replaceable)
             || open_composer_pending
             || self.composer_draft_leases.has_command_permit(&scope)
         {
             return Err(AssistantDraftFailure::Conflict);
         }
         let target = request.target.clone();
+        let before = self.composer_draft_revision(&target);
         let effects = Box::pin(self.reduce_app_action(AppAction::AssistantDraftStaged {
             target: request.target,
             document: request.document,
             client_name: request.client_name,
+            replace: request.replace,
         }))
         .await;
         Box::pin(self.handle_app_effects(request_id, effects)).await;
-        match self.state.composer_drafts.target_is_empty(&target) {
-            true => Err(AssistantDraftFailure::Conflict),
-            false => Ok(StagedAssistantDraft {
-                revision: match &target {
-                    koushi_state::ComposerTarget::Main { room_id } => {
-                        self.state.composer_drafts.room_revision(room_id)
-                    }
-                    koushi_state::ComposerTarget::Thread {
-                        room_id,
-                        root_event_id,
-                    } => self
-                        .state
-                        .composer_drafts
-                        .thread_revision(room_id, root_event_id),
-                },
-            }),
+        // The write is what the revision says: a refusal anywhere in the reducer
+        // leaves it where it was, and a replaced draft keeps content, so the
+        // stored revision is the only answer that cannot be stale.
+        let revision = self.composer_draft_revision(&target);
+        match revision > before {
+            true => Ok(StagedAssistantDraft { revision }),
+            false => Err(AssistantDraftFailure::Conflict),
+        }
+    }
+
+    fn composer_draft_revision(
+        &self,
+        target: &koushi_state::ComposerTarget,
+    ) -> koushi_state::ComposerDraftRevision {
+        match target {
+            koushi_state::ComposerTarget::Main { room_id } => {
+                self.state.composer_drafts.room_revision(room_id)
+            }
+            koushi_state::ComposerTarget::Thread {
+                room_id,
+                root_event_id,
+            } => self
+                .state
+                .composer_drafts
+                .thread_revision(room_id, root_event_id),
         }
     }
 

@@ -390,6 +390,9 @@ pub struct AssistantDraftRequest {
     pub document: koushi_state::ComposerDocument,
     /// The calling assistant's validated client name, shown by the marker.
     pub client_name: String,
+    /// #1905: replace the target's own untouched assistant draft. Without it a
+    /// non-empty target is a `Conflict`.
+    pub replace: bool,
 }
 
 impl std::fmt::Debug for AssistantDraftRequest {
@@ -398,6 +401,7 @@ impl std::fmt::Debug for AssistantDraftRequest {
             .debug_struct("AssistantDraftRequest")
             .field("target", &self.target)
             .field("document", &"MessageBody(..)")
+            .field("replace", &self.replace)
             .finish_non_exhaustive()
     }
 }

@@ -17,7 +17,7 @@ use koushi_mcp::wire::{ErrorCode, WireError};
 use koushi_protocol::command::{CoreCommand, TimelineCommand};
 use koushi_protocol::event::{CoreEvent, TimelineEvent};
 use koushi_protocol::ids::TimelineKey;
-use koushi_state::{ComposerDocument, SessionInfo, SessionState};
+use koushi_state::{ComposerDocument, ComposerTarget, SessionInfo, SessionState};
 
 use super::events;
 use super::grants::Need;
@@ -983,9 +983,11 @@ async fn send_thread_reply(
 /// (#1644).
 ///
 /// The draft goes through Core's Rust draft store, the only composer write an
-/// MCP call may make. It never selects a room, account, pane, or thread, and
-/// it never overwrites a draft: a non-empty or busy composer answers
-/// `conflict`.
+/// MCP call may make. It never selects a room, account, pane, or thread.
+/// A non-empty or busy composer answers `conflict`, with one exception: #1905
+/// `replace` overwrites the target when it still holds exactly the unedited
+/// draft an assistant staged there (`get_draft` status `assistant`). Every
+/// other case stays a `conflict` that changes nothing.
 async fn draft_message(
     shared: &Shared,
     client: &ClientIdentity,
@@ -1017,6 +1019,16 @@ async fn draft_message(
         .and_then(Value::as_str)
         .filter(|id| !id.trim().is_empty())
         .map(str::to_owned);
+    let replace = match arguments.get("replace") {
+        None => false,
+        Some(Value::Bool(replace)) => *replace,
+        Some(_) => {
+            return Err(WireError::new(
+                ErrorCode::Unsupported,
+                "replace must be true or false",
+            ));
+        }
+    };
 
     // As for a send, the approval previews the text, and the room only when
     // this account has joined it; whether it exists is decided after consent.
@@ -1091,6 +1103,7 @@ async fn draft_message(
             target,
             document: ComposerDocument::from_plain_text(body),
             client_name: client.name.clone(),
+            replace,
         })
         .await
         .map_err(assistant_draft_failure)?;
@@ -1144,23 +1157,32 @@ async fn get_draft(
             "the room is not joined",
         ));
     }
+    let target = match &thread_root_event_id {
+        None => ComposerTarget::Main {
+            room_id: room_id.clone(),
+        },
+        Some(root_event_id) => ComposerTarget::Thread {
+            room_id: room_id.clone(),
+            root_event_id: root_event_id.clone(),
+        },
+    };
     let composer = match &thread_root_event_id {
         None => snapshot.composer_drafts.composer_for_room(&room_id),
         Some(root_event_id) => snapshot
             .composer_drafts
             .composer_for_thread(&room_id, root_event_id),
     };
-    // The same rule the renderer keys composer adoption on: the marker holds the
+    // The same rule the renderer keys composer adoption on, so `assistant` is
+    // exactly the state `draft_message` may `replace`: the marker holds the
     // revision the assistant wrote at, so an unchanged revision is still that
     // text. Every later revision — a hand edit, or a send that keeps the text
     // (#1130) — reads back as `user_edited`, the answer that never claims the
     // user's words for the assistant.
     let status = if composer.document.is_empty() {
         "empty"
-    } else if composer
-        .assistant_draft
-        .as_ref()
-        .is_some_and(|marker| marker.revision == composer.draft_revision)
+    } else if snapshot
+        .composer_drafts
+        .assistant_draft_is_untouched(&target)
     {
         "assistant"
     } else {

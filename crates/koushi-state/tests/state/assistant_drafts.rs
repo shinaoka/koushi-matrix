@@ -79,6 +79,19 @@ fn stage(state: &mut AppState, target: ComposerTarget) -> Vec<AppEffect> {
             target,
             document: staged_text(),
             client_name: CLIENT.to_owned(),
+            replace: false,
+        },
+    )
+}
+
+fn replace_stage(state: &mut AppState, target: ComposerTarget, text: &str) -> Vec<AppEffect> {
+    reduce(
+        state,
+        AppAction::AssistantDraftStaged {
+            target,
+            document: ComposerDocument::from_plain_text(text),
+            client_name: CLIENT.to_owned(),
+            replace: true,
         },
     )
 }
@@ -274,6 +287,101 @@ fn dismissing_removes_only_the_marker() {
         )
         .is_empty()
     );
+}
+
+/// #1905: a replacement keeps the open composer live: the user sees the new text
+/// without navigation, a remount, or a lost composer mode.
+#[test]
+fn replacing_hydrates_the_open_composer_at_a_new_revision() {
+    let mut state = ready_state();
+    state.timeline.room_id = Some(ROOM.to_owned());
+    stage(&mut state, main_target(ROOM));
+    let staged = state.composer_drafts.room_revision(ROOM);
+    let mode = state.timeline.composer.mode.clone();
+
+    let effects = replace_stage(&mut state, main_target(ROOM), "the short version");
+
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+            room_id: ROOM.to_owned()
+        })]
+    );
+    assert_eq!(state.timeline.composer.draft, "the short version");
+    assert_eq!(state.timeline.composer.mode, mode);
+    assert!(state.composer_drafts.room_revision(ROOM) > staged);
+    assert_eq!(
+        state
+            .timeline
+            .composer
+            .assistant_draft
+            .as_ref()
+            .map(|marker| marker.client_name.as_str()),
+        Some(CLIENT)
+    );
+    assert_eq!(state.timeline.room_id.as_deref(), Some(ROOM));
+}
+
+/// The replacement is the assistant's own draft only while the marker names the
+/// stored revision; a hand edit or a dismissed label ends that.
+#[test]
+fn replace_never_touches_text_the_user_changed() {
+    let mut state = ready_state();
+    state.timeline.room_id = Some(ROOM.to_owned());
+    stage(&mut state, main_target(ROOM));
+    let staged = state.composer_drafts.room_revision(ROOM);
+    type_draft(&mut state, ROOM, "edited by hand", next(staged, 1));
+
+    assert!(replace_stage(&mut state, main_target(ROOM), "the short version").is_empty());
+    let composer = state.composer_drafts.composer_for_room(ROOM);
+    assert_eq!(composer.draft, "edited by hand");
+    assert_eq!(
+        composer.draft_revision,
+        ComposerDraftRevision::from_u64(next(staged, 1))
+    );
+    assert_eq!(state.timeline.composer.draft, "edited by hand");
+
+    // Hiding the label drops the provenance, so the text is the user's.
+    reduce(
+        &mut state,
+        AppAction::AssistantDraftMarkerDismissed {
+            target: main_target(ROOM),
+        },
+    );
+    assert!(replace_stage(&mut state, main_target(ROOM), "again").is_empty());
+    assert_eq!(
+        state.composer_drafts.composer_for_room(ROOM).draft,
+        "edited by hand"
+    );
+}
+
+/// A replacement in a thread composer hydrates that pane only.
+#[test]
+fn replacing_hydrates_only_the_open_thread_composer() {
+    let mut state = ready_state();
+    state.timeline.room_id = Some(ROOM.to_owned());
+    state.thread = ThreadPaneState::Open {
+        room_id: ROOM.to_owned(),
+        root_event_id: ROOT.to_owned(),
+        intent: ThreadOpenIntent::ExistingThread,
+        is_subscribed: true,
+        composer: ComposerState::default(),
+        staged_uploads: Vec::new(),
+    };
+    stage(&mut state, thread_target());
+
+    let effects = replace_stage(&mut state, thread_target(), "thread, revised");
+
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+    );
+    let ThreadPaneState::Open { composer, .. } = &state.thread else {
+        panic!("thread pane stays open");
+    };
+    assert_eq!(composer.draft, "thread, revised");
+    assert!(composer.assistant_draft.is_some());
+    assert!(state.timeline.composer.document.is_empty());
 }
 
 #[test]

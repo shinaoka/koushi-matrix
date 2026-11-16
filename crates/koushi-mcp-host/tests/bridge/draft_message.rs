@@ -193,6 +193,10 @@ fn draft(body: &str) -> Value {
     json!({ "account_id": ACCOUNT, "room_id": ROOM, "body": body })
 }
 
+fn replace_draft(body: &str) -> Value {
+    json!({ "account_id": ACCOUNT, "room_id": ROOM, "body": body, "replace": true })
+}
+
 /// A send grant does not cover drafting: the refusal names the draft
 /// permission.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -248,6 +252,85 @@ async fn a_granted_draft_is_staged_once_then_conflicts_and_revocation_applies() 
     harness.write_grant(Harness::account_grant(false, false));
     let revoked = harness.call("draft_message", draft("after revoke")).await;
     assert_eq!(error_code(&revoked), "consent_required");
+    harness.stop().await;
+}
+
+/// #1905: an assistant revises the draft it staged while the user has not
+/// touched it. The replacement is a new revision, so `get_draft` reads it back
+/// as the assistant's own draft rather than as the user's text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_untouched_assistant_draft_is_replaced() {
+    let mut harness = Harness::start(Some(Harness::account_grant(false, true))).await;
+    assert_eq!(
+        structured(&wait_until_staged(&mut harness).await)["status"],
+        "staged"
+    );
+    let first = draft_state_until(&mut harness, draft_read(), "assistant").await;
+    let first_revision = harness
+        .core
+        .attach()
+        .snapshot()
+        .composer_drafts
+        .room_revision(ROOM);
+    assert_eq!(structured(&first)["body"], "from the assistant");
+
+    let replaced = harness
+        .call(
+            "draft_message",
+            replace_draft("from the assistant, shorter"),
+        )
+        .await;
+    assert_eq!(structured(&replaced)["status"], "staged", "{replaced}");
+
+    let read_back = draft_body_until(&mut harness, "from the assistant, shorter").await;
+    assert_eq!(structured(&read_back)["status"], "assistant");
+    assert!(
+        harness
+            .core
+            .attach()
+            .snapshot()
+            .composer_drafts
+            .room_revision(ROOM)
+            > first_revision,
+        "a replacement is a new revision"
+    );
+    harness.stop().await;
+}
+
+/// Text the user wrote or edited is never replaced, with or without the flag.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_user_edited_draft_is_never_replaced() {
+    let mut harness = Harness::start(Some(Harness::account_grant(false, true))).await;
+    wait_until_staged(&mut harness).await;
+    user_sets_composer(&harness, "my own words now").await;
+    draft_state_until(&mut harness, draft_read(), "user_edited").await;
+
+    let refused = harness
+        .call("draft_message", replace_draft("the assistant again"))
+        .await;
+    assert_eq!(error_code(&refused), "conflict");
+    let read_back = harness.call("get_draft", draft_read()).await;
+    assert_eq!(structured(&read_back)["status"], "user_edited");
+    assert_eq!(structured(&read_back)["body"], "my own words now");
+    harness.stop().await;
+}
+
+/// A composer the user cleared holds nothing to replace, so the flag simply
+/// stages there as it would without the flag, and never resurrects the old
+/// text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replace_stages_into_a_composer_the_user_cleared() {
+    let mut harness = Harness::start(Some(Harness::account_grant(false, true))).await;
+    wait_until_staged(&mut harness).await;
+    user_sets_composer(&harness, "").await;
+    draft_state_until(&mut harness, draft_read(), "empty").await;
+
+    let staged = harness
+        .call("draft_message", replace_draft("a fresh draft"))
+        .await;
+    assert_eq!(structured(&staged)["status"], "staged", "{staged}");
+    let read_back = draft_body_until(&mut harness, "a fresh draft").await;
+    assert_eq!(structured(&read_back)["status"], "assistant");
     harness.stop().await;
 }
 
@@ -334,6 +417,20 @@ fn draft_read() -> Value {
     json!({ "account_id": ACCOUNT, "room_id": ROOM })
 }
 
+/// Reads a draft back until its body matches: the published snapshot lags the
+/// command that wrote it, and a replacement keeps the `assistant` status the
+/// status-only helper already sees.
+async fn draft_body_until(harness: &mut Harness, body: &str) -> Value {
+    let mut reply = Value::Null;
+    for _ in 0..100 {
+        reply = harness.call("get_draft", draft_read()).await;
+        if structured(&reply)["body"] == body {
+            return reply;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the draft never read back as {body:?}: {reply}");
+}
 fn thread_draft_read() -> Value {
     json!({ "account_id": ACCOUNT, "room_id": ROOM, "thread_root_event_id": ROOT })
 }
@@ -419,6 +516,7 @@ async fn a_thread_draft_is_not_the_room_draft() {
             },
             document: koushi_state::ComposerDocument::from_plain_text("in the thread"),
             client_name: "pi".to_owned(),
+            replace: false,
         }],
     )
     .await;

@@ -33,7 +33,10 @@ pane when the thread belongs to the room the main pane displays, and only in the
 account tab the app displays. It reduces the same `OpenThread` action the
 renderer uses, never changes the account, the selected Space or the selected
 room, and reports what it did — opened, or the reason it did not — in the reply
-outcome instead of in an event.
+outcome instead of in an event. A second one, recorded there for `draft_message`
+(#1644, widened by #1905), is the target composer's draft and its assistant
+marker: that call reduces `AssistantDraftStaged`, and the `TimelineChanged` or
+`ThreadChanged` event it emits carries only the hydrated open composer.
 
 ### Direct search
 

@@ -197,6 +197,38 @@ fn draft_message_never_sends_and_declares_its_permission_and_conflict() {
     assert!(!properties.contains_key("attachments"));
     assert!(!properties.contains_key("reply_to_event_id"));
     assert!(!properties.contains_key("client_request_id"));
+    // #1905: the replacement is opt-in and never the default.
+    assert!(
+        !tool.input_schema["required"]
+            .as_array()
+            .expect("required")
+            .iter()
+            .any(|value| value == "replace")
+    );
+    for phrase in ["replace true", "never replaced", "user_edited"] {
+        assert!(tool.description.contains(phrase), "{phrase}");
+    }
+    assert!(
+        validate_arguments(
+            "draft_message",
+            &json!({"account_id": "a", "room_id": "!r", "body": "hi"})
+        )
+        .is_ok()
+    );
+    assert!(
+        validate_arguments(
+            "draft_message",
+            &json!({"account_id": "a", "room_id": "!r", "body": "hi", "replace": true})
+        )
+        .is_ok()
+    );
+    assert!(
+        validate_arguments(
+            "draft_message",
+            &json!({"account_id": "a", "room_id": "!r", "body": "hi", "replace": "yes"})
+        )
+        .is_err()
+    );
     assert!(
         validate_arguments(
             "draft_message",
