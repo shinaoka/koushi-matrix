@@ -66,7 +66,7 @@ import {
 export { timelineRowsArePurePrependForTests } from "./timeline/TimelineEventProjection";
 import {
   buildTimelineHeightModel, calculateTimelineItemIndexRange, calculateTimelineVirtualRange,
-  EMPTY_TIMELINE_ITEM_INDEX_RANGE, EMPTY_TIMELINE_RANGE, measuredItemHeight,
+  EMPTY_TIMELINE_ITEM_INDEX_RANGE, EMPTY_TIMELINE_RANGE,
   timelineItemHeightAtIndex, timelineItemIndexInRange, timelineItemIndexRangeEquals,
   TIMELINE_ESTIMATED_ITEM_HEIGHT_PX, TIMELINE_VIRTUALIZATION_THRESHOLD, virtualRangeEquals,
   type TimelineItemIndexRange, type TimelineScheduledFrame,
@@ -161,6 +161,11 @@ shouldRequestTimelineForwardFill,
 type TimelineBackfillDemand,
 type TimelineBackfillEvaluationTrigger
 } from "../domain/timelineBackfillPolicy";
+import {
+  TimelineRowHeightCache,
+  noteTimelineFontsLoaded,
+  rowHeightsUnpublished
+} from "./timeline/TimelineRowHeightCache";
 import {
 insertTimelineGapItems,
 projectTimelineDisplayRows,
@@ -292,11 +297,6 @@ export function invokeReturnToLiveSafely(handler: ReturnToLiveHandler): void {
     .then(() => handler())
     .catch(() => undefined);
 }
-
-type PendingMeasuredHeight = {
-  height: number;
-  epoch: number;
-};
 
 type TimelineBackfillRequestEpoch = {
   id: number;
@@ -649,7 +649,18 @@ export const TimelineView = memo(function TimelineView({
   const [viewportTransactionRevision, setViewportTransactionRevision] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const itemHeightByDomIdRef = useRef<Map<string, number>>(new Map());
+  const rowHeightCacheRef = useRef<TimelineRowHeightCache | null>(null);
+  if (rowHeightCacheRef.current === null) {
+    rowHeightCacheRef.current = new TimelineRowHeightCache();
+  }
+  const rowHeights = rowHeightCacheRef.current;
+  /**
+   * #1890: what the height model may read. The cache keeps measurements for rows
+   * that are no longer mounted, but only a commit (the flush, or the idle mount
+   * pass) publishes them here and bumps `measuredHeightVersion`, so a measurement
+   * recorded mid-scroll cannot move the layout outside the anchor transaction.
+   */
+  const committedHeightsRef = useRef<ReadonlyMap<string, number>>(new Map());
   const committedVisibleRowsRef = useRef<{
     timelineKeyHash: string;
     generation: number;
@@ -819,9 +830,13 @@ export const TimelineView = memo(function TimelineView({
   const scrollActivityRef = useRef<"idle" | "active">("idle");
   const scrollIdleTimerRef = useRef<number | null>(null);
   const scrollMaxDeferTimerRef = useRef<number | null>(null);
-  const pendingMeasuredHeightsRef = useRef<Map<string, PendingMeasuredHeight>>(new Map());
+  // #1890: a measured height is recorded in the cache as soon as it is read; only
+  // the height-model commit (the version bump) waits for the scroll to settle. This
+  // counts the recorded heights the model has not been rebuilt for yet.
+  const pendingMeasurementCountRef = useRef(0);
   const measurementEpochRef = useRef(0);
-  const visibleItemDomIdsRef = useRef<Set<string>>(new Set());
+  const visibleRowsRef = useRef<readonly TimelineDisplayRow[]>([]);
+  const visibleRowsByIdRef = useRef<Map<string, TimelineDisplayRow>>(new Map());
   const mountedItemDomIdsRef = useRef<Set<string>>(new Set());
   /** Set by wheel/touch/keyboard/scrollbar intent; consumed by the next scroll event. */
   const userScrollInputPendingRef = useRef(false);
@@ -1193,7 +1208,10 @@ export const TimelineView = memo(function TimelineView({
       clearMeasurementTimers();
       markScrollActivityIdle();
       measurementEpochRef.current += 1;
-      pendingMeasuredHeightsRef.current.clear();
+      // #1890: recorded heights stay in the cache; a reset only drops the owed
+      // commit marker, and the next pass publishes whatever the model has not seen
+      // yet (see `residentHeightsUnpublished`).
+      pendingMeasurementCountRef.current = 0;
       if (options.clearMountedIds) {
         mountedItemDomIdsRef.current = new Set();
       }
@@ -1205,6 +1223,17 @@ export const TimelineView = memo(function TimelineView({
     advanceViewportEpoch();
     resetActiveMeasurementDeferral({ clearMountedIds: true });
   }, [advanceViewportEpoch, generation, resetActiveMeasurementDeferral]);
+  // #1890: a font that finishes loading changes every row's metrics, so heights
+  // measured under the old ones are stale and get re-measured on their next mount.
+  useEffect(() => {
+    const fonts = "fonts" in document ? document.fonts : null;
+    if (!fonts) {
+      return;
+    }
+    const onLoadingDone = () => noteTimelineFontsLoaded();
+    fonts.addEventListener("loadingdone", onLoadingDone);
+    return () => fonts.removeEventListener("loadingdone", onLoadingDone);
+  }, []);
   const readViewportMetrics = useCallback((): TimelineViewportMetrics => {
     const container = containerRef.current;
     if (!container) {
@@ -1371,8 +1400,8 @@ export const TimelineView = memo(function TimelineView({
         viewportTransactionRef.current.accountForInput(containerRef.current?.scrollTop ?? 0);
         if (reason !== "layout") userScrollInputPendingRef.current = false;
       }
-      const pending = pendingMeasuredHeightsRef.current;
-      if (pending.size === 0 && reason !== "layout") {
+      const pending = pendingMeasurementCountRef.current;
+      if (pending === 0 && reason !== "layout") {
         clearMeasurementTimers();
         markScrollActivityIdle();
         clearPendingMeasurementDiagnostics();
@@ -1380,11 +1409,16 @@ export const TimelineView = memo(function TimelineView({
         return;
       }
 
-      const currentEpoch = measurementEpochRef.current;
-      const visibleDomIds = visibleItemDomIdsRef.current;
-      const measuredMountedHeights = new Map<string, number>();
+      // #1890: every height read below is recorded now, whether or not its row is
+      // still mounted when the commit happens. A measurement taken at this width,
+      // on the current item, is valid after the row leaves the window — that is
+      // what lets a reader wheel through history without losing what they passed.
+      let changedRows = pending;
+      pendingMeasurementCountRef.current = 0;
+      rowHeights.retainResident(visibleRowsRef.current);
       const mountedDomIds = new Set<string>();
       const list = listRef.current;
+      const listWidth = list?.clientWidth ?? 0;
       if (list) {
         for (const node of Array.from(list.querySelectorAll<HTMLElement>(".timeline-item-frame"))) {
           const domId =
@@ -1394,7 +1428,13 @@ export const TimelineView = memo(function TimelineView({
             continue;
           }
           mountedDomIds.add(domId);
-          measuredMountedHeights.set(domId, measuredItemHeight(node.getBoundingClientRect().height));
+          const row = visibleRowsByIdRef.current.get(domId);
+          if (!row) {
+            continue;
+          }
+          if (rowHeights.record(row, node.getBoundingClientRect().height, listWidth)) {
+            changedRows += 1;
+          }
         }
         mountedItemDomIdsRef.current = mountedDomIds;
       } else {
@@ -1402,48 +1442,17 @@ export const TimelineView = memo(function TimelineView({
           mountedDomIds.add(domId);
         }
       }
-      const nextHeights = new Map(itemHeightByDomIdRef.current);
-      let changedRows = 0;
-      const committedDomIds = new Set<string>();
-      for (const domId of nextHeights.keys()) {
-        if (!visibleDomIds.has(domId)) {
-          nextHeights.delete(domId);
-        }
-      }
-      for (const [domId, entry] of pending) {
-        if (
-          entry.epoch !== currentEpoch ||
-          !visibleDomIds.has(domId) ||
-          !mountedDomIds.has(domId)
-        ) {
-          continue;
-        }
-        const height = measuredMountedHeights.get(domId) ?? entry.height;
-        if (Math.abs((nextHeights.get(domId) ?? 0) - height) > 1) {
-          nextHeights.set(domId, height);
-          changedRows += 1;
-        }
-        committedDomIds.add(domId);
-      }
-      for (const [domId, height] of measuredMountedHeights) {
-        if (
-          committedDomIds.has(domId) ||
-          !visibleDomIds.has(domId) ||
-          Math.abs((nextHeights.get(domId) ?? 0) - height) <= 1
-        ) {
-          continue;
-        }
-        nextHeights.set(domId, height);
-        changedRows += 1;
-      }
-      pending.clear();
       if (reason !== "layout") {
         clearMeasurementTimers();
         markScrollActivityIdle();
       }
       releaseDeferredPrepend();
 
-      if (changedRows === 0) {
+      const nextHeights = rowHeights.heightsFor(visibleRowsRef.current);
+      if (
+        changedRows === 0 &&
+        !rowHeightsUnpublished(nextHeights, committedHeightsRef.current)
+      ) {
         clearPendingMeasurementDiagnostics();
         return;
       }
@@ -1482,7 +1491,7 @@ export const TimelineView = memo(function TimelineView({
         owner.markMeasurementPending(joined.id, rangeModelEpochRef.current + 1);
       }
 
-      itemHeightByDomIdRef.current = nextHeights;
+      committedHeightsRef.current = nextHeights;
       updateScrollDiagnostics((current) =>
         ({
           ...recordTimelineScrollMeasurementFlush(
@@ -2057,7 +2066,8 @@ export const TimelineView = memo(function TimelineView({
     lastFocusedTargetRestoreDiagnosticRef.current = null;
     stickToBottomAfterMeasurementRef.current = false;
     resetActiveMeasurementDeferral({ clearMountedIds: true });
-    itemHeightByDomIdRef.current = new Map();
+    rowHeights.clear();
+    committedHeightsRef.current = new Map();
     committedVisibleRowsRef.current = null;
     viewportTransactionRef.current.invalidate("key");
     linkPreviewRequestRangeRef.current = EMPTY_TIMELINE_ITEM_INDEX_RANGE;
@@ -2249,16 +2259,18 @@ export const TimelineView = memo(function TimelineView({
     },
     [stableAnchor]
   );
-  const visibleItemDomIds = useMemo(
-    () => new Set(visibleRows.map((row) => row.row_id)),
+  const visibleRowsById = useMemo(
+    () => new Map(visibleRows.map((row) => [row.row_id, row])),
     [visibleRows]
   );
-  visibleItemDomIdsRef.current = visibleItemDomIds;
+  /** The measurement paths run inside callbacks, so they read the current rows by ref. */
+  visibleRowsRef.current = visibleRows;
+  visibleRowsByIdRef.current = visibleRowsById;
   const timelineHeightModel = useMemo(
     () =>
       buildTimelineHeightModel(
         visibleRows,
-        itemHeightByDomIdRef.current,
+        committedHeightsRef.current,
         virtualItemHeight
       ),
     [measuredHeightVersion, visibleRows, virtualItemHeight]
@@ -2964,7 +2976,7 @@ export const TimelineView = memo(function TimelineView({
         const delta = measureAnchorDelta(container, anchor);
         if (delta !== null) {
           measured = true;
-          if (pendingMeasuredHeightsRef.current.size > 0) return;
+          if (pendingMeasurementCountRef.current > 0) return;
           target = container.scrollTop + delta;
           shouldWrite = Math.abs(delta) > VIEWPORT_ANCHOR_TOLERANCE_PX;
         } else if (virtualWindow.virtualized) {
@@ -3414,22 +3426,17 @@ export const TimelineView = memo(function TimelineView({
         !jumpViewportControlRef.current && !roomScrollAnchorRestorePendingRef.current) {
       captureStableAnchor(containerRef.current);
     }
-    const nextHeights = new Map(itemHeightByDomIdRef.current);
-    const visibleDomIds = visibleItemDomIdsRef.current;
-    let changed = false;
+    // #1890: the resident set bounds the cache. Dropping an entry cannot change
+    // the model — `heightsFor` only reports the rows it is handed — so it is
+    // memory hygiene, not a commit.
+    rowHeights.retainResident(visibleRowsRef.current);
     let changedRows = 0;
-    for (const domId of nextHeights.keys()) {
-      if (!visibleDomIds.has(domId)) {
-        nextHeights.delete(domId);
-        changed = true;
-        changedRows += 1;
-      }
-    }
     const nodes = Array.from(list.querySelectorAll<HTMLElement>(".timeline-item-frame"));
     if (nodes.length === 0) {
       mountedItemDomIdsRef.current = new Set();
       return;
     }
+    const listWidth = list.clientWidth ?? 0;
     const mountedDomIds = new Set<string>();
     for (const node of nodes) {
       const domId =
@@ -3439,27 +3446,29 @@ export const TimelineView = memo(function TimelineView({
         continue;
       }
       mountedDomIds.add(domId);
-      const height = measuredItemHeight(node.getBoundingClientRect().height);
-      if (Math.abs((nextHeights.get(domId) ?? 0) - height) <= 1) {
+      const row = visibleRowsByIdRef.current.get(domId);
+      if (!row) {
         continue;
       }
-      nextHeights.set(domId, height);
-      changed = true;
-      changedRows += 1;
+      // Recorded on every pass, so recency follows the viewport; only a height
+      // that actually moved is a model change.
+      if (rowHeights.record(row, node.getBoundingClientRect().height, listWidth)) {
+        changedRows += 1;
+      }
     }
     mountedItemDomIdsRef.current = mountedDomIds;
-    if (!changed) {
+    const nextHeights = rowHeights.heightsFor(visibleRowsRef.current);
+    if (
+      changedRows === 0 &&
+      !rowHeightsUnpublished(nextHeights, committedHeightsRef.current)
+    ) {
       return;
     }
     if (scrollActivityRef.current === "active" && !viewportTransactionRef.current.active()?.rangePrepared) {
-      for (const [domId, height] of nextHeights) {
-        if (Math.abs((itemHeightByDomIdRef.current.get(domId) ?? 0) - height) > 1) {
-          pendingMeasuredHeightsRef.current.set(domId, {
-            height,
-            epoch: measurementEpochRef.current
-          });
-        }
-      }
+      // The heights are already recorded; only the commit waits for the scroll to
+      // settle. A reset in between zeroes the count, and the next pass notices that
+      // the model is behind via `residentHeightsUnpublished`.
+      pendingMeasurementCountRef.current += changedRows;
       const userInputPending =
         pendingScrollFrameUserInputRef.current || userScrollInputPendingRef.current;
       updateScrollDiagnostics((current) =>
@@ -3473,7 +3482,7 @@ export const TimelineView = memo(function TimelineView({
           endIndex: virtualWindow.endIndex,
           paddingTop: virtualWindow.paddingTop,
           paddingBottom: virtualWindow.paddingBottom,
-          changedMeasuredRowCount: pendingMeasuredHeightsRef.current.size,
+          changedMeasuredRowCount: pendingMeasurementCountRef.current,
           heightDeltaAboveViewportPx: 0,
           heightDeltaInsideViewportPx: 0,
           heightDeltaBelowViewportPx: 0,
@@ -3516,7 +3525,7 @@ export const TimelineView = memo(function TimelineView({
       });
       viewportTransactionRef.current.markMeasurementPending(transaction.id, rangeModelEpochRef.current + 1);
     }
-    itemHeightByDomIdRef.current = nextHeights;
+    committedHeightsRef.current = nextHeights;
     updateScrollDiagnostics((current) =>
       recordTimelineScrollHeightCommit(current, "initial")
     );

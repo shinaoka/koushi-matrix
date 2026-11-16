@@ -2438,4 +2438,238 @@ describe("TimelineView", () => {
     }
   });
 
+
+  it("keeps a row's measured height when the row unmounts before the idle flush", async () => {
+    // #1890: a reader wheeling through history measures rows. Those measurements
+    // used to be discarded when the row left the mounted window before the flush
+    // (`!mountedDomIds.has(domId)`), so the spacer above kept the 72 px estimate
+    // and every remount moved the reader by the accumulated error.
+    vi.useFakeTimers();
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const ROW_HEIGHT = 40;
+    const ROW_COUNT = 160;
+    const rects: Record<string, { top: number; height: number }> = {};
+    for (let index = 0; index < ROW_COUNT; index += 1) {
+      rects[`$row${index}`] = { top: index * ROW_HEIGHT, height: ROW_HEIGHT };
+    }
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        listRefCallback={(element) => {
+          scrollContainerRef.current =
+            element?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null;
+        }}
+      />
+    );
+    // `getBy` rather than `findBy`: fake timers are installed above.
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperties(timeline, {
+      scrollHeight: { value: ROW_COUNT * ROW_HEIGHT, writable: true, configurable: true },
+      clientHeight: { value: 600, configurable: true },
+      scrollTop: { value: 0, writable: true, configurable: true }
+    });
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: Array.from({ length: ROW_COUNT }, (_, index) =>
+              message(`$row${index}`, `row ${index}`)
+            )
+          }
+        }
+      });
+    });
+
+    // Wheel through history: each step mounts and measures rows, and the next
+    // step unmounts them before the scroll has settled.
+    for (const scrollTop of [2000, 5000]) {
+      act(() => {
+        fireEvent.wheel(timeline, { deltaY: 40 });
+      });
+      timeline.scrollTop = scrollTop;
+      act(() => {
+        fireEvent.scroll(timeline);
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(16);
+        await Promise.resolve();
+      });
+    }
+    // The scroll settles: the deferred commits land.
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      await Promise.resolve();
+    });
+
+    // Back at the top, the rows above the window are exactly the rows the reader
+    // passed, so every one of them is a measurement: the timeline's height is the
+    // true 160 x 40, not a mixture with the 72 px estimate.
+    timeline.scrollTop = 0;
+    act(() => {
+      fireEvent.scroll(timeline);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      await Promise.resolve();
+    });
+
+    const list = timeline.querySelector(".timeline-item-list")!;
+    const spacers = Array.from(list.querySelectorAll<HTMLElement>(".timeline-virtual-spacer"));
+    expect(spacers).toHaveLength(2);
+    const paddingTop = Number.parseFloat(spacers[0]!.style.blockSize || "0");
+    const paddingBottom = Number.parseFloat(spacers[1]!.style.blockSize || "0");
+    const renderedRows = list.querySelectorAll(".timeline-item-frame").length;
+    expect(paddingTop).toBe(0);
+    expect(renderedRows).toBeGreaterThan(0);
+    expect(paddingTop + renderedRows * ROW_HEIGHT + paddingBottom).toBe(ROW_COUNT * ROW_HEIGHT);
+  });
+
+  it("re-measures an edited row when it comes back into the window", async () => {
+    // #1890: the cache keys freshness on the item object the store hands over, so
+    // an edited row keeps its old height only as an estimate until it remounts.
+    vi.useFakeTimers();
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const ROW_HEIGHT = 40;
+    const EDITED_HEIGHT = 120;
+    const ROW_COUNT = 160;
+    const rects: Record<string, { top: number; height: number }> = {};
+    for (let index = 0; index < ROW_COUNT; index += 1) {
+      rects[`$row${index}`] = { top: index * ROW_HEIGHT, height: ROW_HEIGHT };
+    }
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        listRefCallback={(element) => {
+          scrollContainerRef.current =
+            element?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null;
+        }}
+      />
+    );
+    // `getBy` rather than `findBy`: fake timers are installed above.
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperties(timeline, {
+      scrollHeight: { value: ROW_COUNT * ROW_HEIGHT, writable: true, configurable: true },
+      clientHeight: { value: 600, configurable: true },
+      scrollTop: { value: 0, writable: true, configurable: true }
+    });
+    const initialItems = Array.from({ length: ROW_COUNT }, (_, index) =>
+      message(`$row${index}`, `row ${index}`)
+    );
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key: KEY, generation: 1, items: initialItems }
+        }
+      });
+    });
+
+    // Measure the middle rows, then leave them off-window.
+    for (const scrollTop of [2000, 0]) {
+      act(() => {
+        fireEvent.wheel(timeline, { deltaY: 40 });
+      });
+      timeline.scrollTop = scrollTop;
+      act(() => {
+        fireEvent.scroll(timeline);
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+        await Promise.resolve();
+      });
+    }
+
+    // The model's total, read back from the DOM: the spacers plus the rows that
+    // are mounted at their mocked heights.
+    const timelineTotalHeight = (): number => {
+      const list = timeline.querySelector(".timeline-item-list")!;
+      const spacers = Array.from(list.querySelectorAll<HTMLElement>(".timeline-virtual-spacer"));
+      const padding =
+        Number.parseFloat(spacers[0]?.style.blockSize || "0") +
+        Number.parseFloat(spacers[1]?.style.blockSize || "0");
+      let rendered = 0;
+      for (const frame of Array.from(list.querySelectorAll<HTMLElement>(".timeline-item-frame"))) {
+        const id = frame.dataset["frameItemId"] ?? "";
+        rendered += rects[id]?.height ?? 0;
+      }
+      return padding + rendered;
+    };
+    const totalBeforeEdit = timelineTotalHeight();
+
+    // A row that is off-window grows: the store replaces its item object.
+    const editedIndex = 60;
+    rects[`$row${editedIndex}`] = {
+      top: editedIndex * ROW_HEIGHT,
+      height: EDITED_HEIGHT
+    };
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key: KEY,
+            generation: 1,
+            batch_id: 1,
+            diffs: [
+              {
+                Set: {
+                  index: editedIndex,
+                  item: message(`$row${editedIndex}`, "row 60 edited with a much longer body")
+                }
+              }
+            ]
+          }
+        }
+      });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      await Promise.resolve();
+    });
+
+    // Coming back to it re-measures, so the timeline grows by the edit's delta
+    // rather than keeping the height the row had before it was edited.
+    timeline.scrollTop = 2000;
+    act(() => {
+      fireEvent.scroll(timeline);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      await Promise.resolve();
+    });
+
+    // Exactly the edit's delta: the row was measured at 40 px before it left the
+    // window, and coming back re-measures it at 120 px. Trusting the retained
+    // entry instead would leave the total unchanged.
+    expect(timelineTotalHeight()).toBe(totalBeforeEdit + (EDITED_HEIGHT - ROW_HEIGHT));
+  });
+
 });
