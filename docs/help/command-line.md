@@ -106,3 +106,5 @@ commands or modify its permissions.
 An unavailable, locked, signed-out, or still-verifying account fails explicitly;
 the CLI never falls back to another account. No failure payload is written to
 stdout before output begins. A failed output write may leave partial output.
+A result whose rendered JSON exceeds the CLI's local output bound (16 MiB) fails
+as an output failure (exit 1, `output_too_large`), not as an operation failure.

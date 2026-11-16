@@ -12,9 +12,12 @@ pub(super) fn render(value: &serde_json::Value, compact: bool) -> Result<Vec<u8>
     } else {
         serde_json::to_writer_pretty(&mut bounded, value)
     }
+    // #1902: exceeding the local output bound is an output failure, not an
+    // account/room/event/operation failure; the code name is kept so a script
+    // can tell the bound from a write error (`output_error`).
     .map_err(|_| Failure {
         code: "output_too_large",
-        status: 6,
+        status: 1,
     })?;
     let serialized = String::from_utf8(bounded.0).map_err(|_| Failure::INTERNAL)?;
     let mut bytes = Vec::new();
@@ -30,7 +33,7 @@ pub(super) fn render(value: &serde_json::Value, compact: bool) -> Result<Vec<u8>
         if bytes.len() > MAX_OUTPUT_BYTES {
             return Err(Failure {
                 code: "output_too_large",
-                status: 6,
+                status: 1,
             });
         }
     }
