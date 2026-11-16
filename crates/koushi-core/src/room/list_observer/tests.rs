@@ -288,6 +288,7 @@ async fn project_room_list_snapshot_updates_user_profiles() {
         RoomListSource::Live,
         true,
         std::collections::BTreeMap::new(),
+        &mut super::RoomListTraceLedgers::default(),
     )
     .await;
 
@@ -316,6 +317,81 @@ async fn project_room_list_snapshot_updates_user_profiles() {
     );
 }
 
+/// A count no other test uses, so a concurrent test that records
+/// `room_list_snapshot` without the diagnostics lock cannot be mistaken for
+/// this test's records.
+const TRACED_SNAPSHOT_UNREAD_COUNT: u64 = 73_219;
+
+/// #1915: the observation task creates one `RoomListTraceLedgers` before its
+/// loop, so a repeated identical snapshot records no `room_list_snapshot` twice.
+/// Passing a fresh value per call here would let a regression that recreates
+/// the ledgers inside the loop compile and silently re-flood the ring.
+#[tokio::test]
+async fn a_repeated_identical_snapshot_on_one_session_records_no_second_trace() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
+    let (action_tx, _action_rx) = mpsc::channel(16);
+    let (event_tx, _event_rx) = broadcast::channel(16);
+    let known_room_ids = Arc::new(RwLock::new(BTreeSet::new()));
+    let known_dm_rooms = Arc::new(RwLock::new(Vec::new()));
+    let snapshot = MatrixRoomListSnapshot {
+        rooms: vec![MatrixRoomListRoom {
+            display_name_placeholder: None,
+            room_id: "!traced:example.test".to_owned(),
+            display_name: "Traced".to_owned(),
+            avatar_mxc_uri: None,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: MatrixRoomTags::default(),
+            unread_count: TRACED_SNAPSHOT_UNREAD_COUNT,
+            notification_count: 0,
+            highlight_count: 0,
+            marked_unread: false,
+            recency_stamp: None,
+            conversation_activity: None,
+            latest_event: None,
+            parent_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 2,
+        }],
+        ..MatrixRoomListSnapshot::default()
+    };
+    let mut traced = super::RoomListTraceLedgers::default();
+    for _ in 0..3 {
+        project_room_list_snapshot(
+            &snapshot,
+            &known_room_ids,
+            &known_dm_rooms,
+            &action_tx,
+            &event_tx,
+            1,
+            RoomListSource::Live,
+            true,
+            std::collections::BTreeMap::new(),
+            &mut traced,
+        )
+        .await;
+    }
+
+    let snapshot_records = koushi_diagnostics::snapshot()
+        .records
+        .iter()
+        .filter(|record| {
+            record.event.stage == "room_list_snapshot"
+                && record.event.fields.iter().any(|field| {
+                    field.key == "unread"
+                        && field.value
+                            == koushi_diagnostics::DiagnosticValue::Count(
+                                TRACED_SNAPSHOT_UNREAD_COUNT,
+                            )
+                })
+        })
+        .count();
+    assert_eq!(
+        snapshot_records, 1,
+        "one session records an unchanged room-list snapshot once"
+    );
+}
+
 #[tokio::test]
 async fn project_room_list_snapshot_holds_unproven_empty_and_preserves_known_rooms() {
     let (action_tx, mut action_rx) = mpsc::channel(16);
@@ -336,6 +412,7 @@ async fn project_room_list_snapshot_holds_unproven_empty_and_preserves_known_roo
         RoomListSource::Live,
         false,
         std::collections::BTreeMap::new(),
+        &mut super::RoomListTraceLedgers::default(),
     )
     .await;
 
@@ -804,6 +881,7 @@ async fn normalize_and_project_entries_uses_cached_direct_map_before_timeline_up
         &Arc::new(AtomicBool::new(false)),
         None,
         None,
+        &mut super::RoomListTraceLedgers::default(),
     )
     .await;
 
@@ -900,6 +978,7 @@ async fn live_projection_does_not_import_base_client_only_invites() {
         &Arc::new(AtomicBool::new(true)),
         None,
         None,
+        &mut super::RoomListTraceLedgers::default(),
     )
     .await;
 
@@ -1148,6 +1227,7 @@ async fn project_room_list_snapshot_updates_known_rooms_before_action_delivery()
         RoomListSource::Live,
         true,
         std::collections::BTreeMap::new(),
+        &mut super::RoomListTraceLedgers::default(),
     )
     .await;
 

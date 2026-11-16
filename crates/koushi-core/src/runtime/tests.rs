@@ -1342,6 +1342,7 @@ async fn committed_room_cleanup_bypasses_a_saturated_account_mailbox() {
         account_work: crate::account_work::AccountWorkScheduler::default(),
         account_actor,
         activity_projection: ActivityProjection::default(),
+        unread_trace_ledger: Default::default(),
         activity_resolution_generation: 0,
         deferred_account_dispatch: Default::default(),
         next_internal_request_sequence: 1,
@@ -1780,6 +1781,7 @@ async fn same_batch_select_room_settles_only_final_selection() {
         account_work: crate::account_work::AccountWorkScheduler::default(),
         account_actor,
         activity_projection: ActivityProjection::default(),
+        unread_trace_ledger: Default::default(),
         activity_resolution_generation: 0,
         deferred_account_dispatch: Default::default(),
         next_internal_request_sequence: 1,
@@ -3517,7 +3519,7 @@ type EventNavigationFixture = (
     mpsc::UnboundedSender<FocusedProjectionCommitted>,
 );
 
-fn app_actor_event_navigation_fixture(
+pub(super) fn app_actor_event_navigation_fixture(
     data_dir: &std::path::Path,
     state: AppState,
 ) -> EventNavigationFixture {
@@ -3624,6 +3626,7 @@ fn app_actor_fixture_with_work(
         account_work,
         account_actor,
         activity_projection: ActivityProjection::default(),
+        unread_trace_ledger: Default::default(),
         activity_resolution_generation: 0,
         deferred_account_dispatch: Default::default(),
         next_internal_request_sequence: 1,

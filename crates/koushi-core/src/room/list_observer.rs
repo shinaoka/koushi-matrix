@@ -254,6 +254,7 @@ async fn project_live_entries_and_ack_if_reconciled(
     authoritative: &Arc<AtomicBool>,
     sliding_sync_diagnostics: &crate::SlidingSyncDiagnostics,
     timeline_residency: Option<&TimelineSubscriptionResidencyHandle>,
+    traced: &mut RoomListTraceLedgers,
 ) {
     let entries_count = current.len();
     let unique_ids = unique_room_id_count(current);
@@ -296,6 +297,7 @@ async fn project_live_entries_and_ack_if_reconciled(
         authoritative,
         Some(direct_state),
         Some(sliding_sync_diagnostics),
+        traced,
     )
     .await;
     if !delivered {
@@ -397,6 +399,20 @@ fn projected_direct_room_count(
         .len()
 }
 
+/// The per-session dedup state of the two room-list trace stages (#1915).
+///
+/// The owner is the observation task, so a ledger never outlives its session and
+/// two accounts in one process cannot suppress or clear each other's traces.
+/// Passing it by `&mut` through the projection path keeps that ownership in the
+/// signatures instead of hiding it behind a process-wide lock.
+#[derive(Default)]
+struct RoomListTraceLedgers {
+    /// Last recorded `room_list_snapshot` per room.
+    snapshot: unread_trace::UnreadTraceLedger,
+    /// Last recorded `sdk_room_snapshot` per room.
+    sdk: koushi_sdk::SdkUnreadTraceLedger,
+}
+
 /// Normalize a snapshot and project it as a generation-fenced room-list action +
 /// `RoomEvent::RoomListUpdated`.
 #[expect(
@@ -413,6 +429,7 @@ async fn project_room_list_snapshot(
     source: RoomListSource,
     authoritative: bool,
     room_access: std::collections::BTreeMap<String, koushi_state::RoomAccessObservation>,
+    traced: &mut RoomListTraceLedgers,
 ) -> bool {
     let spaces = normalize_spaces(snapshot);
     let previous_dm_rooms = known_dm_rooms
@@ -422,7 +439,7 @@ async fn project_room_list_snapshot(
     let rooms = normalize_rooms_with_previous(snapshot, &previous_dm_rooms);
     let invites = normalize_invites(snapshot);
     let user_profiles = normalize_user_profiles(snapshot);
-    unread_trace::trace_room_list_snapshot(&rooms);
+    unread_trace::trace_room_list_snapshot(&mut traced.snapshot, &rooms);
     record(
         DiagnosticEvent::new(DiagnosticLevel::Debug, "core.room", "room_list_projection")
             .field(DiagnosticField::token(
@@ -806,6 +823,9 @@ async fn run_live_room_list_observation_with_sources(
     let mut rls_wake_count = 0_u64;
     let mut base_wake_count = 0_u64;
     let mut entries_observed = false;
+    // #1915: session-owned trace dedup. This task is created per session start
+    // and dropped on restart, so its ledgers die with the session they describe.
+    let mut traced = RoomListTraceLedgers::default();
 
     loop {
         tokio::select! {
@@ -1040,6 +1060,7 @@ async fn run_live_room_list_observation_with_sources(
                     &authoritative,
                     &sliding_sync_diagnostics,
                     timeline_residency.as_ref(),
+                    &mut traced,
                 ).await;
             }
             next_loading_state = loading_state.next() => {
@@ -1076,6 +1097,7 @@ async fn run_live_room_list_observation_with_sources(
                             &authoritative,
                             &sliding_sync_diagnostics,
                             timeline_residency.as_ref(),
+                            &mut traced,
                         ).await;
                     }
                 }
@@ -1123,6 +1145,7 @@ async fn run_live_room_list_observation_with_sources(
                         &authoritative,
                         &sliding_sync_diagnostics,
                         timeline_residency.as_ref(),
+                        &mut traced,
                     ).await;
                     #[cfg(test)]
                     emit_live_observer_test_event(
@@ -1258,6 +1281,7 @@ async fn run_live_room_list_observation_with_sources(
                         &authoritative,
                         &sliding_sync_diagnostics,
                         timeline_residency.as_ref(),
+                        &mut traced,
                     )
                     .await;
                 }
@@ -1300,6 +1324,7 @@ async fn run_live_room_list_observation_with_sources(
                         &known_room_ids, &known_dm_rooms, &room_tx, &action_tx, &event_tx,
                         generation, source, &authoritative, &sliding_sync_diagnostics,
                         timeline_residency.as_ref(),
+                        &mut traced,
                     ).await;
                 }
             }
@@ -1347,6 +1372,7 @@ async fn run_live_room_list_observation_with_sources(
                                 &authoritative,
                                 &sliding_sync_diagnostics,
                                 timeline_residency.as_ref(),
+                                &mut traced,
                             )
                             .await;
                             #[cfg(test)]
@@ -1522,6 +1548,7 @@ async fn normalize_and_project_entries(
     authoritative: &Arc<AtomicBool>,
     direct_state: Option<&DirectClassificationState>,
     sliding_sync_diagnostics: Option<&crate::SlidingSyncDiagnostics>,
+    traced: &mut RoomListTraceLedgers,
 ) -> bool {
     // Collect before the await: mapping lazily across the await trips a
     // higher-ranked lifetime check on the iterator closure.
@@ -1579,6 +1606,7 @@ async fn normalize_and_project_entries(
         koushi_sdk::room_list_snapshot_from_sdk_rooms_with_direct_targets(
             joined_rooms,
             direct_targets_by_room,
+            &mut traced.sdk,
         ),
     )
     .await;
@@ -1686,6 +1714,7 @@ async fn normalize_and_project_entries(
         source,
         authoritative.load(Ordering::Acquire),
         room_access,
+        traced,
     ))
     .await
 }

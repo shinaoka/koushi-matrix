@@ -178,72 +178,88 @@ pub(super) struct SdkUnreadTrace<'a> {
     conversation_activity: Option<MatrixConversationActivity>,
 }
 
-pub(super) fn trace_sdk_unread_snapshot(trace: SdkUnreadTrace<'_>) {
+/// Last recorded `sdk_room_snapshot` per room (#1915), owned by the caller.
+///
+/// Room-list snapshots re-project every room on each update; a room is recorded
+/// again only when its traced values change or after it left the unread set.
+/// The owner is the session that projects the room list, so two accounts in one
+/// process keep separate ledgers and neither suppresses nor resets the other's.
+pub type SdkUnreadTraceLedger = koushi_diagnostics::DiagnosticChangeLedger;
+
+/// Record the trace of one room, unless the same room's traced values are
+/// unchanged in `ledger` (#1915).
+fn trace_sdk_unread_snapshot(
+    ledger: &mut SdkUnreadTraceLedger,
+    room_id: &str,
+    trace: SdkUnreadTrace<'_>,
+) {
+    ledger.record_if_changed(room_id, sdk_unread_snapshot_event(trace));
+}
+
+fn sdk_unread_snapshot_event(trace: SdkUnreadTrace<'_>) -> DiagnosticEvent {
     let latest_event = trace.latest_event.as_ref();
-    record(
-        DiagnosticEvent::new(DiagnosticLevel::Debug, "sdk.unread", "sdk_room_snapshot")
-            .field(DiagnosticField::count(
-                "unread_messages",
-                trace.unread_messages,
-            ))
-            .field(DiagnosticField::count("unread_count", trace.unread_count))
-            .field(DiagnosticField::count(
-                "notification_count",
-                trace.notification_count,
-            ))
-            .field(DiagnosticField::count(
-                "highlight_count",
-                trace.highlight_count,
-            ))
-            .field(DiagnosticField::boolean(
-                "marked_unread",
-                trace.marked_unread,
-            ))
-            .field(DiagnosticField::boolean(
-                "latest_event_present",
-                latest_event.is_some(),
-            ))
-            .field(DiagnosticField::boolean(
-                "fully_read_present",
-                trace.fully_read_event_id.is_some(),
-            ))
-            .field(DiagnosticField::boolean(
-                "private_receipt_present",
-                trace.private_read_receipt_event_id.is_some(),
-            ))
-            .field(DiagnosticField::boolean(
-                "latest_event_content_converted",
-                latest_event.is_some_and(|event| event.content_converted),
-            ))
-            .field(DiagnosticField::boolean(
-                "latest_event_threaded",
-                latest_event.is_some_and(|event| event.is_threaded),
-            ))
-            .field(DiagnosticField::boolean(
-                "latest_event_reply",
-                latest_event.is_some_and(|event| event.is_reply),
-            ))
-            .field(DiagnosticField::boolean(
-                "latest_event_thread_summary",
-                latest_event.is_some_and(|event| event.has_thread_summary),
-            ))
-            .field(DiagnosticField::boolean(
-                "latest_event_reactions",
-                latest_event.is_some_and(|event| event.has_reactions),
-            ))
-            .field(DiagnosticField::boolean(
-                "recency_stamp_present",
-                trace.recency_stamp_present,
-            ))
-            .field(DiagnosticField::boolean(
-                "conversation_activity_present",
-                trace.conversation_activity.is_some(),
-            ))
-            .field(DiagnosticField::token(
-                "conversation_activity_source",
-                conversation_activity_source_token(trace.conversation_activity),
-            )),
-    );
+    DiagnosticEvent::new(DiagnosticLevel::Debug, "sdk.unread", "sdk_room_snapshot")
+        .field(DiagnosticField::count(
+            "unread_messages",
+            trace.unread_messages,
+        ))
+        .field(DiagnosticField::count("unread_count", trace.unread_count))
+        .field(DiagnosticField::count(
+            "notification_count",
+            trace.notification_count,
+        ))
+        .field(DiagnosticField::count(
+            "highlight_count",
+            trace.highlight_count,
+        ))
+        .field(DiagnosticField::boolean(
+            "marked_unread",
+            trace.marked_unread,
+        ))
+        .field(DiagnosticField::boolean(
+            "latest_event_present",
+            latest_event.is_some(),
+        ))
+        .field(DiagnosticField::boolean(
+            "fully_read_present",
+            trace.fully_read_event_id.is_some(),
+        ))
+        .field(DiagnosticField::boolean(
+            "private_receipt_present",
+            trace.private_read_receipt_event_id.is_some(),
+        ))
+        .field(DiagnosticField::boolean(
+            "latest_event_content_converted",
+            latest_event.is_some_and(|event| event.content_converted),
+        ))
+        .field(DiagnosticField::boolean(
+            "latest_event_threaded",
+            latest_event.is_some_and(|event| event.is_threaded),
+        ))
+        .field(DiagnosticField::boolean(
+            "latest_event_reply",
+            latest_event.is_some_and(|event| event.is_reply),
+        ))
+        .field(DiagnosticField::boolean(
+            "latest_event_thread_summary",
+            latest_event.is_some_and(|event| event.has_thread_summary),
+        ))
+        .field(DiagnosticField::boolean(
+            "latest_event_reactions",
+            latest_event.is_some_and(|event| event.has_reactions),
+        ))
+        .field(DiagnosticField::boolean(
+            "recency_stamp_present",
+            trace.recency_stamp_present,
+        ))
+        .field(DiagnosticField::boolean(
+            "conversation_activity_present",
+            trace.conversation_activity.is_some(),
+        ))
+        .field(DiagnosticField::token(
+            "conversation_activity_source",
+            conversation_activity_source_token(trace.conversation_activity),
+        ))
 }
 
 fn conversation_activity_source_token(
@@ -866,11 +882,16 @@ pub fn direct_account_data_targets_by_room(
 }
 
 /// Normalize joined rooms with an optional authoritative `m.direct` map.
+///
+/// `ledger` owns the `sdk_room_snapshot` dedup state for the session that
+/// projects the room list (#1915); it must be the same value across successive
+/// snapshots of one session, and never shared between sessions.
 pub async fn room_list_snapshot_from_sdk_rooms_with_direct_targets(
     rooms: impl IntoIterator<Item = matrix_sdk::Room>,
     direct_targets_by_room: Option<&MatrixDirectTargetsByRoom>,
+    ledger: &mut SdkUnreadTraceLedger,
 ) -> MatrixRoomListSnapshot {
-    matrix_room_list_snapshot_from_rooms(direct_targets_by_room, rooms).await
+    matrix_room_list_snapshot_from_rooms(direct_targets_by_room, rooms, ledger).await
 }
 
 /// Normalize a room list snapshot from caller-provided SDK rooms.
@@ -884,7 +905,10 @@ pub async fn room_list_snapshot_from_sdk_rooms_with_direct_targets(
 pub async fn room_list_snapshot_from_sdk_rooms(
     rooms: impl IntoIterator<Item = matrix_sdk::Room>,
 ) -> MatrixRoomListSnapshot {
-    room_list_snapshot_from_sdk_rooms_with_direct_targets(rooms, None).await
+    // A one-shot snapshot has no session to own a ledger, and its caller reads
+    // every record once, so a fresh ledger is exactly the undeduped behavior.
+    let mut ledger = SdkUnreadTraceLedger::default();
+    room_list_snapshot_from_sdk_rooms_with_direct_targets(rooms, None, &mut ledger).await
 }
 
 /// Normalize joined rooms from the caller's source of truth plus invited rooms
@@ -897,8 +921,10 @@ pub async fn room_list_snapshot_from_sdk_rooms_with_invites(
 ) -> MatrixRoomListSnapshot {
     let client = session.client();
     let direct_targets_by_room = matrix_direct_account_data_targets_by_room(&client).await;
+    let mut ledger = SdkUnreadTraceLedger::default();
     let mut snapshot =
-        matrix_room_list_snapshot_from_rooms(Some(&direct_targets_by_room), rooms).await;
+        matrix_room_list_snapshot_from_rooms(Some(&direct_targets_by_room), rooms, &mut ledger)
+            .await;
     snapshot.invites = matrix_invite_previews_from_rooms(client.invited_rooms()).await;
     snapshot
 }
@@ -933,6 +959,7 @@ pub async fn room_list_snapshot(
             return Ok(matrix_room_list_snapshot_from_rooms(
                 Some(&direct_targets_by_room),
                 client.joined_rooms(),
+                &mut SdkUnreadTraceLedger::default(),
             )
             .await);
         }
@@ -953,11 +980,17 @@ pub async fn room_list_snapshot(
     };
 
     let direct_targets_by_room = matrix_direct_account_data_targets_by_room(&client).await;
-    let snapshot = matrix_room_list_snapshot_from_diffs(Some(&direct_targets_by_room), diffs).await;
+    let snapshot = matrix_room_list_snapshot_from_diffs(
+        Some(&direct_targets_by_room),
+        diffs,
+        &mut SdkUnreadTraceLedger::default(),
+    )
+    .await;
     if snapshot.rooms.is_empty() && snapshot.spaces.is_empty() {
         return Ok(matrix_room_list_snapshot_from_rooms(
             Some(&direct_targets_by_room),
             client.joined_rooms(),
+            &mut SdkUnreadTraceLedger::default(),
         )
         .await);
     }
@@ -2509,6 +2542,7 @@ pub(super) fn matrix_timeline_update_from_ui(
 async fn matrix_room_list_snapshot_from_diffs(
     direct_targets_by_room: Option<&MatrixDirectTargetsByRoom>,
     diffs: Vec<eyeball_im::VectorDiff<matrix_sdk_ui::room_list_service::RoomListItem>>,
+    ledger: &mut SdkUnreadTraceLedger,
 ) -> MatrixRoomListSnapshot {
     let mut items = Vec::new();
     for diff in diffs {
@@ -2531,16 +2565,18 @@ async fn matrix_room_list_snapshot_from_diffs(
         }
     }
 
-    matrix_room_list_snapshot_from_items(direct_targets_by_room, items).await
+    matrix_room_list_snapshot_from_items(direct_targets_by_room, items, ledger).await
 }
 
 async fn matrix_room_list_snapshot_from_items(
     direct_targets_by_room: Option<&MatrixDirectTargetsByRoom>,
     items: Vec<matrix_sdk_ui::room_list_service::RoomListItem>,
+    ledger: &mut SdkUnreadTraceLedger,
 ) -> MatrixRoomListSnapshot {
     matrix_room_list_snapshot_from_rooms(
         direct_targets_by_room,
         items.into_iter().map(|item| item.into_inner()),
+        ledger,
     )
     .await
 }
@@ -2548,6 +2584,7 @@ async fn matrix_room_list_snapshot_from_items(
 async fn matrix_room_list_snapshot_from_rooms(
     direct_targets_by_room: Option<&MatrixDirectTargetsByRoom>,
     rooms: impl IntoIterator<Item = matrix_sdk::Room>,
+    ledger: &mut SdkUnreadTraceLedger,
 ) -> MatrixRoomListSnapshot {
     let mut snapshot = MatrixRoomListSnapshot::default();
     let mut user_profiles = BTreeMap::new();
@@ -2678,18 +2715,24 @@ async fn matrix_room_list_snapshot_from_rooms(
         let private_read_receipt_event_id = matrix_room_private_read_receipt_event_id(&room).await;
         let recency_stamp = room.recency_stamp().map(Into::into);
         if unread_count > 0 || notification_count > 0 || highlight_count > 0 || is_marked_unread {
-            trace_sdk_unread_snapshot(SdkUnreadTrace {
-                unread_messages,
-                unread_count,
-                notification_count,
-                highlight_count,
-                marked_unread: is_marked_unread,
-                latest_event: &latest_event,
-                fully_read_event_id: fully_read_event_id.as_deref(),
-                private_read_receipt_event_id: private_read_receipt_event_id.as_deref(),
-                recency_stamp_present: recency_stamp.is_some(),
-                conversation_activity,
-            });
+            trace_sdk_unread_snapshot(
+                ledger,
+                &room_id,
+                SdkUnreadTrace {
+                    unread_messages,
+                    unread_count,
+                    notification_count,
+                    highlight_count,
+                    marked_unread: is_marked_unread,
+                    latest_event: &latest_event,
+                    fully_read_event_id: fully_read_event_id.as_deref(),
+                    private_read_receipt_event_id: private_read_receipt_event_id.as_deref(),
+                    recency_stamp_present: recency_stamp.is_some(),
+                    conversation_activity,
+                },
+            );
+        } else {
+            ledger.forget(&room_id);
         }
 
         let mut list_room = matrix_room_list_room_from_counts(

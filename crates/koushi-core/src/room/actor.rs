@@ -1362,6 +1362,9 @@ impl RoomActor {
         if let Ok(mut known_dm_rooms) = self.known_dm_rooms.write() {
             known_dm_rooms.clear();
         }
+        // No ledger reset here (#1915): the room-list trace ledgers belong to
+        // the observation task, which the next session start creates afresh, so
+        // one account's session never clears another account's dedup state.
     }
 
     pub(super) fn emit(&self, event: CoreEvent) {

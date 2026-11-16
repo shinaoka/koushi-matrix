@@ -135,7 +135,11 @@ fn search_request_status(
     }
 }
 
-fn reduce_with_unread_diagnostics(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
+fn reduce_with_unread_diagnostics(
+    state: &mut AppState,
+    unread_trace_ledger: &mut unread_trace::UnreadTraceLedger,
+    action: AppAction,
+) -> Vec<AppEffect> {
     let room_list_trace = match &action {
         AppAction::RoomListUpdated { rooms, .. }
         | AppAction::RoomListSnapshotProvisional { rooms, .. }
@@ -152,7 +156,7 @@ fn reduce_with_unread_diagnostics(state: &mut AppState, action: AppAction) -> Ve
     }
     let effects = reduce(state, action);
     if let Some(input) = room_list_trace {
-        unread_trace::trace_room_list_applied(&input, &state.rooms);
+        unread_trace::trace_room_list_applied(unread_trace_ledger, &input, &state.rooms);
     }
     for effect in &effects {
         record_native_attention_recomputed(effect);
@@ -276,13 +280,19 @@ impl super::AppActor {
         );
         let previous_session_state = self.state.session.clone();
         let previous_disclosure_epoch = self.state.session_disclosure_epoch;
-        let effects = reduce_with_unread_diagnostics(&mut self.state, action);
+        let effects =
+            reduce_with_unread_diagnostics(&mut self.state, &mut self.unread_trace_ledger, action);
         if self.state.session != previous_session_state {
             self.state.session_disclosure_epoch =
                 crate::session_access_token::next_disclosure_epoch();
             self.session_revision = self
                 .session_revision
                 .and_then(|revision| revision.checked_add(1));
+            // #1915: these ledgers outlive the session they describe, and a new
+            // session's first trace of a room must not be suppressed by the
+            // previous session's values for it.
+            self.unread_trace_ledger = Default::default();
+            self.activity_projection.forget_trace_history();
         }
         if self.state.session == previous_session_state {
             self.state.session_disclosure_epoch = previous_disclosure_epoch;
@@ -597,3 +607,5 @@ impl super::AppActor {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod unread_dedup_tests;
