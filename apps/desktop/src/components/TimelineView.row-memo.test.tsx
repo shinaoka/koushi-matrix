@@ -91,15 +91,18 @@ it("re-renders only the row whose item changed", async () => {
   await mountRows();
   renders.count = 0;
 
-  const updated: TimelineItem = { ...items()[5], body: "Synthetic row 5 edited", is_edited: true };
+  // Edit a row next to the live edge: it is mounted whether or not the
+  // timeline windows its rows (#1890).
+  const index = ROW_COUNT - 2;
+  const updated: TimelineItem = { ...items()[index], body: `Synthetic row ${index} edited`, is_edited: true };
   act(() =>
     emit({
       kind: "Timeline",
-      event: { ItemsUpdated: { key: KEY, generation: 1, batch_id: 1, diffs: [{ Set: { index: 5, item: updated } }] } }
+      event: { ItemsUpdated: { key: KEY, generation: 1, batch_id: 1, diffs: [{ Set: { index, item: updated } }] } }
     })
   );
 
-  await screen.findByText("Synthetic row 5 edited");
+  await screen.findByText(`Synthetic row ${index} edited`);
   // One row (its body plus at most its own timestamp labels), not all ROW_COUNT rows.
   expect(renders.count).toBeGreaterThan(0);
   expect(renders.count).toBeLessThanOrEqual(3);
