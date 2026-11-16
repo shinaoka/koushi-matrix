@@ -3355,11 +3355,12 @@ dependencies = [
 
 [[package]]
 name = "koushi-desktop"
-version = "0.35.2"
+version = "0.35.3"
 dependencies = [
  "dirs 6.0.0",
  "futures-util",
  "gtk",
+ "image",
  "jiff",
  "keyring",
  "koushi-core",
@@ -3442,7 +3443,10 @@ dependencies = [
  "koushi-key",
  "koushi-mcp",
  "koushi-protocol",
+ "koushi-sdk",
  "koushi-state",
+ "matrix-sdk",
+ "matrix-sdk-test",
  "serde",
  "serde_json",
  "tempfile",
@@ -4421,6 +4425,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5b4c1b4f2aa9f25f63a7a49d3dd0ed567b3670da15330a66b29434be899b891"
 dependencies = [
  "futures-lite",
+ "image",
+ "lazy_static",
  "log",
  "mac-notification-sys",
  "serde",

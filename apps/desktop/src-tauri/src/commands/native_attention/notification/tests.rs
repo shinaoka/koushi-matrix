@@ -25,6 +25,7 @@ fn payload() -> NativeNotificationPayload {
     NativeNotificationPayload {
         title: "Mention in Room".to_owned(),
         body: "Alice: private body".to_owned(),
+        sender_avatar: Some("avatar/0123456789abcdef".to_owned()),
         target: NativeNotificationTarget {
             room_id: "!room:example.invalid".to_owned(),
             event_id: Some("$event:example.invalid".to_owned()),

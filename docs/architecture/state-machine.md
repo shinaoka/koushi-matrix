@@ -2125,20 +2125,31 @@ stateDiagram-v2
   its stored draft is non-empty; otherwise it submits the seed and reports
   `seeded`.
 
-- `AssistantDraftStaged { target, document, client_name }` (#1644) is the
-  MCP `draft_message` write, the second draft write that does not come from a
-  composer lease. `AppActor` reduces it only from the `DirectComposerDraft`
+- `AssistantDraftStaged { target, document, client_name, replace }` (#1644) is
+  the MCP `draft_message` write, the second draft write that does not come from
+  a composer lease. `AppActor` reduces it only from the `DirectComposerDraft`
   envelope, after checking that the session is Ready, the account's draft store
   is `Loaded`, the target room is in the room list, the target's stored draft
-  is empty, no composer command permit is held for that exact target, and the
+  is empty (or, with `replace`, still the assistant's untouched draft), no
+  composer command permit is held for that exact target, and the
   open target composer has no pending submission; any other case answers the
-  caller without reducing. The reducer repeats the Ready, room, and empty-draft
+  caller without reducing. The reducer repeats the Ready, room, and draft
   guards, writes the document at the successor of the stored revision, and
   records `AssistantDraftMarker { client_name, revision }` for the target. When
   the target is the open main or thread composer it hydrates that composer
   under the `ComposerDraftsLoaded` rule. The marker lives only while the
   target has content: every path that removes the target's content removes
   the marker, and later renderer edits keep it.
+  `replace: true` (#1905) is the one case where a non-empty target is
+  written: it requires the target to hold exactly the assistant's untouched
+  draft, meaning the marker names the stored revision (the state `get_draft`
+  reports as `assistant`), and it is subject to the same command-permit and
+  pending-send guards. The reducer takes the successor revision and replaces
+  the marker with one naming this call's client, so the replacement is an
+  ordinary assistant draft again; an open composer already showing the older
+  revision hydrates it as a first stage does, with no navigation, focus, or
+  mode change. A target whose text the user edited or whose marker the user
+  dismissed is a `conflict` that writes nothing, with or without the flag.
   `AssistantDraftMarkerDismissed { target }` removes only the marker, leaves
   content and revision unchanged, and is idempotent. The marker is persisted
   with the draft entry (`assistant`, optional in payload schema 3).
@@ -2156,6 +2167,7 @@ stateDiagram-v2
     Empty --> Editing: ComposerDraftsLoaded [active composer empty and persisted draft exists]
     Empty --> Editing: ComposerDraftSeeded [room known, stored draft empty] / store document + successor revision
     Empty --> AssistantDrafted: AssistantDraftStaged [room known, stored draft empty, no command permit] / store document + successor revision + marker
+    AssistantDrafted --> AssistantDrafted: AssistantDraftStaged [replace, marker names stored revision, no command permit] / store document + successor revision + new marker
     AssistantDrafted --> AssistantDrafted: ComposerDraftChanged [non-empty and revision > stored] / replace draft, keep marker
     AssistantDrafted --> Editing: AssistantDraftMarkerDismissed / drop marker
     AssistantDrafted --> Empty: ComposerDraftChanged [empty] or AcceptedSend / drop content + marker

@@ -29,6 +29,7 @@ import {
   Users,
   X
 } from "lucide-react";
+import { startSessionVerificationWindowDrag } from "../backend/appRuntime";
 import { t } from "../i18n/messages";
 import type {
   AccountHomeItem,
@@ -440,7 +441,7 @@ export function TopBar({
   onOpenDiagnostics = () => undefined,
   onSearchQueryChange = () => undefined,
   onSearchScopeChange = () => undefined,
-  onStartWindowDrag = () => undefined,
+  onStartWindowDrag = startSessionVerificationWindowDrag,
   onOpenAppSettings = () => undefined,
   onSelectAccountTab = () => undefined,
   onAddAccountTab = () => undefined,
@@ -459,6 +460,9 @@ export function TopBar({
   onOpenDiagnostics?: () => void;
   onSearchQueryChange?: (value: string) => void;
   onSearchScopeChange?: (value: SearchScopeKind) => void;
+  // #1920: defaults to the real drag port, because the pre-ready shell mounts
+  // this header without passing a handler and the header still swallows the
+  // mousedown that the platform drag region would have used.
   onStartWindowDrag?: () => void;
   onOpenAppSettings?: () => void;
   onSelectAccountTab?: (id: string) => void;

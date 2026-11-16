@@ -1672,7 +1672,8 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             target,
             document,
             client_name,
-        } => timeline::handle_assistant_draft_staged(state, target, document, client_name),
+            replace,
+        } => timeline::handle_assistant_draft_staged(state, target, document, client_name, replace),
         AppAction::AssistantDraftMarkerDismissed { target } => {
             timeline::handle_assistant_draft_marker_dismissed(state, target)
         }
