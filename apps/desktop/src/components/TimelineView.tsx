@@ -138,6 +138,7 @@ import { t } from "../i18n/messages";
 import type {
 MediaTransferProgress,
 CoreEventPayload,
+ReceiptSourceRef,
 TimelineBottomArrival,
 ReplyQuote,
 TimelineItem,
@@ -148,6 +149,7 @@ TimelineReadStateSync
 import {
 timelineItemDomId,
 timelineKeyEquals,
+timelineKeyIdentity,
 timelineKeyRoomId
 } from "../domain/coreEvents";
 import type { TimelineForwardDestination } from "../domain/projectionTypes";
@@ -212,6 +214,7 @@ recordTimelineResync
 } from "../domain/timelineTransportStats";
 import type {
   DisplayDensity,
+  LiveReadReceipt,
   LiveSignalsState,
   MentionSurface,
   ResolveComposerKeyAction,
@@ -360,6 +363,31 @@ type TimelineBackfillMetrics = {
 };
 
 const TIMELINE_LINK_PREVIEW_OVERSCAN_ITEMS = 8;
+
+// #1892: TimelineItemRow is memoized, so every default and empty value handed
+// to a row must keep its identity across renders. A fresh `[]` or `{}` per
+// render would re-render every mounted row on any shell-level update.
+// These are shared and must never be mutated.
+const EMPTY_STRINGS: string[] = [];
+const EMPTY_TEXT_RANGES: TextRange[] = [];
+const EMPTY_RECEIPTS: LiveReadReceipt[] = [];
+const EMPTY_PROFILE_USERS: Record<string, UserProfile> = {};
+const EMPTY_FORWARD_DESTINATIONS: readonly TimelineForwardDestination[] = [];
+const EMPTY_SEARCH_HIGHLIGHTS: Record<string, { snippet: string; ranges: TextRange[] }> = {};
+const EMPTY_MEDIA_DOWNLOADS: Record<string, TimelineMediaDownloadState> = {};
+const EMPTY_REPLY_QUOTE_THUMBNAILS: Record<string, TimelineMediaDownloadState> = {};
+const EMPTY_MENTION_CANDIDATES: MentionCandidate[] = [];
+function shallowEqualStringRecord(
+  left: Readonly<Record<string, string>>,
+  right: Readonly<Record<string, string>>
+): boolean {
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) {
+    return false;
+  }
+  return leftKeys.every((key) => Object.hasOwn(right, key) && left[key] === right[key]);
+}
+const ignoreOpenThread: NonNullable<TimelineRowActionHandlers["onOpenThread"]> = () => undefined;
 const TIMELINE_SCROLL_IDLE_FLUSH_MS = 100;
 const TIMELINE_SCROLL_MAX_DEFER_MS = 500;
 /**
@@ -406,17 +434,17 @@ export const TimelineView = memo(function TimelineView({
   onStartDirectMessage,
   senderDeviceAdvisoryUserIds,
   onOpenSenderDeviceAdvisory,
-  onOpenThread = () => undefined,
+  onOpenThread = ignoreOpenThread,
   resolveComposerKeyAction = ignoreComposerKeyAction,
   liveSignals,
-  profileUsers = {},
+  profileUsers = EMPTY_PROFILE_USERS,
   ownAvatar,
-  pinnedEventIds = [],
-  forwardDestinations = [],
+  pinnedEventIds = EMPTY_STRINGS,
+  forwardDestinations = EMPTY_FORWARD_DESTINATIONS,
   onSetLocalUserAlias,
   onOpenContextMenu,
   currentUserId,
-  ignoredUserIds = [],
+  ignoredUserIds = EMPTY_STRINGS,
   suppressPaginationUi = false,
   automaticBackfillEligible = true,
   initialTargetEventId = null,
@@ -424,15 +452,15 @@ export const TimelineView = memo(function TimelineView({
   onReturnToLive,
   liveLatestEventId = null,
   codeBlockWrap = true,
-  recentEmojis = [],
+  recentEmojis = EMPTY_STRINGS,
   onRecentEmojisChange,
   mathModeEnabled = true,
   onMathModeChange,
   canWrite = true,
-  searchHighlightsByEventId = {},
-  mediaDownloads = {},
+  searchHighlightsByEventId = EMPTY_SEARCH_HIGHLIGHTS,
+  mediaDownloads = EMPTY_MEDIA_DOWNLOADS,
   mediaGallery = [],
-  replyQuoteThumbnails = {},
+  replyQuoteThumbnails = EMPTY_REPLY_QUOTE_THUMBNAILS,
   continuity = { kind: "unknown" },
   roomScrollAnchor: _persistedRoomScrollAnchor = null,
   density = "default",
@@ -446,7 +474,7 @@ export const TimelineView = memo(function TimelineView({
   viewportScheduler: injectedViewportScheduler,
   listRefCallback,
   onRegisterJumpToLatest,
-  editMentionCandidates = [],
+  editMentionCandidates = EMPTY_MENTION_CANDIDATES,
   editMentionCandidatesLoading = false,
   onMentionQueryChange,
   onRequestHistoryKeys,
@@ -949,6 +977,10 @@ export const TimelineView = memo(function TimelineView({
       setPendingKeyRequests(next);
     }
   }, [items, pendingKeyRequests]);
+  // #1892: every row receives this map, and it is rebuilt whenever `items`
+  // changes. Keep the previous object while its contents are equal, so a new
+  // message or one row's diff does not re-render every memoized row.
+  const reactionSenderLabelsRef = useRef<Readonly<Record<string, string>>>({});
   // A reaction preview can omit its display label even when the sender is
   // already represented in this room's timeline. Keep a room-scoped fallback
   // so the tooltip does not regress to "Unknown user" while profile data
@@ -967,11 +999,46 @@ export const TimelineView = memo(function TimelineView({
         labels[item.sender] = label;
       }
     }
+    const previous = reactionSenderLabelsRef.current;
+    if (shallowEqualStringRecord(previous, labels)) {
+      return previous;
+    }
+    reactionSenderLabelsRef.current = labels;
     return labels;
   }, [items, profileUsers]);
   const timelineKeyState = getKeyState(store, timelineKey);
   const generation = timelineKeyState?.generation ?? 0;
   const receiptProjectionRequestId = timelineKeyState?.projectionRequestId ?? null;
+  // #1892: one stable ReceiptSourceRef per event for the current projection,
+  // so memoized rows keep their props across renders.
+  const receiptProjectionConnectionId = receiptProjectionRequestId?.connection_id ?? null;
+  const receiptProjectionSequence = receiptProjectionRequestId?.sequence ?? null;
+  // Keyed by identity, not object: the parent may pass an equal key object per render.
+  const receiptTimelineKeyIdentity = timelineKeyIdentity(timelineKey);
+  const receiptTimelineKeyRef = useRef(timelineKey);
+  receiptTimelineKeyRef.current = timelineKey;
+  const receiptSourceForEvent = useMemo(() => {
+    const cache = new Map<string, ReceiptSourceRef>();
+    return (eventId: string | null): ReceiptSourceRef | undefined => {
+      if (!eventId || receiptProjectionConnectionId === null || receiptProjectionSequence === null) {
+        return undefined;
+      }
+      let source = cache.get(eventId);
+      if (!source) {
+        source = {
+          key: receiptTimelineKeyRef.current,
+          projection_request_id: {
+            connection_id: String(receiptProjectionConnectionId),
+            sequence: String(receiptProjectionSequence)
+          },
+          generation: String(generation),
+          event_id: eventId
+        };
+        cache.set(eventId, source);
+      }
+      return source;
+    };
+  }, [receiptTimelineKeyIdentity, receiptProjectionConnectionId, receiptProjectionSequence, generation]);
   const timelineGenerationRef = useRef(generation);
   useLayoutEffect(() => { timelineGenerationRef.current = generation; }, [generation]);
   const stableAnchor = viewportTransactionRef.current.stableAnchor;
@@ -2607,10 +2674,13 @@ export const TimelineView = memo(function TimelineView({
     },
     [aliasDraft, aliasTarget, closeAliasDialog, onSetLocalUserAlias]
   );
-  const effectiveForwardDestinations =
-    forwardDestinations.length > 0
-      ? forwardDestinations
-      : [{ room_id: roomId, display_name: roomId }];
+  const effectiveForwardDestinations = useMemo(
+    () =>
+      forwardDestinations.length > 0
+        ? forwardDestinations
+        : [{ room_id: roomId, display_name: roomId }],
+    [forwardDestinations, roomId]
+  );
   /**
    * #1810: the per-image actions the shared viewer shows for one event. They
    * come from the row's own Rust facts, so a neighbour the reader navigated to
@@ -4130,8 +4200,8 @@ export const TimelineView = memo(function TimelineView({
                   contentEventId &&
                   searchHighlightsByEventId[contentEventId]?.snippet ===
                     (item.formatted?.plain_text ?? item.body)
-                    ? searchHighlightsByEventId[contentEventId]?.ranges ?? []
-                    : []
+                    ? searchHighlightsByEventId[contentEventId]?.ranges ?? EMPTY_TEXT_RANGES
+                    : EMPTY_TEXT_RANGES
                 }
                 onReply={onReply}
                 onOpenThread={onOpenThread}
@@ -4194,22 +4264,10 @@ export const TimelineView = memo(function TimelineView({
                 onOpenQuotedMedia={openQuotedMedia}
                 receipts={
                   contentEventId
-                    ? scopedReceiptsByEvent?.[contentEventId]?.readers ?? []
-                    : []
+                    ? scopedReceiptsByEvent?.[contentEventId]?.readers ?? EMPTY_RECEIPTS
+                    : EMPTY_RECEIPTS
                 }
-                receiptSource={
-                  contentEventId && receiptProjectionRequestId
-                    ? {
-                        key: timelineKey,
-                        projection_request_id: {
-                          connection_id: String(receiptProjectionRequestId.connection_id),
-                          sequence: String(receiptProjectionRequestId.sequence)
-                        },
-                        generation: String(generation),
-                        event_id: contentEventId
-                      }
-                    : undefined
-                }
+                receiptSource={receiptSourceForEvent(contentEventId)}
                 receiptTotalCount={
                   contentEventId
                     ? scopedReceiptsByEvent?.[contentEventId]?.total_count ?? 0
