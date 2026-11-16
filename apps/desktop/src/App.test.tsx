@@ -340,7 +340,14 @@ describe("ContextualRightPanel", () => {
     expect(importSource).toContain("if (!isTauriRuntime())");
     expect(importSource).toContain("api.chooseRoomKeyImportSource(");
     expect(source).toContain("runInBackground(windowDialogPort.toggleFullscreen())");
-    expect(source).toContain("windowDialogPort.startDragging().catch(() => undefined)");
+    // #1920: the window drag moved to the shared runtime helper so the title
+    // bar can default to it; the guard and the port call live there now.
+    const runtimeSource = readFileSync(
+      new URL("./backend/appRuntime.ts", import.meta.url),
+      "utf8"
+    );
+    expect(runtimeSource).toContain("if (!isTauriRuntime()) return;");
+    expect(runtimeSource).toContain("windowDialogPort.startDragging().catch(() => undefined)");
   });
 
   test("TimelineItemRow renders reaction pills with accessible labels", () => {

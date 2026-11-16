@@ -7543,13 +7543,6 @@ function AccountContent({
     window.addEventListener("pointerup", onPointerUp, { once: true });
   }
 
-  function startWindowDrag() {
-    if (!isTauriRuntime()) {
-      return;
-    }
-    void windowDialogPort.startDragging().catch(() => undefined);
-  }
-
   return (
     <ActiveLocaleContext.Provider value={localeContextKey}>
     <TimelineStoreContext.Provider value={timelineStoreContextValue}>
@@ -7576,7 +7569,6 @@ function AccountContent({
           }}
           onSearchQueryChange={setSearchQuery}
           onSearchScopeChange={setSearchScope}
-          onStartWindowDrag={startWindowDrag}
         />
         {eventNavigation?.kind === "opening" ? (
           // #1146: Rust publishes `opening` at click admission; show it until
