@@ -33,6 +33,8 @@ export function minimalEnvironment() {
     "RUSTUP_HOME",
     "RUSTC_WRAPPER",
     "RUSTFLAGS",
+    // kache records dependency digests for `kache why-miss` when this is set (AGENTS.md).
+    "KACHE_EXPLAIN_MISS",
     "TERM"
   ]) {
     if (process.env[key] !== undefined) {
