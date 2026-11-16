@@ -1455,11 +1455,7 @@ fn heif_avatar_content_reports_the_fetch_resolution() {
     // #1450: the HEIC fixture rides the same avatar entry point as every other
     // source, and the retained content reports the fetch resolution with its
     // WebP dimensions (the 64x64 fixture is inside the 120 px budget).
-    let heic = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../koushi-media/tests/fixtures/heif/opaque.heic"
-    ))
-    .to_vec();
+    let heic = include_bytes!("../../../koushi-media/tests/fixtures/heif/opaque.heic").to_vec();
     let (content, resolution) =
         prepare_avatar_content(heic, AvatarResolution::LocalResize, &avatar_policy())
             .expect("HEIF decodes through the avatar entry point");

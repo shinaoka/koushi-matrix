@@ -664,11 +664,7 @@ fn heic_item(id: &str, position: u64) -> StageUploadBytesInput {
         filename: "IMG_0001.HEIC".to_owned(),
         // Browsers commonly report no MIME for HEIC; content detection decides.
         mime_type: String::new(),
-        bytes: include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../koushi-media/tests/fixtures/heif/opaque.heic"
-        ))
-        .to_vec(),
+        bytes: include_bytes!("../../../koushi-media/tests/fixtures/heif/opaque.heic").to_vec(),
     }
 }
 

@@ -792,8 +792,11 @@ async fn unknown_room_or_space_fails_before_writing() {
 /// Regenerate with `KOUSHI_UPDATE_HISTORY_EXPORT_FIXTURE=1`.
 #[tokio::test]
 async fn browser_fixture_matches_renderer() {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../apps/desktop/e2e/fixtures/history-export-page");
+    // Runtime lookup: `env!` would key the test build on the checkout path.
+    let manifest_dir =
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo test sets CARGO_MANIFEST_DIR");
+    let fixture =
+        Path::new(&manifest_dir).join("../../apps/desktop/e2e/fixtures/history-export-page");
     let output = tempfile::tempdir().unwrap();
     let fs = super::fs::NativeHistoryExportFilesystem;
     let math = ExportSourceEvent::Plain(json!({
