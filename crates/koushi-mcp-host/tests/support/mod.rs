@@ -1,7 +1,8 @@
 //! Shared fixture for the bridge tests: a disposable runtime whose session
-//! state is driven through the real core reducer (#1580). It has no SDK
-//! session, so nothing reaches a homeserver; it carries exactly the session
-//! state `BridgeAccounts` reads.
+//! state is driven through the real core reducer (#1580). This fixture installs
+//! no SDK session, so by itself nothing reaches a homeserver: it carries
+//! exactly the session state `BridgeAccounts` reads. A test that needs a
+//! homeserver installs its own SDK session on the runtime it starts.
 #![allow(dead_code)] // each test binary uses its own subset
 
 use std::time::Duration;

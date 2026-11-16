@@ -1275,6 +1275,17 @@ impl CoreRuntime {
             .await
     }
 
+    /// Test hook: mark the session installed by
+    /// [`Self::install_account_session_for_testing`] as promoted, which is what
+    /// admits user content. A session installed without a login or restore flow
+    /// never passes through promotion on its own.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub async fn promote_account_session_for_testing(&self) -> bool {
+        self.account_actor_test_handle
+            .promote_session_for_testing()
+            .await
+    }
+
     /// Hold every room-list reconciliation of this runtime until the returned
     /// sender is used or dropped (#1634).
     ///

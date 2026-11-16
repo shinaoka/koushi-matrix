@@ -20,4 +20,8 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "
 [dev-dependencies]
 koushi-core = { path = "../koushi-core", features = ["test-hooks"] }
 koushi-key = { path = "../koushi-key" }
+# A mock-homeserver SDK session, so a bridge send reaches inspectable content.
+koushi-sdk = { path = "../koushi-sdk", features = ["test-hooks"] }
+matrix-sdk = { workspace = true, features = ["testing"] }
+matrix-sdk-test = { workspace = true }
 tokio = { version = "1", features = ["test-util"] }

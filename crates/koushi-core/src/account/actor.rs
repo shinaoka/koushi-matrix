@@ -624,6 +624,12 @@ pub(crate) enum AccountMessage {
         session: Arc<MatrixClientSession>,
         completed: oneshot::Sender<bool>,
     },
+    /// Test hook: mark an installed mock session as promoted, so the user
+    /// content it sends is admitted as it is after a real promotion.
+    #[cfg(any(test, feature = "test-hooks"))]
+    PromoteSessionForTesting {
+        promoted: oneshot::Sender<bool>,
+    },
     #[cfg(any(test, feature = "test-hooks"))]
     ResidencyTestRoomCommand {
         command: RoomCommand,
@@ -978,6 +984,24 @@ impl AccountActorHandle {
         let (completed, acknowledged) = oneshot::channel();
         if !self
             .send(AccountMessage::ResidencyTestInstallSession { session, completed })
+            .await
+        {
+            return false;
+        }
+        acknowledged.await.unwrap_or(false)
+    }
+
+    /// Test hook: mark the installed mock session as promoted. User content is
+    /// admitted only on a promoted session, and installing a session without a
+    /// login or restore flow never passes through promotion, so a send from a
+    /// mock-homeserver session would otherwise be refused forever. It sets the
+    /// send-admission flag alone, not the observers and sync a real promotion
+    /// also starts; a test that needs those exercises the real flow.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub async fn promote_session_for_testing(&self) -> bool {
+        let (promoted, acknowledged) = oneshot::channel();
+        if !self
+            .send(AccountMessage::PromoteSessionForTesting { promoted })
             .await
         {
             return false;
@@ -2921,6 +2945,12 @@ impl AccountActor {
                 AccountMessage::ResidencyTestInstallSession { session, completed } => {
                     let installed = Box::pin(self.install_residency_test_session(session)).await;
                     let _ = completed.send(installed);
+                }
+                #[cfg(any(test, feature = "test-hooks"))]
+                AccountMessage::PromoteSessionForTesting { promoted } => {
+                    let installed = self.session.is_some();
+                    self.session_promoted |= installed;
+                    let _ = promoted.send(installed);
                 }
                 #[cfg(any(test, feature = "test-hooks"))]
                 AccountMessage::ResidencyTestRoomCommand { command, accepted } => {
