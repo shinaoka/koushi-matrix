@@ -1362,6 +1362,8 @@ impl RoomActor {
         if let Ok(mut known_dm_rooms) = self.known_dm_rooms.write() {
             known_dm_rooms.clear();
         }
+        crate::unread_trace::reset_room_list_snapshot_ledger();
+        koushi_sdk::reset_sdk_unread_trace_ledger();
     }
 
     pub(super) fn emit(&self, event: CoreEvent) {

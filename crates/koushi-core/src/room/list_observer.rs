@@ -422,7 +422,7 @@ async fn project_room_list_snapshot(
     let rooms = normalize_rooms_with_previous(snapshot, &previous_dm_rooms);
     let invites = normalize_invites(snapshot);
     let user_profiles = normalize_user_profiles(snapshot);
-    unread_trace::trace_room_list_snapshot(&rooms);
+    unread_trace::trace_room_list_snapshot_for_session(&rooms);
     record(
         DiagnosticEvent::new(DiagnosticLevel::Debug, "core.room", "room_list_projection")
             .field(DiagnosticField::token(

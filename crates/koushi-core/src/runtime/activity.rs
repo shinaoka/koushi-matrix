@@ -81,6 +81,9 @@ pub(super) struct ActivityProjection {
     /// `AvatarThumbnailUpdated` settlement cannot reach them without this
     /// projection-local record.
     avatar_thumbnails_by_mxc: BTreeMap<String, AvatarThumbnailState>,
+    /// #1915: last recorded `activity_placeholder` unread trace per room, so a
+    /// rebuild of an unchanged room does not append another record.
+    placeholder_traces: crate::unread_trace::UnreadTraceLedger,
 }
 
 #[derive(Default)]
@@ -854,6 +857,13 @@ impl ActivityProjection {
         // The SDK count is verified at room scope. Fully-read markers, private
         // receipts and the server notification counter can disagree, so no
         // individual event row may claim to be unread here.
+        // #1915: a room that is no longer unread has left the traced set, so its
+        // next unread state is a new transition worth recording.
+        for room in &state.rooms {
+            if excluded.contains(room.room_id.as_str()) || room_activity_unread_count(room) == 0 {
+                self.placeholder_traces.forget(&room.room_id);
+            }
+        }
         let mut unread: Vec<ActivityRow> = state
             .rooms
             .iter()
@@ -861,6 +871,7 @@ impl ActivityProjection {
             .filter(|room| room_activity_unread_count(room) > 0)
             .map(|room| {
                 crate::unread_trace::trace_activity_room(
+                    &mut self.placeholder_traces,
                     "activity_placeholder",
                     room,
                     state

@@ -33,13 +33,18 @@ fn unread_reason_token(value: &str) -> &'static str {
     }
 }
 
-fn record_room_metrics(
+/// Last recorded per-room unread trace for one stage owner (#1915). Each
+/// stage owner keeps its own ledger, so a stage records a room only when that
+/// room's traced values change, and again after it left the unread set.
+pub(crate) type UnreadTraceLedger = koushi_diagnostics::DiagnosticChangeLedger;
+
+fn room_metrics_event(
     stage: &str,
     room: &RoomSummary,
     mode: Option<RoomNotificationMode>,
     emitted: Option<bool>,
     reason: Option<&str>,
-) {
+) -> DiagnosticEvent {
     let projection = room_attention_projection(room, mode);
     let mode = match mode {
         Some(RoomNotificationMode::All) => "all",
@@ -93,7 +98,7 @@ fn record_room_metrics(
             unread_reason_token(reason),
         ));
     }
-    koushi_diagnostics::record(event);
+    event
 }
 
 fn room_has_unread_metrics(room: &RoomSummary) -> bool {
@@ -125,30 +130,66 @@ pub(crate) fn capture_room_list_applied(
     }
 }
 
-pub(crate) fn trace_room_list_snapshot(rooms: &[RoomSummary]) {
-    for room in rooms.iter().filter(|room| room_has_unread_metrics(room)) {
-        record_room_metrics("room_list_snapshot", room, None, None, None);
+pub(crate) fn trace_room_list_snapshot(ledger: &mut UnreadTraceLedger, rooms: &[RoomSummary]) {
+    for room in rooms {
+        if room_has_unread_metrics(room) {
+            ledger.record_if_changed(
+                &room.room_id,
+                room_metrics_event("room_list_snapshot", room, None, None, None),
+            );
+        } else {
+            ledger.forget(&room.room_id);
+        }
     }
 }
 
+/// Room-list observers for one session run as several tasks (provisional
+/// cache, live service, membership batches) that all project the same rooms,
+/// so their `room_list_snapshot` ledger is shared. Session teardown clears it
+/// through [`reset_room_list_snapshot_ledger`].
+static ROOM_LIST_SNAPSHOT_LEDGER: std::sync::Mutex<UnreadTraceLedger> =
+    std::sync::Mutex::new(UnreadTraceLedger::new());
+
+pub(crate) fn trace_room_list_snapshot_for_session(rooms: &[RoomSummary]) {
+    let mut ledger = ROOM_LIST_SNAPSHOT_LEDGER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    trace_room_list_snapshot(&mut ledger, rooms);
+}
+
+pub(crate) fn reset_room_list_snapshot_ledger() {
+    *ROOM_LIST_SNAPSHOT_LEDGER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = UnreadTraceLedger::new();
+}
+
 pub(crate) fn trace_room_list_applied(
+    ledger: &mut UnreadTraceLedger,
     input: &RoomListAppliedTraceInput,
     applied_rooms: &[RoomSummary],
 ) {
-    for room in applied_rooms.iter().filter(|room| {
-        input.raw_unread_room_ids.contains(room.room_id.as_str()) || room_has_unread_metrics(room)
-    }) {
-        record_room_metrics(
-            "room_list_applied",
-            room,
-            input.notification_modes.get(&room.room_id).copied(),
-            None,
-            None,
-        );
+    for room in applied_rooms {
+        if input.raw_unread_room_ids.contains(room.room_id.as_str())
+            || room_has_unread_metrics(room)
+        {
+            ledger.record_if_changed(
+                &room.room_id,
+                room_metrics_event(
+                    "room_list_applied",
+                    room,
+                    input.notification_modes.get(&room.room_id).copied(),
+                    None,
+                    None,
+                ),
+            );
+        } else {
+            ledger.forget(&room.room_id);
+        }
     }
 }
 
 pub(crate) fn trace_activity_room(
+    ledger: &mut UnreadTraceLedger,
     stage: &str,
     room: &RoomSummary,
     mode: Option<RoomNotificationMode>,
@@ -156,9 +197,13 @@ pub(crate) fn trace_activity_room(
     reason: &str,
 ) {
     if !room_has_unread_metrics(room) {
+        ledger.forget(&room.room_id);
         return;
     }
-    record_room_metrics(stage, room, mode, Some(emitted), Some(reason));
+    ledger.record_if_changed(
+        &room.room_id,
+        room_metrics_event(stage, room, mode, Some(emitted), Some(reason)),
+    );
 }
 
 pub(crate) fn trace_mark_read(stage: &str, request_id: u64, room_id: &str, event_id: Option<&str>) {
@@ -230,10 +275,19 @@ mod tests {
     fn unread_helpers_collect_typed_records_without_trace_env() {
         let _diagnostic_lock = koushi_diagnostics::test_support::lock();
         let room = private_room();
-        trace_room_list_snapshot(std::slice::from_ref(&room));
+        let mut ledger = UnreadTraceLedger::default();
+        trace_room_list_snapshot(&mut ledger, std::slice::from_ref(&room));
         let input = capture_room_list_applied(std::slice::from_ref(&room), &HashMap::new());
-        trace_room_list_applied(&input, std::slice::from_ref(&room));
-        trace_activity_room("activity_recent_event", &room, None, true, "unread");
+        let mut ledger = UnreadTraceLedger::default();
+        trace_room_list_applied(&mut ledger, &input, std::slice::from_ref(&room));
+        trace_activity_room(
+            &mut UnreadTraceLedger::new(),
+            "activity_recent_event",
+            &room,
+            None,
+            true,
+            "unread",
+        );
         trace_mark_read(
             "mark_read_success",
             77,
@@ -260,7 +314,14 @@ mod tests {
             "latest_event_read",
             "room_metrics",
         ] {
-            trace_activity_room("activity_recent_event", &room, None, true, reason);
+            trace_activity_room(
+                &mut UnreadTraceLedger::new(),
+                "activity_recent_event",
+                &room,
+                None,
+                true,
+                reason,
+            );
         }
 
         let records = koushi_diagnostics::snapshot().records;
@@ -317,6 +378,7 @@ mod tests {
         let room = private_room();
 
         trace_activity_room(
+            &mut UnreadTraceLedger::new(),
             "activity_recent_event",
             &room,
             None,
@@ -324,6 +386,7 @@ mod tests {
             "plain_unread_only",
         );
         trace_activity_room(
+            &mut UnreadTraceLedger::new(),
             "activity_placeholder",
             &room,
             None,
