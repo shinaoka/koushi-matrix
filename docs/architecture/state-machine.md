@@ -2125,20 +2125,20 @@ stateDiagram-v2
   its stored draft is non-empty; otherwise it submits the seed and reports
   `seeded`.
 
-- `AssistantDraftStaged { target, document, client_name, replace }` (#1644) is
-  the MCP `draft_message` write, the second draft write that does not come from
-  a composer lease. `AppActor` reduces it only from the `DirectComposerDraft`
-  envelope, after checking that the session is Ready, the account's draft store
-  is `Loaded`, the target room is in the room list, the target's stored draft
-  is empty (or, with `replace`, still the assistant's untouched draft), no
-  composer command permit is held for that exact target, and the
-  open target composer has no pending submission; any other case answers the
-  caller without reducing. The reducer repeats the Ready, room, and draft
-  guards, writes the document at the successor of the stored revision, and
-  records `AssistantDraftMarker { client_name, revision }` for the target. When
-  the target is the open main or thread composer it hydrates that composer
-  under the `ComposerDraftsLoaded` rule. The marker lives only while the
-  target has content: every path that removes the target's content removes
+- `AssistantDraftStaged { target, document, client_name, replace, reply_to_event_id }`
+  (#1644) is the MCP `draft_message` write, the second draft write that does
+  not come from a composer lease. `AppActor` reduces it only from the
+  `DirectComposerDraft` envelope, after checking that the session is Ready, the
+  account's draft store is `Loaded`, the target room is in the room list, the
+  target's stored draft is empty (or, with `replace`, still the assistant's
+  untouched draft), no composer command permit is held for that exact target,
+  and the open target composer has no pending submission; any other case
+  answers the caller without reducing. The reducer repeats the Ready, room, and
+  draft guards, writes the document at the successor of the stored revision,
+  and records `AssistantDraftMarker { client_name, revision }` for the target.
+  When the target is the open main or thread composer it hydrates that
+  composer under the `ComposerDraftsLoaded` rule. The marker lives only while
+  the target has content: every path that removes the target's content removes
   the marker, and later renderer edits keep it.
   `replace: true` (#1905) is the one case where a non-empty target is
   written: it requires the target to hold exactly the assistant's untouched
@@ -2153,6 +2153,18 @@ stateDiagram-v2
   `AssistantDraftMarkerDismissed { target }` removes only the marker, leaves
   content and revision unchanged, and is idempotent. The marker is persisted
   with the draft entry (`assistant`, optional in payload schema 3).
+- `reply_to_event_id` stages the draft as a reply (#1906). The MCP host reads
+  that event through the same direct read `send_message` uses before it stages
+  anything, so Core decides existence, room membership, and the target rules;
+  `DirectMessageView::draft_reply_target_failure` refuses a deleted event and,
+  for a thread composer, an event of another thread. A refusal changes no
+  draft. On success the reducer stores the relation beside the text
+  (`room_reply_targets` / `thread_reply_targets`), it is persisted with the
+  draft entry (`reply_to_event_id`, optional in payload schema 3), and
+  `composer_for_room` / `composer_for_thread` derive the composer mode from it,
+  so opening that composer later starts in `Reply`. A `replace` sets the
+  relation from its own `reply_to_event_id`, so a replacement without one
+  drops the reply the replaced text had.
 
 ```mermaid
 stateDiagram-v2
@@ -2166,11 +2178,12 @@ stateDiagram-v2
     Editing --> Empty: LogoutRequested/SessionCleared
     Empty --> Editing: ComposerDraftsLoaded [active composer empty and persisted draft exists]
     Empty --> Editing: ComposerDraftSeeded [room known, stored draft empty] / store document + successor revision
-    Empty --> AssistantDrafted: AssistantDraftStaged [room known, stored draft empty, no command permit] / store document + successor revision + marker
-    AssistantDrafted --> AssistantDrafted: AssistantDraftStaged [replace, marker names stored revision, no command permit] / store document + successor revision + new marker
-    AssistantDrafted --> AssistantDrafted: ComposerDraftChanged [non-empty and revision > stored] / replace draft, keep marker
+    Empty --> AssistantDrafted: AssistantDraftStaged [room known, stored draft empty, no command permit] / store document + successor revision + marker + reply target
+    AssistantDrafted --> AssistantDrafted: AssistantDraftStaged [replace, marker names stored revision, no command permit] / store document + successor revision + new marker + given reply target
+    AssistantDrafted --> AssistantDrafted: ComposerDraftChanged [non-empty and revision > stored] / replace draft, keep marker and reply target
     AssistantDrafted --> Editing: AssistantDraftMarkerDismissed / drop marker
-    AssistantDrafted --> Empty: ComposerDraftChanged [empty] or AcceptedSend / drop content + marker
+    AssistantDrafted --> Empty: ComposerDraftChanged [empty] or AcceptedSend / drop content, marker, and reply target
+    AssistantDrafted --> AssistantDrafted: ComposerReplyCancelled / drop reply target, keep content
 ```
 
 Content, ActiveEmpty, and LeasedEmpty are protected. LeasedEmpty becomes a
@@ -4206,9 +4219,12 @@ stateDiagram-v2
   open; stale room/root signals and closed/opening thread states are ignored.
   `ThreadComposerReplyCancelled { room_id, root_event_id }` returns that open
   thread's composer to `Plain` and is a no-op when already `Plain` or stale.
-  Neither touches the selected room's main composer mode, and reply mode is never
-  stored with the thread draft: opening another thread, closing the pane, or
-  rebuilding the composer from `composer_drafts` starts in `Plain`.
+  Neither touches the selected room's main composer mode. The relation belongs
+  to the thread's stored draft (#1906): it is written to the draft store beside
+  the text, `composer_for_thread` restores it, so reopening that thread starts
+  in `Reply` and cancelling drops only the relation. A thread draft without
+  content keeps none, so opening another thread, closing the pane, or
+  rebuilding a composer from an empty stored draft starts in `Plain`.
 - `ThreadReplySubmitted { room_id, root_event_id, transaction_id, body }` and
   `ThreadSubmissionAccepted` apply only when a ready session has that exact
   thread open and the thread composer has no pending transaction. They record
@@ -4247,7 +4263,8 @@ stateDiagram-v2
     [*] --> Plain
     Plain --> Reply: ComposerReplyTargetSelected
     Reply --> Reply: ComposerReplyTargetSelected
-    Reply --> Plain: ComposerReplyCancelled
+    Reply --> Plain: ComposerReplyCancelled / drop stored reply target, keep text
+    Reply --> Plain: ComposerDraftChanged [empty] / drop drafted content and reply target
     Reply --> Plain: SendTextFinished [matching pending reply send]
 ```
 
@@ -4255,7 +4272,14 @@ stateDiagram-v2
   session is `Ready` and `room_id` is the selected timeline room; otherwise it is
   ignored. Re-selecting while already in `Reply` replaces the target (idempotent).
 - `ComposerReplyCancelled` returns to `Plain`; it is a no-op when already `Plain`
-  or when no room is selected.
+  or when no room is selected. It drops the stored relation and keeps the draft
+  text and its revision.
+- The relation belongs to the stored draft (#1906): `ComposerReplyTargetSelected`
+  writes it beside the text in the Rust draft store, except for a composer with
+  no content, and `composer_for_room` derives the mode from it. Opening that
+  room's composer after a switch or a restart therefore starts in `Reply`, and a
+  draft changed to empty drops the relation, so the composer returns to `Plain`.
+  Clearing or sending the draft drops both.
 - `SendTextSubmitted { room_id, transaction_id, body }` records one pending
   transaction only when no send is already pending. The pending state records the
   submitted composer kind: plain send, or reply send with the reply target that

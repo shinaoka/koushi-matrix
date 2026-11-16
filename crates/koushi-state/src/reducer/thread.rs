@@ -124,23 +124,25 @@ pub(crate) fn handle_thread_composer_reply_target_selected(
     root_event_id: String,
     event_id: String,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
+    if !is_session_ready(state) || !open_thread_is(state, &room_id, &root_event_id) {
         return Vec::new();
     }
-    match &mut state.thread {
-        ThreadPaneState::Open {
-            room_id: open_room_id,
-            root_event_id: open_root_event_id,
-            composer,
-            ..
-        } if open_room_id == &room_id && open_root_event_id == &root_event_id => {
-            composer.mode = ComposerMode::Reply {
-                in_reply_to_event_id: event_id,
-            };
-            vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
-        }
-        _ => Vec::new(),
+    // #1906: the reply relation is part of the stored thread draft, so it
+    // survives reopening that thread. `set_reply_target` keeps it only while
+    // the draft has content.
+    state.composer_drafts.set_reply_target(
+        &crate::ComposerTarget::Thread {
+            room_id: room_id.clone(),
+            root_event_id: root_event_id.clone(),
+        },
+        Some(event_id.clone()),
+    );
+    if let ThreadPaneState::Open { composer, .. } = &mut state.thread {
+        composer.mode = ComposerMode::Reply {
+            in_reply_to_event_id: event_id,
+        };
     }
+    vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
 }
 
 pub(crate) fn handle_thread_composer_reply_cancelled(
@@ -148,21 +150,39 @@ pub(crate) fn handle_thread_composer_reply_cancelled(
     room_id: String,
     root_event_id: String,
 ) -> Vec<AppEffect> {
-    match &mut state.thread {
+    if !open_thread_is(state, &room_id, &root_event_id) {
+        return Vec::new();
+    }
+    let ThreadPaneState::Open { composer, .. } = &state.thread else {
+        return Vec::new();
+    };
+    if composer.mode == ComposerMode::Plain {
+        return Vec::new();
+    }
+    // #1906: cancelling drops only the relation; the draft text stays.
+    state.composer_drafts.set_reply_target(
+        &crate::ComposerTarget::Thread {
+            room_id: room_id.clone(),
+            root_event_id: root_event_id.clone(),
+        },
+        None,
+    );
+    if let ThreadPaneState::Open { composer, .. } = &mut state.thread {
+        composer.mode = ComposerMode::Plain;
+    }
+    vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+}
+
+/// Whether `room_id` / `root_event_id` is this state's open thread.
+fn open_thread_is(state: &AppState, room_id: &str, root_event_id: &str) -> bool {
+    matches!(
+        &state.thread,
         ThreadPaneState::Open {
             room_id: open_room_id,
             root_event_id: open_root_event_id,
-            composer,
             ..
-        } if open_room_id == &room_id
-            && open_root_event_id == &root_event_id
-            && composer.mode != ComposerMode::Plain =>
-        {
-            composer.mode = ComposerMode::Plain;
-            vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
-        }
-        _ => Vec::new(),
-    }
+        } if open_room_id == room_id && open_root_event_id == root_event_id
+    )
 }
 
 pub(crate) fn handle_thread_composer_draft_changed(
@@ -197,6 +217,25 @@ pub(crate) fn handle_thread_composer_draft_changed(
             composer.draft = document.plain_body();
             composer.document = document;
             composer.draft_revision = revision;
+            // #1906: emptying the thread draft drops its reply relation; a
+            // reply selected before the text arrived is stored with the text.
+            let target = crate::ComposerTarget::Thread {
+                room_id: room_id.clone(),
+                root_event_id: root_event_id.clone(),
+            };
+            let selected = match &composer.mode {
+                ComposerMode::Plain => None,
+                ComposerMode::Reply {
+                    in_reply_to_event_id,
+                } => Some(in_reply_to_event_id.clone()),
+            };
+            if composer.document.is_empty() {
+                composer.mode = state.composer_drafts.reply_mode(&target);
+            } else if let Some(event_id) = selected {
+                state
+                    .composer_drafts
+                    .set_reply_target(&target, Some(event_id));
+            }
             vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
         }
         _ => Vec::new(),

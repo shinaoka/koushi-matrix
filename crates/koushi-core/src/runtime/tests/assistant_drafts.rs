@@ -33,9 +33,17 @@ fn main_target(room_id: &str) -> koushi_state::ComposerTarget {
 }
 
 fn request(target: koushi_state::ComposerTarget) -> AssistantDraftRequest {
+    reply_request(target, None)
+}
+
+fn reply_request(
+    target: koushi_state::ComposerTarget,
+    reply_to_event_id: Option<&str>,
+) -> AssistantDraftRequest {
     AssistantDraftRequest {
         target,
         document: koushi_state::ComposerDocument::from_plain_text("assistant text"),
+        reply_to_event_id: reply_to_event_id.map(str::to_owned),
         client_name: "claude-code".to_owned(),
         replace: false,
     }
@@ -280,6 +288,7 @@ async fn an_open_composer_sending_blocks_a_replacement() {
             koushi_state::ComposerDocument::from_plain_text("assistant text"),
             "claude-code".to_owned(),
             false,
+            None,
         )
         .expect("an empty target accepts the draft");
     state.timeline.room_id = Some(ROOM.to_owned());
@@ -295,4 +304,98 @@ async fn an_open_composer_sending_blocks_a_replacement() {
     let composer = actor.state.composer_drafts.composer_for_room(ROOM);
     assert_eq!(composer.draft, "assistant text");
     assert_eq!(composer.draft_revision, staged);
+}
+
+/// #1906: an assistant replies to a message in a room nobody has open. The
+/// draft and its reply target are staged together, opening the room puts that
+/// composer in reply mode for the event, and the send is submitted as a reply.
+#[tokio::test]
+async fn a_reply_draft_for_a_closed_room_opens_in_reply_mode() {
+    let data = tempfile::tempdir().unwrap();
+    let (mut actor, ..) = app_actor_event_navigation_fixture(data.path(), ready_state());
+    let before = actor.state.clone();
+
+    let staged = actor
+        .handle_assistant_draft(rid(), reply_request(main_target(ROOM), Some("$question")))
+        .await
+        .expect("an empty target accepts the reply draft");
+
+    // #1524: staging changes no selection, focus, pane, or read state.
+    let mut expected = before;
+    expected.composer_drafts = actor.state.composer_drafts.clone();
+    assert_eq!(actor.state, expected, "only the draft store changed");
+    assert_eq!(
+        actor.state.composer_drafts.room_reply_target(ROOM),
+        Some("$question")
+    );
+    let composer = actor.state.composer_drafts.composer_for_room(ROOM);
+    assert_eq!(composer.draft, "assistant text");
+    assert_eq!(staged.revision, composer.draft_revision);
+
+    let effects = actor
+        .reduce_app_action(AppAction::SelectRoom {
+            room_id: ROOM.to_owned(),
+        })
+        .await;
+    actor.handle_app_effects(rid(), effects).await;
+    assert_eq!(
+        actor.state.timeline.composer.mode,
+        koushi_state::ComposerMode::Reply {
+            in_reply_to_event_id: "$question".to_owned(),
+        }
+    );
+    assert_eq!(actor.state.timeline.composer.draft, "assistant text");
+
+    // The submission the GUI dispatches records the reply relation, which is
+    // what turns the send into an `m.in_reply_to` (#1643).
+    let draft_revision = composer.draft_revision;
+    let effects = actor
+        .reduce_app_action(AppAction::SendTextSubmittedAtRevision {
+            room_id: ROOM.to_owned(),
+            transaction_id: "txn-reply".to_owned(),
+            body: "assistant text".to_owned(),
+            draft_revision,
+        })
+        .await;
+    actor.handle_app_effects(rid(), effects).await;
+    assert_eq!(
+        actor.state.timeline.composer.pending_send_kind,
+        Some(koushi_state::PendingComposerSendKind::Reply {
+            in_reply_to_event_id: "$question".to_owned(),
+        })
+    );
+}
+
+/// #1906: a thread draft carries both relations, and the room's composer next
+/// to it stays plain.
+#[tokio::test]
+async fn a_thread_reply_draft_carries_the_thread_and_the_reply_target() {
+    let data = tempfile::tempdir().unwrap();
+    let (mut actor, ..) = app_actor_event_navigation_fixture(data.path(), ready_state());
+    let target = koushi_state::ComposerTarget::Thread {
+        room_id: ROOM.to_owned(),
+        root_event_id: "$root".to_owned(),
+    };
+
+    actor
+        .handle_assistant_draft(rid(), reply_request(target, Some("$in-thread")))
+        .await
+        .expect("an empty thread target accepts the reply draft");
+
+    let composer = actor
+        .state
+        .composer_drafts
+        .composer_for_thread(ROOM, "$root");
+    assert_eq!(composer.draft, "assistant text");
+    assert_eq!(
+        composer.mode,
+        koushi_state::ComposerMode::Reply {
+            in_reply_to_event_id: "$in-thread".to_owned(),
+        }
+    );
+    assert_eq!(
+        actor.state.composer_drafts.room_reply_target(ROOM),
+        None,
+        "the room composer keeps no relation of its own"
+    );
 }

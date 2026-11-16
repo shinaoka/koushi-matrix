@@ -194,8 +194,9 @@ fn draft_message_never_sends_and_declares_its_permission_and_conflict() {
         .as_object()
         .expect("properties");
     assert!(properties.contains_key("thread_root_event_id"));
+    // #1906: a reply target is staged with the draft; attachments stay out.
+    assert!(properties.contains_key("reply_to_event_id"));
     assert!(!properties.contains_key("attachments"));
-    assert!(!properties.contains_key("reply_to_event_id"));
     assert!(!properties.contains_key("client_request_id"));
     // #1905: the replacement is opt-in and never the default.
     assert!(
@@ -243,8 +244,21 @@ fn draft_message_never_sends_and_declares_its_permission_and_conflict() {
         )
         .is_err()
     );
+    assert!(
+        validate_arguments(
+            "draft_message",
+            &json!({
+                "account_id": "a",
+                "room_id": "!r",
+                "body": "hi",
+                "reply_to_event_id": "$question"
+            })
+        )
+        .is_ok()
+    );
     let output = tool.output_schema.expect("typed output");
     assert_eq!(output["properties"]["status"]["const"], "staged");
+    assert!(output["properties"].get("reply_to_event_id").is_some());
 }
 
 #[test]

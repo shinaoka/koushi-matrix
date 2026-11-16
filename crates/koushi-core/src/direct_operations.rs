@@ -81,6 +81,33 @@ pub struct DirectMessageView {
     pub reply_to_event_id: Option<String>,
 }
 
+impl DirectMessageView {
+    /// #1906: why this event cannot be the reply target of a draft whose
+    /// composer scope is `thread_root_event_id` (`None` for the room's main
+    /// composer), or `None` when it can be one.
+    ///
+    /// The read that produced this view already resolved the event inside the
+    /// joined room and refused non-messages, so only the target rules are left
+    /// here: a deleted event, and an event outside the requested thread. A
+    /// thread root and any event of that thread can be replied to from the
+    /// thread's composer.
+    pub fn draft_reply_target_failure(
+        &self,
+        thread_root_event_id: Option<&str>,
+    ) -> Option<DirectMessageFailure> {
+        if self.is_redacted {
+            return Some(DirectMessageFailure::Redacted);
+        }
+        let root = thread_root_event_id?;
+        if self.event_id == root || self.thread_root_event_id.as_deref() == Some(root) {
+            return None;
+        }
+        Some(DirectMessageFailure::NotInThread {
+            thread_root_event_id: self.thread_root_event_id.clone(),
+        })
+    }
+}
+
 /// The outcome of adding a reaction with set semantics (#1628).
 #[derive(Clone, Eq, PartialEq)]
 pub struct DirectReactionOutcome {
@@ -388,6 +415,9 @@ impl std::fmt::Debug for DirectMessageFailure {
 pub struct AssistantDraftRequest {
     pub target: koushi_state::ComposerTarget,
     pub document: koushi_state::ComposerDocument,
+    /// #1906: the event the staged draft replies to. The caller validated it
+    /// against `target` with [`DirectMessageView::draft_reply_target_failure`].
+    pub reply_to_event_id: Option<String>,
     /// The calling assistant's validated client name, shown by the marker.
     pub client_name: String,
     /// #1905: replace the target's own untouched assistant draft. Without it a
@@ -401,6 +431,7 @@ impl std::fmt::Debug for AssistantDraftRequest {
             .debug_struct("AssistantDraftRequest")
             .field("target", &self.target)
             .field("document", &"MessageBody(..)")
+            .field("reply_to_event_id", &self.reply_to_event_id.is_some())
             .field("replace", &self.replace)
             .finish_non_exhaustive()
     }
@@ -425,4 +456,76 @@ pub enum AssistantDraftFailure {
     Conflict,
     /// The account's draft store has not loaded (or failed to load).
     Unavailable,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn view(
+        event_id: &str,
+        is_redacted: bool,
+        thread_root_event_id: Option<&str>,
+    ) -> DirectMessageView {
+        DirectMessageView {
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: event_id.to_owned(),
+            sender_id: "@member:example.invalid".to_owned(),
+            timestamp_ms: 0,
+            kind: koushi_protocol::event::RoomMessageKind::Text,
+            is_encrypted: false,
+            is_redacted,
+            content_available: true,
+            body: Some("body".to_owned()),
+            edited: None,
+            reactions: Vec::new(),
+            relations_truncated: false,
+            thread_root_event_id: thread_root_event_id.map(str::to_owned),
+            reply_to_event_id: None,
+        }
+    }
+
+    /// #1906: the room composer accepts any readable message of the room, and a
+    /// deleted one is refused.
+    #[test]
+    fn a_main_composer_takes_any_message_that_was_not_deleted() {
+        assert_eq!(
+            view("$message", false, None).draft_reply_target_failure(None),
+            None
+        );
+        assert_eq!(
+            view("$message", false, Some("$root")).draft_reply_target_failure(None),
+            None
+        );
+        assert_eq!(
+            view("$deleted", true, None).draft_reply_target_failure(None),
+            Some(DirectMessageFailure::Redacted)
+        );
+    }
+
+    /// #1906: a thread composer takes the root and the events of that thread,
+    /// and refuses an event of another thread or of no thread.
+    #[test]
+    fn a_thread_composer_takes_only_its_own_thread() {
+        assert_eq!(
+            view("$root", false, None).draft_reply_target_failure(Some("$root")),
+            None
+        );
+        assert_eq!(
+            view("$reply", false, Some("$root")).draft_reply_target_failure(Some("$root")),
+            None
+        );
+        assert_eq!(
+            view("$elsewhere", false, Some("$other")).draft_reply_target_failure(Some("$root")),
+            Some(DirectMessageFailure::NotInThread {
+                thread_root_event_id: Some("$other".to_owned())
+            })
+        );
+        assert_eq!(
+            view("$loose", false, None).draft_reply_target_failure(Some("$root")),
+            Some(DirectMessageFailure::NotInThread {
+                thread_root_event_id: None
+            })
+        );
+    }
 }

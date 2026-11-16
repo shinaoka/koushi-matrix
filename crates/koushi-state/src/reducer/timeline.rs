@@ -708,6 +708,24 @@ pub(crate) fn handle_composer_draft_changed(
         state.timeline.composer.draft = document.plain_body();
         state.timeline.composer.document = document;
         state.timeline.composer.draft_revision = revision;
+        // #1906: emptying the draft drops its reply relation, so the composer
+        // must not keep a reply preview the stored draft no longer has. The
+        // other direction needs write-back: a reply the user selected before
+        // the text arrived is stored once the text is there, or `get_draft`
+        // would report a plain draft the composer shows as a reply.
+        let target = crate::ComposerTarget::Main {
+            room_id: room_id.clone(),
+        };
+        if state.timeline.composer.document.is_empty() {
+            state.timeline.composer.mode = state.composer_drafts.reply_mode(&target);
+        } else if let ComposerMode::Reply {
+            in_reply_to_event_id,
+        } = &state.timeline.composer.mode
+        {
+            state
+                .composer_drafts
+                .set_reply_target(&target, Some(in_reply_to_event_id.clone()));
+        }
         vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
     } else {
         Vec::new()
@@ -769,6 +787,7 @@ pub(crate) fn handle_assistant_draft_staged(
     document: crate::ComposerDocument,
     client_name: String,
     replace: bool,
+    reply_to_event_id: Option<String>,
 ) -> Vec<AppEffect> {
     let room_id = match &target {
         crate::ComposerTarget::Main { room_id } | crate::ComposerTarget::Thread { room_id, .. } => {
@@ -780,7 +799,7 @@ pub(crate) fn handle_assistant_draft_staged(
     }
     if state
         .composer_drafts
-        .stage_assistant_draft(&target, document, client_name, replace)
+        .stage_assistant_draft(&target, document, client_name, replace, reply_to_event_id)
         .is_none()
     {
         return Vec::new();
@@ -824,13 +843,15 @@ pub(crate) fn handle_assistant_draft_staged(
     Vec::new()
 }
 
-/// Copies only the draft fields, so the open composer keeps its mode and its
-/// submission tombstones.
+/// Copies only the draft fields, so the open composer keeps its submission
+/// tombstones. The mode follows the store: an assistant draft can stage a reply
+/// relation (#1906), and the open composer must show it at once.
 fn hydrate_staged_draft(composer: &mut crate::ComposerState, hydrated: crate::ComposerState) {
     composer.draft = hydrated.draft;
     composer.document = hydrated.document;
     composer.draft_revision = hydrated.draft_revision;
     composer.assistant_draft = hydrated.assistant_draft;
+    composer.mode = hydrated.mode;
 }
 
 /// #1644: drop only the marker; the draft and its revision stay.
@@ -922,7 +943,11 @@ pub(crate) fn handle_composer_draft_accepted(
             if state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
                 return Vec::new();
             }
+            // #1037: acceptance settles the stored draft but never the reply
+            // mode; the send terminal owns that transition.
+            let mode = state.timeline.composer.mode.clone();
             state.timeline.composer = state.composer_drafts.composer_for_room(&room_id);
+            state.timeline.composer.mode = mode;
             // #1037: only prepared-upload sends accept a main draft through
             // this action, after every upload was queued, so their pending
             // echoes are already in the live Room timeline.
@@ -1190,6 +1215,15 @@ pub(crate) fn handle_composer_reply_target_selected(
     if !is_session_ready(state) || state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
         return Vec::new();
     }
+    // #1906: the reply relation is part of the stored draft, so it survives
+    // reopening this composer. `set_reply_target` keeps it only while the
+    // draft has content.
+    state.composer_drafts.set_reply_target(
+        &crate::ComposerTarget::Main {
+            room_id: room_id.clone(),
+        },
+        Some(event_id.clone()),
+    );
     state.timeline.composer.mode = ComposerMode::Reply {
         in_reply_to_event_id: event_id,
     };
@@ -1203,6 +1237,14 @@ pub(crate) fn handle_composer_reply_cancelled(state: &mut AppState) -> Vec<AppEf
     if state.timeline.composer.mode == ComposerMode::Plain {
         return Vec::new();
     }
+    // #1906: cancelling drops only the relation; the draft text and its
+    // revision stay.
+    state.composer_drafts.set_reply_target(
+        &crate::ComposerTarget::Main {
+            room_id: room_id.clone(),
+        },
+        None,
+    );
     state.timeline.composer.mode = ComposerMode::Plain;
     vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
 }

@@ -69,6 +69,11 @@ struct PersistedComposerDraftEntry {
     /// without an assistant draft stay readable by older builds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     assistant: Option<AssistantDraftMarker>,
+    /// #1906: absent unless the draft replies to an event, so a payload
+    /// without one stays readable by older builds; one that has it is
+    /// unreadable to them, the same tradeoff as `assistant`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reply_to_event_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -187,6 +192,7 @@ impl From<ComposerDraftPersistenceEntry> for PersistedComposerDraftEntry {
             revision: entry.revision,
             last_accepted_clear_revision: entry.last_accepted_clear_revision,
             assistant: entry.assistant,
+            reply_to_event_id: entry.reply_to_event_id,
         }
     }
 }
@@ -198,6 +204,7 @@ impl From<PersistedComposerDraftEntry> for ComposerDraftPersistenceEntry {
             revision: entry.revision,
             last_accepted_clear_revision: entry.last_accepted_clear_revision,
             assistant: entry.assistant,
+            reply_to_event_id: entry.reply_to_event_id,
         }
     }
 }
@@ -239,6 +246,7 @@ impl From<PersistedComposerDraftStoreV2> for ComposerDraftPersistenceProjection 
             revision: entry.revision,
             last_accepted_clear_revision: entry.last_accepted_clear_revision,
             assistant: None,
+            reply_to_event_id: None,
         };
         Self {
             rooms: persisted
@@ -303,6 +311,7 @@ impl TryFrom<LegacyComposerDraftStoreV1> for ComposerDraftPersistenceProjection 
                             .map(ComposerDraftRevision::from_u64)
                             .unwrap_or_default(),
                         assistant: None,
+                        reply_to_event_id: None,
                     },
                 )
             })
@@ -377,6 +386,7 @@ impl TryFrom<LegacyComposerDraftStoreV1> for ComposerDraftPersistenceProjection 
                     revision,
                     last_accepted_clear_revision,
                     assistant: None,
+                    reply_to_event_id: None,
                 },
             );
         }

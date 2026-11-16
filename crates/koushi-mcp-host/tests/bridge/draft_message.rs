@@ -517,6 +517,7 @@ async fn a_thread_draft_is_not_the_room_draft() {
             document: koushi_state::ComposerDocument::from_plain_text("in the thread"),
             client_name: "pi".to_owned(),
             replace: false,
+            reply_to_event_id: None,
         }],
     )
     .await;
@@ -539,5 +540,84 @@ async fn an_unstaged_target_reads_back_as_empty() {
     assert_eq!(structured(&reply)["status"], "empty");
     assert_eq!(structured(&reply)["body"], "");
     assert!(structured(&reply).get("sender_id").is_none());
+    harness.stop().await;
+}
+
+/// #1906: a reply target is no longer refused as an unsupported argument. This
+/// fixture has no SDK session, so Core cannot confirm any event here and the
+/// call fails closed instead of staging a relation it could not check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unconfirmed_reply_target_is_refused_and_stages_nothing() {
+    let mut harness = Harness::start(Some(Harness::account_grant(false, true))).await;
+    let reply = harness
+        .call(
+            "draft_message",
+            json!({
+                "account_id": ACCOUNT, "room_id": ROOM, "body": "answer",
+                "reply_to_event_id": "$question:example.invalid"
+            }),
+        )
+        .await;
+    assert_eq!(error_code(&reply), "account_unavailable");
+    assert_ne!(error_reason(&reply), "plain_text_only");
+
+    let read = harness.call("get_draft", draft_read()).await;
+    assert_eq!(structured(&read)["status"], "empty");
+    assert!(structured(&read)["reply_to_event_id"].is_null());
+    harness.stop().await;
+}
+
+/// #1906: `get_draft` reports the reply target a draft was staged with, so an
+/// assistant can tell a kept reply from a cancelled one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_staged_reply_target_reads_back_and_a_cancelled_one_does_not() {
+    let mut harness = Harness::start(Some(Harness::account_grant(false, true))).await;
+    // Staged through the real reducer: this fixture has no room timeline, so
+    // `draft_message` cannot read the reply target it would stage.
+    support::apply_actions(
+        &harness.core,
+        vec![koushi_state::AppAction::AssistantDraftStaged {
+            target: koushi_state::ComposerTarget::Main {
+                room_id: ROOM.to_owned(),
+            },
+            document: koushi_state::ComposerDocument::from_plain_text("answer"),
+            client_name: "pi".to_owned(),
+            replace: false,
+            reply_to_event_id: Some("$question:example.invalid".to_owned()),
+        }],
+    )
+    .await;
+
+    let staged = draft_state_until(&mut harness, draft_read(), "assistant").await;
+    assert_eq!(
+        structured(&staged)["reply_to_event_id"],
+        "$question:example.invalid"
+    );
+    assert_eq!(structured(&staged)["body"], "answer");
+
+    // Cancelling in the GUI drops only the relation: the text stays.
+    support::apply_actions(
+        &harness.core,
+        vec![
+            koushi_state::AppAction::SelectRoom {
+                room_id: ROOM.to_owned(),
+            },
+            koushi_state::AppAction::ComposerReplyCancelled,
+        ],
+    )
+    .await;
+    // Injected actions are only queued, so poll for the cancellation the same
+    // way the status read-back does.
+    let mut cancelled = Value::Null;
+    for _ in 0..100 {
+        cancelled = harness.call("get_draft", draft_read()).await;
+        if structured(&cancelled)["reply_to_event_id"].is_null() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(structured(&cancelled)["reply_to_event_id"].is_null());
+    assert_eq!(structured(&cancelled)["status"], "assistant");
+    assert_eq!(structured(&cancelled)["body"], "answer");
     harness.stop().await;
 }

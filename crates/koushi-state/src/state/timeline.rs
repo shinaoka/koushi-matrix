@@ -1029,6 +1029,8 @@ pub struct ComposerDraftPersistenceEntry {
     pub last_accepted_clear_revision: ComposerDraftRevision,
     /// #1644: only meaningful with `content`; import drops it otherwise.
     pub assistant: Option<AssistantDraftMarker>,
+    /// #1906: the event this draft replies to, only meaningful with `content`.
+    pub reply_to_event_id: Option<String>,
 }
 
 #[derive(Clone, Default, Eq, PartialEq)]
@@ -1103,6 +1105,14 @@ pub struct ComposerDraftStore {
         String,
         std::collections::BTreeMap<String, AssistantDraftMarker>,
     >,
+    /// #1906: the event each target's draft replies to, keyed like `rooms` /
+    /// `threads`. A key is present only while the matching content is, so an
+    /// empty composer never carries a reply relation.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub room_reply_targets: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub thread_reply_targets:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Deserialize)]
@@ -1177,6 +1187,8 @@ impl ComposerDraftStore {
             && self.quiescent_thread_lru.is_empty()
             && self.room_assistant_markers.is_empty()
             && self.thread_assistant_markers.is_empty()
+            && self.room_reply_targets.is_empty()
+            && self.thread_reply_targets.is_empty()
     }
 
     pub fn composer_for_room(&self, room_id: &str) -> ComposerState {
@@ -1192,7 +1204,66 @@ impl ComposerDraftStore {
             .copied()
             .unwrap_or_default();
         composer.assistant_draft = self.room_assistant_marker(room_id).cloned();
+        composer.mode = self.reply_mode(&ComposerTarget::Main {
+            room_id: room_id.to_owned(),
+        });
         composer
+    }
+
+    /// #1906: the event a room's main-composer draft replies to, if any.
+    pub fn room_reply_target(&self, room_id: &str) -> Option<&str> {
+        self.room_reply_targets.get(room_id).map(String::as_str)
+    }
+
+    /// #1906: thread-target counterpart of [`Self::room_reply_target`].
+    pub fn thread_reply_target(&self, room_id: &str, root_event_id: &str) -> Option<&str> {
+        self.thread_reply_targets
+            .get(room_id)
+            .and_then(|targets| targets.get(root_event_id))
+            .map(String::as_str)
+    }
+
+    /// #1906: set or clear `target`'s reply relation. The relation belongs to
+    /// the stored draft, so reopening that composer restores it; a target
+    /// without content keeps none, exactly as the assistant marker.
+    pub fn set_reply_target(&mut self, target: &ComposerTarget, reply_to_event_id: Option<String>) {
+        if self.target_is_empty(target) {
+            return;
+        }
+        match target {
+            ComposerTarget::Main { room_id } => match reply_to_event_id {
+                Some(event_id) => {
+                    self.room_reply_targets.insert(room_id.clone(), event_id);
+                }
+                None => {
+                    self.room_reply_targets.remove(room_id);
+                }
+            },
+            ComposerTarget::Thread {
+                room_id,
+                root_event_id,
+            } => match reply_to_event_id {
+                Some(event_id) => {
+                    self.thread_reply_targets
+                        .entry(room_id.clone())
+                        .or_default()
+                        .insert(root_event_id.clone(), event_id);
+                }
+                None => {
+                    self.remove_thread_reply_target(room_id, root_event_id);
+                }
+            },
+        }
+    }
+
+    fn remove_thread_reply_target(&mut self, room_id: &str, root_event_id: &str) {
+        let Some(targets) = self.thread_reply_targets.get_mut(room_id) else {
+            return;
+        };
+        targets.remove(root_event_id);
+        if targets.is_empty() {
+            self.thread_reply_targets.remove(room_id);
+        }
     }
 
     /// #1644: the marker of a room's main-composer draft, if an assistant
@@ -1262,6 +1333,7 @@ impl ComposerDraftStore {
         document: ComposerDocument,
         client_name: String,
         replace: bool,
+        reply_to_event_id: Option<String>,
     ) -> Option<ComposerDraftRevision> {
         if document.is_empty() {
             return None;
@@ -1317,6 +1389,9 @@ impl ComposerDraftStore {
                     .insert(root_event_id.clone(), marker);
             }
         }
+        // #1906: the relation belongs to the content just written, so a
+        // replacement that carries none drops the previous one.
+        self.set_reply_target(target, reply_to_event_id);
         Some(revision)
     }
 
@@ -1356,6 +1431,24 @@ impl ComposerDraftStore {
         let _ = self.apply_room_draft(room_id, document, revision);
     }
 
+    /// #1906: the reply mode of `target`'s stored draft, as its composer shows
+    /// it.
+    pub fn reply_mode(&self, target: &ComposerTarget) -> ComposerMode {
+        let reply_to_event_id = match target {
+            ComposerTarget::Main { room_id } => self.room_reply_target(room_id),
+            ComposerTarget::Thread {
+                room_id,
+                root_event_id,
+            } => self.thread_reply_target(room_id, root_event_id),
+        };
+        match reply_to_event_id {
+            Some(in_reply_to_event_id) => ComposerMode::Reply {
+                in_reply_to_event_id: in_reply_to_event_id.to_owned(),
+            },
+            None => ComposerMode::Plain,
+        }
+    }
+
     pub fn room_revision(&self, room_id: &str) -> ComposerDraftRevision {
         self.room_revisions
             .get(room_id)
@@ -1377,6 +1470,7 @@ impl ComposerDraftStore {
         if document.is_empty() {
             self.rooms.remove(&room_id);
             self.room_assistant_markers.remove(&room_id);
+            self.room_reply_targets.remove(&room_id);
             self.touch_quiescent_room(&room_id);
         } else {
             self.rooms.insert(room_id.clone(), document);
@@ -1396,6 +1490,7 @@ impl ComposerDraftStore {
         if current_revision <= submitted_revision {
             self.rooms.remove(room_id);
             self.room_assistant_markers.remove(room_id);
+            self.room_reply_targets.remove(room_id);
             self.room_last_accepted_clear_revisions
                 .insert(room_id.to_owned(), revision);
         }
@@ -1461,6 +1556,7 @@ impl ComposerDraftStore {
     pub fn clear_room_draft(&mut self, room_id: &str) {
         self.rooms.remove(room_id);
         self.room_assistant_markers.remove(room_id);
+        self.room_reply_targets.remove(room_id);
         self.room_revisions.remove(room_id);
         self.room_last_accepted_clear_revisions.remove(room_id);
         self.remove_room_from_lru(room_id);
@@ -1486,6 +1582,10 @@ impl ComposerDraftStore {
         composer.assistant_draft = self
             .thread_assistant_marker(room_id, root_event_id)
             .cloned();
+        composer.mode = self.reply_mode(&ComposerTarget::Thread {
+            room_id: room_id.to_owned(),
+            root_event_id: root_event_id.to_owned(),
+        });
         composer
     }
 
@@ -1601,6 +1701,7 @@ impl ComposerDraftStore {
 
     fn remove_thread_content(&mut self, room_id: &str, root_event_id: &str) {
         self.remove_thread_assistant_marker(room_id, root_event_id);
+        self.remove_thread_reply_target(room_id, root_event_id);
         let should_remove_room = if let Some(room_threads) = self.threads.get_mut(room_id) {
             room_threads.remove(root_event_id);
             room_threads.is_empty()
@@ -1830,6 +1931,10 @@ impl ComposerDraftStore {
             .retain(|room_id, _| room_ids.contains(room_id));
         self.thread_assistant_markers
             .retain(|room_id, markers| room_ids.contains(room_id) && !markers.is_empty());
+        self.room_reply_targets
+            .retain(|room_id, _| room_ids.contains(room_id));
+        self.thread_reply_targets
+            .retain(|room_id, targets| room_ids.contains(room_id) && !targets.is_empty());
     }
 
     pub fn persisted_projection(
@@ -1903,6 +2008,7 @@ impl ComposerDraftStore {
                 .copied()
                 .unwrap_or_default(),
             assistant: self.room_assistant_marker(room_id).cloned(),
+            reply_to_event_id: self.room_reply_target(room_id).map(str::to_owned),
         };
         let room_has_content = |room_id: &str| {
             self.rooms
@@ -2006,6 +2112,9 @@ impl ComposerDraftStore {
             assistant: self
                 .thread_assistant_marker(room_id, root_event_id)
                 .cloned(),
+            reply_to_event_id: self
+                .thread_reply_target(room_id, root_event_id)
+                .map(str::to_owned),
         };
         let mut quiescent_thread_order = Vec::new();
         let mut seen_threads = BTreeSet::new();
@@ -2110,6 +2219,11 @@ impl ComposerDraftStore {
                         .room_assistant_markers
                         .insert(room_id.clone(), marker);
                 }
+                if let Some(reply_to_event_id) = entry.reply_to_event_id {
+                    drafts
+                        .room_reply_targets
+                        .insert(room_id.clone(), reply_to_event_id);
+                }
             } else if !retained_empty_rooms.contains(&room_id) {
                 continue;
             }
@@ -2136,6 +2250,13 @@ impl ComposerDraftStore {
                             .entry(room_id.clone())
                             .or_default()
                             .insert(root_event_id.clone(), marker);
+                    }
+                    if let Some(reply_to_event_id) = entry.reply_to_event_id {
+                        drafts
+                            .thread_reply_targets
+                            .entry(room_id.clone())
+                            .or_default()
+                            .insert(root_event_id.clone(), reply_to_event_id);
                     }
                 } else if !retained_empty_threads.contains(&target) {
                     continue;
@@ -2204,6 +2325,7 @@ fn validate_persisted_projection(
                 .content
                 .as_ref()
                 .is_some_and(ComposerDocument::is_empty)
+            || (entry.content.is_none() && entry.reply_to_event_id.is_some())
     }) {
         return Err(invalid());
     }
@@ -2240,6 +2362,7 @@ fn validate_persisted_projection(
                     .content
                     .as_ref()
                     .is_some_and(ComposerDocument::is_empty)
+                || (entry.content.is_none() && entry.reply_to_event_id.is_some())
             {
                 return Err(invalid());
             }
