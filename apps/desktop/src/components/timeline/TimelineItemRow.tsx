@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import {
   Fragment,
+  memo,
   useCallback,
   useEffect,
   useRef,
@@ -302,7 +303,7 @@ export function ThreadRootStatusPlaceholder({
   );
 }
 
-export function TimelineItemRow({
+function TimelineItemRowView({
   item,
   accountTabId,
   rowId,
@@ -2114,3 +2115,11 @@ function withheldCodeText(
       return t("timeline.keyRequestWithheld");
   }
 }
+
+/**
+ * #1892: rows re-render only when their own inputs change. A shell-level
+ * update (live signals, scroll observation, another row's diff) re-renders
+ * TimelineView, and without this every mounted row re-rendered with it. The
+ * call site keeps every prop referentially stable for unchanged rows.
+ */
+export const TimelineItemRow = memo(TimelineItemRowView);
