@@ -11,10 +11,6 @@ use std::collections::BTreeMap;
 
 const CORPUS: &str = include_str!("../../../../site/fixtures/search-corpus.json");
 const GOLDEN: &str = include_str!("../../../../site/generated/search-scenes.json");
-const GOLDEN_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../site/generated/search-scenes.json"
-);
 
 #[derive(Deserialize)]
 struct Corpus {
@@ -180,5 +176,10 @@ async fn site_search_scenes_match_the_golden_results() {
 #[ignore = "writes site/generated/search-scenes.json; run explicitly after a corpus change"]
 async fn write_site_search_golden() {
     let scenes = run_scenes().await;
-    std::fs::write(GOLDEN_PATH, render(&scenes)).unwrap();
+    // Runtime lookup: `env!` would key the test build on the checkout path.
+    let manifest_dir =
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo test sets CARGO_MANIFEST_DIR");
+    let golden_path =
+        std::path::Path::new(&manifest_dir).join("../../site/generated/search-scenes.json");
+    std::fs::write(golden_path, render(&scenes)).unwrap();
 }

@@ -188,10 +188,7 @@ async fn prepared_send_rejects_before_upload_when_account_or_target_fence_fails(
 }
 
 /// The repository's licensed opaque HEIC fixture.
-const HEIF_FIXTURE: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../koushi-media/tests/fixtures/heif/opaque.heic"
-));
+const HEIF_FIXTURE: &[u8] = include_bytes!("../../../koushi-media/tests/fixtures/heif/opaque.heic");
 
 /// #1147: the preview surface must render an Original+Keep HEIF selection
 /// without WebView HEIC support, while the selection itself keeps the exact

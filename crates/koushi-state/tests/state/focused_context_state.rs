@@ -76,10 +76,7 @@ fn app_state_serializes_a_focused_context_state_slot() {
 
 #[test]
 fn state_machine_docs_describe_the_focused_context_state_machine() {
-    let docs = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/architecture/state-machine.md"
-    ));
+    let docs = include_str!("../../../../docs/architecture/state-machine.md");
     let focused_context_section = docs
         .split("## Focused Context")
         .nth(1)

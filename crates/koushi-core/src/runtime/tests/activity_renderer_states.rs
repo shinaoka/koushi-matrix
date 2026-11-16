@@ -232,20 +232,21 @@ async fn activity_renderer_states_match_the_checked_in_artifact() {
         "staleRowWithNewerActivityResolving": stale_resolving,
         "staleRowWithNewerActivityFailed": stale_failed,
     });
-    let artifact_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../apps/desktop/e2e/fixtures/activity-resolution-states.generated.json"
-    );
+    // Runtime lookup: `env!` would key the test build on the checkout path.
+    let artifact_path = std::path::Path::new(
+        &std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo test sets CARGO_MANIFEST_DIR"),
+    )
+    .join("../../apps/desktop/e2e/fixtures/activity-resolution-states.generated.json");
     if std::env::var("UPDATE_ACTIVITY_RENDERER_GOLDEN").as_deref() == Ok("1") {
         std::fs::write(
-            artifact_path,
+            &artifact_path,
             serde_json::to_string_pretty(&actual).expect("format Activity states") + "\n",
         )
         .expect("write Activity renderer artifact");
         return;
     }
     let checked_in: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(artifact_path).expect("read Activity renderer artifact"),
+        &std::fs::read_to_string(&artifact_path).expect("read Activity renderer artifact"),
     )
     .expect("checked-in Activity renderer artifact must be valid JSON");
     assert_eq!(actual, checked_in);

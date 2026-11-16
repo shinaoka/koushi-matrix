@@ -75,11 +75,7 @@ fn heif_input(id: &str) -> StageUploadBytesInput {
         position: 1,
         filename: "camera.png".to_owned(),
         mime_type: "image/png".to_owned(),
-        bytes: include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../koushi-media/tests/fixtures/heif/opaque.heic"
-        ))
-        .to_vec(),
+        bytes: include_bytes!("../../../koushi-media/tests/fixtures/heif/opaque.heic").to_vec(),
     }
 }
 
