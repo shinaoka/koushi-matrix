@@ -121,8 +121,8 @@ function ScheduledMessagesList({
   items,
   onCancel,
   onReschedule,
-  mathModeEnabled = true,
-  onMathModeChange = () => undefined,
+  mathModeEnabled,
+  onMathModeChange,
   renderItemMeta
 }: {
   capability: ScheduledSendCapability;
@@ -134,8 +134,9 @@ function ScheduledMessagesList({
    * selected-room pane omits it; the scoped right panel supplies it.
    */
   renderItemMeta?: (item: ScheduledSendItem) => ReactNode;
-  mathModeEnabled?: boolean;
-  onMathModeChange?: (enabled: boolean) => void | Promise<void>;
+  /** Required: an omitted setting renders as "on" with no-op handler (#1903). */
+  mathModeEnabled: boolean;
+  onMathModeChange: (enabled: boolean) => void | Promise<void>;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editBody, setEditBody] = useState("");

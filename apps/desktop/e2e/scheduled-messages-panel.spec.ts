@@ -9,7 +9,9 @@
  *  - removes the bodies when Rust replaces an `Open` with `Closed`,
  *  - never lets a delayed open outlive a newer panel intent or the
  *    before-account-switch cleanup,
- *  - keeps two accounts' projections apart.
+ *  - keeps two accounts' projections apart,
+ *  - hands the panel's inline editor the same math-formatting setting the main
+ *    composer reads, so its Σ switch matches and drives that one value (#1903).
  *
  * The harness only carries the transport value the test publishes; it does not
  * derive the projection or the reservation queue.
@@ -414,4 +416,41 @@ test("session retirement closes the panel and removes a populated projection", a
 
   await expect(page.getByText(ALPHA_BODY)).toHaveCount(0);
   await expect.poll(() => projectionKind(page)).toBe("closed");
+});
+
+test("the panel editor's math switch follows and drives the composer setting (#1903)", async ({
+  page
+}) => {
+  await page.setViewportSize({ width: 1400, height: 800 });
+  await gotoReadyShell(page);
+  await registerOpenProjection(page, ALPHA_BODY, "synthetic-math");
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  // The reporter's own setup: the main composer's switch is off.
+  const composerMathSwitch = page.getByRole("switch", { name: /math formatting on/i });
+  await expect(composerMathSwitch).toHaveCount(1);
+  await composerMathSwitch.click();
+  await expect(page.getByRole("switch", { name: /math formatting off/i })).toHaveCount(1);
+
+  await page.locator('[data-header-action="scheduled"]').click();
+  await page.getByRole("button", { name: t("scheduled.edit") }).click();
+
+  // Two switches, one setting: the editor's must not fall back to its default.
+  const panelEditor = page.locator(".scheduled-messages .scheduled-message-edit");
+  const panelMathSwitch = panelEditor.getByRole("switch", { name: /math formatting off/i });
+  await expect(panelMathSwitch).toHaveAttribute("aria-checked", "false");
+  await expect(page.getByRole("switch", { name: /math formatting off/i })).toHaveCount(2);
+
+  await panelMathSwitch.click();
+
+  // The panel sends the app-scoped patch the main composer sends (#1244), and
+  // both surfaces re-render from the one setting.
+  await expect
+    .poll(() => page.evaluate(() => window.__harness.invocationsOf("update_settings").at(-1)?.args))
+    .toMatchObject({ patch: { scope: "app", composer: { math_mode: true } } });
+  await expect(panelEditor.getByRole("switch", { name: /math formatting on/i })).toHaveAttribute(
+    "aria-checked",
+    "true"
+  );
+  await expect(page.getByRole("switch", { name: /math formatting on/i })).toHaveCount(2);
 });

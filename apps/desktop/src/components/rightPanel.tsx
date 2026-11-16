@@ -575,7 +575,7 @@ export function ContextualRightPanel({
       onTimelineDiagnosticLogEntry?.(...args)
   );
   const threadEditMentionQueryChangeStable = useStableEvent(onThreadMentionQueryChange);
-  const threadMathModeChangeStable = useStableEvent((enabled: boolean) =>
+  const composerMathModeChangeStable = useStableEvent((enabled: boolean) =>
     onUpdateSettings?.({
       // #1244: math mode is app-scoped, so the patch names its scope; otherwise
       // the closed Settings dialog would stamp it account-scoped and drop it.
@@ -1108,6 +1108,10 @@ export function ContextualRightPanel({
             items={scheduledItems}
             onCancel={onCancelScheduledSend}
             onReschedule={onRescheduleScheduledSend}
+            // #1903: the editor's math switch reads the app-scoped setting; a
+            // mount without it falls back to "on" with a no-op handler.
+            mathModeEnabled={composerSettings.math_mode}
+            onMathModeChange={composerMathModeChangeStable}
             renderItemMeta={(item) => {
               const destination = snapshot.state.domain.rooms.find(
                 (room) => room.room_id === item.room_id
@@ -1224,7 +1228,7 @@ export function ContextualRightPanel({
               recentEmojis={composerSettings.recent_emojis}
               onRecentEmojisChange={onRecentEmojisChange}
               mathModeEnabled={composerSettings.math_mode}
-              onMathModeChange={threadMathModeChangeStable}
+              onMathModeChange={composerMathModeChangeStable}
               searchHighlightsByEventId={searchHighlightsByEventId}
               mediaDownloads={mediaDownloads}
               replyQuoteThumbnails={
@@ -1377,7 +1381,7 @@ export function ContextualRightPanel({
             recentEmojis={composerSettings.recent_emojis}
             onRecentEmojisChange={onRecentEmojisChange}
             mathModeEnabled={composerSettings.math_mode}
-            onMathModeChange={threadMathModeChangeStable}
+            onMathModeChange={composerMathModeChangeStable}
             searchHighlightsByEventId={searchHighlightsByEventId}
             mediaDownloads={mediaDownloads}
             replyQuoteThumbnails={
@@ -1453,13 +1457,7 @@ export function ContextualRightPanel({
           }}
           mathModeEnabled={composerSettings.math_mode}
           recentEmojis={composerSettings.recent_emojis}
-          onMathModeChange={(enabled) =>
-            onUpdateSettings?.({
-              // #1244: math mode is app-scoped, so name the scope explicitly.
-              scope: "app",
-              composer: { ...composerSettings, math_mode: enabled }
-            })
-          }
+          onMathModeChange={composerMathModeChangeStable}
           onRecentEmojisChange={onRecentEmojisChange}
           roomName={t("panel.thread")}
         />
@@ -1498,7 +1496,7 @@ export function ContextualRightPanel({
         hasStagedUploads={threadStagedUploads.length > 0}
         mathModeEnabled={composerSettings.math_mode}
         recentEmojis={composerSettings.recent_emojis}
-        onMathModeChange={threadMathModeChangeStable}
+        onMathModeChange={composerMathModeChangeStable}
         onRecentEmojisChange={onRecentEmojisChange}
         mentionCandidates={threadMentionCandidates}
         mentionCandidatesLoading={threadMentionCandidatesLoading}
