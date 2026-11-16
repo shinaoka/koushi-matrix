@@ -47,7 +47,7 @@ import {
 } from "../domain/desktopNotification";
 import type { ShortcutLabelProfile } from "../domain/shortcuts";
 import { renderableThumbnailSourceUrl } from "../backend/linkMediaRuntime";
-import { avatarInitial } from "../app/uiShared";
+import { avatarInitial, currentSavedSession } from "../app/uiShared";
 import { currentSessionStatusDetails } from "../domain/currentSessionStatus";
 import type { RuntimeAlert } from "./Shell";
 import { ModalDialog } from "./ModalDialog";
@@ -1044,7 +1044,9 @@ export function AppSettingsDialog({
         initialCategory="appearance"
         settingsScope="app"
         onSettingsScopeChange={onSettingsScopeChange}
-        currentSession={null}
+        // #1921: the nav cross-link's disabled gate is "app scope and no current
+        // session", so a hard-coded null made it inert in every shipped mount.
+        currentSession={currentSavedSession(snapshot)}
         currentSessionStatus={domain.current_session_status}
         displayDensity={domain.settings.values.appearance.density}
         settings={domain.settings}
