@@ -302,7 +302,9 @@ mod unix {
             .arg(endpoint)
             .output()
             .expect("run");
-        assert_eq!(output.status.code(), Some(6));
+        // #1902: the local output bound is an output failure (1), not an
+        // account/room/event/operation failure (6).
+        assert_eq!(output.status.code(), Some(1));
         assert!(output.stdout.is_empty());
         assert_eq!(output.stderr, b"koushi: output_too_large\n");
         server.join().expect("server");
