@@ -3519,7 +3519,7 @@ type EventNavigationFixture = (
     mpsc::UnboundedSender<FocusedProjectionCommitted>,
 );
 
-fn app_actor_event_navigation_fixture(
+pub(super) fn app_actor_event_navigation_fixture(
     data_dir: &std::path::Path,
     state: AppState,
 ) -> EventNavigationFixture {

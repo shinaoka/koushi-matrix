@@ -120,6 +120,14 @@ fn activity_latest_display_event_id(room: &RoomSummary) -> Option<&str> {
 }
 
 impl ActivityProjection {
+    /// #1915: the trace dedup state is per session, but this projection
+    /// outlives a logout/login inside one runtime. Clearing it keeps the new
+    /// session's first `activity_placeholder` records from being suppressed by
+    /// the previous session's values.
+    pub(super) fn forget_trace_history(&mut self) {
+        self.placeholder_traces = Default::default();
+    }
+
     /// Keep a downloaded avatar visible when the only remaining copy lives in
     /// this projection's rows. Called for every `AvatarThumbnailUpdated`; the
     /// map stays bounded to avatars the cached rows still reference.

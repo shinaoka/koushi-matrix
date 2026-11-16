@@ -48,6 +48,44 @@ fn dedup_records_since(cursor: DetailCursor, stage: &str) -> usize {
         .count()
 }
 
+/// #1915 regression: the ledgers are owned by the session that projects the
+/// room list. `AccountRuntimeManager` runs several accounts in one process, so a
+/// process-wide ledger let one account's traces suppress another's for the same
+/// room, and one account's session start clear another's state. Two sessions
+/// here are two ledger values, exactly as two runtimes hold them.
+#[test]
+fn two_sessions_record_the_same_room_independently() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock();
+    let rooms = dedup_rooms();
+    let mut session_a = unread_trace::UnreadTraceLedger::default();
+    let mut session_b = unread_trace::UnreadTraceLedger::default();
+
+    let first = detail_cursor();
+    unread_trace::trace_room_list_snapshot(&mut session_a, &rooms);
+    unread_trace::trace_room_list_snapshot(&mut session_b, &rooms);
+    assert_eq!(
+        dedup_records_since(first, "room_list_snapshot"),
+        6,
+        "each session records its own first snapshot: 3 rooms x 2 sessions"
+    );
+
+    // Dedup still applies inside one session.
+    let repeated = detail_cursor();
+    unread_trace::trace_room_list_snapshot(&mut session_a, &rooms);
+    assert_eq!(dedup_records_since(repeated, "room_list_snapshot"), 0);
+
+    // B starting a new session neither records into A's ledger nor clears it.
+    let restarted = detail_cursor();
+    let mut session_b_restarted = unread_trace::UnreadTraceLedger::default();
+    unread_trace::trace_room_list_snapshot(&mut session_b_restarted, &rooms);
+    unread_trace::trace_room_list_snapshot(&mut session_a, &rooms);
+    assert_eq!(
+        dedup_records_since(restarted, "room_list_snapshot"),
+        3,
+        "session B's restart records B's rooms and leaves session A's state alone"
+    );
+}
+
 #[test]
 fn repeated_identical_room_list_snapshots_append_no_per_room_unread_traces() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
@@ -104,4 +142,58 @@ fn repeated_identical_room_list_snapshots_append_no_per_room_unread_traces() {
     apply(&mut state, &rooms);
     assert_eq!(dedup_records_since(unread_again, "room_list_snapshot"), 1);
     assert_eq!(dedup_records_since(unread_again, "room_list_applied"), 1);
+}
+
+/// The actor-owned ledgers (`room_list_applied`, `activity_placeholder`) live
+/// as long as the runtime, but their meaning is per session. A lock-screen
+/// gate and its unlock in the same runtime change `state.session`, and the
+/// session's first room-list application after that must be recorded instead
+/// of being suppressed by the values traced before the gate.
+#[tokio::test]
+async fn a_session_change_clears_the_actor_owned_trace_history() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
+    let data = tempfile::tempdir().expect("tempdir");
+    let rooms = dedup_rooms();
+    let (mut actor, ..) =
+        super::super::tests::app_actor_event_navigation_fixture(data.path(), ready_state());
+
+    let apply_room_list = |actor: &mut crate::runtime::AppActor| {
+        actor.reduce_app_action_state(AppAction::RoomListUpdated {
+            spaces: Vec::new(),
+            rooms: rooms.clone(),
+        });
+    };
+    let first = detail_cursor();
+    apply_room_list(&mut actor);
+    assert_eq!(
+        dedup_records_since(first, "room_list_applied"),
+        3,
+        "the first session records every unread room"
+    );
+
+    // Same session: identical, so nothing is recorded again.
+    let repeated = detail_cursor();
+    apply_room_list(&mut actor);
+    assert_eq!(dedup_records_since(repeated, "room_list_applied"), 0);
+
+    // A session gate and its unlock put the session through two other values
+    // and back to ready. That is a new session lifetime, not more of the old
+    // one, so the next identical application is recorded again.
+    let SessionState::Ready(info) = actor.state.session.clone() else {
+        panic!("the fixture starts ready");
+    };
+    actor.reduce_app_action_state(AppAction::SessionLocked);
+    assert!(!matches!(actor.state.session, SessionState::Ready(_)));
+    actor.reduce_app_action_state(AppAction::RestoreSessionSucceeded(info.clone()));
+    actor.reduce_app_action_state(AppAction::CurrentDeviceTrustChanged(
+        koushi_state::CurrentDeviceTrustState::Verified,
+    ));
+    assert_eq!(actor.state.session, SessionState::Ready(info));
+    let new_session = detail_cursor();
+    apply_room_list(&mut actor);
+    assert_eq!(
+        dedup_records_since(new_session, "room_list_applied"),
+        3,
+        "the unlocked session records its own first room-list application"
+    );
 }

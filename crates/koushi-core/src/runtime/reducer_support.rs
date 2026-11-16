@@ -288,6 +288,11 @@ impl super::AppActor {
             self.session_revision = self
                 .session_revision
                 .and_then(|revision| revision.checked_add(1));
+            // #1915: these ledgers outlive the session they describe, and a new
+            // session's first trace of a room must not be suppressed by the
+            // previous session's values for it.
+            self.unread_trace_ledger = Default::default();
+            self.activity_projection.forget_trace_history();
         }
         if self.state.session == previous_session_state {
             self.state.session_disclosure_epoch = previous_disclosure_epoch;

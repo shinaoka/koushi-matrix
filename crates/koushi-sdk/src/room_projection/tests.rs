@@ -628,6 +628,7 @@ async fn explicit_empty_direct_map_overrides_cached_room_direct_targets() {
     let snapshot = super::room_list_snapshot_from_sdk_rooms_with_direct_targets(
         std::iter::once(room),
         Some(&direct_targets_by_room),
+        &mut super::SdkUnreadTraceLedger::default(),
     )
     .await;
 
@@ -1063,6 +1064,64 @@ fn room_list_room_from_counts_carries_room_tags() {
 
     assert_eq!(room.tags, tags);
 }
+/// #1915: the `sdk_room_snapshot` dedup state is owned by the session that
+/// projects the room list. With the process-wide ledger this test replaces, the
+/// second session's identical trace for the same room was suppressed, so a
+/// multi-account process lost one account's records.
+#[test]
+fn two_sessions_record_the_same_room_snapshot_independently() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock();
+    let latest_event = Some(test_latest_event("$event:example.invalid"));
+    let trace = || super::SdkUnreadTrace {
+        unread_messages: SESSION_TRACE_UNREAD_COUNT,
+        unread_count: SESSION_TRACE_UNREAD_COUNT,
+        notification_count: 1,
+        highlight_count: 1,
+        marked_unread: true,
+        latest_event: &latest_event,
+        fully_read_event_id: Some("$event:example.invalid"),
+        private_read_receipt_event_id: None,
+        recency_stamp_present: true,
+        conversation_activity: None,
+    };
+    let room_id = "!shared-room:example.invalid";
+    let mut session_a = super::SdkUnreadTraceLedger::default();
+    let mut session_b = super::SdkUnreadTraceLedger::default();
+
+    super::trace_sdk_unread_snapshot(&mut session_a, room_id, trace());
+    super::trace_sdk_unread_snapshot(&mut session_b, room_id, trace());
+    assert_eq!(
+        sdk_room_snapshot_records(),
+        2,
+        "each session records the room"
+    );
+    // Within one session the identical trace is still deduplicated.
+    super::trace_sdk_unread_snapshot(&mut session_a, room_id, trace());
+    assert_eq!(sdk_room_snapshot_records(), 2);
+}
+
+/// A count no other test uses, so a concurrent test that records
+/// `sdk_room_snapshot` without the diagnostics lock cannot be mistaken for
+/// this test's records.
+const SESSION_TRACE_UNREAD_COUNT: u64 = 73_219;
+
+fn sdk_room_snapshot_records() -> usize {
+    koushi_diagnostics::snapshot()
+        .records
+        .iter()
+        .filter(|record| {
+            record.event.stage == "sdk_room_snapshot"
+                && record.event.fields.iter().any(|field| {
+                    field.key == "unread_count"
+                        && field.value
+                            == koushi_diagnostics::DiagnosticValue::Count(
+                                SESSION_TRACE_UNREAD_COUNT,
+                            )
+                })
+        })
+        .count()
+}
+
 #[test]
 fn unread_diagnostic_snapshot_rejects_private_synthetic_inputs() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
@@ -1085,21 +1144,25 @@ fn unread_diagnostic_snapshot_rejects_private_synthetic_inputs() {
         has_reactions: false,
         is_redacted: false,
     });
-    trace_sdk_unread_snapshot(SdkUnreadTrace {
-        unread_messages: 2,
-        unread_count: 2,
-        notification_count: 1,
-        highlight_count: 1,
-        marked_unread: true,
-        latest_event: &latest_event,
-        fully_read_event_id: Some("$event:example.invalid"),
-        private_read_receipt_event_id: None,
-        recency_stamp_present: true,
-        conversation_activity: Some(MatrixConversationActivity {
-            timestamp_ms: 3,
-            source: MatrixConversationActivitySource::Message,
-        }),
-    });
+    trace_sdk_unread_snapshot(
+        &mut super::SdkUnreadTraceLedger::default(),
+        "!room:example.invalid",
+        SdkUnreadTrace {
+            unread_messages: 2,
+            unread_count: 2,
+            notification_count: 1,
+            highlight_count: 1,
+            marked_unread: true,
+            latest_event: &latest_event,
+            fully_read_event_id: Some("$event:example.invalid"),
+            private_read_receipt_event_id: None,
+            recency_stamp_present: true,
+            conversation_activity: Some(MatrixConversationActivity {
+                timestamp_ms: 3,
+                source: MatrixConversationActivitySource::Message,
+            }),
+        },
+    );
     let serialized = serde_json::to_string(&koushi_diagnostics::snapshot()).unwrap();
     assert!(serialized.contains("conversation_activity_source"));
     for forbidden in [

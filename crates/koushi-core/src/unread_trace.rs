@@ -143,26 +143,6 @@ pub(crate) fn trace_room_list_snapshot(ledger: &mut UnreadTraceLedger, rooms: &[
     }
 }
 
-/// Room-list observers for one session run as several tasks (provisional
-/// cache, live service, membership batches) that all project the same rooms,
-/// so their `room_list_snapshot` ledger is shared. Session teardown clears it
-/// through [`reset_room_list_snapshot_ledger`].
-static ROOM_LIST_SNAPSHOT_LEDGER: std::sync::Mutex<UnreadTraceLedger> =
-    std::sync::Mutex::new(UnreadTraceLedger::new());
-
-pub(crate) fn trace_room_list_snapshot_for_session(rooms: &[RoomSummary]) {
-    let mut ledger = ROOM_LIST_SNAPSHOT_LEDGER
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    trace_room_list_snapshot(&mut ledger, rooms);
-}
-
-pub(crate) fn reset_room_list_snapshot_ledger() {
-    *ROOM_LIST_SNAPSHOT_LEDGER
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = UnreadTraceLedger::new();
-}
-
 pub(crate) fn trace_room_list_applied(
     ledger: &mut UnreadTraceLedger,
     input: &RoomListAppliedTraceInput,
@@ -281,7 +261,7 @@ mod tests {
         let mut ledger = UnreadTraceLedger::default();
         trace_room_list_applied(&mut ledger, &input, std::slice::from_ref(&room));
         trace_activity_room(
-            &mut UnreadTraceLedger::new(),
+            &mut UnreadTraceLedger::default(),
             "activity_recent_event",
             &room,
             None,
@@ -315,7 +295,7 @@ mod tests {
             "room_metrics",
         ] {
             trace_activity_room(
-                &mut UnreadTraceLedger::new(),
+                &mut UnreadTraceLedger::default(),
                 "activity_recent_event",
                 &room,
                 None,
@@ -378,7 +358,7 @@ mod tests {
         let room = private_room();
 
         trace_activity_room(
-            &mut UnreadTraceLedger::new(),
+            &mut UnreadTraceLedger::default(),
             "activity_recent_event",
             &room,
             None,
@@ -386,7 +366,7 @@ mod tests {
             "plain_unread_only",
         );
         trace_activity_room(
-            &mut UnreadTraceLedger::new(),
+            &mut UnreadTraceLedger::default(),
             "activity_placeholder",
             &room,
             None,
