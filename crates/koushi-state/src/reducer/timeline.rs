@@ -760,12 +760,15 @@ pub(crate) fn handle_composer_draft_seeded(
 
 /// #1644: `draft_message` stages an assistant draft into an empty target and
 /// hydrates the open target composer under the `ComposerDraftsLoaded` rule.
+/// #1905: with `replace` it overwrites a target that still holds only the
+/// assistant's untouched draft, which the open composer already shows.
 /// Navigation, focus, and read state are never touched.
 pub(crate) fn handle_assistant_draft_staged(
     state: &mut AppState,
     target: crate::ComposerTarget,
     document: crate::ComposerDocument,
     client_name: String,
+    replace: bool,
 ) -> Vec<AppEffect> {
     let room_id = match &target {
         crate::ComposerTarget::Main { room_id } | crate::ComposerTarget::Thread { room_id, .. } => {
@@ -777,7 +780,7 @@ pub(crate) fn handle_assistant_draft_staged(
     }
     if state
         .composer_drafts
-        .stage_assistant_draft(&target, document, client_name)
+        .stage_assistant_draft(&target, document, client_name, replace)
         .is_none()
     {
         return Vec::new();
@@ -786,7 +789,7 @@ pub(crate) fn handle_assistant_draft_staged(
         crate::ComposerTarget::Main { room_id } => {
             if state.timeline.room_id.as_deref() == Some(room_id.as_str())
                 && state.timeline.composer.pending_transaction_id.is_none()
-                && state.timeline.composer.draft.is_empty()
+                && (replace || state.timeline.composer.draft.is_empty())
             {
                 let hydrated = state.composer_drafts.composer_for_room(room_id);
                 hydrate_staged_draft(&mut state.timeline.composer, hydrated);
@@ -808,7 +811,7 @@ pub(crate) fn handle_assistant_draft_staged(
                 && open_room_id == room_id
                 && open_root_event_id == root_event_id
                 && composer.pending_transaction_id.is_none()
-                && composer.draft.is_empty()
+                && (replace || composer.draft.is_empty())
             {
                 let hydrated = state
                     .composer_drafts

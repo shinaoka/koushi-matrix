@@ -22,7 +22,7 @@ account and each permission.
 | `get_attachment` | Downloads one attachment into Koushi's media cache and returns its path. | attachments |
 | `send_message` | Sends a message, optionally as a reply, or sends local files with an optional caption. | send; also attachments when sending files |
 | `send_thread_reply` | Posts a plain-text reply in a thread, optionally quoting and mentioning one message of that thread. | send |
-| `draft_message` | Puts plain text into a room's or a thread's composer as a draft for you to review, edit, and send. Never sends. | draft |
+| `draft_message` | Puts plain text into a room's or a thread's composer as a draft for you to review, edit, and send. Replaces, with `replace`, a draft an assistant staged that you have not touched. Never sends. | draft |
 | `get_draft` | Reads back what a room's or a thread's composer currently holds, and whether it is the assistant's untouched draft, your own text, or empty. Changes nothing. | draft |
 | `get_message` | Fetches one message by its event id, with sender, time, the body after its latest edit, reactions, and its thread or reply relation. | read |
 | `react_to_message` | Adds the assistant account's reaction to a message. Repeating it with the same reaction does nothing. | message actions |
@@ -368,8 +368,12 @@ Tool calls run inside Koushi's own runtime, but they are not GUI actions:
   assistant's name above the composer. Editing keeps the label; sending,
   clearing the text, or hiding the label removes it. The assistant never
   replaces text you wrote: a composer that already holds a draft, or that you
-  are typing or sending in, answers `conflict`. If you start typing at the very
-  moment a draft arrives, your text stays and the draft is dropped.
+  are typing or sending in, answers `conflict`. The one exception is its own
+  draft: with `replace`, the assistant overwrites text an assistant staged that
+  you have not touched since, and an open composer shows the new text at once.
+  Once you edit that text, or hide its **Drafted by** label, it answers
+  `conflict` again, so text you wrote is never replaced. If you start typing at
+  the very moment a draft arrives, your text stays and the draft is dropped.
 - `get_draft` only reads. It reports the composer's current text and whether the
   assistant's draft is untouched, edited by hand, or gone; it stages, sends,
   clears, and focuses nothing, and it marks nothing read. The reply says what the
@@ -466,7 +470,7 @@ Two failures look similar and mean different things:
 | `unsupported` with reason `redacted` | The target message was already deleted. | Nothing to change; `delete_message` on it already succeeds with `already_redacted`. |
 | `unsupported` with reason `not_thread_root` | The target of `draft_message` is itself a thread reply. | Name the thread's root event instead. |
 | `unsupported` with reason `not_in_thread` | The `reply_to_event_id` of `send_thread_reply` is not in the thread being answered, so nothing was sent. The message names the thread that event does belong to, or says it is in none. | Retry with `thread_root_event_id` set to that thread, or use `send_message` for a main-timeline message. |
-| `conflict` | `draft_message` found a draft already in that composer, or you were typing or sending in it. Nothing changed. | Send or clear the existing draft, then ask the assistant again. |
+| `conflict` | `draft_message` found a draft already in that composer, or you were typing or sending in it. Nothing changed. | Send or clear the existing draft, then ask the assistant again. `get_draft` says whether the draft is still the assistant's own (`assistant`, which `replace` can overwrite) or yours (`user_edited`). |
 | `busy` with reason `drafts_loading` | Koushi has not finished loading the account's drafts. | Retry in a moment. |
 | `internal` with reason `relations_unavailable` | Koushi could not read the message's reactions (a truncated page or a failed request). | Retry the call; nothing was sent. |
 | `busy` | This account already runs the maximum number of concurrent searches from assistants, or too many approvals are waiting. | Answer or close waiting approvals, wait for earlier calls, and retry. |

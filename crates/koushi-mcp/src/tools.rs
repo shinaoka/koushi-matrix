@@ -536,14 +536,15 @@ pub fn definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "draft_message",
-            description: "Put plain text into a room's composer, or into a thread's composer when thread_root_event_id is given, as a draft the user reviews, edits, and sends from Koushi. Nothing is sent. Koushi does not switch the visible account or room, open a thread, move focus, or change read state; an open, empty composer shows the draft at once, otherwise it appears when the user next opens that composer, marked as written by this assistant. Fails with conflict, changing nothing, when that composer already holds a draft or the user is typing or sending in it; read the room and try again later rather than retrying at once. Replies to a specific message and attachments are not staged in this version. body is at most 16 KiB of UTF-8. Needs the draft permission, which is separate from send.",
+            description: "Put plain text into a room's composer, or into a thread's composer when thread_root_event_id is given, as a draft the user reviews, edits, and sends from Koushi. Nothing is sent. Koushi does not switch the visible account or room, open a thread, move focus, or change read state; an open, empty composer shows the draft at once, otherwise it appears when the user next opens that composer, marked as written by this assistant. Fails with conflict, changing nothing, when that composer already holds a draft or the user is typing or sending in it; read the room and try again later rather than retrying at once. With replace true, a draft the assistant staged earlier and the user has not touched is overwritten as a new revision, and an open composer shows it at once without moving focus; a draft get_draft reports as user_edited, or a composer the user is typing or sending in, is never replaced and still answers conflict. Replies to a specific message and attachments are not staged in this version. body is at most 16 KiB of UTF-8. Needs the draft permission, which is separate from send.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "account_id": account_id_property(),
                     "room_id": { "type": "string", "description": "Room id of a room this account is joined to." },
                     "body": { "type": "string", "minLength": 1, "description": "Plain text of the draft." },
-                    "thread_root_event_id": { "type": "string", "description": "Stage the draft in this thread's composer instead of the room's. Must be a visible thread root, not a thread reply." }
+                    "thread_root_event_id": { "type": "string", "description": "Stage the draft in this thread's composer instead of the room's. Must be a visible thread root, not a thread reply." },
+                    "replace": { "type": "boolean", "description": "Overwrite the draft in that composer when it is still exactly the unedited draft an assistant staged there. Use get_draft first: status assistant means it can be replaced; status user_edited is the user's text and is never replaced. An empty composer stages either way, flag or not. Without this, a composer that already holds any draft answers conflict." }
                 },
                 "required": ["account_id", "room_id", "body"],
                 "additionalProperties": false

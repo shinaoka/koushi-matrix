@@ -37,6 +37,15 @@ fn request(target: koushi_state::ComposerTarget) -> AssistantDraftRequest {
         target,
         document: koushi_state::ComposerDocument::from_plain_text("assistant text"),
         client_name: "claude-code".to_owned(),
+        replace: false,
+    }
+}
+
+fn replace_request(target: koushi_state::ComposerTarget) -> AssistantDraftRequest {
+    AssistantDraftRequest {
+        document: koushi_state::ComposerDocument::from_plain_text("replacement text"),
+        replace: true,
+        ..request(target)
     }
 }
 
@@ -169,4 +178,121 @@ async fn unknown_rooms_and_unloaded_stores_are_refused() {
         Err(AssistantDraftFailure::Unavailable)
     );
     assert!(actor.state.composer_drafts.is_empty());
+}
+
+/// #1905: the assistant replaces the draft it staged and the user has not
+/// touched. The write is a new revision that keeps the marker.
+#[tokio::test]
+async fn an_untouched_assistant_draft_is_replaced_at_a_new_revision() {
+    let data = tempfile::tempdir().unwrap();
+    let (mut actor, ..) = app_actor_event_navigation_fixture(data.path(), ready_state());
+    let first = actor
+        .handle_assistant_draft(rid(), request(main_target(ROOM)))
+        .await
+        .expect("an empty target accepts the draft");
+
+    let replaced = actor
+        .handle_assistant_draft(rid(), replace_request(main_target(ROOM)))
+        .await
+        .expect("its own untouched draft is replaceable");
+
+    assert!(replaced.revision > first.revision);
+    let composer = actor.state.composer_drafts.composer_for_room(ROOM);
+    assert_eq!(composer.draft, "replacement text");
+    assert_eq!(composer.draft_revision, replaced.revision);
+    assert_eq!(
+        composer.assistant_draft.as_ref().map(|m| m.revision),
+        Some(replaced.revision)
+    );
+}
+
+/// The user's own text is never replaced: no marker, no replacement.
+#[tokio::test]
+async fn a_draft_the_user_wrote_is_never_replaced() {
+    let data = tempfile::tempdir().unwrap();
+    let mut state = ready_state();
+    state
+        .composer_drafts
+        .apply_room_draft(ROOM.to_owned(), "mine", 3.into())
+        .unwrap();
+    let (mut actor, ..) = app_actor_event_navigation_fixture(data.path(), state);
+
+    assert_eq!(
+        actor
+            .handle_assistant_draft(rid(), replace_request(main_target(ROOM)))
+            .await,
+        Err(AssistantDraftFailure::Conflict)
+    );
+    assert_eq!(
+        actor.state.composer_drafts.composer_for_room(ROOM).draft,
+        "mine"
+    );
+}
+
+/// A renderer draft or send command in flight for the target keeps the draft
+/// out of its way, replaced or not.
+#[tokio::test]
+async fn a_renderer_command_in_flight_blocks_a_replacement() {
+    let data = tempfile::tempdir().unwrap();
+    let (mut actor, ..) = app_actor_event_navigation_fixture(data.path(), ready_state());
+    let staged = actor
+        .handle_assistant_draft(rid(), request(main_target(ROOM)))
+        .await
+        .expect("an empty target accepts the draft");
+
+    let scope = crate::composer_draft_lifecycle::ComposerDraftScope {
+        account: session_key_id_from_info(&session()),
+        target: main_target(ROOM),
+    };
+    let registry = Arc::clone(&actor.composer_draft_leases);
+    let generation = registry.begin_renderer_generation().unwrap();
+    let lease = registry.acquire(generation, scope.clone()).unwrap();
+    let permit = registry
+        .try_command_permit(generation, lease, &scope)
+        .unwrap();
+
+    assert_eq!(
+        actor
+            .handle_assistant_draft(rid(), replace_request(main_target(ROOM)))
+            .await,
+        Err(AssistantDraftFailure::Conflict)
+    );
+    let composer = actor.state.composer_drafts.composer_for_room(ROOM);
+    assert_eq!(composer.draft, "assistant text");
+    assert_eq!(composer.draft_revision, staged.revision);
+
+    drop(permit);
+    actor
+        .handle_assistant_draft(rid(), replace_request(main_target(ROOM)))
+        .await
+        .expect("the target is free again");
+}
+
+/// An open composer that is sending that draft refuses the replacement too.
+#[tokio::test]
+async fn an_open_composer_sending_blocks_a_replacement() {
+    let data = tempfile::tempdir().unwrap();
+    let mut state = ready_state();
+    let staged = state
+        .composer_drafts
+        .stage_assistant_draft(
+            &main_target(ROOM),
+            koushi_state::ComposerDocument::from_plain_text("assistant text"),
+            "claude-code".to_owned(),
+            false,
+        )
+        .expect("an empty target accepts the draft");
+    state.timeline.room_id = Some(ROOM.to_owned());
+    state.timeline.composer.pending_transaction_id = Some("txn".to_owned());
+    let (mut actor, ..) = app_actor_event_navigation_fixture(data.path(), state);
+
+    assert_eq!(
+        actor
+            .handle_assistant_draft(rid(), replace_request(main_target(ROOM)))
+            .await,
+        Err(AssistantDraftFailure::Conflict)
+    );
+    let composer = actor.state.composer_drafts.composer_for_room(ROOM);
+    assert_eq!(composer.draft, "assistant text");
+    assert_eq!(composer.draft_revision, staged);
 }

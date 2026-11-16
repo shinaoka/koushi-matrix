@@ -1501,13 +1501,15 @@ pub enum AppAction {
         document: crate::ComposerDocument,
     },
     /// #1644: an MCP assistant staged `document` into an empty target with
-    /// `draft_message`. Core checked the target first; the reducer repeats the
-    /// Ready, room, and empty-draft guards, picks the successor revision, and
-    /// records the assistant marker.
+    /// `draft_message`, or, with #1905 `replace`, into a target that still
+    /// holds only its own untouched draft. Core checked the target first; the
+    /// reducer repeats the Ready, room, and draft guards, picks the successor
+    /// revision, and records the assistant marker.
     AssistantDraftStaged {
         target: crate::ComposerTarget,
         document: crate::ComposerDocument,
         client_name: String,
+        replace: bool,
     },
     /// #1644: the user dismissed the assistant marker of `target`. Content and
     /// revision stay.

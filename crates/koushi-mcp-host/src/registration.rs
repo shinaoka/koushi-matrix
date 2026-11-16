@@ -231,7 +231,7 @@ const TOOLS: [(&str, &str); 18] = [
     ("send_thread_reply", "Reply in a thread"),
     (
         "draft_message",
-        "Put a draft in a composer for you to review and send",
+        "Put a draft in a composer for you to review and send, or revise your own",
     ),
     ("get_draft", "Read back the draft in a composer, unchanged"),
 ];

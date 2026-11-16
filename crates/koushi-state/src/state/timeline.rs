@@ -1231,17 +1231,46 @@ impl ComposerDraftStore {
         }
     }
 
+    /// #1905: whether `target` still holds exactly the draft an assistant
+    /// staged there, so `replace` may overwrite it: the content exists and the
+    /// marker names the stored revision.
+    pub fn assistant_draft_is_untouched(&self, target: &ComposerTarget) -> bool {
+        let (marker, revision) = match target {
+            ComposerTarget::Main { room_id } => (
+                self.room_assistant_marker(room_id),
+                self.room_revision(room_id),
+            ),
+            ComposerTarget::Thread {
+                room_id,
+                root_event_id,
+            } => (
+                self.thread_assistant_marker(room_id, root_event_id),
+                self.thread_revision(room_id, root_event_id),
+            ),
+        };
+        marker.is_some_and(|marker| marker.revision == revision)
+    }
+
     /// #1644: write an assistant-staged draft into an empty target at the
-    /// successor of its stored revision and mark it. Returns the revision, or
-    /// `None` when the target already has content or the revision space is
-    /// exhausted; nothing changes then.
+    /// successor of its stored revision and mark it. With #1905 `replace`, the
+    /// same write replaces a target that still holds only the assistant's
+    /// untouched draft. Returns the revision, or `None` when the target holds
+    /// anything else or the revision space is exhausted; nothing changes then.
     pub fn stage_assistant_draft(
         &mut self,
         target: &ComposerTarget,
         document: ComposerDocument,
         client_name: String,
+        replace: bool,
     ) -> Option<ComposerDraftRevision> {
-        if document.is_empty() || !self.target_is_empty(target) {
+        if document.is_empty() {
+            return None;
+        }
+        // #1905: a replacement is the one write into a non-empty target, and
+        // only while it still holds an assistant's untouched draft.
+        let writable =
+            self.target_is_empty(target) || (replace && self.assistant_draft_is_untouched(target));
+        if !writable {
             return None;
         }
         let current = match target {
