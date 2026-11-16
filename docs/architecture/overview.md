@@ -2585,8 +2585,19 @@ Invariants:
   user's explicit dismissal (`dismiss_assistant_draft_marker`). If the user
   starts typing in the renderer's 350 ms persistence debounce window just as
   the draft lands, the user's text wins: the renderer re-persists it above the
-  staged revision and dismisses the marker. Reply relations and attachments
-  are not staged in this version.
+  staged revision and dismisses the marker. `reply_to_event_id` stages the
+  draft as a reply: Core reads that event first (room and, for a thread
+  composer, thread membership) and refuses a deleted or out-of-scope target
+  with `event_not_found`, `not_a_message`, `redacted`, or `not_in_thread`
+  before writing anything. The reply target is stored with the draft itself,
+  in the same Rust draft store and revision as the text (#1906), so opening
+  that composer later starts in reply mode with the usual preview, cancelling
+  the reply keeps the text and drops only the relation, and clearing or
+  sending the draft drops both. A `replace` carries the relation that call was
+  given and none otherwise, so the replaced text's reply is dropped rather
+  than kept. `get_draft` reports the stored reply target so
+  the assistant can see whether the user kept or cancelled it. Attachments are
+  still not staged.
 - **Polling, not push.** MCP cannot wake a host that is not calling. Room
   changes surface through a `wait_for_events` long-poll of at most 50 s over a
   sampled feed: the host samples each joined room's latest event every 2 s,

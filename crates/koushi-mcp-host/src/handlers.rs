@@ -1008,12 +1008,17 @@ async fn draft_message(
             "body is longer than a composer draft can hold (16 KiB)",
         ));
     }
-    if arguments.get("reply_to_event_id").is_some() || arguments.get("attachments").is_some() {
+    if arguments.get("attachments").is_some() {
         return Err(WireError::new(
             ErrorCode::Unsupported,
-            "draft_message stages plain text only; replies and attachments are not supported",
+            "draft_message stages plain text only; attachments are not supported",
         ));
     }
+    let reply_to_event_id = arguments
+        .get("reply_to_event_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned);
     let thread_root_event_id = arguments
         .get("thread_root_event_id")
         .and_then(Value::as_str)
@@ -1098,10 +1103,46 @@ async fn draft_message(
         }
     };
 
+    // #1906: the reply target is checked by reading it, never guessed. Core
+    // resolves the event inside that joined room and decides the target rules,
+    // so a draft takes the same relation `send_message` would send.
+    if let Some(reply_to_event_id) = &reply_to_event_id {
+        let is_thread_root = thread_root_event_id.as_deref() == Some(reply_to_event_id.as_str());
+        // A thread's own root was read above, so it is not read twice.
+        if !is_thread_root {
+            let view = match connection
+                .direct_message_action(koushi_core::DirectMessageRequest::Read {
+                    room_id: room_id.clone(),
+                    event_id: reply_to_event_id.clone(),
+                })
+                .await
+                .map_err(direct_message_failure)?
+            {
+                koushi_core::DirectMessageResponse::Read(view) => view,
+                _ => {
+                    return Err(WireError::new(
+                        ErrorCode::Internal,
+                        "Koushi answered a different action",
+                    ));
+                }
+            };
+            if let Some(failure) = view.draft_reply_target_failure(thread_root_event_id.as_deref())
+            {
+                return Err(direct_message_failure(failure));
+            }
+        }
+        // A revocation during the read is honored before the write.
+        shared
+            .broker
+            .authorize(client, &account_id, Need::Draft, ConsentContext::default())
+            .await?;
+    }
+
     connection
         .stage_assistant_draft(koushi_core::AssistantDraftRequest {
             target,
             document: ComposerDocument::from_plain_text(body),
+            reply_to_event_id: reply_to_event_id.clone(),
             client_name: client.name.clone(),
             replace,
         })
@@ -1110,6 +1151,7 @@ async fn draft_message(
     Ok(json!({
         "room_id": room_id,
         "thread_root_event_id": thread_root_event_id,
+        "reply_to_event_id": reply_to_event_id,
         "status": "staged",
     }))
 }
@@ -1191,6 +1233,12 @@ async fn get_draft(
     Ok(json!({
         "status": status,
         "body": composer.draft,
+        "reply_to_event_id": match &composer.mode {
+            koushi_state::ComposerMode::Plain => None,
+            koushi_state::ComposerMode::Reply {
+                in_reply_to_event_id,
+            } => Some(in_reply_to_event_id.clone()),
+        },
     }))
 }
 

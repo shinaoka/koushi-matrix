@@ -1510,6 +1510,9 @@ pub enum AppAction {
         document: crate::ComposerDocument,
         client_name: String,
         replace: bool,
+        /// #1906: the event the staged draft replies to, already validated by
+        /// Core against the target room and thread.
+        reply_to_event_id: Option<String>,
     },
     /// #1644: the user dismissed the assistant marker of `target`. Content and
     /// revision stay.

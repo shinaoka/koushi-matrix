@@ -2920,6 +2920,7 @@ impl AppActor {
             document: request.document,
             client_name: request.client_name,
             replace: request.replace,
+            reply_to_event_id: request.reply_to_event_id,
         }))
         .await;
         Box::pin(self.handle_app_effects(request_id, effects)).await;
