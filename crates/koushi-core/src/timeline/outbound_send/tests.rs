@@ -4151,7 +4151,10 @@ async fn retry_advances_a_stopped_room_in_enqueue_order() {
     let room_id = matrix_sdk::ruma::room_id!("!retry-order:example.test");
     server.mock_room_state_encryption().plain().mount().await;
     let room = server.sync_joined_room(&client, room_id).await;
-    tokio::time::pause();
+    // Real time, not `tokio::time::pause()`: the requests use a real socket,
+    // and paused time auto-advances past their request timeout while the mock
+    // is still answering, which made both phases below flaky. The SDK's
+    // retry backoff for this queue is only ~1.5 s.
     let mut updates = client.send_queue().subscribe();
     let timeline = Arc::new(room.timeline().await.expect("live timeline"));
 
@@ -4190,8 +4193,7 @@ async fn retry_advances_a_stopped_room_in_enqueue_order() {
         if enqueued.len() == 2 && failure.is_some() {
             break;
         }
-        tokio::time::advance(Duration::from_millis(500)).await;
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let (failed_transaction, is_recoverable) = failure.expect("the head reports its failure");
     assert!(is_recoverable, "a 500 is a transient failure");
@@ -4296,8 +4298,7 @@ async fn retry_advances_a_stopped_room_in_enqueue_order() {
         if sent.len() == 2 {
             break;
         }
-        tokio::time::advance(Duration::from_millis(500)).await;
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(
         sent,
