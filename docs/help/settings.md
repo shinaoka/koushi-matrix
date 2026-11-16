@@ -12,9 +12,11 @@ opens **App Settings**. The account-settings and sign-out menu items name the
 selected account by its full Matrix ID (for example `@alice:example.org`), so
 accounts with the same display name remain distinguishable. Sign-out and
 identity-reset confirmations also use the full Matrix ID. Choosing either item while settings are already open
-switches directly to that scope. With **Account Settings** open, use the button
-at the bottom of the category list to switch to **App Settings**; to return,
-open **Account Settings** from the rail or the **Koushi** menu.
+switches directly to that scope. With either scope open, use the button at the
+bottom of the category list to switch to the other one; in **App Settings** that
+button reads **Account Settings** and needs a selected account. **App Settings →
+Search history** also has its own **Account Settings** button, next to the page's
+controls.
 
 Both scopes open in a foreground dialog. Choose a category on the left; its
 controls appear on the right. Each side scrolls when the window is small. Close

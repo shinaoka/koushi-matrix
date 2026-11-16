@@ -2103,6 +2103,58 @@ describe("UserSettingsPanel", () => {
     expect(onSettingsScopeChange).toHaveBeenCalledWith("account");
   });
 
+  // #1921: the nav cross-link is the App Settings -> Account Settings route. The
+  // dialog hard-coded `currentSession={null}`, so its disabled gate was on in every
+  // real mount, while the Search history page next to it had a live button.
+  test("App Settings offers a live account-scope cross-link when an account is signed in", () => {
+    const { container } = render(
+      <AppSettingsDialog
+        snapshot={readyDesktopSnapshotFixture()}
+        onUpdateSettings={vi.fn()}
+        onClose={vi.fn()}
+        onSettingsScopeChange={vi.fn()}
+      />
+    );
+
+    const link = container.querySelector<HTMLButtonElement>("button.settings-scope-switch");
+    expect(link?.textContent).toBe(t("settings.accountSettings"));
+    expect(link?.disabled).toBe(false);
+  });
+
+  test("the App Settings cross-link switches to the account scope", () => {
+    const onSettingsScopeChange = vi.fn();
+    const { container } = render(
+      <AppSettingsDialog
+        snapshot={readyDesktopSnapshotFixture()}
+        onUpdateSettings={vi.fn()}
+        onClose={vi.fn()}
+        onSettingsScopeChange={onSettingsScopeChange}
+      />
+    );
+
+    const link = container.querySelector<HTMLButtonElement>("button.settings-scope-switch")!;
+    fireEvent.click(link);
+
+    expect(onSettingsScopeChange).toHaveBeenCalledTimes(1);
+    expect(onSettingsScopeChange).toHaveBeenCalledWith("account");
+  });
+
+  test("the App Settings cross-link is disabled when no account is signed in", () => {
+    const snapshot = readyDesktopSnapshotFixture();
+    snapshot.state.domain.session = { kind: "signedOut" };
+    const { container } = render(
+      <AppSettingsDialog
+        snapshot={snapshot}
+        onUpdateSettings={vi.fn()}
+        onClose={vi.fn()}
+        onSettingsScopeChange={vi.fn()}
+      />
+    );
+
+    const link = container.querySelector<HTMLButtonElement>("button.settings-scope-switch");
+    expect(link?.disabled).toBe(true);
+  });
+
   // App Settings is the AppSettingsDialog, a different entry point from the
   // account surface, so the shortcut must be wired there as well.
   test("App Settings dialog switches to the account scope from the search history summary", () => {
