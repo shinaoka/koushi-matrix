@@ -1856,7 +1856,17 @@ distinguish it from an explicit opt-in. While it is OFF no message content
 leaves Rust. While it is ON, a live unread observation may use the latest
 event's sanitized plain-text preview only when the projection verifies that
 the event changed with that unread rise; otherwise it uses the count body.
-The preview is bounded in length with whitespace collapsed. A verified preview
+The preview is bounded in length with whitespace collapsed. While it is ON and
+the preview is verified, the banner text also names the sender of that same
+event, reading `{sender}: {preview}` for a room; a direct message omits the
+prefix because its room label already is the partner.
+The same verified event may add its sender's avatar to the payload as an opaque
+renderable-thumbnail cache reference, and only when that thumbnail is already
+cached: a banner never starts a media download and never writes an avatar file.
+Neither the label nor the reference appears while the switch is OFF, so the
+default surface stays at engineering rule 9's minimum, and with the switch OFF
+the banner carries counts only (#1907).
+A verified preview
 still does not identify an exact navigation target, so a click opens the room.
 The payload follows the same mute, session,
 initial-sync/backfill, self-event, focus, and dedup suppression as the candidate,
@@ -1865,8 +1875,14 @@ and `NativeAttentionSummary` stays free of message bodies and identifiers.
 The desktop notification adapter is the only owner of the platform banner. It
 honors `SettingsValues.notifications.desktop_notifications` (app notifications
 OFF raises no banner). Linux uses `notify-rust` with an explicit freedesktop
-`default` action; Windows uses its typed default-click response and the
-installed application's AppUserModelID. Neither relies on the desktop
+`default` action, names the app through `appname` and the installed
+`desktop-entry` so the banner header shows Koushi's own icon, name, and receive
+time instead of a generic caller, marks the category `im.received`, escapes
+`&`, `<`, and `>` in the body because servers render markup there, and inlines
+an available avatar as `image-data` so no image file and no media URL reaches
+the OS. Windows uses its typed default-click response and the installed
+application's AppUserModelID, and carries the payload text without a platform
+image. Neither relies on the desktop
 `tauri-plugin-notification` click path. macOS uses the bundled app's
 `UNUserNotificationCenter` through `mac-usernotifications`, with asynchronous
 responses and bounded, cancellable activation lifetimes; the deprecated

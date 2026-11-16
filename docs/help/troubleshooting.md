@@ -89,10 +89,11 @@ sounds, and badges. Also check the operating system's
 notification permission for Koushi. An unread badge and a desktop notification
 are different signals. A red badge counts locally observed unread messages;
 server-only notification counts do not create a red number or a desktop alert.
-Desktop alerts state the verified room count and open the room; they do not jump
-to an unverified event. Message text appears in a banner only with **Show message
-content in notifications** on (off by default), and only for a new message Koushi
-has decrypted and read itself.
+Desktop alerts name the room and its unread count and open the room; they do not
+jump to an unverified event. The sender's name, the start of the message, and on
+Linux the sender's avatar appear in a banner only with **Show message content in
+notifications** on (off by default), and only for a new message Koushi has
+decrypted and read itself.
 
 If the notification you are missing is mail or a relay message sent from this
 device, see [Notifications from this device do not

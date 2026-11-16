@@ -6,10 +6,11 @@
 //! must never be built for a suppressed candidate.
 
 use koushi_state::{
-    AppAction, AppState, NativeAttentionCandidate, NativeAttentionCapabilities,
-    NativeAttentionCapability, NativeAttentionObservationKind, NativeAttentionProjectionInput,
-    RoomAttentionKind, RoomLatestEventSummary, RoomNotificationMode, RoomSummary, RoomTags,
-    SessionInfo, SessionState, native_attention_projection_from_rooms, reduce,
+    AppAction, AppState, AvatarImage, AvatarThumbnailState, NativeAttentionCandidate,
+    NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionObservationKind,
+    NativeAttentionProjectionInput, RoomAttentionKind, RoomLatestEventSummary,
+    RoomNotificationMode, RoomSummary, RoomTags, SessionInfo, SessionState,
+    native_attention_projection_from_rooms, reduce,
 };
 use std::collections::{BTreeSet, HashMap};
 
@@ -66,6 +67,206 @@ fn latest_event(event_id: &str, sender: &str, preview: &str) -> RoomLatestEventS
         timestamp_ms: 42,
         is_redacted: false,
     }
+}
+
+fn cached_avatar() -> AvatarImage {
+    AvatarImage {
+        mxc_uri: "mxc://example.invalid/avatar".to_owned(),
+        thumbnail: AvatarThumbnailState::Ready {
+            source_ref: "avatar/0123456789abcdef".to_owned(),
+            width: Some(120),
+            height: Some(120),
+            mime_type: Some("image/webp".to_owned()),
+        },
+    }
+}
+
+/// A signed-in account whose banners may carry message content (#994).
+fn preview_account() -> AppState {
+    let mut state = AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: "@viewer:example.invalid".to_owned(),
+            device_id: "VIEWER".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        ..AppState::default()
+    };
+    state.settings.values.notifications.message_previews = true;
+    state.native_attention.summary.capabilities = capabilities();
+    state.native_attention_context.window_focused = false;
+    state
+}
+
+/// Raise the one alert a live unread rise produces: the room goes from read to
+/// unread while its latest event changes to another user's message.
+fn receive_banner(
+    state: &mut AppState,
+    room_id: &str,
+    is_dm: bool,
+    highlight: u64,
+    event: RoomLatestEventSummary,
+) -> koushi_state::NativeNotificationPayload {
+    let mut read = room(room_id, is_dm, 0, 0);
+    read.latest_event = Some(latest_event("$old:example.invalid", "Alice", "old"));
+    reduce(
+        state,
+        AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![read],
+        },
+    );
+    let mut unread = room(room_id, is_dm, 1, highlight);
+    unread.latest_event = Some(event);
+    reduce(
+        state,
+        AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![unread],
+        },
+    );
+    state
+        .native_attention
+        .notification
+        .clone()
+        .expect("verified banner")
+}
+
+fn verified_event(sender: &str, text: &str) -> RoomLatestEventSummary {
+    let mut event = latest_event("$observed:example.invalid", sender, "preview");
+    event.message_text = Some(text.to_owned());
+    event.sender_avatar = Some(cached_avatar());
+    event
+}
+
+/// #1907: a room banner names its sender in front of the text, so the popup
+/// answers "who said this" as well as "which room".
+#[test]
+fn a_room_banner_names_its_sender_in_front_of_the_text() {
+    let payload = receive_banner(
+        &mut preview_account(),
+        "!room:example.invalid",
+        false,
+        0,
+        verified_event("Alice", "hello there"),
+    );
+    assert_eq!(payload.title, "Message in Room");
+    assert_eq!(payload.body, "Alice: hello there");
+    assert_eq!(
+        payload.sender_avatar.as_deref(),
+        Some("avatar/0123456789abcdef")
+    );
+}
+
+/// A direct message names the partner in its title already, so its body is the
+/// message alone and the avatar is that same partner.
+#[test]
+fn a_direct_message_banner_is_the_text_and_the_partner_avatar() {
+    let payload = receive_banner(
+        &mut preview_account(),
+        "!dm:example.invalid",
+        true,
+        0,
+        verified_event("Alice", "hello there"),
+    );
+    assert_eq!(payload.title, "Direct message in Room");
+    assert_eq!(payload.body, "hello there");
+    assert_eq!(
+        payload.sender_avatar.as_deref(),
+        Some("avatar/0123456789abcdef")
+    );
+}
+
+/// A mention inside a direct message still omits the sender prefix: the title
+/// already names the partner.
+#[test]
+fn a_direct_mention_banner_omits_the_sender() {
+    let payload = receive_banner(
+        &mut preview_account(),
+        "!dm:example.invalid",
+        true,
+        1,
+        verified_event("Alice", "hello there"),
+    );
+    assert_eq!(payload.title, "Direct message in Room");
+    assert_eq!(payload.body, "hello there");
+}
+
+/// Previews OFF is the private default (#1054): today's count body, and no
+/// sender avatar either, because the avatar follows the same gate as the text.
+#[test]
+fn previews_off_carries_neither_the_sender_nor_the_avatar() {
+    let mut state = preview_account();
+    state.settings.values.notifications.message_previews = false;
+    let payload = receive_banner(
+        &mut state,
+        "!room:example.invalid",
+        false,
+        0,
+        verified_event("Alice", "hello there"),
+    );
+    assert_eq!(payload.body, "1 unread");
+    assert_eq!(payload.sender_avatar, None);
+}
+
+/// Only a cached thumbnail publishes an avatar: a thumbnail that is still
+/// loading leaves the avatar out instead of starting a download (#1907).
+#[test]
+fn an_uncached_thumbnail_publishes_no_avatar() {
+    let mut loading = verified_event("Alice", "hello there");
+    loading.sender_avatar = Some(AvatarImage {
+        mxc_uri: "mxc://example.invalid/avatar".to_owned(),
+        thumbnail: AvatarThumbnailState::Loading { request_id: 7 },
+    });
+    let payload = receive_banner(
+        &mut preview_account(),
+        "!room:example.invalid",
+        false,
+        0,
+        loading,
+    );
+    assert_eq!(payload.body, "Alice: hello there");
+    assert_eq!(payload.sender_avatar, None);
+}
+
+/// A display name may carry any whitespace; the banner keeps one line, and a
+/// blank one falls back to the text alone.
+#[test]
+fn a_sender_label_is_one_line_and_a_blank_one_is_left_out() {
+    let payload = receive_banner(
+        &mut preview_account(),
+        "!room:example.invalid",
+        false,
+        0,
+        verified_event(" Alice\n\tSmith ", "hello"),
+    );
+    assert_eq!(payload.body, "Alice Smith: hello");
+
+    let payload = receive_banner(
+        &mut preview_account(),
+        "!room:example.invalid",
+        false,
+        0,
+        verified_event(" \u{2028} ", "hello"),
+    );
+    assert_eq!(payload.body, "hello");
+}
+
+/// #1907: the avatar reference is account-scoped metadata, so `Debug` redacts it
+/// with the rest of the payload.
+#[test]
+fn notification_debug_redacts_the_avatar_reference() {
+    let payload = receive_banner(
+        &mut preview_account(),
+        "!room:example.invalid",
+        false,
+        0,
+        verified_event("Alice", "hello there"),
+    );
+    let rendered = format!("{payload:?}");
+    assert!(!rendered.contains("avatar/0123456789abcdef"));
+    assert!(!rendered.contains("Alice"));
+    assert!(rendered.contains("AvatarRef(..)"));
 }
 
 #[test]

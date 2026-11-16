@@ -96,6 +96,13 @@ Rules:
    candidate-scoped native effects, permission-prompt limits, Space rail and
    thread badges, and sound policy are specified in state ownership "Threads
    and attention" and overview "Desktop Attention Surfaces".
+   The local OS banner has exactly one exception, and it is default-off: the
+   device-local message-preview option (#994). While it is ON and the
+   projection verified the event behind a live alert, that banner may carry the
+   event's message text, its sender display label, and its already-cached
+   avatar thumbnail reference (#1907). The label is never a Matrix user id, the
+   avatar reference is a session cache reference rather than a media URL or
+   homeserver identifier, and with the option OFF none of the three is present.
    The same minimization governs a notification this device relays, whether by
    mail or through a relay sink added later: by default the body carries only the safe room
    display label, the kind, and the counts, and no room, event, sender, or

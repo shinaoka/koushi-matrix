@@ -6,13 +6,16 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::locale_profile::{CatalogLocale, DisplayPlatform};
-use crate::notification_text::{NotificationText, notification_counts, notification_text};
+use crate::notification_text::{
+    NotificationText, notification_counts, notification_label_separator, notification_text,
+};
 
 use super::AppState;
 use super::errors::OperationFailureKind;
 use super::notification_delivery::{
     BoundedNotificationDeliveryText, bounded_notification_delivery_message_source,
 };
+use super::profile::AvatarThumbnailState;
 #[cfg(test)]
 use super::room::RoomLatestEventSummary;
 use super::room::{
@@ -121,16 +124,26 @@ impl fmt::Debug for NativeAttentionCandidate {
     }
 }
 
-/// Rust-owned text and target of one desktop notification.
+/// Rust-owned text, image, and target of one desktop notification.
 ///
 /// Built in the same projection run as the selected candidate, so the
-/// notification body and the navigation target can never describe different
-/// events. `Debug` redacts every field: the title carries a room label and the
-/// body may carry message content.
+/// notification body, the avatar, and the navigation target can never describe
+/// different events. `Debug` redacts every field: the title carries a room
+/// label, the body may carry message content, and the avatar reference is
+/// account-scoped metadata.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NativeNotificationPayload {
     pub title: String,
     pub body: String,
+    /// Opaque cache reference of the verified event sender's avatar thumbnail,
+    /// as published by [`AvatarThumbnailState::Ready::source_ref`] (#1907).
+    ///
+    /// Present only while the banner may carry message content, from the same
+    /// event the preview came from, and only when the thumbnail is already
+    /// cached: the banner never starts a download. It is a cache reference, not
+    /// a media URL, so no homeserver or token reaches the OS.
+    #[serde(default)]
+    pub sender_avatar: Option<String>,
     pub target: NativeNotificationTarget,
 }
 
@@ -151,6 +164,10 @@ impl fmt::Debug for NativeNotificationPayload {
             .debug_struct("NativeNotificationPayload")
             .field("title", &"NotificationTitle(..)")
             .field("body", &"NotificationBody(..)")
+            .field(
+                "sender_avatar",
+                &self.sender_avatar.as_ref().map(|_| "AvatarRef(..)"),
+            )
             .field("target", &self.target)
             .finish()
     }
@@ -694,18 +711,79 @@ fn native_notification_payload(
     previews_allowed: bool,
     locale: CatalogLocale,
 ) -> NativeNotificationPayload {
-    let preview = previews_allowed
+    let verified = previews_allowed
         .then(|| verified_native_preview(entry))
         .flatten();
+    let (body, sender_avatar) = match verified {
+        Some(preview) => (
+            native_notification_preview_body(entry, &preview, locale),
+            verified_native_sender_avatar(entry),
+        ),
+        None => (native_notification_count_body(candidate, locale), None),
+    };
     NativeNotificationPayload {
         title: native_notification_title(&candidate.room_display_name, candidate.kind, locale),
-        body: preview.unwrap_or_else(|| native_notification_count_body(candidate, locale)),
+        body,
+        sender_avatar,
         target: NativeNotificationTarget {
             room_id: entry.room_id.to_owned(),
             event_id: None,
             thread_root_event_id: None,
         },
     }
+}
+
+/// The verified preview as a banner body.
+///
+/// A room names the sender in front of the text, the way a group chat does; a
+/// direct message does not, because its room label already is the partner.
+fn native_notification_preview_body(
+    entry: &NativeAttentionCandidateEntry<'_>,
+    preview: &str,
+    locale: CatalogLocale,
+) -> String {
+    if entry.room.is_dm {
+        return preview.to_owned();
+    }
+    let Some(sender) = verified_native_sender_label(entry) else {
+        return preview.to_owned();
+    };
+    format!("{sender}{}{preview}", notification_label_separator(locale))
+}
+
+/// The display label of the sender of the verified event, as one line.
+///
+/// It is the room list's own label, never a Matrix user id, and it is flattened
+/// the way the preview is, because a display name may carry any whitespace. It
+/// is not length-truncated: a name is the user's own label, not message text.
+fn verified_native_sender_label(entry: &NativeAttentionCandidateEntry<'_>) -> Option<String> {
+    let label = flattened_single_line(entry.room.latest_event.as_ref()?.sender_label.as_deref()?);
+    (!label.is_empty()).then_some(label)
+}
+
+/// The verified event sender's avatar, when its thumbnail is already cached.
+///
+/// A thumbnail that is still loading, failed, or was evicted publishes `None`
+/// rather than a banner that waits for a fetch (#1907).
+fn verified_native_sender_avatar(entry: &NativeAttentionCandidateEntry<'_>) -> Option<String> {
+    let avatar = entry.room.latest_event.as_ref()?.sender_avatar.as_ref()?;
+    match &avatar.thumbnail {
+        AvatarThumbnailState::Ready { source_ref, .. } if !source_ref.is_empty() => {
+            Some(source_ref.clone())
+        }
+        _ => None,
+    }
+}
+
+/// One line of caller text: whitespace, control characters, and line
+/// separators collapsed to single spaces.
+fn flattened_single_line(text: &str) -> String {
+    text.split(|character: char| {
+        character.is_whitespace() || character.is_control() || character == '\u{2028}'
+    })
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 /// The longest OS preview, in grapheme clusters. A banner shows a line or two; the
@@ -733,15 +811,7 @@ fn verified_native_preview(entry: &NativeAttentionCandidateEntry<'_>) -> Option<
     {
         return None;
     }
-    let flattened = event
-        .message_text
-        .as_deref()?
-        .split(|character: char| {
-            character.is_whitespace() || character.is_control() || character == '\u{2028}'
-        })
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
+    let flattened = flattened_single_line(event.message_text.as_deref()?);
     if flattened.is_empty() {
         return None;
     }

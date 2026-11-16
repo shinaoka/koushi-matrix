@@ -15,6 +15,11 @@
 //!
 //! macOS uses `UNUserNotificationCenter` through `mac-usernotifications` so
 //! its delegate can report body clicks without a blocked OS thread (#1128).
+//!
+//! On Linux the banner also carries Koushi's own identity (`appname` plus the
+//! installed `desktop-entry`) and, when the payload names an already-cached
+//! avatar, the sender image as inline `image-data` (#1907). No avatar file is
+//! written: the bytes travel in the notification itself.
 
 #[cfg(not(target_os = "macos"))]
 use std::sync::atomic::AtomicUsize;
@@ -306,15 +311,13 @@ fn dispatch_native_notification(
             };
         };
 
-        let title = payload.title.clone();
-        let body = payload.body.clone();
-        let target = payload.target.clone();
+        let thread_payload = payload.clone();
         let activation_app = app.clone();
         let spawned = std::thread::Builder::new()
             .name("koushi-notification-activation".to_owned())
             .spawn(move || {
                 let _reservation = reservation;
-                show_banner_and_wait_for_activation(&activation_app, &fence, &title, &body, target);
+                show_banner_and_wait_for_activation(&activation_app, &fence, &thread_payload);
             });
 
         match spawned {
@@ -340,19 +343,17 @@ fn dispatch_native_notification(
 fn show_banner_and_wait_for_activation(
     app: &AppHandle,
     fence: &ActivationFence,
-    title: &str,
-    body: &str,
-    target: NativeNotificationTarget,
+    payload: &NativeNotificationPayload,
 ) {
     {
-        let notification = response_notification(title, body, notification_app_identity(app));
+        let notification = banner_notification(app, payload);
         let Ok(handle) = notification.show() else {
             record_show_failed();
             return;
         };
         let result = handle.wait_for_response(|response: &notify_rust::NotificationResponse| {
             if notification_response_activates(response) {
-                activate_notification(app, fence, target.clone());
+                activate_notification(app, fence, payload.target.clone());
             }
         });
         if result.is_err() {
@@ -366,22 +367,106 @@ fn notification_response_activates(response: &notify_rust::NotificationResponse)
     response.is_default_action()
 }
 
+/// Build the platform banner for one payload.
+///
+/// Linux carries the sender, the text, the Koushi identity, and the cached
+/// avatar; Windows keeps its installed-application identity and its own text
+/// only (#1907).
 #[cfg(not(target_os = "macos"))]
-fn response_notification(
-    title: &str,
-    body: &str,
+fn banner_notification(
+    app: &AppHandle,
+    payload: &NativeNotificationPayload,
+) -> notify_rust::Notification {
+    #[cfg(target_os = "linux")]
+    return linux_banner(&linux_banner_spec(payload, &app.package_info().name));
+    #[cfg(windows)]
+    return windows_banner(payload, notification_app_identity(app));
+}
+
+/// The freedesktop arguments one Linux banner is shown with (#1907).
+///
+/// Plain strings, so the mapping is testable where `notify-rust`'s Linux-only
+/// types are not compiled; [`linux_banner`] applies them.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Eq, PartialEq)]
+struct LinuxBannerSpec {
+    summary: String,
+    body: String,
+    app_name: String,
+    /// The installed `.desktop` file's id, which is the product name: the Tauri
+    /// Linux bundle installs `<productName>.desktop` and Plasma reads the app
+    /// name, its icon, and its own receive time from it.
+    desktop_entry: String,
+    /// Freedesktop `category`, so the server can file and filter the banner as
+    /// an incoming message.
+    category: &'static str,
+    /// Opaque renderable-thumbnail cache reference of the sender's avatar.
+    avatar: Option<String>,
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_banner_spec(payload: &NativeNotificationPayload, product_name: &str) -> LinuxBannerSpec {
+    LinuxBannerSpec {
+        summary: payload.title.clone(),
+        body: freedesktop_body_markup(&payload.body),
+        app_name: product_name.to_owned(),
+        desktop_entry: product_name.to_owned(),
+        category: "im.received",
+        avatar: payload.sender_avatar.clone(),
+    }
+}
+
+/// Escape the banner body for the freedesktop markup subset Plasma renders: a
+/// message is text, never markup.
+#[cfg(any(target_os = "linux", test))]
+fn freedesktop_body_markup(body: &str) -> String {
+    body.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// The cached avatar thumbnail as tightly packed straight RGBA rows.
+///
+/// The bytes come from the session-scoped in-memory thumbnail cache, so the
+/// banner carries an image only when this session already decoded that avatar:
+/// it never starts a fetch and never writes an avatar file (#1907).
+#[cfg(any(target_os = "linux", test))]
+fn avatar_rgba(source_ref: Option<&str>) -> Option<(i32, i32, Vec<u8>)> {
+    let content = koushi_core::renderable_thumbnail::lookup_renderable_thumbnail(source_ref?)?;
+    let image = image::load_from_memory(&content.bytes).ok()?.to_rgba8();
+    let width = i32::try_from(image.width()).ok()?;
+    let height = i32::try_from(image.height()).ok()?;
+    Some((width, height, image.into_raw()))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_banner(spec: &LinuxBannerSpec) -> notify_rust::Notification {
+    let mut notification = notify_rust::Notification::new();
+    notification
+        .summary(&spec.summary)
+        .body(&spec.body)
+        .appname(&spec.app_name)
+        .hint(notify_rust::Hint::DesktopEntry(spec.desktop_entry.clone()))
+        .hint(notify_rust::Hint::Category(spec.category.to_owned()))
+        .action("default", "Open");
+    if let Some((width, height, pixels)) = avatar_rgba(spec.avatar.as_deref())
+        && let Ok(image) = notify_rust::Image::from_rgba(width, height, pixels)
+    {
+        notification.image_data(image);
+    }
+    notification
+}
+
+#[cfg(windows)]
+fn windows_banner(
+    payload: &NativeNotificationPayload,
     app_id: Option<&str>,
 ) -> notify_rust::Notification {
     let mut notification = notify_rust::Notification::new();
-    notification.summary(title).body(body);
-    #[cfg(target_os = "linux")]
-    notification.action("default", "Open");
-    #[cfg(windows)]
+    notification.summary(&payload.title).body(&payload.body);
     if let Some(app_id) = app_id {
         notification.app_id(app_id);
     }
-    #[cfg(not(windows))]
-    let _ = app_id;
     notification
 }
 
@@ -393,11 +478,6 @@ fn notification_app_id(is_dev: bool, identifier: &str) -> Option<&str> {
 #[cfg(windows)]
 fn notification_app_identity(app: &AppHandle) -> Option<&str> {
     notification_app_id(tauri::is_dev(), &app.config().identifier)
-}
-
-#[cfg(target_os = "linux")]
-fn notification_app_identity(_app: &AppHandle) -> Option<&str> {
-    None
 }
 
 fn record_show_failed() {
@@ -413,12 +493,7 @@ fn record_show_failed() {
 
 #[cfg(not(target_os = "macos"))]
 fn show_without_activation(app: &AppHandle, payload: &NativeNotificationPayload) -> bool {
-    let notification = response_notification(
-        &payload.title,
-        &payload.body,
-        notification_app_identity(app),
-    );
-    notification.show().is_ok()
+    banner_notification(app, payload).show().is_ok()
 }
 
 async fn select_activation_tab(
