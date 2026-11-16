@@ -40,6 +40,7 @@ fn room_list_applied_records_without_trace_environment() {
 
     reduce_with_unread_diagnostics(
         &mut state,
+        &mut unread_trace::UnreadTraceLedger::default(),
         AppAction::RoomListUpdated {
             spaces: Vec::new(),
             rooms: vec![unread_diagnostic_room(private_room_id)],
@@ -170,6 +171,7 @@ fn native_attention_recomputed_diagnostic_records_private_safe_fields_child() {
     });
     reduce_with_unread_diagnostics(
         &mut state,
+        &mut unread_trace::UnreadTraceLedger::default(),
         AppAction::RoomListUpdated {
             spaces: Vec::new(),
             rooms: vec![room.clone()],
@@ -177,6 +179,7 @@ fn native_attention_recomputed_diagnostic_records_private_safe_fields_child() {
     );
     reduce_with_unread_diagnostics(
         &mut state,
+        &mut unread_trace::UnreadTraceLedger::default(),
         AppAction::NativeWindowFocusChanged {
             focused: false,
             observation_generation: 1,
@@ -192,6 +195,7 @@ fn native_attention_recomputed_diagnostic_records_private_safe_fields_child() {
         .timestamp_ms = 43;
     reduce_with_unread_diagnostics(
         &mut state,
+        &mut unread_trace::UnreadTraceLedger::default(),
         AppAction::RoomListUpdated {
             spaces: Vec::new(),
             rooms: vec![room],

@@ -1,8 +1,9 @@
 use super::super::tests::unread_diagnostic_room;
 use super::*;
 use koushi_state::{
-    ConversationActivity, ConversationActivitySource, RoomNotificationModeOperation,
-    RoomNotificationSettings, RoomTags, UserProfile,
+    ConversationActivity, ConversationActivitySource, RoomLatestEventSummary,
+    RoomNotificationModeOperation, RoomNotificationSettings, RoomSummary, RoomTags, SpaceSummary,
+    UserProfile,
 };
 use std::collections::BTreeSet;
 

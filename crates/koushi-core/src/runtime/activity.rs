@@ -4,9 +4,11 @@ use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, reco
 use koushi_state::{
     ActivityMarkReadTarget, ActivityResolutionState, ActivityRow, ActivityRowKind, ActivityState,
     ActivityStream, ActivityTab, AppAction, AppState, AvatarImage, AvatarThumbnailState,
-    RoomLatestEventSummary, RoomNotificationMode, RoomSummary, SpaceSummary,
-    room_activity_unread_count,
+    RoomNotificationMode,
 };
+
+use crate::room_profile::{RoomProfile, RoomProfileTable, RoomUnreadCounts};
+use crate::unread_trace::UnreadTraceLedger;
 
 use super::{ActivityResolutionRequest, RequestId};
 
@@ -81,39 +83,32 @@ pub(super) struct ActivityProjection {
     /// `AvatarThumbnailUpdated` settlement cannot reach them without this
     /// projection-local record.
     avatar_thumbnails_by_mxc: BTreeMap<String, AvatarThumbnailState>,
+    /// #1915: the per-room derived inputs of both streams. Only rooms whose
+    /// profile revision changed have their rows rebuilt.
+    room_profiles: RoomProfileTable,
+    /// Unread-stream summary rows by room, rebuilt per changed profile.
+    unread_rows_by_room: HashMap<String, ActivityRow>,
+    /// Advances on every change to the cached rows or their avatar thumbnails.
+    rows_revision: u64,
+    /// The streams last built and the global inputs they were built from.
+    emitted: Option<ActivityEmission>,
+    /// Last recorded `activity_placeholder` unread trace per room.
+    placeholder_traces: UnreadTraceLedger,
+    stream_rebuilds: u64,
+    last_rebuilt_room_rows: Vec<String>,
+}
+
+struct ActivityEmission {
+    rows_revision: u64,
+    own_user_id: Option<String>,
+    recent: Vec<ActivityRow>,
+    unread: Vec<ActivityRow>,
 }
 
 #[derive(Default)]
 pub(super) struct ActivityMarkReadResult {
     pub(super) cleared_event_ids: Vec<String>,
     pub(super) cleared_placeholder_room_ids: Vec<String>,
-}
-
-fn activity_latest_display_event(room: &RoomSummary) -> Option<&RoomLatestEventSummary> {
-    let latest = room.latest_event.as_ref()?;
-    if latest.is_redacted
-        || matches!(
-            latest.relation_type.as_deref(),
-            Some("m.replace" | "m.annotation")
-        )
-    {
-        return None;
-    }
-    if let Some(conversation_activity) = room.conversation_activity
-        && conversation_activity.timestamp_ms != latest.timestamp_ms
-    {
-        return None;
-    }
-    // Older room-list injectors only provide the already-filtered latest event
-    // and omit the separate conversation-activity projection. Production
-    // projections keep that field in sync, while the producer-side filter in
-    // koushi-sdk ensures state/profile events never reach this fallback.
-    Some(latest)
-}
-
-fn activity_latest_display_event_id(room: &RoomSummary) -> Option<&str> {
-    let latest = activity_latest_display_event(room)?;
-    (!latest.event_id.trim().is_empty()).then_some(latest.event_id.as_str())
 }
 
 impl ActivityProjection {
@@ -128,8 +123,12 @@ impl ActivityProjection {
         if !self.cached_rows_reference_avatar(mxc_uri) {
             return;
         }
+        if self.avatar_thumbnails_by_mxc.get(mxc_uri) == Some(thumbnail) {
+            return;
+        }
         self.avatar_thumbnails_by_mxc
             .insert(mxc_uri.to_owned(), thumbnail.clone());
+        self.rows_revision = self.rows_revision.wrapping_add(1);
     }
 
     fn cached_rows_reference_avatar(&self, mxc_uri: &str) -> bool {
@@ -184,49 +183,95 @@ impl ActivityProjection {
         sender_id: Option<&str>,
         embedded: Option<&AvatarImage>,
     ) -> Option<AvatarImage> {
-        let Some(sender_id) = sender_id else {
-            return self.settled_avatar(embedded.cloned());
-        };
-        let own_profile_avatar = (own_user_id == Some(sender_id))
-            .then_some(state.profile.own.avatar.as_ref())
-            .flatten();
-        let profile_avatar = own_profile_avatar
-            .or_else(|| {
-                state
-                    .profile
-                    .room_users
-                    .get(room_id)
-                    .and_then(|profiles| profiles.get(sender_id))
-                    .and_then(|profile| profile.avatar.as_ref())
-            })
-            .or_else(|| {
-                state
-                    .profile
-                    .users
-                    .get(sender_id)
-                    .and_then(|profile| profile.avatar.as_ref())
-            });
-        // A same-source row copy may already carry a settled thumbnail while
-        // the profile entry is still NotRequested; keep the settled state.
-        let avatar = match (profile_avatar, embedded) {
-            (Some(profile), Some(embedded))
-                if profile.mxc_uri == embedded.mxc_uri
-                    && profile.thumbnail == AvatarThumbnailState::NotRequested
-                    && embedded.thumbnail != AvatarThumbnailState::NotRequested =>
-            {
-                Some(embedded.clone())
-            }
-            (Some(profile), _) => Some(profile.clone()),
-            (None, Some(embedded)) => Some(embedded.clone()),
-            (None, None) => None,
-        };
-        self.settled_avatar(avatar)
+        self.settled_avatar(
+            chosen_sender_avatar(state, own_user_id, room_id, sender_id, embedded).cloned(),
+        )
     }
 
+    /// Whether `current` is what [`Self::resolved_sender_avatar`] would
+    /// return now, checked without cloning.
+    fn sender_avatar_is_current(
+        &self,
+        state: &AppState,
+        own_user_id: Option<&str>,
+        row: &ActivityRow,
+        embedded: Option<&AvatarImage>,
+    ) -> bool {
+        let chosen = chosen_sender_avatar(
+            state,
+            own_user_id,
+            &row.room_id,
+            row.sender_id.as_deref(),
+            embedded,
+        );
+        match (chosen, row.sender_avatar.as_ref()) {
+            (None, None) => true,
+            (Some(chosen), Some(current)) => {
+                chosen.mxc_uri == current.mxc_uri
+                    && self
+                        .avatar_thumbnails_by_mxc
+                        .get(&chosen.mxc_uri)
+                        .unwrap_or(&chosen.thumbnail)
+                        == &current.thumbnail
+            }
+            _ => false,
+        }
+    }
+}
+
+/// The avatar source a row shows before thumbnail settlement: the live
+/// profile when known, else the copy embedded in the row or summary.
+fn chosen_sender_avatar<'a>(
+    state: &'a AppState,
+    own_user_id: Option<&str>,
+    room_id: &str,
+    sender_id: Option<&str>,
+    embedded: Option<&'a AvatarImage>,
+) -> Option<&'a AvatarImage> {
+    let Some(sender_id) = sender_id else {
+        return embedded;
+    };
+    let own_profile_avatar = (own_user_id == Some(sender_id))
+        .then_some(state.profile.own.avatar.as_ref())
+        .flatten();
+    let profile_avatar = own_profile_avatar
+        .or_else(|| {
+            state
+                .profile
+                .room_users
+                .get(room_id)
+                .and_then(|profiles| profiles.get(sender_id))
+                .and_then(|profile| profile.avatar.as_ref())
+        })
+        .or_else(|| {
+            state
+                .profile
+                .users
+                .get(sender_id)
+                .and_then(|profile| profile.avatar.as_ref())
+        });
+    // A same-source row copy may already carry a settled thumbnail while
+    // the profile entry is still NotRequested; keep the settled state.
+    match (profile_avatar, embedded) {
+        (Some(profile), Some(embedded))
+            if profile.mxc_uri == embedded.mxc_uri
+                && profile.thumbnail == AvatarThumbnailState::NotRequested
+                && embedded.thumbnail != AvatarThumbnailState::NotRequested =>
+        {
+            Some(embedded)
+        }
+        (Some(profile), _) => Some(profile),
+        (None, Some(embedded)) => Some(embedded),
+        (None, None) => None,
+    }
+}
+
+impl ActivityProjection {
     /// Compatibility path for older tests/injectors. Production timelines use
     /// `CanonicalActivityWindowReconciled`; this path replaces each observed
     /// room too, spilling only its over-bound detail into resolver provenance.
     pub(super) fn ingest(&mut self, rows: Vec<ActivityRow>) {
+        self.rows_revision = self.rows_revision.wrapping_add(1);
         if rows.is_empty() {
             self.canonical_rows_by_room.clear();
             self.hidden_event_ids_by_room.clear();
@@ -262,6 +307,7 @@ impl ActivityProjection {
     }
 
     pub(super) fn ingest_resolution_rows(&mut self, rows: Vec<ActivityRow>, state: &AppState) {
+        self.rows_revision = self.rows_revision.wrapping_add(1);
         for row in rows {
             let Some(row) = Self::sanitize_row(row) else {
                 continue;
@@ -295,6 +341,7 @@ impl ActivityProjection {
         if room_id.trim().is_empty() {
             return;
         }
+        self.rows_revision = self.rows_revision.wrapping_add(1);
 
         self.remove_canonical_room(&room_id);
         self.hidden_event_ids_by_room.remove(&room_id);
@@ -679,16 +726,115 @@ impl ActivityProjection {
         })
     }
 
+    /// The rows update open Activity needs after an action, or `None` when
+    /// no Activity input changed (#1915). Unchanged rooms cost one profile
+    /// comparison; the streams are rebuilt only when a room profile, the
+    /// cached rows, the session user, or a shown avatar changed, and the
+    /// action is emitted only when the rebuilt rows differ from the state.
     pub(super) fn update_action_for_open_state(&mut self, state: &AppState) -> Option<AppAction> {
-        if !matches!(state.activity, ActivityState::Open { .. }) {
+        let ActivityState::Open {
+            recent: current_recent,
+            unread: current_unread,
+            ..
+        } = &state.activity
+        else {
+            return None;
+        };
+        let rooms_changed = self.refresh_room_rows(state);
+        let state_holds_emission = self.emitted.as_ref().is_some_and(|emitted| {
+            emitted.recent == current_recent.rows && emitted.unread == current_unread.rows
+        });
+        if !rooms_changed && state_holds_emission && self.emitted_inputs_current(state) {
             return None;
         }
-        let (recent, unread, excluded_room_ids) = self.snapshot_preserving_resolution(state);
+        let (recent, unread, excluded_room_ids) = self.build_streams(state);
+        if recent.rows == current_recent.rows && unread.rows == current_unread.rows {
+            return None;
+        }
+        let (recent, unread) = preserve_resolution(state, recent, unread);
         Some(AppAction::ActivityRowsUpdated {
             recent,
             unread,
             excluded_room_ids,
         })
+    }
+
+    /// Whether the global inputs of the last emission still hold: the cached
+    /// rows, the session user, and every shown sender avatar.
+    fn emitted_inputs_current(&self, state: &AppState) -> bool {
+        let Some(emitted) = &self.emitted else {
+            return false;
+        };
+        let own_user_id = crate::event_projection::timeline_projection_own_user_id(state);
+        emitted.rows_revision == self.rows_revision
+            && emitted.own_user_id.as_deref() == own_user_id
+            && emitted.recent.iter().all(|row| {
+                self.sender_avatar_is_current(state, own_user_id, row, self.embedded_avatar(row))
+            })
+    }
+
+    /// The avatar copy a recent row was built from: its cached row, else the
+    /// room's latest displayable event.
+    fn embedded_avatar(&self, row: &ActivityRow) -> Option<&AvatarImage> {
+        let event_id = row.event_id.as_deref()?;
+        if let Some(cached) = self
+            .canonical_rows_by_room
+            .get(&row.room_id)
+            .and_then(|rows| rows.get(event_id))
+            .or_else(|| self.resolution_rows_by_event_id.get(event_id))
+        {
+            return cached.sender_avatar.as_ref();
+        }
+        self.room_profiles
+            .get(&row.room_id)
+            .and_then(|profile| profile.latest_display_event.as_ref())
+            .filter(|latest| latest.event_id == event_id)
+            .and_then(|latest| latest.sender_avatar.as_ref())
+    }
+
+    /// Refresh the room profile table and rebuild the unread summary row of
+    /// every room whose profile changed. Returns whether any room changed.
+    fn refresh_room_rows(&mut self, state: &AppState) -> bool {
+        let changes = self.room_profiles.refresh(state);
+        self.last_rebuilt_room_rows.clear();
+        for room_id in &changes.removed {
+            self.unread_rows_by_room.remove(room_id);
+            self.placeholder_traces.forget(room_id);
+        }
+        for &index in &changes.updated {
+            let room = &state.rooms[index];
+            let Some(profile) = self.room_profiles.get(&room.room_id) else {
+                continue;
+            };
+            self.last_rebuilt_room_rows.push(room.room_id.clone());
+            // The SDK count is verified at room scope. Fully-read markers,
+            // private receipts and the server notification counter can
+            // disagree, so no individual event row may claim to be unread.
+            if activity_excluded(profile) || profile.confirmed_unread_count() == 0 {
+                self.unread_rows_by_room.remove(&room.room_id);
+                self.placeholder_traces.forget(&room.room_id);
+                continue;
+            }
+            crate::unread_trace::trace_activity_room(
+                &mut self.placeholder_traces,
+                "activity_placeholder",
+                room,
+                profile.notification_mode,
+                true,
+                "unread",
+            );
+            let row = ActivityRow {
+                context_label: profile.context_label.clone(),
+                ..ActivityRow::room_unread_placeholder(
+                    room.room_id.clone(),
+                    profile.display_label.clone(),
+                    profile.activity_timestamp_ms,
+                    false,
+                )
+            };
+            self.unread_rows_by_room.insert(room.room_id.clone(), row);
+        }
+        !changes.is_empty()
     }
 
     /// A row refresh never owns the resolution lifecycle: keep the current
@@ -697,16 +843,8 @@ impl ActivityProjection {
         &mut self,
         state: &AppState,
     ) -> (ActivityStream, ActivityStream, Vec<String>) {
-        let (mut recent, mut unread, excluded_room_ids) = self.snapshot(state);
-        if let ActivityState::Open {
-            recent: current_recent,
-            unread: current_unread,
-            ..
-        } = &state.activity
-        {
-            recent.resolution = current_recent.resolution;
-            unread.resolution = current_unread.resolution;
-        }
+        let (recent, unread, excluded_room_ids) = self.snapshot(state);
+        let (recent, unread) = preserve_resolution(state, recent, unread);
         (recent, unread, excluded_room_ids)
     }
 
@@ -739,47 +877,59 @@ impl ActivityProjection {
             .collect()
     }
 
+    #[cfg(test)]
+    pub(super) fn stream_rebuilds(&self) -> u64 {
+        self.stream_rebuilds
+    }
+
+    #[cfg(test)]
+    pub(super) fn last_rebuilt_room_rows(&self) -> &[String] {
+        &self.last_rebuilt_room_rows
+    }
+
+    #[cfg(test)]
+    pub(super) fn room_profile_revision(&self, room_id: &str) -> Option<u64> {
+        self.room_profiles.get(room_id).map(RoomProfile::revision)
+    }
+
     pub(super) fn snapshot(
         &mut self,
         state: &AppState,
     ) -> (ActivityStream, ActivityStream, Vec<String>) {
+        self.refresh_room_rows(state);
+        self.build_streams(state)
+    }
+
+    /// Build both streams from the refreshed room profiles and cached rows,
+    /// and remember them as the current emission.
+    fn build_streams(&mut self, state: &AppState) -> (ActivityStream, ActivityStream, Vec<String>) {
+        self.stream_rebuilds += 1;
         self.retain_projecting_avatars();
         let own_user_id = crate::event_projection::timeline_projection_own_user_id(state);
-        let rooms_by_id: HashMap<&str, &RoomSummary> = state
-            .rooms
-            .iter()
-            .map(|room| (room.room_id.as_str(), room))
-            .collect();
         let excluded_room_ids = state
             .rooms
             .iter()
             .filter(|room| {
-                room.tags.low_priority.is_some()
-                    || state
-                        .room_notification_settings
-                        .get(&room.room_id)
-                        .is_some_and(|settings| settings.mode == RoomNotificationMode::Mute)
+                self.room_profiles
+                    .get(&room.room_id)
+                    .is_some_and(activity_excluded)
             })
             .map(|room| room.room_id.clone())
             .collect::<Vec<_>>();
-        let excluded: BTreeSet<&str> = excluded_room_ids.iter().map(String::as_str).collect();
 
         let mut recent = Vec::new();
         let mut recent_event_ids = BTreeSet::new();
-        let effective_rows = self.effective_rows();
-        for row in effective_rows.values() {
-            if excluded.contains(row.room_id.as_str()) {
-                continue;
-            }
-            let Some(room) = rooms_by_id.get(row.room_id.as_str()) else {
+        for row in self.effective_row_refs() {
+            let Some(profile) = self.room_profiles.get(&row.room_id) else {
                 continue;
             };
-            let mode = state
-                .room_notification_settings
-                .get(&room.room_id)
-                .map(|settings| settings.mode);
-            let room_activity_unread = room_activity_unread_count_for_mode(room, mode) > 0;
-            if !activity_recent_row_visible(mode, row.highlight, room_activity_unread) {
+            if activity_excluded(profile)
+                || !activity_recent_row_visible(
+                    profile.notification_mode,
+                    row.highlight,
+                    activity_mode_unread_count(profile) > 0,
+                )
+            {
                 continue;
             }
             let sender_avatar = self.resolved_sender_avatar(
@@ -789,11 +939,10 @@ impl ActivityProjection {
                 row.sender_id.as_deref(),
                 row.sender_avatar.as_ref(),
             );
-            let context_label = activity_row_context_label(room, &state.spaces);
             let row = ActivityRow {
-                room_label: room.display_label.clone(),
+                room_label: profile.display_label.clone(),
                 sender_avatar,
-                context_label,
+                context_label: profile.context_label.clone(),
                 unread: false,
                 highlight: row.highlight,
                 ..row.clone()
@@ -805,34 +954,33 @@ impl ActivityProjection {
         }
 
         for room in &state.rooms {
-            if excluded.contains(room.room_id.as_str()) {
-                continue;
-            }
-            let Some(display_event_id) = activity_latest_display_event_id(room) else {
+            let Some(profile) = self.room_profiles.get(&room.room_id) else {
                 continue;
             };
-            let Some(latest_event) = &room.latest_event else {
-                continue;
-            };
-            if recent_event_ids.contains(display_event_id) {
+            if activity_excluded(profile) {
                 continue;
             }
-            let mode = state
-                .room_notification_settings
-                .get(&room.room_id)
-                .map(|settings| settings.mode);
-            if !activity_recent_row_visible(
-                mode,
-                false,
-                room_activity_unread_count_for_mode(room, mode) > 0,
-            ) {
+            let Some(latest_event) = profile
+                .latest_display_event
+                .as_ref()
+                .filter(|latest| !latest.event_id.trim().is_empty())
+            else {
+                continue;
+            };
+            if recent_event_ids.contains(&latest_event.event_id)
+                || !activity_recent_row_visible(
+                    profile.notification_mode,
+                    false,
+                    activity_mode_unread_count(profile) > 0,
+                )
+            {
                 continue;
             }
             let mut row = ActivityRow::event(
                 room.room_id.clone(),
-                display_event_id.to_owned(),
+                latest_event.event_id.clone(),
                 latest_event.sender_id.clone(),
-                room.display_label.clone(),
+                profile.display_label.clone(),
                 latest_event.sender_label.clone(),
                 latest_event.preview.clone(),
                 latest_event.timestamp_ms,
@@ -847,58 +995,29 @@ impl ActivityProjection {
                 latest_event.sender_avatar.as_ref(),
             );
             row.thread_root_event_id = latest_event.thread_root_event_id.clone();
-            row.context_label = activity_row_context_label(room, &state.spaces);
+            row.context_label = profile.context_label.clone();
             recent.push(row);
         }
 
-        // The SDK count is verified at room scope. Fully-read markers, private
-        // receipts and the server notification counter can disagree, so no
-        // individual event row may claim to be unread here.
         let mut unread: Vec<ActivityRow> = state
             .rooms
             .iter()
-            .filter(|room| !excluded.contains(room.room_id.as_str()))
-            .filter(|room| room_activity_unread_count(room) > 0)
-            .map(|room| {
-                crate::unread_trace::trace_activity_room(
-                    "activity_placeholder",
-                    room,
-                    state
-                        .room_notification_settings
-                        .get(&room.room_id)
-                        .map(|settings| settings.mode),
-                    true,
-                    "unread",
-                );
-                let timestamp_ms = room
-                    .conversation_activity
-                    .map(|activity| activity.timestamp_ms)
-                    .or_else(|| activity_latest_display_event(room).map(|event| event.timestamp_ms))
-                    .unwrap_or_default();
-                ActivityRow {
-                    context_label: activity_row_context_label(room, &state.spaces),
-                    ..ActivityRow::room_unread_placeholder(
-                        room.room_id.clone(),
-                        room.display_label.clone(),
-                        timestamp_ms,
-                        false,
-                    )
-                }
-            })
+            .filter_map(|room| self.unread_rows_by_room.get(&room.room_id).cloned())
             .collect();
         sort_activity_rows(&mut recent);
         sort_activity_rows(&mut unread);
 
-        let marker_event_ids = state
-            .live_signals
-            .rooms
-            .values()
-            .filter_map(|signals| signals.fully_read_event_id.as_deref())
-            .filter(|event_id| effective_rows.contains_key(*event_id))
-            .count();
         let canonical_rows = self.canonical_row_ordinals.len();
         let resolver_rows = self.resolution_rows_by_event_id.len();
         if canonical_rows > MAX_CANONICAL_ROWS_GLOBAL || resolver_rows > ACTIVITY_RECENT_MAX_ROWS {
+            let effective_rows = self.effective_rows();
+            let marker_event_ids = state
+                .live_signals
+                .rooms
+                .values()
+                .filter_map(|signals| signals.fully_read_event_id.as_deref())
+                .filter(|event_id| effective_rows.contains_key(*event_id))
+                .count();
             record(
                 DiagnosticEvent::new(DiagnosticLevel::Debug, "core.activity", "projection_pruned")
                     .field(DiagnosticField::count(
@@ -925,6 +1044,12 @@ impl ActivityProjection {
         }
         recent.truncate(ACTIVITY_RECENT_MAX_ROWS);
 
+        self.emitted = Some(ActivityEmission {
+            rows_revision: self.rows_revision,
+            own_user_id: own_user_id.map(str::to_owned),
+            recent: recent.clone(),
+            unread: unread.clone(),
+        });
         (
             ActivityStream {
                 rows: recent,
@@ -939,6 +1064,64 @@ impl ActivityProjection {
             excluded_room_ids,
         )
     }
+
+    /// The effective cached rows by reference: canonical rows own a stable
+    /// identity they share with a resolver row; redacted and hidden events
+    /// are skipped.
+    fn effective_row_refs(&self) -> impl Iterator<Item = &ActivityRow> {
+        let visible = |room_id: &str, event_id: &str| {
+            !self.redacted_event_ids.contains(event_id)
+                && !self
+                    .hidden_event_ids_by_room
+                    .get(room_id)
+                    .is_some_and(|ids| ids.contains(event_id))
+        };
+        let canonical = self
+            .canonical_rows_by_room
+            .iter()
+            .flat_map(move |(room_id, rows)| {
+                rows.iter()
+                    .filter(move |(event_id, _)| visible(room_id, event_id))
+                    .map(|(_, row)| row)
+            });
+        let resolution = self
+            .resolution_rows_by_event_id
+            .iter()
+            .filter(move |(event_id, row)| {
+                visible(&row.room_id, event_id)
+                    && !self
+                        .canonical_rows_by_room
+                        .get(&row.room_id)
+                        .is_some_and(|rows| rows.contains_key(*event_id))
+            })
+            .map(|(_, row)| row);
+        canonical.chain(resolution)
+    }
+}
+
+fn preserve_resolution(
+    state: &AppState,
+    mut recent: ActivityStream,
+    mut unread: ActivityStream,
+) -> (ActivityStream, ActivityStream) {
+    if let ActivityState::Open {
+        recent: current_recent,
+        unread: current_unread,
+        ..
+    } = &state.activity
+    {
+        recent.resolution = current_recent.resolution;
+        unread.resolution = current_unread.resolution;
+    }
+    (recent, unread)
+}
+
+fn activity_excluded(profile: &RoomProfile) -> bool {
+    profile.low_priority || profile.is_muted()
+}
+
+fn activity_mode_unread_count(profile: &RoomProfile) -> u64 {
+    mode_unread_count(&profile.counts, profile.notification_mode)
 }
 
 fn activity_row_newest_first(left: &ActivityRow, right: &ActivityRow) -> std::cmp::Ordering {
@@ -962,24 +1145,32 @@ fn bounded_event_ids(ids: Vec<String>) -> BTreeSet<String> {
     bounded.into_iter().collect()
 }
 
+#[cfg(test)]
 fn room_activity_unread_count_for_mode(
-    room: &RoomSummary,
+    room: &koushi_state::RoomSummary,
     mode: Option<RoomNotificationMode>,
 ) -> u64 {
+    mode_unread_count(&crate::room_profile::RoomUnreadCounts::of(room), mode)
+}
+
+fn mode_unread_count(counts: &RoomUnreadCounts, mode: Option<RoomNotificationMode>) -> u64 {
     // Activity remains notification-filtered, but server-only notification
     // counts and manual flags cannot prove an unread message. Require the
     // client-observed main/thread count before applying the push-rule filter.
-    let confirmed_unread_count = room_activity_unread_count(room);
+    let confirmed_unread_count = counts
+        .unread_count
+        .saturating_add(counts.thread_unread_count);
     if confirmed_unread_count == 0 {
         return 0;
     }
-    let highlight_total = room
+    let highlight_total = counts
         .highlight_count
-        .saturating_add(room.thread_highlight_count);
+        .saturating_add(counts.thread_highlight_count);
     if matches!(mode, Some(RoomNotificationMode::Mentions)) && highlight_total == 0 {
         0
     } else {
-        room.notification_count
+        counts
+            .notification_count
             .max(highlight_total)
             .min(confirmed_unread_count)
     }
@@ -991,29 +1182,6 @@ fn activity_recent_row_visible(
     room_activity_unread: bool,
 ) -> bool {
     !matches!(mode, Some(RoomNotificationMode::Mentions)) || row_highlight || room_activity_unread
-}
-
-fn activity_row_context_label(room: &RoomSummary, spaces: &[SpaceSummary]) -> String {
-    if room.is_dm {
-        return "DM".to_owned();
-    }
-    let parent_space = room
-        .parent_space_ids
-        .iter()
-        .filter_map(|space_id| spaces.iter().find(|space| space.space_id == *space_id))
-        .next()
-        .or_else(|| {
-            spaces.iter().find(|space| {
-                space
-                    .child_room_ids
-                    .iter()
-                    .any(|room_id| room_id == &room.room_id)
-            })
-        });
-    if let Some(space) = parent_space {
-        return format!("{} / {}", space.display_name, room.display_label);
-    }
-    room.display_label.clone()
 }
 
 fn sort_activity_rows(rows: &mut [ActivityRow]) {
@@ -1069,5 +1237,7 @@ pub(super) fn cap_activity_resolution_requests(
     requests
 }
 
+#[cfg(test)]
+mod incremental_tests;
 #[cfg(test)]
 mod tests;

@@ -9,6 +9,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod change_ledger;
+pub use change_ledger::DiagnosticChangeLedger;
+
 pub const DEFAULT_DIAGNOSTIC_CAPACITY: usize = 10_000;
 const DEFAULT_ROTATION_DIAGNOSTIC_CAPACITY: usize = 128;
 

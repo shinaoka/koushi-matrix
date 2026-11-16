@@ -992,6 +992,7 @@ impl CoreRuntime {
             account_work: account_work.clone(),
             account_actor,
             activity_projection: ActivityProjection::default(),
+            unread_trace_ledger: Default::default(),
             activity_resolution_generation: 0,
             deferred_account_dispatch: Default::default(),
             next_internal_request_sequence: 1,
@@ -1510,6 +1511,8 @@ struct AppActor {
     account_work: crate::account_work::AccountWorkScheduler,
     account_actor: AccountActorHandle,
     activity_projection: ActivityProjection,
+    /// #1915: last recorded `room_list_applied` unread trace per room.
+    unread_trace_ledger: crate::unread_trace::UnreadTraceLedger,
     activity_resolution_generation: u64,
     /// #1060: batch-commit dispatches waiting for AccountActor mailbox
     /// capacity; delivered from the run loop, never awaited in a commit.

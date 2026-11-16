@@ -178,72 +178,94 @@ pub(super) struct SdkUnreadTrace<'a> {
     conversation_activity: Option<MatrixConversationActivity>,
 }
 
+/// Last recorded `sdk_room_snapshot` per room (#1915). Room-list snapshots
+/// re-project every room on each update; a room is recorded again only when
+/// its traced values change or after it left the unread set.
+static SDK_UNREAD_TRACE_LEDGER: std::sync::Mutex<koushi_diagnostics::DiagnosticChangeLedger> =
+    std::sync::Mutex::new(koushi_diagnostics::DiagnosticChangeLedger::new());
+
+fn sdk_unread_trace_ledger()
+-> std::sync::MutexGuard<'static, koushi_diagnostics::DiagnosticChangeLedger> {
+    SDK_UNREAD_TRACE_LEDGER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Forget every room's last `sdk_room_snapshot`, so the next session records
+/// its rooms afresh.
+pub fn reset_sdk_unread_trace_ledger() {
+    *sdk_unread_trace_ledger() = koushi_diagnostics::DiagnosticChangeLedger::new();
+}
+
+#[cfg(test)]
 pub(super) fn trace_sdk_unread_snapshot(trace: SdkUnreadTrace<'_>) {
+    record(sdk_unread_snapshot_event(trace));
+}
+
+fn sdk_unread_snapshot_event(trace: SdkUnreadTrace<'_>) -> DiagnosticEvent {
     let latest_event = trace.latest_event.as_ref();
-    record(
-        DiagnosticEvent::new(DiagnosticLevel::Debug, "sdk.unread", "sdk_room_snapshot")
-            .field(DiagnosticField::count(
-                "unread_messages",
-                trace.unread_messages,
-            ))
-            .field(DiagnosticField::count("unread_count", trace.unread_count))
-            .field(DiagnosticField::count(
-                "notification_count",
-                trace.notification_count,
-            ))
-            .field(DiagnosticField::count(
-                "highlight_count",
-                trace.highlight_count,
-            ))
-            .field(DiagnosticField::boolean(
-                "marked_unread",
-                trace.marked_unread,
-            ))
-            .field(DiagnosticField::boolean(
-                "latest_event_present",
-                latest_event.is_some(),
-            ))
-            .field(DiagnosticField::boolean(
-                "fully_read_present",
-                trace.fully_read_event_id.is_some(),
-            ))
-            .field(DiagnosticField::boolean(
-                "private_receipt_present",
-                trace.private_read_receipt_event_id.is_some(),
-            ))
-            .field(DiagnosticField::boolean(
-                "latest_event_content_converted",
-                latest_event.is_some_and(|event| event.content_converted),
-            ))
-            .field(DiagnosticField::boolean(
-                "latest_event_threaded",
-                latest_event.is_some_and(|event| event.is_threaded),
-            ))
-            .field(DiagnosticField::boolean(
-                "latest_event_reply",
-                latest_event.is_some_and(|event| event.is_reply),
-            ))
-            .field(DiagnosticField::boolean(
-                "latest_event_thread_summary",
-                latest_event.is_some_and(|event| event.has_thread_summary),
-            ))
-            .field(DiagnosticField::boolean(
-                "latest_event_reactions",
-                latest_event.is_some_and(|event| event.has_reactions),
-            ))
-            .field(DiagnosticField::boolean(
-                "recency_stamp_present",
-                trace.recency_stamp_present,
-            ))
-            .field(DiagnosticField::boolean(
-                "conversation_activity_present",
-                trace.conversation_activity.is_some(),
-            ))
-            .field(DiagnosticField::token(
-                "conversation_activity_source",
-                conversation_activity_source_token(trace.conversation_activity),
-            )),
-    );
+    DiagnosticEvent::new(DiagnosticLevel::Debug, "sdk.unread", "sdk_room_snapshot")
+        .field(DiagnosticField::count(
+            "unread_messages",
+            trace.unread_messages,
+        ))
+        .field(DiagnosticField::count("unread_count", trace.unread_count))
+        .field(DiagnosticField::count(
+            "notification_count",
+            trace.notification_count,
+        ))
+        .field(DiagnosticField::count(
+            "highlight_count",
+            trace.highlight_count,
+        ))
+        .field(DiagnosticField::boolean(
+            "marked_unread",
+            trace.marked_unread,
+        ))
+        .field(DiagnosticField::boolean(
+            "latest_event_present",
+            latest_event.is_some(),
+        ))
+        .field(DiagnosticField::boolean(
+            "fully_read_present",
+            trace.fully_read_event_id.is_some(),
+        ))
+        .field(DiagnosticField::boolean(
+            "private_receipt_present",
+            trace.private_read_receipt_event_id.is_some(),
+        ))
+        .field(DiagnosticField::boolean(
+            "latest_event_content_converted",
+            latest_event.is_some_and(|event| event.content_converted),
+        ))
+        .field(DiagnosticField::boolean(
+            "latest_event_threaded",
+            latest_event.is_some_and(|event| event.is_threaded),
+        ))
+        .field(DiagnosticField::boolean(
+            "latest_event_reply",
+            latest_event.is_some_and(|event| event.is_reply),
+        ))
+        .field(DiagnosticField::boolean(
+            "latest_event_thread_summary",
+            latest_event.is_some_and(|event| event.has_thread_summary),
+        ))
+        .field(DiagnosticField::boolean(
+            "latest_event_reactions",
+            latest_event.is_some_and(|event| event.has_reactions),
+        ))
+        .field(DiagnosticField::boolean(
+            "recency_stamp_present",
+            trace.recency_stamp_present,
+        ))
+        .field(DiagnosticField::boolean(
+            "conversation_activity_present",
+            trace.conversation_activity.is_some(),
+        ))
+        .field(DiagnosticField::token(
+            "conversation_activity_source",
+            conversation_activity_source_token(trace.conversation_activity),
+        ))
 }
 
 fn conversation_activity_source_token(
@@ -2678,7 +2700,7 @@ async fn matrix_room_list_snapshot_from_rooms(
         let private_read_receipt_event_id = matrix_room_private_read_receipt_event_id(&room).await;
         let recency_stamp = room.recency_stamp().map(Into::into);
         if unread_count > 0 || notification_count > 0 || highlight_count > 0 || is_marked_unread {
-            trace_sdk_unread_snapshot(SdkUnreadTrace {
+            let event = sdk_unread_snapshot_event(SdkUnreadTrace {
                 unread_messages,
                 unread_count,
                 notification_count,
@@ -2690,6 +2712,9 @@ async fn matrix_room_list_snapshot_from_rooms(
                 recency_stamp_present: recency_stamp.is_some(),
                 conversation_activity,
             });
+            sdk_unread_trace_ledger().record_if_changed(&room_id, event);
+        } else {
+            sdk_unread_trace_ledger().forget(&room_id);
         }
 
         let mut list_room = matrix_room_list_room_from_counts(
