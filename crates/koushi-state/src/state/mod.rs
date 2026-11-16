@@ -226,7 +226,7 @@ pub use navigation::{
 // ── Re-exports: activity ────────────────────────────────────────────────────
 pub use activity::{
     ActivityMarkReadState, ActivityMarkReadTarget, ActivityResolutionState, ActivityRow,
-    ActivityRowKind, ActivityState, ActivityStream, ActivityTab,
+    ActivityRowKind, ActivityState, ActivityStream, ActivityTab, sort_activity_rows,
 };
 
 // ── Re-exports: directory ───────────────────────────────────────────────────

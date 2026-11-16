@@ -45,6 +45,7 @@ mod report;
 pub mod room;
 pub mod room_history_export;
 mod room_key_receive;
+pub(crate) mod room_profile;
 #[cfg(any(test, feature = "test-hooks"))]
 pub mod room_subscription_residency_test_support;
 pub mod runtime;

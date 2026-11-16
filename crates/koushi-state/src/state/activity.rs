@@ -203,6 +203,22 @@ impl ActivityRow {
     }
 }
 
+/// The one Activity row order: newest first, then room id, then event id.
+///
+/// Living beside [`ActivityRow`] rather than in the producing crate is what
+/// keeps it single-sourced: a projection that emits rows and a reducer that
+/// normalizes them must agree exactly, or "the rows did not change" becomes
+/// false forever and every action re-emits.
+pub fn sort_activity_rows(rows: &mut [ActivityRow]) {
+    rows.sort_by(|left, right| {
+        right
+            .timestamp_ms
+            .cmp(&left.timestamp_ms)
+            .then_with(|| left.room_id.cmp(&right.room_id))
+            .then_with(|| left.event_id.cmp(&right.event_id))
+    });
+}
+
 impl fmt::Debug for ActivityRow {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter

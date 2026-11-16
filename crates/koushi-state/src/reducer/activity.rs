@@ -245,12 +245,6 @@ fn normalize_activity_stream(
     stream
         .rows
         .retain(|row| !excluded_room_ids.contains(&row.room_id));
-    stream.rows.sort_by(|left, right| {
-        right
-            .timestamp_ms
-            .cmp(&left.timestamp_ms)
-            .then_with(|| left.room_id.cmp(&right.room_id))
-            .then_with(|| left.event_id.cmp(&right.event_id))
-    });
+    crate::sort_activity_rows(&mut stream.rows);
     stream
 }
