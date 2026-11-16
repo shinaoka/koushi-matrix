@@ -4,6 +4,7 @@ import { ModalDialog, NativeModal } from "./ModalDialog";
 // Imports: React, lucide-react, i18n, domain types, uiShared.
 
 import {
+  type DragEvent,
   type RefObject,
   useEffect,
   useLayoutEffect,
@@ -57,6 +58,17 @@ import { Composer } from "./composer";
 import { FloatingLayer } from "./floatingLayer";
 import { Tooltip } from "./Tooltip";
 import { documentFromText } from "../domain/composerDocument";
+import {
+  attachmentTransferHasFiles,
+  filesFromAttachmentTransfer,
+  ingestAttachmentFiles
+} from "../domain/attachmentIngestion";
+import {
+  claimNativeDroppedFiles,
+  subscribeNativeFileDrops,
+  type NativeFileDropEvent
+} from "../backend/nativeFileDropRuntime";
+import { useStableEvent } from "./useStableEvent";
 import { diagnosticReportPreview } from "../domain/diagnostics";
 import { roomListItemLabel, spaceChildLabel } from "../domain/roomDisplayLabel";
 
@@ -1440,6 +1452,7 @@ export function UploadStagingDialog({
   onMathModeChange = () => undefined,
   onRecentEmojisChange = () => undefined,
   roomName = t("panel.thread"),
+  onAttachFiles,
   canEdit = true
 }: {
   items: StagedUploadItem[];
@@ -1473,8 +1486,15 @@ export function UploadStagingDialog({
   onMathModeChange?: (enabled: boolean) => void | Promise<void>;
   onRecentEmojisChange?: (emojis: string[]) => void | Promise<void>;
   roomName?: string;
+  /**
+   * #1904: stages files the user drops on this dialog. The captions are
+   * editor-only composers and cannot carry attachments themselves, so the
+   * dialog is the drop target for the next file.
+   */
+  onAttachFiles?: (files: File[]) => void | Promise<void>;
 }) {
   const firstCaptionRef = useRef<ImeInlineMentionEditorHandle>(null);
+  const dialogRef = useRef<HTMLElement | null>(null);
   // The dialog exists to caption and send the staged files, so its first
   // caption editor takes focus. The clear action is destructive and explains
   // itself with a bubble, so opening on it showed that explanation every time
@@ -1482,6 +1502,65 @@ export function UploadStagingDialog({
   useLayoutEffect(() => {
     firstCaptionRef.current?.focus();
   }, []);
+  // #1904: a file dropped anywhere on the open dialog joins the staged list.
+  // Without this the caption editor was the only thing under the cursor, so the
+  // drop was addressed to a surface that cannot carry attachments.
+  const stageDroppedFiles = async (files: File[]) => {
+    if (!canEdit || !onAttachFiles) {
+      return;
+    }
+    try {
+      await ingestAttachmentFiles(files, onAttachFiles);
+    } catch {
+      // Staging failure is reported through the Rust-owned operation/event path.
+    }
+  };
+  const onDialogDragOver = (event: DragEvent<HTMLElement>) => {
+    if (!canEdit || !onAttachFiles || !attachmentTransferHasFiles(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  };
+  const onDialogDrop = (event: DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    if (!canEdit || !onAttachFiles) {
+      return;
+    }
+    void stageDroppedFiles(filesFromAttachmentTransfer(event.dataTransfer));
+  };
+  // WebKitGTK hides dragged files from HTML5 DataTransfer, so the Linux build
+  // hit-tests the dialog itself while the drop is native.
+  const onNativeFileDrop = useStableEvent((event: NativeFileDropEvent) => {
+    if (!canEdit || !onAttachFiles || event.kind !== "drop") {
+      return;
+    }
+    const node = dialogRef.current;
+    const rect = node?.getBoundingClientRect();
+    if (
+      !node ||
+      !rect ||
+      event.x < rect.left ||
+      event.x > rect.right ||
+      event.y < rect.top ||
+      event.y > rect.bottom
+    ) {
+      return;
+    }
+    void claimNativeDroppedFiles().then((files) => {
+      // Reading the bytes is asynchronous; the dialog (and the room's staging
+      // list with it) may be gone by now, so never stage into what replaced it.
+      if (node.isConnected) {
+        void stageDroppedFiles(files);
+      }
+    });
+  });
+  useEffect(() => {
+    if (!canEdit || !onAttachFiles) {
+      return;
+    }
+    return subscribeNativeFileDrops(onNativeFileDrop);
+  }, [canEdit, onAttachFiles, onNativeFileDrop]);
   const sendable = uploadStagingItemsAreSendable(items);
   const canSendAttachments = canEdit && sendable;
   const sendButtonRef = useRef<HTMLButtonElement>(null);
@@ -1502,7 +1581,10 @@ export function UploadStagingDialog({
     <FloatingLayer>
       <NativeModal onDismiss={onClear} aria-label={t("upload.dialogTitle")} className="dialog-overlay upload-staging-overlay">
         <section
+          ref={dialogRef}
           className="upload-staging-dialog"
+          onDragOver={onDialogDragOver}
+          onDrop={onDialogDrop}
         >
           <div className="upload-staging-header">
             <h2>{t("upload.dialogTitle")}</h2>
