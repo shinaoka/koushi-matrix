@@ -27,8 +27,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** A 72-px room that opens at the live edge, with the container a real scroller. */
-async function mountTimedRoom(rowCount: number) {
+/** A room that opens at the live edge, with the container a real scroller. */
+async function mountTimedRoom(rowCount: number, rowHeight = TIMED_ROOM_ROW_HEIGHT) {
   const onScrollDiagnosticsChange = vi.fn();
   let listener: ((payload: CoreEventPayload) => void) | null = null;
   const transport = baseTransport({
@@ -39,7 +39,7 @@ async function mountTimedRoom(rowCount: number) {
   });
   const rects: Record<string, { top: number; height: number }> = {};
   for (let index = 0; index < rowCount; index += 1) {
-    rects[`$row${index}`] = { top: index * TIMED_ROOM_ROW_HEIGHT, height: TIMED_ROOM_ROW_HEIGHT };
+    rects[`$row${index}`] = { top: index * rowHeight, height: rowHeight };
   }
   const scrollContainerRef: { current: HTMLElement | null } = { current: null };
   mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
@@ -59,7 +59,7 @@ async function mountTimedRoom(rowCount: number) {
   // `getBy` rather than `findBy`: fake timers are installed by the caller.
   const timeline = screen.getByTestId("timeline-view");
   Object.defineProperties(timeline, {
-    scrollHeight: { value: rowCount * TIMED_ROOM_ROW_HEIGHT, writable: true, configurable: true },
+    scrollHeight: { value: rowCount * rowHeight, writable: true, configurable: true },
     clientHeight: { value: 600, configurable: true },
     scrollTop: { value: 0, writable: true, configurable: true }
   });
@@ -96,7 +96,7 @@ async function mountTimedRoom(rowCount: number) {
       });
     },
     setRowHeight(index: number, height: number) {
-      rects[`$row${index}`] = { top: index * TIMED_ROOM_ROW_HEIGHT, height };
+      rects[`$row${index}`] = { top: index * rowHeight, height };
     }
   };
 }
@@ -2925,6 +2925,119 @@ describe("TimelineView", () => {
     const settled = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
     expect(settled.heightModelCommits - baselineCommits).toBeGreaterThan(0);
     expect(timeline.scrollTop).toBe(4996);
+  });
+
+/**
+ * The height model's extent for the whole list, as the DOM shows it: both
+ * spacer blocks the model's padding plus the rows it mounted.
+ */
+function modelledExtent(timeline: HTMLElement): number {
+  const padding = Array.from(
+    timeline.querySelectorAll<HTMLElement>(".timeline-virtual-spacer")
+  ).reduce((total, spacer) => total + Number.parseFloat(spacer.style.blockSize || "0"), 0);
+  const measured = Array.from(timeline.querySelectorAll<HTMLElement>("[data-item-id]")).reduce(
+    (total, row) => total + row.getBoundingClientRect().height,
+    0
+  );
+  return padding + measured;
+}
+
+  it("sizes the room from its first measurements, not from the 72 px constant", async () => {
+    // #1890 §2.3: every unmeasured row starts at what the open measured. With
+    // the 72 px constant in a 48 px room the model is a third too tall, which is
+    // the padding the round-trip test reaches.
+    vi.useFakeTimers();
+    const rowHeight = 48;
+    const rowCount = 160;
+    const { timeline } = await mountTimedRoom(rowCount, rowHeight);
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      await Promise.resolve();
+    });
+
+    const extent = modelledExtent(timeline);
+    expect(extent).toBeGreaterThan(rowCount * rowHeight * 0.95);
+    expect(extent).toBeLessThan(rowCount * rowHeight * 1.05);
+  });
+
+  it("freezes a new estimate for a new timeline key", async () => {
+    vi.useFakeTimers();
+    const ROW_COUNT = 160;
+    const SHORT = 48;
+    const TALL = 120;
+    const roomKey = (roomId: string): TimelineKey =>
+      roomTimelineKey(KEY.account_key, roomId);
+    const rects: Record<string, { top: number; height: number }> = {};
+    for (let index = 0; index < ROW_COUNT; index += 1) {
+      rects[`$row${index}`] = { top: index * SHORT, height: SHORT };
+    }
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+    let listener: ((payload: CoreEventPayload) => void) | null = null;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        listener = nextListener;
+        return () => undefined;
+      }
+    });
+    const seed = (key: TimelineKey) =>
+      act(() => {
+        listener?.({
+          kind: "Timeline",
+          event: {
+            InitialItems: {
+              request_id: null,
+              key,
+              generation: 1,
+              items: Array.from({ length: ROW_COUNT }, (_, index) =>
+                message(`$row${index}`, `row ${index}`)
+              )
+            }
+          }
+        });
+      });
+    const renderRoom = (roomId: string) => (
+      <TimelineView
+        timelineKey={roomKey(roomId)}
+        roomId={roomId}
+        transport={transport}
+        onReply={vi.fn()}
+        listRefCallback={(element) => {
+          scrollContainerRef.current =
+            element?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null;
+        }}
+      />
+    );
+
+    const { rerender } = render(renderRoom("!short:example.invalid"));
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperties(timeline, {
+      scrollHeight: { value: ROW_COUNT * SHORT, writable: true, configurable: true },
+      clientHeight: { value: 600, configurable: true },
+      scrollTop: { value: 0, writable: true, configurable: true }
+    });
+    seed(roomKey("!short:example.invalid"));
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      await Promise.resolve();
+    });
+    expect(modelledExtent(timeline)).toBeLessThan(ROW_COUNT * SHORT * 1.05);
+
+    for (let index = 0; index < ROW_COUNT; index += 1) {
+      rects[`$row${index}`] = { top: index * TALL, height: TALL };
+    }
+    rerender(renderRoom("!tall:example.invalid"));
+    seed(roomKey("!tall:example.invalid"));
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      await Promise.resolve();
+    });
+
+    // A key change clears the measurement cache, so the new room has to freeze
+    // its own estimate instead of keeping the previous room's.
+    const extent = modelledExtent(timeline);
+    expect(extent).toBeGreaterThan(ROW_COUNT * TALL * 0.95);
+    expect(extent).toBeLessThan(ROW_COUNT * TALL * 1.05);
   });
 
   it("re-measures an edited row when it comes back into the window", async () => {

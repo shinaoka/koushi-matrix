@@ -6,6 +6,7 @@ import type { TimelineItem } from "../../domain/coreEvents";
 import {
   buildTimelineHeightModel,
   calculateTimelineVirtualRange,
+  freezeEstimatedItemHeight,
   scheduleTimelineFrame,
   TIMELINE_ESTIMATED_ITEM_HEIGHT_PX,
   TIMELINE_VIRTUAL_OVERSCAN_SCREENS
@@ -234,5 +235,24 @@ describe("scheduleTimelineFrame teardown", () => {
       Object.defineProperty(globalThis, "window", windowDescriptor);
       vi.restoreAllMocks();
     }
+  });
+});
+
+describe("frozen estimate (#1890 §2.3)", () => {
+  it("is the mean of what the open measured", () => {
+    expect(freezeEstimatedItemHeight([48, 48, 48])).toBe(48);
+    expect(freezeEstimatedItemHeight([40, 60])).toBe(50);
+  });
+
+  it("falls back to the constant when nothing was measured", () => {
+    expect(freezeEstimatedItemHeight([])).toBe(TIMELINE_ESTIMATED_ITEM_HEIGHT_PX);
+    expect(freezeEstimatedItemHeight([0, Number.NaN, -4])).toBe(
+      TIMELINE_ESTIMATED_ITEM_HEIGHT_PX
+    );
+  });
+
+  it("clamps a mean outside what a row can be", () => {
+    expect(freezeEstimatedItemHeight([4])).toBe(36);
+    expect(freezeEstimatedItemHeight([10_000])).toBe(480);
   });
 });

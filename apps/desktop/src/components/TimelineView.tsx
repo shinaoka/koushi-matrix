@@ -71,6 +71,7 @@ export { timelineRowsArePurePrependForTests } from "./timeline/TimelineEventProj
 import {
   buildTimelineHeightModel, calculateTimelineItemIndexRange, calculateTimelineVirtualRange,
   EMPTY_TIMELINE_ITEM_INDEX_RANGE, EMPTY_TIMELINE_RANGE, FOCUSED_TARGET_PLACEMENT_ATTEMPTS,
+  freezeEstimatedItemHeight,
   timelineItemHeightAtIndex, timelineItemIndexInRange, timelineItemIndexRangeEquals,
   timelineLiveEdgeScrollTop, timelineRangeIncludingIndex, TIMELINE_ESTIMATED_ITEM_HEIGHT_PX,
   virtualRangeEquals,
@@ -650,7 +651,15 @@ export const TimelineView = memo(function TimelineView({
   );
   const pendingScrollFrameRef = useRef<TimelineScheduledFrame | null>(null);
   const rangeModelEpochRef = useRef(0);
-  const virtualItemHeight = TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
+  /**
+   * #1890 §2.3: frozen from the first measurements of an open, and reset only
+   * when the timeline key changes (the same place the measurement cache is
+   * cleared). See `freezeEstimatedItemHeight`.
+   */
+  const [frozenEstimate, setFrozenEstimate] = useState<number | null>(null);
+  const frozenEstimateRef = useRef<number | null>(null);
+  frozenEstimateRef.current = frozenEstimate;
+  const virtualItemHeight = frozenEstimate ?? TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
   const [measuredHeightVersion, setMeasuredHeightVersion] = useState(0);
   const [viewportTransactionRevision, setViewportTransactionRevision] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -2080,6 +2089,8 @@ export const TimelineView = memo(function TimelineView({
     stickToBottomAfterMeasurementRef.current = false;
     resetActiveMeasurementDeferral({ clearMountedIds: true });
     rowHeights.clear();
+    frozenEstimateRef.current = null;
+    setFrozenEstimate(null);
     committedHeightsRef.current = new Map();
     committedVisibleRowsRef.current = null;
     viewportTransactionRef.current.invalidate("key");
@@ -3529,6 +3540,8 @@ export const TimelineView = memo(function TimelineView({
     // memory hygiene, not a commit.
     rowHeights.retainResident(visibleRowsRef.current);
     const changedRowIds: string[] = [];
+    /** Physical heights of this pass, for the frozen estimate below. */
+    const passHeights: number[] = [];
     const nodes = Array.from(list.querySelectorAll<HTMLElement>(".timeline-item-frame"));
     if (nodes.length === 0) {
       mountedItemDomIdsRef.current = new Set();
@@ -3550,11 +3563,20 @@ export const TimelineView = memo(function TimelineView({
       }
       // Recorded on every pass, so recency follows the viewport; only a height
       // that actually moved is a model change.
-      if (rowHeights.record(row, node.getBoundingClientRect().height, listWidth)) {
+      const physicalHeight = node.getBoundingClientRect().height;
+      passHeights.push(physicalHeight);
+      if (rowHeights.record(row, physicalHeight, listWidth)) {
         changedRowIds.push(domId);
       }
     }
     mountedItemDomIdsRef.current = mountedDomIds;
+    // #1890 §2.3: the first pass of an open that measured anything fixes the
+    // estimate every unmeasured row will carry for the rest of it.
+    if (frozenEstimateRef.current === null && passHeights.length > 0) {
+      const frozen = freezeEstimatedItemHeight(passHeights);
+      frozenEstimateRef.current = frozen;
+      setFrozenEstimate(frozen);
+    }
     const changedRows = changedRowIds.length;
     const nextHeights = rowHeights.heightsFor(visibleRowsRef.current);
     let heightsToCommit = nextHeights;

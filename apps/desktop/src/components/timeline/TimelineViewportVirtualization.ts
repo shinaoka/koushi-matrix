@@ -7,6 +7,26 @@ export const TIMELINE_ESTIMATED_ITEM_HEIGHT_PX = 72;
 export const TIMELINE_MIN_ITEM_HEIGHT_PX = 36;
 const TIMELINE_MAX_ITEM_HEIGHT_PX = 480;
 
+/**
+ * #1890 §2.3: the height every unmeasured row starts at, frozen from the first
+ * measurements of an open.
+ *
+ * The estimate is what makes a window's own padding believable: while
+ * unmeasured rows still carry 72 px for a 48 px row, a screen of overscan covers
+ * two thirds of a screen and the reader can reach the padding. One clamped mean
+ * over what the open actually measured is close enough for the rest of it, and
+ * it must not track later measurements — those arrive row by row, so following
+ * them would move the viewport under the reader.
+ */
+export function freezeEstimatedItemHeight(measured: readonly number[]): number {
+  const heights = measured.filter((height) => Number.isFinite(height) && height > 0);
+  if (heights.length === 0) {
+    return TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
+  }
+  const mean = heights.reduce((total, height) => total + height, 0) / heights.length;
+  return estimatedItemHeight(mean);
+}
+
 export type TimelineViewportMetrics = {
   scrollTop: number;
   clientHeight: number;
