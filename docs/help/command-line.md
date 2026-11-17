@@ -21,6 +21,10 @@ remain outside this CLI's scope.
 - Source checkout: `cargo build -p koushi-mcp --bin koushi --locked`, then
   `target/debug/koushi` (`.exe` on Windows).
 
+Run `koushi --help` (also `koushi <command> --help`) for the full reference:
+commands, result fields, pagination, exit codes, and examples. It prints
+without connecting to the app.
+
 You may add the executable's directory to your own PATH. Installation does not
 edit your shell configuration. The examples below assume `koushi` is on PATH.
 

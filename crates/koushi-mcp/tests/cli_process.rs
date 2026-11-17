@@ -19,6 +19,54 @@ fn help_is_available_without_the_app() {
 }
 
 #[test]
+fn help_documents_each_section_an_agent_needs() {
+    let output = cli().arg("--help").output().expect("help process");
+    let help = String::from_utf8(output.stdout).expect("help utf8");
+    for section in [
+        "NAME",
+        "DESCRIPTION",
+        "INSTRUCTIONS",
+        "SYNOPSIS",
+        "COMMANDS",
+        "OPTIONS",
+        "STDIN",
+        "EXIT STATUS",
+        "ENVIRONMENT",
+        "EXAMPLES",
+        "OUTPUT",
+    ] {
+        // A heading is a whole line, including the first line.
+        assert!(
+            format!("\n{help}").contains(&format!("\n{section}\n")),
+            "missing {section}"
+        );
+    }
+    // Pagination continues only through these documented result fields.
+    assert!(help.contains("result.next_cursor"));
+    assert!(help.contains("result.next"));
+}
+
+#[test]
+fn help_after_a_command_prints_help_without_connecting() {
+    for args in [
+        vec!["search", "--help"],
+        vec![
+            "rooms",
+            "--account",
+            "account:@member1:example.invalid",
+            "-h",
+        ],
+        vec!["help"],
+    ] {
+        let output = cli().args(&args).output().expect("help process");
+        assert!(output.status.success(), "{args:?}");
+        let help = String::from_utf8(output.stdout).expect("help utf8");
+        assert!(help.contains("SYNOPSIS"), "{args:?}");
+        assert!(output.stderr.is_empty(), "{args:?}");
+    }
+}
+
+#[test]
 fn rejects_writes_missing_accounts_and_sensitive_query_argv_without_echo() {
     for args in [
         vec!["send", "--body", "SYNTHETIC_PRIVATE_PAYLOAD"],
