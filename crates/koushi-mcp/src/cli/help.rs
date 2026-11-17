@@ -32,11 +32,14 @@ INSTRUCTIONS
   2. Run `koushi list_accounts --json` and pick the account_id. Every other
      tool needs it; switching the app's visible tab changes nothing.
   3. Run `koushi <tool> --help` for a tool's arguments and result.
-  4. On exit 5 the first time, approve koushi-cli in the Koushi window: the
-     command waits for that in-app approval until --timeout. Each permission
-     (read, send, draft, attachments, message_actions) is approved
-     separately; read never implies send. Nothing can approve on the app's
-     behalf, and piping input does not skip it.
+  4. A call that needs approval waits up to 40 s for it in the Koushi window,
+     or until --timeout, whichever comes first. If the wait runs out the
+     command exits 5: approve koushi-cli in Koushi and run it again. A denial
+     also exits 5, and is not asked again until you turn that permission on
+     in Koushi. Each permission (read, send, draft, attachments,
+     message_actions) is approved separately; read never implies send.
+     Nothing can approve on the app's behalf, and piping input does not skip
+     it.
   5. Page explicitly: pass result.next_cursor back as --cursor (list_rooms)
      and result.next back as --from (read_room_messages, older history)
      until it is null. Only null ends the history: a page may hold fewer
@@ -48,7 +51,8 @@ INSTRUCTIONS
 SYNOPSIS
   koushi <tool> [--<argument> <value> ...] [options]
   koushi <tool> --args-stdin [options] < arguments.json
-  koushi [<tool>] --help | -h | help [<tool>]
+  koushi [<tool>] [...] --help | -h
+  koushi help [<tool>]
   koushi --version | -V
 
 COMMANDS
@@ -67,8 +71,12 @@ OPTIONS
   --json               Compact one-line JSON (default: indented JSON)
   --endpoint <path>    Private endpoint.json written by the app (default: see ENVIRONMENT)
   --timeout <seconds>  Whole-command deadline, including stdin and approval (1-120; default 75)
-  -h, --help, help     Print help without connecting, also after a tool name
-  -V, --version        Print the CLI version
+  -h, --help           Print help without connecting; accepted anywhere, and
+                       after a tool name prints that tool's help
+  help [<tool>]        The same, but only as the first word: `koushi help
+                       list_rooms` works, `koushi list_rooms help` is a usage
+                       error (exit 2)
+  -V, --version        Print the CLI version (only as the sole argument)
 ";
 
 const OVERVIEW_STDIN: &str = "
@@ -268,8 +276,11 @@ pub(super) fn tool(tool: &ToolDefinition) -> String {
         "Pass arguments as options, or the whole object through --args-stdin.".to_owned()
     });
     steps.push(
-        "On exit 5, approve koushi-cli for the permission this tool needs in the \
-         Koushi window, then run the same command again."
+        "A call that needs approval waits up to 40 s for it in the Koushi window, \
+         or until --timeout, whichever comes first. On exit 5, approve koushi-cli \
+         for the permission this tool needs in Koushi, then run the same command \
+         again. A denial also exits 5, and is not asked again until you turn that \
+         permission on in Koushi."
             .to_owned(),
     );
     if !tool.read_only {

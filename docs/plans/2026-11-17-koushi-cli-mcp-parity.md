@@ -142,7 +142,7 @@ parser and help alike.
 
 - RED first: the rewritten and new `tests/cli/` cases failed against the
   verb parser (17 of 23), then passed with the generated parser.
-- `cargo test -p koushi-mcp -p koushi-mcp-host`: all pass (`cli` 28, host
+- `cargo test -p koushi-mcp -p koushi-mcp-host`: all pass (`cli` 30, host
   `bridge` 58 including `a_cli_read_grant_admits_no_write_tool`, which fails
   when the write grants are injected). `cargo clippy -p koushi-mcp -p
   koushi-mcp-host --all-targets -- -D warnings` and `cargo fmt --check` on both
@@ -179,4 +179,11 @@ parser and help alike.
   are left as follow-ups: tools without an output schema list no result
   fields in help, and `draft_message` reports `status: "staged"` while
   `get_draft` reports `assistant` for the same draft.
+- Merging #1954 (help text matched to the parser and approval wait): the
+  generated help says `help` is recognized only as the first word (a test
+  pins `koushi list_rooms help` as exit 2), that approval waits up to 40 s or
+  until `--timeout`, and that a denial is not asked again until the
+  permission is turned on in Koushi; the overview and every tool help are
+  tested for both. Its stdin line-ending fix has no counterpart: the CLI's
+  only stdin is the `--args-stdin` JSON object.
 - Not run here: Windows build and runtime, macOS packaging, and the CI matrix.

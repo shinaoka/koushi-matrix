@@ -24,6 +24,8 @@ arguments, permissions, and results. It does not sign in independently.
 Run `koushi --help` for the list of tools, options, exit codes, and examples,
 and `koushi <tool> --help` for one tool's arguments, generated from the same
 definitions MCP clients see. Help prints without connecting to the app.
+`-h`/`--help` works anywhere in the line, and `koushi help [<tool>]` works as
+the first word; `koushi list_rooms help` is a usage error.
 
 You may add the executable's directory to your own PATH. Installation does not
 edit your shell configuration. The examples below assume `koushi` is on PATH.
@@ -38,11 +40,15 @@ edit your shell configuration. The examples below assume `koushi` is on PATH.
 The account ID is always required, even with only one account. Switching the
 visible app tab never changes a CLI target. Use the same settings page to
 remove access. CLI approval is separate from the named MCP clients' grants.
-Missing permissions wait for the existing in-app approval; a script cannot
-approve itself, and piping input does not skip this step. An already-approved
-script needs no new dialog until access is revoked. Each permission (read,
-send, draft, attachments, message actions) is approved separately, exactly as
-for an MCP client: read access never allows sending, drafting, or reacting.
+Missing permissions wait for the existing in-app approval for up to 40 s, or
+until `--timeout` if that is shorter; when the wait runs out the command exits
+5, and you approve `koushi-cli` in Koushi and run it again. A denial exits 5
+too, and is not asked again until you turn that permission on in Koushi. A
+script cannot approve itself, and piping input does not skip this step. An
+already-approved script needs no new dialog until access is revoked. Each
+permission (read, send, draft, attachments, message actions) is approved
+separately, exactly as for an MCP client: read access never allows sending,
+drafting, or reacting.
 
 Names are self-declared: another process running as your OS user can claim
 `koushi-cli`. The boundary is your OS account, local transport, and private

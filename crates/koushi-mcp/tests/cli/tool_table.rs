@@ -63,6 +63,10 @@ fn every_tool_help_has_the_agent_sections_and_states_its_effects() {
             "{} output envelope",
             tool.name
         );
+        let flowed = crate::help::flowed(&text);
+        for phrase in ["waits up to 40 s", "A denial also exits 5"] {
+            assert!(flowed.contains(phrase), "{} {phrase}", tool.name);
+        }
     }
 }
 

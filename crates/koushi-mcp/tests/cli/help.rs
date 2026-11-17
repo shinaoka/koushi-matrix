@@ -46,7 +46,8 @@ fn help_documents_each_section_an_agent_needs() {
     assert_sections(&help, "overview");
     // Pagination continues only through these documented result fields.
     assert!(help.contains("result.next_cursor"));
-    assert!(help.contains("result.next"));
+    // Not a substring of `result.next_cursor`, which would satisfy it.
+    assert!(help.contains("result.next back as --from"));
     // An agent given only the help met an empty page after a non-null
     // cursor; help says which value ends paging.
     assert!(help.contains("until it is null"));
@@ -73,6 +74,47 @@ fn help_after_a_command_prints_help_without_connecting() {
         assert!(help.contains("SYNOPSIS"), "{args:?}");
         assert!(output.stderr.is_empty(), "{args:?}");
     }
+}
+
+#[test]
+fn only_a_leading_help_is_a_command_and_help_after_a_tool_is_a_usage_error() {
+    // `help` is a word, not a flag, so it is only recognized first. The help
+    // text says so; this pins that the text and the parser agree.
+    let output = cli()
+        .args(["list_rooms", "help"])
+        .output()
+        .expect("rejected process");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert_eq!(output.stderr, b"koushi: usage_error\n");
+    let help = cli().arg("--help").output().expect("help process");
+    let text = String::from_utf8(help.stdout).expect("help utf8");
+    assert!(text.contains("koushi help [<tool>]"));
+    assert!(text.contains("only as the first word"));
+    assert!(!text.contains("also after a tool name"));
+}
+
+/// Help with every run of whitespace collapsed to one space, so a phrase
+/// matches whatever the line wrapping.
+pub fn flowed(help: &str) -> String {
+    help.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[test]
+fn help_bounds_the_approval_wait_and_says_what_clears_a_denial() {
+    // The bridge waits at most 40 s for approval, then answers exit 5; a
+    // denial is not asked again until the permission is turned on in Koushi.
+    let output = cli().arg("--help").output().expect("help process");
+    let overview = flowed(&String::from_utf8(output.stdout).expect("help utf8"));
+    for phrase in [
+        "waits up to 40 s",
+        "or until --timeout, whichever comes first",
+        "A denial also exits 5",
+        "until you turn that permission on in Koushi",
+    ] {
+        assert!(overview.contains(phrase), "overview: {phrase}");
+    }
+    assert!(!overview.contains("approval until --timeout"));
 }
 
 #[test]
