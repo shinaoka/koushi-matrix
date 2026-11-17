@@ -47,6 +47,10 @@ fn help_documents_each_section_an_agent_needs() {
     // Pagination continues only through these documented result fields.
     assert!(help.contains("result.next_cursor"));
     assert!(help.contains("result.next"));
+    // An agent given only the help met an empty page after a non-null
+    // cursor; help says which value ends paging.
+    assert!(help.contains("until it is null"));
+    assert!(help.contains("Only null ends the history"));
 }
 
 #[test]
@@ -104,4 +108,7 @@ fn the_overview_examples_are_one_session_with_private_text_on_stdin() {
     ] {
         assert!(examples.contains(step), "missing step {step}");
     }
+    // A room is chosen by its name, not by its position in the list.
+    assert!(examples.contains("select(.name == $name)"));
+    assert!(!examples.contains("rooms[0]"));
 }

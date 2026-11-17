@@ -38,7 +38,9 @@ INSTRUCTIONS
      separately; read never implies send. Nothing can approve on the app's
      behalf, and piping input does not skip it.
   5. Page explicitly: pass result.next_cursor back as --cursor (list_rooms)
-     and result.next back as --from (read_room_messages, older history).
+     and result.next back as --from (read_room_messages, older history)
+     until it is null. Only null ends the history: a page may hold fewer
+     messages than --limit, or none.
   6. On exit 4 or 130 after a write, do not assume it failed: rerun a tool
      that takes a client_request_id with the same id, and check the others
      with a read first (see WRITES).
@@ -114,8 +116,9 @@ EXAMPLES
   # One session in bash with jq. Ids come from earlier results; reply.txt
   # and reaction.txt hold text you wrote, which never enters argv.
   account=$(koushi list_accounts --json | jq -r '.result.accounts[0].account_id')
-  room=$(koushi list_rooms --account-id "$account" --unread-only --limit 20 --json |
-    jq -r '.result.rooms[0].room_id')
+  room=$(koushi list_rooms --account-id "$account" --limit 200 --json |
+    jq -r --arg name "Project chat" \
+      '.result.rooms[] | select(.name == $name) | .room_id')
   messages=$(koushi read_room_messages --account-id "$account" --room-id "$room" --limit 10 --json)
   event=$(jq -r '.result.messages[0].event_id' <<<"$messages")
   jq -n --arg account_id "$account" --arg room_id "$room" --rawfile body reply.txt \

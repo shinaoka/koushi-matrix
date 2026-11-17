@@ -83,11 +83,12 @@ argument file or history.
 
 `list_rooms` returns `result.next_cursor`; pass it with `--cursor` for another
 page. `read_room_messages` returns `result.next`; pass it with `--from` to read
-older history. Limits and other bounds are listed in each tool's help, and the
-CLI refuses an out-of-range value before connecting. `search_messages` returns
-one bounded result set, without a continuation cursor. Results reflect the
-history Koushi can decrypt and index, so an empty result does not prove there
-were no messages.
+older history until it is `null`. Only `null` ends the history: a page can hold
+fewer messages than `--limit`, or none. Limits and other bounds are listed in
+each tool's help, and the CLI refuses an out-of-range value before connecting.
+`search_messages` returns one bounded result set, without a continuation
+cursor. Results reflect the history Koushi can decrypt and index, so an empty
+result does not prove there were no messages.
 
 ## Writes and retries
 
