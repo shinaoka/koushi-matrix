@@ -7,7 +7,9 @@ suites; agent verification and QA lanes (Local CLI).
 The canon amendment in this change (overview "Local CLI", the CLI stdout rule
 in REPOSITORY_RULES, and the CLI paragraph of the engineering rules) is
 reviewed before implementation, because it widens an authorization surface:
-the CLI gains every write tool.
+the CLI gains every write tool. Decided by the user (2026-11-17): private
+text (`body`, `query`, `key`) enters only through `--args-stdin`, keeping
+#1651's stdin-only condition, because the CLI is for agents.
 
 ## Command and option mapping
 
@@ -27,6 +29,7 @@ koushi --version | -V
 | `"type": "boolean"` | `--unread-only`: flag, sets `true` |
 | array of strings (`room_ids`) | `--room-ids <v>`, repeated per element |
 | array of one-property objects (`attachments: [{path}]`) | `--attachments <path>`, repeated, fills `path` |
+| `body`, `query`, `key` (private text) | no option: `--args-stdin` only |
 | any other shape | `--args-stdin` only; help says so |
 
 - Names: `snake_case` → `--kebab-case`. A unit test asserts no generated
@@ -48,8 +51,12 @@ koushi --version | -V
   value form, required, bounds, property description), and for a tool with
   `read_only: false` a WRITES paragraph: a timeout or Ctrl-C after submission
   may already have applied the write; retry with the same `client_request_id`.
-  Text properties (`body`, `query`, `key`) carry a note recommending
-  `--args-stdin` for private text.
+  A tool with a private text property (`body`, `query`, `key`) gets no option
+  for it; its help says that argument comes only through `--args-stdin`,
+  because the CLI is for agents and argv reaches shell history and process
+  listings, and shows the argument object to pipe. The closed list of private
+  property names lives beside the parser; `tool_table.rs` asserts that every
+  property it names exists in some tool, so a renamed property fails CI.
 
 ## Execution, consent and `client_request_id`
 

@@ -2363,10 +2363,10 @@ tool with the same semantics.
   property takes one value; a boolean property is a flag that sets `true`; an
   array of strings is repeated once per element; an array of objects with
   exactly one property is repeated once per element, each value filling that
-  property (`send_message --attachments <path>`). `required` is enforced, types
-  are checked by `tools::validate_arguments`, and the schema's `minimum`,
-  `maximum`, `minLength`, and `maxItems` bounds are checked locally as usage
-  errors. `--args-stdin` instead reads the complete MCP argument object as JSON
+  property (`send_message --attachments <path>`); `body`, `query`, and `key`
+  are the exception below. `required` is enforced, types are checked by
+  `tools::validate_arguments`, and the schema's `minimum`, `maximum`,
+  `minLength`, and `maxItems` bounds are checked locally as usage errors. `--args-stdin` instead reads the complete MCP argument object as JSON
   from stdin and cannot be combined with tool options. There is no other
   method than `tools/call`, no credential input, client-name override, or
   implicit GUI target; account-scoped tools require `--account-id` because
@@ -2388,13 +2388,14 @@ tool with the same semantics.
   delivery time;
   expiry and Ctrl-C close the connection. An operation already admitted at the
   host retains its existing revocation/settlement semantics.
-- Text arguments (`body`, `query`, `key`) are ordinary options, as in MCP.
-  Because argv reaches shell history and process listings, the same values
-  are accepted through `--args-stdin` (non-terminal stdin, UTF-8, bounded to
-  64 KiB), and help recommends that path for private text. Arguments never
-  enter environment variables, diagnostics, or automatic history. Help and
-  examples never place confidential text in a shell literal. CLI options and
-  error output never echo rejected values.
+- Private text arguments (`body`, `query`, `key`) have no option: they enter
+  only through `--args-stdin` (non-terminal stdin, UTF-8, bounded to 64 KiB),
+  because argv reaches shell history and process listings. The CLI is for
+  agents and scripts, which can write the argument object to a pipe; a tool
+  with such a property is called through `--args-stdin` whenever it is set.
+  Arguments never enter environment variables, diagnostics, or automatic
+  history. Help and examples never place confidential text in a shell
+  literal. CLI options and error output never echo rejected values.
 - Writes keep the tool's own retry contract. The adapter never generates,
   alters, or reuses a `client_request_id` on its own and never retries a call.
   A write that reaches `--timeout` or Ctrl-C after submission may already have
