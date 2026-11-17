@@ -15,6 +15,15 @@ are **Enter sends** and the platform modifier plus Enter. The keyboard page
 lists the current platform's shortcuts. Confirming an IME candidate is separate
 from sending the composed message.
 
+## Format a message
+
+Select text in a composer and use the **Bold** or **Italic** button under it, or
+press **Cmd + B** / **Cmd + I** (**Ctrl** on Windows and Linux). With nothing
+selected the shortcut inserts the markup pair with placeholder text, exactly as
+the button does. Formatting shortcuts do nothing while an IME composition is in
+progress or while the composer is read-only. The full shortcut list is under
+**App Settings → Keyboard**.
+
 ## Read older messages
 
 Scroll upward to read earlier messages. Older history loads automatically as you

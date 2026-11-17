@@ -102,6 +102,25 @@ export interface ComposerSendingAccount {
   colorClassName: string;
 }
 
+/** #1949: the inline formats that have both a toolbar button and a shortcut. */
+const INLINE_FORMAT = {
+  bold: { prefix: "**", placeholder: "bold" },
+  italic: { prefix: "_", placeholder: "italic" }
+} as const;
+
+type InlineFormat = keyof typeof INLINE_FORMAT;
+
+function inlineFormatFromKey(key: string): InlineFormat | null {
+  switch (key.toLowerCase()) {
+    case "b":
+      return "bold";
+    case "i":
+      return "italic";
+    default:
+      return null;
+  }
+}
+
 export const Composer = memo(function Composer({
   surface = "main",
   editorOnly = false,
@@ -443,6 +462,12 @@ export const Composer = memo(function Composer({
     );
   }
 
+  /** #1949: the toolbar buttons and their keyboard shortcuts share this. */
+  function applyInlineFormat(kind: InlineFormat) {
+    const { prefix, placeholder } = INLINE_FORMAT[kind];
+    applyInlineMarkdown(prefix, prefix, placeholder);
+  }
+
   function applyInlineMarkdown(prefix: string, suffix = prefix, placeholder = "") {
     const { start, end } = selectionRange();
     const selected = copyDocumentRange(localDocument, start, end) || placeholder;
@@ -687,6 +712,24 @@ export const Composer = memo(function Composer({
           });
           setDocumentSelection({ start: effect.newSelectionPos, end: effect.newSelectionPos });
         }
+        return;
+      }
+    }
+    // #1949: the toolbar's Bold and Italic. Ctrl is AppKit's text-editing modifier
+    // on macOS (see `shortcutIdForKeyboardEvent`), so the format modifier is Cmd
+    // there and Ctrl elsewhere; a composition owns the keyboard and the lock owns
+    // the write path, so neither reaches the document.
+    if (
+      canEdit &&
+      !event.nativeEvent.isComposing &&
+      !event.altKey &&
+      !event.shiftKey &&
+      (IS_MAC_PLATFORM ? event.metaKey && !event.ctrlKey : event.ctrlKey)
+    ) {
+      const format = inlineFormatFromKey(event.key);
+      if (format) {
+        event.preventDefault();
+        applyInlineFormat(format);
         return;
       }
     }
@@ -1042,7 +1085,7 @@ export const Composer = memo(function Composer({
               aria-label={t("composer.bold")}
               disabled={!canEdit}
               onMouseDown={keepComposerFocus}
-              onClick={() => applyInlineMarkdown("**", "**", "bold")}
+              onClick={() => applyInlineFormat("bold")}
               {...tooltipProps}
             >
               <Bold size={ICON_SIZE.input} />
@@ -1057,7 +1100,7 @@ export const Composer = memo(function Composer({
               aria-label={t("composer.italic")}
               disabled={!canEdit}
               onMouseDown={keepComposerFocus}
-              onClick={() => applyInlineMarkdown("_", "_", "italic")}
+              onClick={() => applyInlineFormat("italic")}
               {...tooltipProps}
             >
               <Italic size={ICON_SIZE.input} />
