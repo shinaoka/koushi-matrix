@@ -19,6 +19,11 @@ export interface KeyboardShortcut {
   labelMessageId: MessageId;
   keys: string[];
   parity: ShortcutParity;
+  /**
+   * Whether an app-level action exists for the id, so a native-menu payload may
+   * dispatch it. A shortcut that only acts inside a focused surface (the
+   * composer's inline formats, for example) stays false.
+   */
   implemented: boolean;
   platforms?: ShortcutPlatform[];
   nativeMenu?: NativeMenuArea;
