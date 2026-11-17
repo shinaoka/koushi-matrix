@@ -49,7 +49,7 @@ koushi --version | -V
   bound fails in `ipc::Client::call` as today.
 - `koushi --help` keeps the #1943 sections; COMMANDS lists every tool with the
   first sentence of its description. `koushi <tool> --help` prints NAME,
-  DESCRIPTION (the full tool description), OPTIONS (one per property: flag,
+  DESCRIPTION (the full tool description), SYNOPSIS, ARGUMENTS (one per property: flag,
   value form, required, bounds, property description; a property without a
   description gets the type and required line only), and for a tool with
   `read_only: false` a WRITES paragraph: a timeout or Ctrl-C after submission
@@ -128,3 +128,18 @@ enforced inventory; the stdin bound aligned with the bridge frame; a help
 fallback for properties without a description; host-only bounds named in
 help. The user kept private text stdin-only. The integrated diff gets its own
 independent review before landing.
+
+## Evidence
+
+- RED first: the rewritten and new `tests/cli/` cases failed against the
+  verb parser (17 of 23), then passed with the generated parser.
+- `cargo test -p koushi-mcp -p koushi-mcp-host`: all pass (`cli` 23, host
+  `bridge` 58 including `a_cli_read_grant_admits_no_write_tool`, which fails
+  when the write grants are injected). `cargo clippy -p koushi-mcp -p
+  koushi-mcp-host --all-targets -- -D warnings` and `cargo fmt --check` on both
+  crates are clean.
+- Test-structure, suite-inventory, agents-docs, headless-QA-lane, secret-scan,
+  SDK-submodule and user-help checks pass.
+- `node scripts/cli-local-qa.mjs` against a disposable local Tuwunel prints
+  `cli_accounts=ok`, `cli_encrypted_read=ok`, `cli_encrypted_search=ok`.
+- Not run here: Windows build and runtime, macOS packaging, and the CI matrix.
