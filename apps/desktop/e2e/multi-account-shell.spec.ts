@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import type { AccountTabsSnapshot } from "../src/domain/types";
 import { gotoReadyShell } from "./support/basicOperations";
 
@@ -312,6 +312,7 @@ test("notification activation navigates and settles in the target account contex
   await page.evaluate(async () => {
     await window.__harness.pushNotificationActivation({
       account_tab_id: "bob-account-tab",
+      activation_id: 11,
       room_id: "!harness-room:example.invalid",
       event_id: "$notification-event:example.invalid",
       thread_root_event_id: null
@@ -382,4 +383,127 @@ test("a room-only notification click selects its room while the app is open", as
   expect(selection.args.roomId).toBe("!harness-room:example.invalid");
   await expect.poll(() => page.evaluate(() => window.__harness.currentSnapshot().state.ui.navigation.active_room_id))
     .toBe("!harness-room:example.invalid");
+});
+
+// #1953: the renderer keeps a notification click pending until the owning tab
+// publishes a ready snapshot that still carries its account scope. A room or
+// Space the user selects in that window is newer than the click, so the
+// activation must retire instead of overriding the selection later.
+const OTHER_ROOM_ID = "!harness-other-room:example.invalid";
+
+/** Two joined rooms in one account, with no account scope on the snapshot. */
+async function seedDeferredActivationState(page: Page): Promise<number> {
+  return page.evaluate((otherRoomId) => {
+    const harness = window.__harness as any;
+    const snapshot = harness.currentSnapshot();
+    const room = snapshot.state.domain.rooms[0];
+    const sidebarRoom = snapshot.sidebar.sections.rooms[0];
+    const otherSidebarRoom = { ...sidebarRoom, room_id: otherRoomId, display_name: "Other Room" };
+    harness.setSnapshot({
+      ...snapshot,
+      account_tab_id: undefined,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          rooms: [
+            ...snapshot.state.domain.rooms,
+            { ...room, room_id: otherRoomId, display_name: "Other Room", display_label: "Other Room", original_display_label: "Other Room" }
+          ]
+        }
+      },
+      sidebar: {
+        ...snapshot.sidebar,
+        space_rooms: [...snapshot.sidebar.space_rooms, otherSidebarRoom],
+        sections: { ...snapshot.sidebar.sections, rooms: [...snapshot.sidebar.sections.rooms, otherSidebarRoom] }
+      }
+    });
+    harness.pushStateUpdate();
+    return harness.currentSnapshot().state_generation;
+  }, OTHER_ROOM_ID);
+}
+
+test("a deferred notification activation never overrides a newer room selection (#1953)", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate((tabs) => window.__harness.pushAccountTabs(tabs), accountTabs(false));
+  await expect(page.getByRole("button", { name: "Harness: Ready", exact: true })).toBeVisible();
+  const updateGeneration = await seedDeferredActivationState(page);
+  await expect.poll(() => page.evaluate(() => window.__harness.appStoreGeneration()))
+    .toBeGreaterThanOrEqual(updateGeneration);
+  await page.evaluate(async () => {
+    window.__harness.clearInvocations();
+    await window.__harness.pushNotificationActivation({
+      account_tab_id: "harness-account-tab",
+      activation_id: 21,
+      room_id: "!harness-other-room:example.invalid",
+      event_id: null,
+      thread_root_event_id: null
+    });
+  });
+  // The click cannot open yet: no snapshot has re-declared the tab's scope.
+  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("select_room").length))
+    .toBe(0);
+
+  await page.getByRole("button", { name: "Harness Room", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("select_room").length))
+    .toBe(1);
+  expect((await page.evaluate(() => window.__harness.invocationsOf("select_room")[0])).args)
+    .toMatchObject({ roomId: "!harness-room:example.invalid", input: "pointer" });
+
+  // A later full snapshot restores the account scope the delta dropped. The
+  // retired activation must not navigate away from the room the user picked.
+  const restoredGeneration = await page.evaluate(() => {
+    const harness = window.__harness;
+    harness.setSnapshot({ ...harness.currentSnapshot(), account_tab_id: "harness-account-tab" });
+    harness.pushStateUpdate();
+    return harness.currentSnapshot().state_generation;
+  });
+  await expect.poll(() => page.evaluate(() => window.__harness.appStoreGeneration()))
+    .toBeGreaterThanOrEqual(restoredGeneration);
+  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("select_room").length))
+    .toBe(1);
+  expect(await page.evaluate(() => window.__harness.currentSnapshot().state.ui.navigation.active_room_id))
+    .toBe("!harness-room:example.invalid");
+});
+
+test("a deferred notification activation opens once the account scope returns (#1953)", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate((tabs) => window.__harness.pushAccountTabs(tabs), accountTabs(false));
+  await expect(page.getByRole("button", { name: "Harness: Ready", exact: true })).toBeVisible();
+  const updateGeneration = await seedDeferredActivationState(page);
+  await expect.poll(() => page.evaluate(() => window.__harness.appStoreGeneration()))
+    .toBeGreaterThanOrEqual(updateGeneration);
+  await page.evaluate(async () => {
+    window.__harness.clearInvocations();
+    await window.__harness.pushNotificationActivation({
+      account_tab_id: "harness-account-tab",
+      activation_id: 22,
+      room_id: "!harness-other-room:example.invalid",
+      event_id: null,
+      thread_root_event_id: null
+    });
+  });
+  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("select_room").length))
+    .toBe(0);
+
+  const restoredGeneration = await page.evaluate(() => {
+    const harness = window.__harness;
+    harness.setSnapshot({ ...harness.currentSnapshot(), account_tab_id: "harness-account-tab" });
+    harness.pushStateUpdate();
+    return harness.currentSnapshot().state_generation;
+  });
+  await expect.poll(() => page.evaluate(() => window.__harness.appStoreGeneration()))
+    .toBeGreaterThanOrEqual(restoredGeneration);
+  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("select_room").length))
+    .toBe(1);
+  // The selection names its origin and the Rust-minted activation, so the
+  // navigation ledger can attribute it to this click (#1543, #1953).
+  expect((await page.evaluate(() => window.__harness.invocationsOf("select_room")[0])).args)
+    .toMatchObject({
+      roomId: "!harness-other-room:example.invalid",
+      input: "notification",
+      activationId: 22
+    });
+  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("select_room").length))
+    .toBe(1);
 });

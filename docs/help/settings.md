@@ -165,7 +165,9 @@ this account. **Desktop notifications** turns them on or off.
 On macOS, turning on Desktop notifications requests system permission. If it was
 previously denied, allow Koushi in macOS System Settings. Clicking an OS
 notification opens the room that raised it; it does not jump to an exact
-message. When messages become read, Koushi waits until the banner has been
+message. If you pick a different room, Space, or account before the click can
+open, your own selection wins and that click no longer navigates. When messages
+become read, Koushi waits until the banner has been
 submitted for at least five seconds before withdrawing it. Clicking or manually
 dismissing it still works immediately, and macOS controls its normal banner duration.
 Signing out or disabling notification privacy options clears the account's banners

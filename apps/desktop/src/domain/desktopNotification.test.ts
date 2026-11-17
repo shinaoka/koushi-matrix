@@ -69,6 +69,7 @@ describe("desktop notification dispatch", () => {
 describe("desktop notification activation plan", () => {
   const target = (overrides: Partial<DesktopNotificationActivation>) => ({
     account_tab_id: "account:@alice:example.invalid",
+    activation_id: 3,
     room_id: "!room:example.invalid",
     event_id: "$event:example.invalid",
     thread_root_event_id: null,

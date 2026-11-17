@@ -222,11 +222,12 @@ async fn notification_activation_selects_owning_account_tab() {
 #[test]
 fn activation_event_carries_its_account_and_target_without_preview_text() {
     let account_tab_id = AccountTabId::from_string("account:@alice:example.invalid".to_owned());
-    let activation = NativeNotificationActivation::new(&account_tab_id, payload().target);
+    let activation = NativeNotificationActivation::new(&account_tab_id, 7, payload().target);
     assert_eq!(
         serde_json::to_value(&activation).expect("activation serializes"),
         serde_json::json!({
             "account_tab_id": "account:@alice:example.invalid",
+            "activation_id": 7,
             "room_id": "!room:example.invalid",
             "event_id": "$event:example.invalid",
             "thread_root_event_id": "$root:example.invalid",

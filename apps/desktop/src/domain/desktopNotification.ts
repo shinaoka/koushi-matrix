@@ -8,6 +8,8 @@ import type { DesktopAttentionDiagnosticSink } from "./desktopAttention";
  */
 export interface DesktopNotificationActivation {
   account_tab_id: string;
+  /** This click's Rust-minted ordinal (#1953); opaque here. */
+  activation_id: number;
   room_id: string;
   event_id: string | null;
   thread_root_event_id: string | null;

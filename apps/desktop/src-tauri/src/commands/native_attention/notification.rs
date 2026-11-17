@@ -23,7 +23,7 @@
 
 #[cfg(not(target_os = "macos"))]
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use koushi_core::account_runtime_manager::{AccountRuntimeManager, AccountTabId};
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
@@ -129,24 +129,40 @@ impl NativeNotificationAuthorization {
 /// Target handed to the webview after a completed notification click.
 ///
 /// Carries only identifiers the webview already holds; the notification body
-/// and its preview stay in Rust.
+/// and its preview stay in Rust. `activation_id` is this click's process-local
+/// ordinal (#1953); see overview "Desktop Attention Surfaces".
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct NativeNotificationActivation {
     pub account_tab_id: String,
+    pub activation_id: u64,
     pub room_id: String,
     pub event_id: Option<String>,
     pub thread_root_event_id: Option<String>,
 }
 
 impl NativeNotificationActivation {
-    fn new(account_tab_id: &AccountTabId, target: NativeNotificationTarget) -> Self {
+    fn new(
+        account_tab_id: &AccountTabId,
+        activation_id: u64,
+        target: NativeNotificationTarget,
+    ) -> Self {
         Self {
             account_tab_id: account_tab_id.as_str().to_owned(),
+            activation_id,
             room_id: target.room_id,
             event_id: target.event_id,
             thread_root_event_id: target.thread_root_event_id,
         }
     }
+}
+
+/// Ordinal of the next activation this process hands to the webview.
+///
+/// A plain counter, not a hash: it correlates records without naming anything.
+static NEXT_ACTIVATION_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_activation_id() -> u64 {
+    NEXT_ACTIVATION_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Account fence captured when the banner was shown.
@@ -525,21 +541,22 @@ fn activate_notification(
 ) {
     let app = app.clone();
     let fence = fence.clone();
+    let activation_id = next_activation_id();
     tauri::async_runtime::spawn(async move {
         crate::ensure_main_window_visible_for_handle(&app);
 
         let state = app.state::<CoreRuntimeState>();
         let Some(connection) = state.runtime.tab_connection(&fence.account_tab_id) else {
-            record_activation("stale_account");
+            record_activation("stale_account", activation_id);
             return;
         };
         let snapshot = connection.versioned_snapshot();
         if !matches!(snapshot.state.session, SessionState::Ready(_)) {
-            record_activation("session_unavailable");
+            record_activation("session_unavailable", activation_id);
             return;
         }
         if account_key_from_app_state(&snapshot.state) != fence.account_key {
-            record_activation("stale_account");
+            record_activation("stale_account", activation_id);
             return;
         }
         drop(connection);
@@ -560,7 +577,7 @@ fn activate_notification(
             if changed {
                 state.restart_selected_forwarder(app.clone());
             }
-            record_activation("stale_account");
+            record_activation("stale_account", activation_id);
             return;
         }
         if changed {
@@ -572,25 +589,26 @@ fn activate_notification(
         if app
             .emit(
                 NOTIFICATION_ACTIVATED_EVENT_NAME,
-                NativeNotificationActivation::new(&fence.account_tab_id, target),
+                NativeNotificationActivation::new(&fence.account_tab_id, activation_id, target),
             )
             .is_err()
         {
-            record_activation("delivery_failed");
+            record_activation("delivery_failed", activation_id);
             return;
         }
-        record_activation("delivered");
+        record_activation("delivered", activation_id);
     });
 }
 
-fn record_activation(reason: &'static str) {
+fn record_activation(reason: &'static str, activation_id: u64) {
     record(
         DiagnosticEvent::new(
             DiagnosticLevel::Info,
             "desktop.native_notification",
             "activation_settled",
         )
-        .field(DiagnosticField::token("outcome", reason)),
+        .field(DiagnosticField::token("outcome", reason))
+        .field(DiagnosticField::correlation("activation", activation_id)),
     );
 }
 
