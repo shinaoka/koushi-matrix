@@ -46,6 +46,43 @@ fn the_overview_help_lists_every_tool_as_a_command() {
 }
 
 #[test]
+fn every_tool_help_has_the_agent_sections_and_states_its_effects() {
+    for tool in definitions() {
+        let text = help(&[tool.name, "--help"]);
+        crate::help::assert_sections(&text, tool.name);
+        for fact in ["Stdout:", "Side effects:", "Exit status:"] {
+            assert!(text.contains(fact), "{} {fact}", tool.name);
+        }
+        assert!(
+            text.contains(&format!("koushi {} --args-stdin --json", tool.name)),
+            "{} stdin example",
+            tool.name
+        );
+        assert!(
+            text.contains(&format!("\"tool\":\"{}\"", tool.name)),
+            "{} output envelope",
+            tool.name
+        );
+    }
+}
+
+#[test]
+fn the_overview_states_each_commands_stdout_and_side_effects() {
+    let overview = help(&["--help"]);
+    for tool in definitions() {
+        let start = overview
+            .find(&format!("\n  {}\n", tool.name))
+            .expect("command entry");
+        let entry = &overview[start + 1..];
+        // Entries are separated by a blank line.
+        let entry = &entry[..entry.find("\n\n").unwrap_or(entry.len())];
+        for fact in ["Stdout:", "Side effects:"] {
+            assert!(entry.contains(fact), "{} {fact}", tool.name);
+        }
+    }
+}
+
+#[test]
 fn every_tool_has_help_naming_each_argument() {
     for tool in definitions() {
         let text = help(&[tool.name, "--help"]);
@@ -61,13 +98,17 @@ fn every_tool_has_help_naming_each_argument() {
                 // Private text has no option; help names the stdin path.
                 assert!(!text.contains(&option(name)), "{}.{name}", tool.name);
                 assert!(
-                    text.contains(&format!("\n  {name} ")),
+                    text.lines()
+                        .any(|line| line.trim_start().starts_with(&format!("{name}  ("))),
                     "{}.{name}",
                     tool.name
                 );
             } else {
                 assert!(
-                    text.contains(&format!("\n  {} ", option(name))),
+                    text.lines().any(|line| line
+                        .trim_start()
+                        .starts_with(&format!("{} ", option(name)))
+                        && line.contains("  (")),
                     "{}.{name}",
                     tool.name
                 );
