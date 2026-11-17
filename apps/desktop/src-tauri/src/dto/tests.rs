@@ -2617,23 +2617,25 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
         "the complete Rust-owned current-session status must cross the Tauri DTO"
     );
 
-    let golden_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/golden/frontend_app_state.json"
-    );
+    // Run-time path: `env!` would bake the absolute checkout path into dep-info (#1937).
+    let manifest_dir =
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo test sets CARGO_MANIFEST_DIR");
+    let golden_path =
+        std::path::Path::new(&manifest_dir).join("tests/golden/frontend_app_state.json");
 
     if std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1") {
         let pretty = serde_json::to_string_pretty(&value).expect("should format golden JSON");
-        std::fs::create_dir_all(std::path::Path::new(golden_path).parent().unwrap())
+        std::fs::create_dir_all(golden_path.parent().unwrap())
             .expect("golden directory should be creatable");
-        std::fs::write(golden_path, pretty).expect("golden artifact should be writable");
+        std::fs::write(&golden_path, pretty).expect("golden artifact should be writable");
         return;
     }
 
-    let golden_bytes = std::fs::read(golden_path).unwrap_or_else(|_| {
+    let golden_bytes = std::fs::read(&golden_path).unwrap_or_else(|_| {
         panic!(
-            "golden artifact not found at {golden_path}. \
-                Run with UPDATE_GOLDEN=1 to generate it."
+            "golden artifact not found at {}. \
+                Run with UPDATE_GOLDEN=1 to generate it.",
+            golden_path.display()
         )
     });
     let golden: serde_json::Value =

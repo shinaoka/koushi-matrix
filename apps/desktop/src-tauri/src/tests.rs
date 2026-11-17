@@ -15,11 +15,9 @@ mod thumbnail_protocol_test_support;
 
 #[test]
 fn main_window_overlay_permission_contract() {
-    let capability: serde_json::Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/capabilities/windows-overlay.json"
-    )))
-    .expect("Windows overlay capability must be valid JSON");
+    let capability: serde_json::Value =
+        serde_json::from_str(include_str!("../capabilities/windows-overlay.json"))
+            .expect("Windows overlay capability must be valid JSON");
     assert_eq!(capability["identifier"], "windows-overlay");
     assert_eq!(capability["platforms"], serde_json::json!(["windows"]));
     assert_eq!(capability["windows"], serde_json::json!(["main"]));

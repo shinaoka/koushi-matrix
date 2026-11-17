@@ -1886,10 +1886,11 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
         )
         .expect("serialize intent lifecycle failed noop room not in state"),
     });
-    let contract_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../src/domain/coreEvents.generated.json"
-    );
+    // Run-time path: `env!` would bake the absolute checkout path into dep-info (#1937).
+    let manifest_dir =
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo test sets CARGO_MANIFEST_DIR");
+    let contract_path =
+        std::path::Path::new(&manifest_dir).join("../src/domain/coreEvents.generated.json");
     if std::env::var("UPDATE_CORE_EVENT_GOLDEN").as_deref() == Ok("1") {
         std::fs::write(
             contract_path,
@@ -1998,10 +1999,9 @@ fn core_event_contract_artifact_key_set_does_not_shrink() {
     .copied()
     .collect();
 
-    let artifact: serde_json::Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../src/domain/coreEvents.generated.json"
-    )))
+    let artifact: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../src/domain/coreEvents.generated.json"
+    ))
     .expect("contract artifact must be valid JSON");
 
     let artifact_keys: std::collections::BTreeSet<&str> = artifact

@@ -8,7 +8,10 @@ use std::fs;
 use std::path::Path;
 
 fn read_json(file: &str) -> serde_json::Value {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+    // Run-time path: `env!` would bake the absolute checkout path into dep-info (#1937).
+    let manifest_dir =
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo test sets CARGO_MANIFEST_DIR");
+    let path = Path::new(&manifest_dir).join(file);
     let contents = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("{file} must be readable: {error}"));
     serde_json::from_str(&contents)
