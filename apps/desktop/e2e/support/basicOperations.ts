@@ -52,9 +52,20 @@ export async function seedTimelineItems(
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
             } as any);
             await new Promise((resolve) => setTimeout(resolve, 25));
-            return itemDomIds.every((id) =>
-              document.querySelector(`[data-item-id="${CSS.escape(id)}"]`)
+            const mounted = (id: string) =>
+              document.querySelector(`[data-item-id="${CSS.escape(id)}"]`) !== null;
+            if (itemDomIds.every(mounted)) {
+              return true;
+            }
+            // The timeline mounts only the window around the viewport, so a long
+            // batch is never all in the DOM. Its tail is at the live edge and the
+            // store-side total proves the batch itself landed.
+            const total = Number(
+              document
+                .querySelector('[data-testid="timeline-view"]')
+                ?.getAttribute("data-total-items") ?? 0
             );
+            return total >= itemDomIds.length && mounted(itemDomIds[itemDomIds.length - 1] ?? "");
           },
           { key, nextItems: items, nextGeneration: generation }
         ),
