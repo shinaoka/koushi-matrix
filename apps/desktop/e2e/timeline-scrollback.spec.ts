@@ -1707,21 +1707,25 @@ test("timeline navigation keeps the unread marker and bottom control independent
   await expect(container).toHaveAttribute("data-total-items", "30");
 
   // Leave the live edge and land on the unread marker's rows: only the mounted
-  // window renders a separator, so the reader has to be near the marker. A bare
-  // scrollTop write is not user input and snaps back (see the prepend anchor
-  // test), so wheel first to keep viewport control.
-  const rowHeight = await container.evaluate((node) => {
-    const row = node.querySelector<HTMLElement>("[data-item-id]");
-    return row ? row.getBoundingClientRect().height : 0;
+  // window renders a separator, so the reader has to be near the marker, and
+  // the marker's own position keeps this independent of the row height the model
+  // assumes for rows it has not measured. A bare scrollTop write is not user
+  // input and snaps back (see the prepend anchor test), so wheel first.
+  const markerRowTop = await container.evaluate((node) => {
+    const row = node.querySelector<HTMLElement>('[data-item-id="$m24"]');
+    if (!row) return null;
+    return Math.round(
+      node.scrollTop + row.getBoundingClientRect().top - node.getBoundingClientRect().top
+    );
   });
-  expect(rowHeight).toBeGreaterThan(0);
+  expect(markerRowTop).not.toBeNull();
   await container.evaluate(
     (node, target) => {
       node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -40 }));
       node.scrollTop = target;
       node.dispatchEvent(new Event("scroll", { bubbles: true }));
     },
-    Math.max(0, 24 * rowHeight - 40)
+    Math.max(0, (markerRowTop ?? 0) - 200)
   );
 
   await expect
@@ -1736,6 +1740,24 @@ test("timeline navigation keeps the unread marker and bottom control independent
       roomId: ROOM_ID,
       atBottom: false
     });
+
+  // The report has to name the row the reader sees first, which is more than
+  // "not at the bottom". Both are read in one tick so a window shift between
+  // them cannot show up as a mismatch.
+  const observed = await container.evaluate((node) => {
+    const top = node.getBoundingClientRect().top;
+    const row = Array.from(node.querySelectorAll<HTMLElement>("[data-item-id]"))
+      .filter((candidate) => candidate.getBoundingClientRect().bottom > top)
+      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0];
+    return {
+      reported: window.__harness.invocationsOf("observe_timeline_viewport").at(-1)?.args as {
+        firstVisibleEventId?: string;
+      } | undefined,
+      dom: row?.getAttribute("data-item-id") ?? null
+    };
+  });
+  expect(observed.dom).not.toBeNull();
+  expect(observed.reported?.firstVisibleEventId).toBe(observed.dom);
 
   await page.evaluate(
     ({ key }) => {

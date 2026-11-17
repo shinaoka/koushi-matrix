@@ -636,3 +636,95 @@ test("the observed viewport matches the physically visible rows", async ({ page 
     .poll(async () => (await compareObservation()).observed, { timeout: 10_000 })
     .toEqual((await compareObservation()).physical);
 });
+
+/**
+ * #1890 §2.2: with the window sized in screens, a row that measures shorter than
+ * the estimate above the reader has to publish its height in the same frame as
+ * the anchor compensation. If it waits for the scroll to settle, the modelled
+ * gap between the reader and the spacer grows and the spacer itself can come
+ * into view during the wheel.
+ */
+test("a round trip through history keeps the reader's row and never shows a spacer", async ({
+  page
+}) => {
+  await gotoReadyApp(page);
+  await seedTimeline(page, 120);
+  const timeline = page.locator("[data-testid=timeline-view]");
+  await expect(timeline).toHaveAttribute("data-total-items", "120");
+  await waitAnimationFrames(page, 6);
+
+  // The live-edge open puts the last row at the bottom; keep its distance from
+  // the container's bottom edge as the reader's position.
+  const readerRow = page.locator(
+    '[data-event-id="$scroll-anchor-item-0119:example.invalid"]'
+  );
+  const offsetFromBottom = async (): Promise<number> =>
+    page.evaluate(() => {
+      const row = document.querySelector<HTMLElement>(
+        '[data-event-id="$scroll-anchor-item-0119:example.invalid"]'
+      );
+      const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]");
+      if (!row || !container) return Number.POSITIVE_INFINITY;
+      return (
+        container.getBoundingClientRect().bottom - row.getBoundingClientRect().bottom
+      );
+    });
+  await expect(readerRow).toBeVisible();
+  const beforeOffset = await offsetFromBottom();
+  expect(Number.isFinite(beforeOffset)).toBe(true);
+
+  // Count every frame where a spacer is on screen, from here until the end.
+  await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]")!;
+    const state = { spacerFrames: 0, running: true };
+    (window as unknown as { __spacerWatch: typeof state }).__spacerWatch = state;
+    const sample = () => {
+      if (!state.running) return;
+      const box = container.getBoundingClientRect();
+      for (const spacer of Array.from(
+        container.querySelectorAll<HTMLElement>(".timeline-virtual-spacer")
+      )) {
+        const rect = spacer.getBoundingClientRect();
+        // A spacer with no height is the list's own end, not a visible gap.
+        if (rect.height > 0 && rect.bottom > box.top && rect.top < box.bottom) {
+          state.spacerFrames += 1;
+          break;
+        }
+      }
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+
+  const clientHeight = await timeline.evaluate((node) => node.clientHeight);
+  await timeline.hover();
+  // Up to the top of the loaded history, one screen at a time.
+  for (let step = 0; step < 40; step += 1) {
+    const scrollTop = await timelineScrollTop(page);
+    if (scrollTop <= 0) break;
+    await page.mouse.wheel(0, -Math.round(clientHeight));
+    await waitAnimationFrames(page, 3);
+  }
+  // And back down to the live edge.
+  for (let step = 0; step < 40; step += 1) {
+    await page.mouse.wheel(0, Math.round(clientHeight));
+    await waitAnimationFrames(page, 3);
+    const distanceToBottom = await page.evaluate(() => {
+      const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]");
+      if (!container) return 0;
+      return container.scrollHeight - container.clientHeight - container.scrollTop;
+    });
+    if (distanceToBottom <= 1) break;
+  }
+  await waitAnimationFrames(page, 4);
+
+  const afterOffset = await offsetFromBottom();
+  expect(Math.abs(afterOffset - beforeOffset)).toBeLessThanOrEqual(1);
+  const spacerFrames = await page.evaluate(() => {
+    const state = (window as unknown as { __spacerWatch: { spacerFrames: number; running: boolean } })
+      .__spacerWatch;
+    state.running = false;
+    return state.spacerFrames;
+  });
+  expect(spacerFrames).toBe(0);
+});
