@@ -142,4 +142,29 @@ independent review before landing.
   SDK-submodule and user-help checks pass.
 - `node scripts/cli-local-qa.mjs` against a disposable local Tuwunel prints
   `cli_accounts=ok`, `cli_encrypted_read=ok`, `cli_encrypted_search=ok`.
+- Help shape: audited against the agent-CLI help contract. The overview and
+  every tool help carry NAME, DESCRIPTION with a use-when line, INSTRUCTIONS,
+  SYNOPSIS, COMMANDS (arguments, stdout, side effects, exit status), OPTIONS,
+  STDIN, WRITES for write tools, EXIT STATUS, ENVIRONMENT, EXAMPLES and
+  OUTPUT, in that order; `tests/cli/help.rs` and `tests/cli/tool_table.rs`
+  pin the order of all but WRITES for the overview and every tool, and
+  require WRITES in every write tool's help.
+- Acceptance test: a fresh agent of another model family (Mistral Large 4,
+  non-interactive, bash tool only, no context files, skills or MCP) got the
+  endpoint path, the built binary on `PATH`, and the instruction to learn the
+  CLI only from `koushi --help` and `koushi <tool> --help`. Against a
+  disposable local Tuwunel with the `headless-core-qa` bridge host and a
+  schema-3 `koushi-cli` grant, it listed the accounts, found "Synthetic CLI
+  QA", read its messages, drafted a reply, sent it with a fresh
+  `client_request_id`, and reacted to the fixture message, each verified with
+  a read (`get_message` reactions, `get_draft`), with no other input. Private
+  text went through `--args-stdin` from files it wrote, following the
+  examples. Where it stumbled: after a non-null `result.next` it read an
+  empty page and searched to confirm nothing was missing, and the overview
+  example chose `rooms[0]` of unread rooms. Help now says only a null cursor
+  ends paging and selects the room by name (tests first). Its other remarks
+  concern MCP tool descriptions shared with MCP clients, not CLI help, and
+  are left as follow-ups: tools without an output schema list no result
+  fields in help, and `draft_message` reports `status: "staged"` while
+  `get_draft` reports `assistant` for the same draft.
 - Not run here: Windows build and runtime, macOS packaging, and the CI matrix.
