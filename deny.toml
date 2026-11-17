@@ -59,6 +59,22 @@ ignore = [
     # written, and Koushi opens only its own store directory.
     # Drop this exception when #1841 moves the vendored SDK to rusqlite 0.41.
     "RUSTSEC-2026-0459",
+    # RUSTSEC-2026-0543: chrono is unmaintained, and every version is affected.
+    # This is a maintenance-ended notice, not a vulnerability: it reports no
+    # patched version and no exploit, so there is no "upgrade" to take.
+    # Advisory: https://rustsec.org/advisories/RUSTSEC-2026-0543
+    # Koushi never depends on chrono directly and has no `chrono::` use of its
+    # own; in the graph `cargo deny` resolves, chrono 0.4.45 arrives only through
+    # the vendored Matrix SDK, which this workspace depends on as submodule path
+    # deps: matrix-sdk-ui 0.19.1 (vendor/matrix-rust-sdk/crates/matrix-sdk-ui,
+    # `chrono.workspace = true`) and oauth2 5.0.0 via matrix-sdk 0.19.1. Both are
+    # upstream-owned, so leaving chrono means changing or following the vendor,
+    # not this workspace. (`serde_with`, under tauri-utils, also declares an
+    # optional chrono; no enabled feature turns it on, so it is not a path here.)
+    # Drop this exception when chrono leaves the dependency graph: the vendored
+    # SDK moves matrix-sdk-ui and oauth2 to a maintained alternative (jiff or
+    # time), or the lockfile stops listing chrono at all.
+    "RUSTSEC-2026-0543",
 ]
 
 [licenses]
