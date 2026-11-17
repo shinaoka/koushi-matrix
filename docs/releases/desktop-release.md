@@ -79,7 +79,7 @@ Claude Code and OpenCode have equivalent discovery entry points under
   installer after an external signing step. The public release workflow does
   not use those signing stages until the provider and protected CI gate are
   approved.
-- Every package bundles the `koushi-mcp` launcher and read-only `koushi` CLI (#1651). The build scripts
+- Every package bundles the `koushi-mcp` launcher and the `koushi` CLI (#1651, #1944). The build scripts
   build it for the release target, stage it as
   `apps/desktop/src-tauri/binaries/<binary>-<target>[.exe]`, and pass
   `bundle.externalBin` through `--config`; `tauri.conf.json` never lists it, so
