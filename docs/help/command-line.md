@@ -21,9 +21,11 @@ remain outside this CLI's scope.
 - Source checkout: `cargo build -p koushi-mcp --bin koushi --locked`, then
   `target/debug/koushi` (`.exe` on Windows).
 
-Run `koushi --help` (also `koushi <command> --help`) for the full reference:
-commands, result fields, pagination, exit codes, and examples. It prints
-without connecting to the app.
+Run `koushi --help` for the full reference: commands, result fields,
+pagination, exit codes, and examples. It prints without connecting to the app.
+`-h`/`--help` works anywhere in the line, including after a command, and
+`koushi help` works as the first word; every form prints the same global text,
+and `koushi rooms help` is a usage error.
 
 You may add the executable's directory to your own PATH. Installation does not
 edit your shell configuration. The examples below assume `koushi` is on PATH.
@@ -38,9 +40,12 @@ edit your shell configuration. The examples below assume `koushi` is on PATH.
 The account ID is always required, even with only one account. Switching the
 visible app tab never changes a CLI target. Use the same settings page to
 remove access. CLI approval is separate from the named MCP clients' grants.
-Missing permissions wait for the existing in-app approval; a script cannot
-approve itself, and piping input does not skip this step. An already-approved
-script needs no new dialog until access is revoked.
+Missing permissions wait for the existing in-app approval for up to 40 s, or
+until `--timeout` if that is shorter; when the wait runs out the command exits
+5, and you approve `koushi-cli` in Koushi and run it again. A denial exits 5 too,
+and is not asked again until you turn that permission on in Koushi. A script
+cannot approve itself, and piping input does not skip this step. An
+already-approved script needs no new dialog until access is revoked.
 
 Names are self-declared: another process running as your OS user can claim
 `koushi-cli`. The boundary is your OS account, local transport, and private
@@ -64,7 +69,8 @@ Search accepts UTF-8 stdin to EOF, at most 16 KiB, and refuses terminal input.
 Use a private input source such as a secret manager's pipe or a file you have
 chosen to protect. Do not put confidential queries into shell literals, argv,
 or environment variables; shell history and process listings can expose them.
-The CLI creates no query file or history. A trailing line ending is removed.
+The CLI creates no query file or history. All trailing CR and LF bytes are
+removed from the query.
 Use `--room` to restrict a search to one room.
 
 `rooms` returns `result.next_cursor`; pass it with `--cursor` for another page.
