@@ -230,6 +230,11 @@ export const Composer = memo(function Composer({
   const closeEmojiPicker = useCallback(() => {
     setEmojiPickerOpen(false);
   }, []);
+  // #1941: the read-only lock takes the write path away, so an already-open
+  // picker must not keep offering emojis it can no longer insert.
+  useEffect(() => {
+    if (!canEdit) closeEmojiPicker();
+  }, [canEdit, closeEmojiPicker]);
   const [scheduleValue, setScheduleValue] = useState(() => defaultScheduleDateTimeValue());
   const [localDocument, setLocalDocument] = useState(document);
   const previousDocumentRef = useRef(document);
@@ -277,6 +282,9 @@ export const Composer = memo(function Composer({
       ? []
       : mentionCandidates;
   const autocompleteOpen =
+    // #1941: a draft saved with an unfinished `@query` must not offer mention
+    // rows the locked composer cannot insert.
+    canEdit &&
     activeMention !== null &&
     activeMentionKey !== dismissedMentionKey &&
     (activeMentionSuggestions.length > 0 || mentionCandidatesLoading);
@@ -338,6 +346,12 @@ export const Composer = memo(function Composer({
   }
 
   function commitEditorMutation(mutation: { document: ComposerDocument; selection: DocumentSelection }) {
+    // #1941: every editor write converges here, so the read-only lock closes the
+    // toolbar templates, the mention trigger and the emoji insert at once rather
+    // than leaving each new control to remember the check.
+    if (!canEdit) {
+      return;
+    }
     if (editorRef.current) {
       editorRef.current.commit(mutation);
       return;
@@ -351,6 +365,11 @@ export const Composer = memo(function Composer({
     replacement: string,
     cursorOffset = replacement.length
   ) {
+    // The commit below is refused while locked; do not then hand focus to an
+    // editor that will not take the text either.
+    if (!canEdit) {
+      return;
+    }
     const nextDocument = replaceDocumentRange(
       localDocument,
       start,
@@ -802,6 +821,7 @@ export const Composer = memo(function Composer({
             aria-label={t("composer.emoji")}
             aria-expanded={emojiPickerOpen}
             aria-haspopup="dialog"
+            disabled={!canEdit}
             onClick={toggleEmojiPicker}
             {...tooltipProps}
           >
@@ -862,6 +882,7 @@ export const Composer = memo(function Composer({
             className="icon-button"
             type="button"
             aria-label={t("composer.mention")}
+            disabled={!canEdit}
             onMouseDown={keepComposerFocus}
             onClick={insertMentionTrigger}
             {...tooltipProps}
@@ -904,7 +925,7 @@ export const Composer = memo(function Composer({
       {(tooltipProps) => (
         <button
           ref={sendButtonRef}
-          className={`send-button ${localValue.trim() && !isSending ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
+          className={`send-button ${sendEnabled ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
           type="button"
           aria-label={isSending ? t("action.sending") : t("action.send")}
           disabled={!sendEnabled}
@@ -1019,6 +1040,7 @@ export const Composer = memo(function Composer({
               className="icon-button"
               type="button"
               aria-label={t("composer.bold")}
+              disabled={!canEdit}
               onMouseDown={keepComposerFocus}
               onClick={() => applyInlineMarkdown("**", "**", "bold")}
               {...tooltipProps}
@@ -1033,6 +1055,7 @@ export const Composer = memo(function Composer({
               className="icon-button"
               type="button"
               aria-label={t("composer.italic")}
+              disabled={!canEdit}
               onMouseDown={keepComposerFocus}
               onClick={() => applyInlineMarkdown("_", "_", "italic")}
               {...tooltipProps}
@@ -1047,6 +1070,7 @@ export const Composer = memo(function Composer({
               className="icon-button"
               type="button"
               aria-label={t("composer.link")}
+              disabled={!canEdit}
               onMouseDown={keepComposerFocus}
               onClick={applyLinkMarkdown}
               {...tooltipProps}
@@ -1061,6 +1085,7 @@ export const Composer = memo(function Composer({
               className="icon-button"
               type="button"
               aria-label={t("composer.list")}
+              disabled={!canEdit}
               onMouseDown={keepComposerFocus}
               onClick={applyListMarkdown}
               {...tooltipProps}
@@ -1075,6 +1100,7 @@ export const Composer = memo(function Composer({
               className="icon-button"
               type="button"
               aria-label={t("composer.code")}
+              disabled={!canEdit}
               onMouseDown={keepComposerFocus}
               onClick={() => applyInlineMarkdown("`", "`", "code")}
               {...tooltipProps}
