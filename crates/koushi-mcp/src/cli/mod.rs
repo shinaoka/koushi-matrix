@@ -1,6 +1,9 @@
-//! Read-only terminal adapter. Private payloads are emitted only as requested
-//! stdout results, never as errors/diagnostics or automatic persistent data.
+//! Terminal adapter generated from the MCP tool table: one command per tool,
+//! one `tools/call` per process. Private payloads are emitted only as
+//! requested stdout results, never as errors/diagnostics or automatic
+//! persistent data.
 mod args;
+mod help;
 mod output;
 
 use std::io::IsTerminal;
@@ -12,7 +15,13 @@ use tokio::io::AsyncReadExt;
 
 use crate::wire::{ClientInfo, ErrorCode};
 
-const MAX_QUERY_BYTES: usize = 16 * 1024;
+/// Private text properties: message bodies, search queries, and reaction
+/// keys. They get no option and enter only through `--args-stdin`, because
+/// argv reaches shell history and process listings.
+pub const STDIN_ONLY_PROPERTIES: [&str; 3] = ["body", "query", "key"];
+
+/// `--args-stdin` accepts any argument object that fits one bridge frame.
+const MAX_ARGUMENT_BYTES: usize = crate::wire::MAX_FRAME_BYTES;
 const MAX_OUTPUT_BYTES: usize = 16 * crate::wire::MAX_FRAME_BYTES;
 
 /// Only closed codes and statuses can reach diagnostics. No remote detail or
@@ -48,7 +57,7 @@ impl Failure {
 /// Entry point shared only with the shipped CLI binary.
 pub fn main() -> ExitCode {
     let invocation = match args::parse(std::env::args_os().skip(1)) {
-        Ok(args::Action::Help) => return output::write_stdout(args::HELP.as_bytes()),
+        Ok(args::Action::Help(text)) => return output::write_stdout(text.as_bytes()),
         Ok(args::Action::Version) => {
             return output::write_stdout(
                 concat!("koushi ", env!("CARGO_PKG_VERSION"), "\n").as_bytes(),
@@ -89,32 +98,16 @@ pub fn main() -> ExitCode {
     }
 }
 
-async fn execute(mut invocation: args::Invocation) -> Result<(), Failure> {
-    if invocation.tool == "search_messages" {
-        if std::io::stdin().is_terminal() {
-            return Err(Failure::USAGE);
+async fn execute(invocation: args::Invocation) -> Result<(), Failure> {
+    let arguments = match invocation.arguments {
+        Some(arguments) => arguments,
+        None => {
+            let arguments = read_argument_object().await?;
+            args::check(&invocation.tool, &arguments)?;
+            arguments
         }
-        let mut bytes = Vec::new();
-        tokio::io::stdin()
-            .take((MAX_QUERY_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .await
-            .map_err(|_| Failure {
-                code: "input_error",
-                status: 2,
-            })?;
-        if bytes.len() > MAX_QUERY_BYTES {
-            return Err(Failure::USAGE);
-        }
-        let query = String::from_utf8(bytes).map_err(|_| Failure::USAGE)?;
-        let query = query.trim_end_matches(['\r', '\n']);
-        if query.trim().is_empty() {
-            return Err(Failure::USAGE);
-        }
-        invocation.arguments["query"] = json!(query);
-    }
-    crate::tools::validate_arguments(invocation.tool, &invocation.arguments)
-        .map_err(|_| Failure::USAGE)?;
+    };
+    let tool = invocation.tool.name;
     let endpoint = invocation
         .endpoint
         .or_else(crate::endpoint::default_path)
@@ -129,10 +122,7 @@ async fn execute(mut invocation: args::Invocation) -> Result<(), Failure> {
     .await
     .map_err(|error| Failure::bridge(error.code))?;
     let response = client
-        .call(
-            "tools/call",
-            json!({"name":invocation.tool,"arguments":invocation.arguments}),
-        )
+        .call("tools/call", json!({"name":tool,"arguments":arguments}))
         .await
         .map_err(|error| Failure::bridge(error.code))?;
     let result = response.get("structuredContent").ok_or(Failure::INTERNAL)?;
@@ -148,10 +138,34 @@ async fn execute(mut invocation: args::Invocation) -> Result<(), Failure> {
         }
         None => return Err(Failure::INTERNAL),
     }
-    let mut envelope = json!({"schema_version":1,"tool":invocation.tool,"result":result});
-    if let Some(account) = invocation.arguments.get("account_id") {
+    let mut envelope = json!({"schema_version":1,"tool":tool,"result":result});
+    if let Some(account) = arguments.get("account_id") {
         envelope["account_id"] = account.clone();
     }
     let bytes = output::render(&envelope, invocation.json)?;
     output::write_result(&bytes).await
+}
+
+/// `--args-stdin`: the whole argument object as UTF-8 JSON from non-terminal
+/// stdin, bounded by the bridge frame. Nothing read is ever echoed.
+async fn read_argument_object() -> Result<Value, Failure> {
+    if std::io::stdin().is_terminal() {
+        return Err(Failure::USAGE);
+    }
+    let mut bytes = Vec::new();
+    tokio::io::stdin()
+        .take((MAX_ARGUMENT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|_| Failure {
+            code: "input_error",
+            status: 2,
+        })?;
+    if bytes.len() > MAX_ARGUMENT_BYTES {
+        return Err(Failure::USAGE);
+    }
+    match serde_json::from_slice(&bytes) {
+        Ok(object @ Value::Object(_)) => Ok(object),
+        _ => Err(Failure::USAGE),
+    }
 }

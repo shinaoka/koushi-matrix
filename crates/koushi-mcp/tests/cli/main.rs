@@ -3,3 +3,5 @@
 mod help;
 mod reads;
 mod support;
+mod tool_table;
+mod writes;

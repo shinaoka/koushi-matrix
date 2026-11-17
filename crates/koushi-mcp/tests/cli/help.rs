@@ -6,7 +6,7 @@ fn help_is_available_without_the_app() {
     let output = cli().arg("--help").output().expect("help process");
     assert!(output.status.success());
     let help = String::from_utf8(output.stdout).expect("help utf8");
-    assert!(help.contains("--query-stdin"));
+    assert!(help.contains("--args-stdin"));
     assert!(help.contains("scrollback"));
     assert!(output.stderr.is_empty());
 }
@@ -42,14 +42,16 @@ fn help_documents_each_section_an_agent_needs() {
 #[test]
 fn help_after_a_command_prints_help_without_connecting() {
     for args in [
-        vec!["search", "--help"],
+        vec!["search_messages", "--help"],
         vec![
-            "rooms",
-            "--account",
+            "list_rooms",
+            "--account-id",
             "account:@member1:example.invalid",
             "-h",
         ],
         vec!["help"],
+        vec!["help", "send_message"],
+        vec!["no_such_tool", "--help"],
     ] {
         let output = cli().args(&args).output().expect("help process");
         assert!(output.status.success(), "{args:?}");
