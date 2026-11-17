@@ -3,7 +3,7 @@
 use serde_json::Value;
 
 use super::STDIN_ONLY_PROPERTIES;
-use super::args::option_name;
+use super::args::{has_option, option_name};
 use crate::tools::{ToolDefinition, definitions};
 
 const WIDTH: usize = 78;
@@ -47,7 +47,9 @@ const OVERVIEW_TAIL: &str = "
 OPTIONS
   --<argument>         One tool argument: room_id becomes --room-id. A list
                        argument is repeated once per element; a true/false
-                       argument is a flag that sets true.
+                       argument is a flag that sets true. The command line
+                       holds at most 160 words and 64 KiB; pass longer
+                       argument lists through --args-stdin.
   --args-stdin         Read the complete MCP argument object as JSON from stdin
   --json               Compact one-line JSON (default: indented JSON)
   --endpoint <path>    Private endpoint.json written by the app (default: see ENVIRONMENT)
@@ -136,9 +138,10 @@ pub(super) fn tool(tool: &ToolDefinition) -> String {
         .as_object()
         .map(|map| map.iter().collect())
         .unwrap_or_default();
-    let stdin_only_required = required
+    // A required argument without an option makes --args-stdin the only form.
+    let stdin_only_required = properties
         .iter()
-        .any(|name| STDIN_ONLY_PROPERTIES.contains(name));
+        .any(|(name, property)| required.contains(&name.as_str()) && !has_option(name, property));
 
     let mut text = format!("NAME\n  koushi {} - ", tool.name);
     text.push_str(first_sentence(tool.description));
@@ -150,7 +153,7 @@ pub(super) fn tool(tool: &ToolDefinition) -> String {
         // Each option with its value stays on one line.
         let mut tokens = vec![format!("koushi {}", tool.name)];
         for (name, property) in &properties {
-            if STDIN_ONLY_PROPERTIES.contains(&name.as_str()) {
+            if !has_option(name, property) {
                 continue;
             }
             let usage = format!("{}{}", option_name(name), value_form(property));
@@ -175,7 +178,7 @@ pub(super) fn tool(tool: &ToolDefinition) -> String {
             facts.push("required".to_owned());
         }
         facts.extend(bounds(property));
-        if STDIN_ONLY_PROPERTIES.contains(&name.as_str()) {
+        if !has_option(name, property) {
             facts.push("only through --args-stdin".to_owned());
             text.push_str(&format!("  {name}  ({})\n", facts.join(", ")));
         } else {
@@ -281,6 +284,14 @@ fn bounds(property: &Value) -> Vec<String> {
         (None, Some(high)) => facts.push(format!("at most {high}")),
         (None, None) => {}
     }
+    if let Some(length) = property["minLength"].as_u64() {
+        let unit = if length == 1 {
+            "character"
+        } else {
+            "characters"
+        };
+        facts.push(format!("at least {length} {unit}"));
+    }
     if let Some(items) = property["maxItems"].as_u64() {
         facts.push(format!("at most {items} elements"));
     }
@@ -315,5 +326,49 @@ fn wrap_tokens<'a>(
     }
     if !line.is_empty() {
         text.push_str(&format!("{pad}{line}\n"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::tools::ToolDefinition;
+
+    fn synthetic_tool(properties: serde_json::Value) -> ToolDefinition {
+        ToolDefinition {
+            name: "synthetic_tool",
+            description: "Synthetic tool.",
+            input_schema: json!({"type":"object","properties":properties}),
+            read_only: true,
+            output_schema: None,
+        }
+    }
+
+    #[test]
+    fn a_shape_the_parser_cannot_take_gets_no_option() {
+        let help = super::tool(&synthetic_tool(json!({
+            "pairs": {"type":"array","items":{"type":"object","properties":{
+                "left":{"type":"string"},"right":{"type":"string"}}}},
+            "counts": {"type":"array","items":{"type":"integer"}},
+            "settings": {"type":"object"}
+        })));
+        for name in ["pairs", "counts", "settings"] {
+            assert!(!help.contains(&format!("--{name}")), "{name}");
+            assert!(
+                help.lines()
+                    .any(|line| line.starts_with(&format!("  {name}  "))
+                        && line.contains("only through --args-stdin")),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn help_names_a_minimum_length() {
+        let help = super::tool(&synthetic_tool(json!({
+            "label": {"type":"string","minLength":1}
+        })));
+        assert!(help.contains("--label <value>  (string, at least 1 character)"));
     }
 }

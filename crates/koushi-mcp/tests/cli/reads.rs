@@ -267,6 +267,44 @@ mod unix {
     }
 
     #[test]
+    fn a_maximal_room_list_fits_on_the_command_line() {
+        let rooms: Vec<String> = (0..64)
+            .map(|index| format!("!r{index}:example.invalid"))
+            .collect();
+        let mut args = vec![
+            "read_recent_activity".to_owned(),
+            "--account-id".to_owned(),
+            "account:@member1:example.invalid".to_owned(),
+            "--limit".to_owned(),
+            "100".to_owned(),
+            "--from-timestamp-ms".to_owned(),
+            "0".to_owned(),
+            "--to-timestamp-ms".to_owned(),
+            "1".to_owned(),
+            "--cursor".to_owned(),
+            "synthetic-cursor".to_owned(),
+            "--json".to_owned(),
+            "--timeout".to_owned(),
+            "20".to_owned(),
+        ];
+        for room in &rooms {
+            args.extend(["--room-ids".to_owned(), room.clone()]);
+        }
+        let (_dir, endpoint, server, _ready) = app(json!({"isError":false,"structuredContent":{}}));
+        let output = cli()
+            .args(&args)
+            .arg("--endpoint")
+            .arg(endpoint)
+            .output()
+            .expect("run");
+        assert!(output.status.success());
+        assert_eq!(
+            server.join().expect("server")["arguments"]["room_ids"],
+            json!(rooms)
+        );
+    }
+
+    #[test]
     fn pretty_output_expansion_is_bounded_before_any_stdout() {
         let mut result = Value::Array(vec![Value::Null; 100000]);
         for _ in 0..100 {

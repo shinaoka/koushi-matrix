@@ -10,8 +10,10 @@ use serde_json::{Map, Value, json};
 use super::{Failure, STDIN_ONLY_PROPERTIES};
 use crate::tools::ToolDefinition;
 
+/// The command line's bounds, named in the overview help. 160 words fit 64
+/// repeated list elements (two words each) plus every other option.
 const MAX_ARGV_BYTES: usize = 64 * 1024;
-const MAX_ARGV_WORDS: usize = 64;
+const MAX_ARGV_WORDS: usize = 160;
 
 pub(super) enum Action {
     Help(String),
@@ -46,6 +48,20 @@ pub(super) fn item_property(property: &Value) -> Option<&str> {
             Some(name.as_str())
         }
         _ => None,
+    }
+}
+
+/// Whether a schema property has a generated option. Private text and any
+/// shape the parser cannot fill (nested objects, lists of numbers or of
+/// several-property objects) enter only through `--args-stdin`.
+pub(super) fn has_option(name: &str, property: &Value) -> bool {
+    if STDIN_ONLY_PROPERTIES.contains(&name) {
+        return false;
+    }
+    match property["type"].as_str() {
+        Some("string" | "integer" | "boolean") => true,
+        Some("array") => property["items"]["type"] == "string" || item_property(property).is_some(),
+        _ => false,
     }
 }
 
@@ -95,8 +111,8 @@ pub(super) fn parse(args: impl Iterator<Item = OsString>) -> Result<Action, Fail
             .strip_prefix("--")
             .map(|name| name.replace('-', "_"))
             .filter(|name| option_name(name) == *flag)
-            .filter(|name| !STDIN_ONLY_PROPERTIES.contains(&name.as_str()))
-            .and_then(|name| properties.get(&name).map(|schema| (name, schema)));
+            .and_then(|name| properties.get(&name).map(|schema| (name, schema)))
+            .filter(|(name, schema)| has_option(name, schema));
         let repeatable = property
             .as_ref()
             .is_some_and(|(_, schema)| schema["type"] == "array");
@@ -143,8 +159,7 @@ pub(super) fn parse(args: impl Iterator<Item = OsString>) -> Result<Action, Fail
                     Some("array") => {
                         let element = match item_property(schema) {
                             Some(field) => json!({ field: value }),
-                            None if schema["items"]["type"] == "string" => json!(value),
-                            None => return Err(Failure::USAGE),
+                            None => json!(value),
                         };
                         let list = arguments.entry(name).or_insert_with(|| json!([]));
                         list.as_array_mut().ok_or(Failure::INTERNAL)?.push(element);

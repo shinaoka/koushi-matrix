@@ -66,6 +66,8 @@ koushi send_message --args-stdin < private-arguments.json
 Each tool argument is an option: `room_id` becomes `--room-id`. A list
 argument is given once per element (`--room-ids`, or `--attachments <path>`
 for each file to send), and a true/false argument is a flag that sets it.
+The command line holds at most 160 words and 64 KiB; pass a longer list
+through `--args-stdin`.
 
 `--args-stdin` instead reads the tool's whole argument object as JSON from
 standard input, for example
