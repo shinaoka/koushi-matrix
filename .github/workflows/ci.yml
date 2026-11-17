@@ -345,6 +345,13 @@ jobs:
         run: node scripts/check-command-snapshot-contract.mjs
       - name: Retained-customization reachability guard
         run: node scripts/check-retained-reachability.mjs
+      # #1942: `icon.icns` packed its 16/32/64px renders under the legacy
+      # icp4/icp5/icp6 codes, which macOS decodes as colour noise, so the icon
+      # was garbage wherever the system drew a small size and nothing noticed.
+      - name: Icon asset checker tests
+        run: node --test scripts/generate-koushi-icons.test.mjs scripts/check-icon-sizes.test.mjs
+      - name: Icon asset guard
+        run: node scripts/check-icon-sizes.mjs
       - name: Rust cache report contract tests
         run: node --test scripts/ci-rust-cache-report.test.mjs scripts/ci-rust-cache-metrics.test.mjs
       # One invocation runs the ordinary crates, the koushi-core-testkit

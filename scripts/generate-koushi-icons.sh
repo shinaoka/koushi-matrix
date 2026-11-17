@@ -34,18 +34,21 @@ echo "Generating Koushi icon assets from ${SRC}..."
 cp "${SRC}" "${OUT_DIR}/icon.svg"
 
 # macOS/Linux/Windows PNG sizes used by Tauri bundles.
-convert -background none "${SRC}" -resize 32x32   "${OUT_DIR}/32x32.png"
-convert -background none "${SRC}" -resize 128x128 "${OUT_DIR}/128x128.png"
-convert -background none "${SRC}" -resize 256x256 "${OUT_DIR}/128x128@2x.png"
-convert -background none "${SRC}" -resize 512x512 "${OUT_DIR}/icon.png"
+# `-depth 8` keeps these assets 8-bit; ImageMagick 7 otherwise writes 16-bit PNGs,
+# which makes every file here several times larger and is rejected by
+# scripts/check-icon-sizes.mjs for the ICNS inputs.
+convert -background none "${SRC}" -resize 32x32   -depth 8 "${OUT_DIR}/32x32.png"
+convert -background none "${SRC}" -resize 128x128 -depth 8 "${OUT_DIR}/128x128.png"
+convert -background none "${SRC}" -resize 256x256 -depth 8 "${OUT_DIR}/128x128@2x.png"
+convert -background none "${SRC}" -resize 512x512 -depth 8 "${OUT_DIR}/icon.png"
 
 # Favicon sizes from the simplified small-mark source.
 SMALL_SRC="${PROJECT_ROOT}/assets/branding/koushi-photon-small.svg"
-convert -background none "${SMALL_SRC}" -resize 16x16 "${PROJECT_ROOT}/assets/branding/favicon-16.png"
-convert -background none "${SMALL_SRC}" -resize 32x32 "${PROJECT_ROOT}/assets/branding/favicon-32.png"
+convert -background none "${SMALL_SRC}" -resize 16x16 -depth 8 "${PROJECT_ROOT}/assets/branding/favicon-16.png"
+convert -background none "${SMALL_SRC}" -resize 32x32 -depth 8 "${PROJECT_ROOT}/assets/branding/favicon-32.png"
 
 # Windows ICO with multiple embedded sizes (keep the 256x256 source frame).
-convert -background none "${SRC}" -resize 256x256 \
+convert -background none "${SRC}" -resize 256x256 -depth 8 \
   \( -clone 0 -resize 16x16 \) \
   \( -clone 0 -resize 32x32 \) \
   \( -clone 0 -resize 48x48 \) \
@@ -55,22 +58,24 @@ convert -background none "${SRC}" -resize 256x256 \
 
 # macOS ICNS: render the full-bleed source separately so the shared transparent
 # raster assets retain their existing cross-platform appearance.
-for size in 16 32 64 128 256 512 1024; do
-  convert -background none "${MACOS_SRC}" -resize "${size}x${size}" \
+for size in 32 64 128 256 512 1024; do
+  convert -background none "${MACOS_SRC}" -resize "${size}x${size}" -depth 8 \
     "${MACOS_ICON_DIR}/${size}x${size}.png"
 done
 
 # Pack PNGs into a simple ICNS container. This script uses a small Python helper
-# so the assets remain reproducible without macOS-only tools.
+# so the assets remain reproducible without macOS-only tools. The helper owns the
+# type codes; see its docstring for why no slot is packed as `icp4`/`icp5`/`icp6`.
 python3 "${SCRIPT_DIR}/lib/generate-icns.py" \
   "${OUT_DIR}/icon.icns" \
-  "${MACOS_ICON_DIR}/16x16.png" \
-  "${MACOS_ICON_DIR}/32x32.png" \
-  "${MACOS_ICON_DIR}/64x64.png" \
-  "${MACOS_ICON_DIR}/128x128.png" \
-  "${MACOS_ICON_DIR}/256x256.png" \
-  "${MACOS_ICON_DIR}/512x512.png" \
-  "${MACOS_ICON_DIR}/1024x1024.png"
+  "ic11=${MACOS_ICON_DIR}/32x32.png" \
+  "ic12=${MACOS_ICON_DIR}/64x64.png" \
+  "ic07=${MACOS_ICON_DIR}/128x128.png" \
+  "ic08=${MACOS_ICON_DIR}/256x256.png" \
+  "ic13=${MACOS_ICON_DIR}/256x256.png" \
+  "ic14=${MACOS_ICON_DIR}/512x512.png" \
+  "ic09=${MACOS_ICON_DIR}/512x512.png" \
+  "ic10=${MACOS_ICON_DIR}/1024x1024.png"
 
 echo "Done. Assets in ${OUT_DIR}:"
 ls -la "${OUT_DIR}"
