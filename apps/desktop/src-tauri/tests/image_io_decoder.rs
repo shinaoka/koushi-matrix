@@ -30,10 +30,8 @@ use objc2_core_graphics::{
 use objc2_image_io::{CGImageDestination, CGImageSource, kCGImagePropertyOrientation};
 
 /// The repository's licensed 64x64 opaque HEIC fixture (libheif output).
-const LICENSED_FIXTURE: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../../crates/koushi-media/tests/fixtures/heif/opaque.heic"
-));
+const LICENSED_FIXTURE: &[u8] =
+    include_bytes!("../../../../crates/koushi-media/tests/fixtures/heif/opaque.heic");
 
 /// Synthetic 1x1 PNG; test-only bytes with no user data.
 const PNG: &[u8] = &[
