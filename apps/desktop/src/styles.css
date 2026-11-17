@@ -4605,20 +4605,25 @@ button:disabled {
    thread pane a 12% brand fill is invisible, because the thread pane surface is
    itself a 12% brand tint. The pill therefore takes a stronger tint, which stays
    distinct from the white row, the thread pane and `--surface-hover`. */
+/* #1950: laid out like Element's pill: an inline-block capped only by its line
+   (`max-width: 100%`), which ends a name that cannot fit in an ellipsis.
+   `text-overflow` paints only for a block container's own inline content, so
+   the inline-flex box it replaced cut names silently, and its 240px cap cut
+   ordinary "Name (Affiliation)" names on a wide row. */
 .message-mention-pill {
-  display: inline-flex;
-  align-items: center;
-  max-width: min(240px, 100%);
-  min-height: 20px;
+  display: inline-block;
+  box-sizing: border-box;
+  max-width: 100%;
   padding: 0 6px;
   overflow: hidden;
+  line-height: 18px;
   border: 1px solid color-mix(in srgb, var(--brand) 45%, var(--line));
   border-radius: 999px;
   color: var(--brand);
   background: color-mix(in srgb, var(--brand) 22%, var(--surface));
   font-weight: 650;
   text-overflow: ellipsis;
-  vertical-align: baseline;
+  vertical-align: text-top;
   white-space: nowrap;
 }
 

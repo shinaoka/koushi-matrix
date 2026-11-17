@@ -176,3 +176,81 @@ test("an Element-shaped mention reads as the composer's pill, not as a link", as
     `pill ${appearance.background} on ${appearance.surface}`
   ).toBeGreaterThanOrEqual(8);
 });
+
+/** A mention whose formatted anchor carries `label` (Element spelling, no `@`). */
+function labelledMentionItem(eventId: string, label: string): Record<string, unknown> {
+  const elementUrl = `https://matrix.to/#/${MENTIONED_USER_ID}`;
+  return itemWithBody(eventId, `${label}: please take a look`, {
+    formatted: {
+      html: `<a href="${elementUrl}">${label}</a>: please take a look`,
+      plain_text: `${label}: please take a look`,
+      code_blocks: []
+    },
+    mentioned_user_ids: [MENTIONED_USER_ID]
+  });
+}
+
+/** The pill's box, the message body's box, and the text boxes on either side. */
+async function pillGeometry(row: ReturnType<Page["locator"]>) {
+  return row.locator("a.message-mention-pill").evaluate((pill) => {
+    const body = pill.closest(".message-body")!;
+    const style = getComputedStyle(pill);
+    const textBox = (node: Node) => {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      return range.getClientRects()[0]!;
+    };
+    const pillText = [...pill.childNodes].find((node) => node.nodeType === Node.TEXT_NODE)!;
+    const after = pill.nextSibling!;
+    return {
+      text: pill.textContent ?? "",
+      clipped: pill.scrollWidth > pill.clientWidth + 1,
+      display: style.display,
+      overflow: style.overflowX,
+      textOverflow: style.textOverflow,
+      whiteSpace: style.whiteSpace,
+      pillRight: pill.getBoundingClientRect().right,
+      bodyRight: body.getBoundingClientRect().right,
+      pillTextBottom: textBox(pillText).bottom,
+      afterTextBottom: textBox(after).bottom
+    };
+  });
+}
+
+// #1950: Element's pill is an inline-block capped only by its line
+// (`max-width: 100%`) that ends a name that cannot fit in an ellipsis. Ours was an
+// inline-flex box capped at 240px: an ordinary "Name (Affiliation)" display name
+// was cut mid-word, and `text-overflow` never applies to a flex container, so the
+// cut had no ellipsis and read as a wrong name.
+test("a mention pill shows an ordinary display name in full", async ({ page }) => {
+  const label = "Harness Ada Lovelace (Analytical Engine Society)";
+  await gotoReadyShell(page);
+  await seedTimelineItems(page, [labelledMentionItem("$full-name:example.invalid", label)]);
+
+  const geometry = await pillGeometry(page.locator('[data-event-id="$full-name:example.invalid"]'));
+  expect(geometry.text).toBe(`@${label}`);
+  expect(geometry.clipped, "an ordinary name fits the row, so the pill must not clip it").toBe(
+    false
+  );
+  // The pill's text sits on the line's baseline, like the text after it.
+  expect(Math.abs(geometry.pillTextBottom - geometry.afterTextBottom)).toBeLessThanOrEqual(1);
+});
+
+test("a mention pill too wide for its line ends in an ellipsis inside the row", async ({
+  page
+}) => {
+  const label = `Harness ${"Very Long Display Name ".repeat(12).trim()}`;
+  await gotoReadyShell(page);
+  await seedTimelineItems(page, [labelledMentionItem("$long-name:example.invalid", label)]);
+
+  const geometry = await pillGeometry(page.locator('[data-event-id="$long-name:example.invalid"]'));
+  expect(geometry.text).toBe(`@${label}`);
+  expect(geometry.clipped).toBe(true);
+  expect(geometry.pillRight).toBeLessThanOrEqual(geometry.bodyRight + 0.5);
+  // `text-overflow` paints its ellipsis only for a block container's own inline
+  // content; on a flex container the cut is silent.
+  expect(["block", "inline-block"]).toContain(geometry.display);
+  expect(geometry.overflow).toBe("hidden");
+  expect(geometry.textOverflow).toBe("ellipsis");
+  expect(geometry.whiteSpace).toBe("nowrap");
+});
