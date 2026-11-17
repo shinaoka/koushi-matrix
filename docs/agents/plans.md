@@ -24,6 +24,11 @@ gives an assistant `get_message` plus react, edit, delete, and thread reply as
 direct session-owned operations behind a new `message_actions` grant
 (`connections.json` schema 3), with no timeline actor and no GUI state change.
 
+[#1944 CLI generated from the MCP tool table](../plans/2026-11-17-koushi-cli-mcp-parity.md)
+replaces the read-only `koushi` verbs with one command per MCP tool, writes
+included, with options derived from each tool's input schema and the host's
+existing per-capability grants under the `koushi-cli` client name.
+
 [One-click MCP registration](../plans/2026-10-19-mcp-one-click-register.md)
 lets the AI assistants page run Claude Code's, Codex's, or pi's own
 registration CLI (resolved with the login `PATH`, bounded and killable) and

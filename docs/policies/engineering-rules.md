@@ -45,11 +45,14 @@ Never log, print, commit, or store in fixtures:
 - real account private data; real room names or real discussion content in
   docs, tests, or mocks
 
-The read-only `koushi` CLI may intentionally return an authorized requested
-result on stdout, as a product output surface under overview "Local CLI". This
+The `koushi` CLI may intentionally return an authorized requested tool result
+on stdout, as a product output surface under overview "Local CLI". This
 exception does not permit credential/key output, private stderr/diagnostics,
-crash output, test artifacts, or automatic plaintext files/caches. Search text
-enters through bounded non-terminal stdin, never argv or environment variables.
+crash output, test artifacts, or automatic plaintext files/caches. Text
+arguments are accepted as options, as in MCP, and through bounded non-terminal
+stdin (`--args-stdin`); help recommends stdin for private text because argv
+reaches shell history and process listings. Arguments never enter environment
+variables.
 
 Allowed only in debug/test contexts: synthetic local QA credentials, local
 homeserver URLs, synthetic room/event IDs. Allowed in UI state: user ID,

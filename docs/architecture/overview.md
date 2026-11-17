@@ -2345,21 +2345,38 @@ Repeated Core evaluations with the same coarse signature are deduplicated.
 
 ## Local CLI
 
-The `koushi` executable is a read-only adapter in `crates/koushi-mcp`, bundled
-alongside `koushi-mcp`. It connects to the same running, enabled local bridge
-through `ipc::connect` / `Client::call("tools/call", ...)`, uses the shared
-bridge protocol and tool argument definitions, and adds no Matrix session,
-store owner, product policy, or independent login/sync engine. Existing bridge
-admission, membership, consent, session fencing, and GUI-independence contracts
-apply unchanged. No new Matrix functionality is introduced; Element's GUI
-flows remain the existing Core behavior behind this adapter.
+The `koushi` executable is a generated front end to the MCP tool table, in
+`crates/koushi-mcp`, bundled alongside `koushi-mcp` (#1944). It connects to the
+same running, enabled local bridge through `ipc::connect` /
+`Client::call("tools/call", ...)`, uses the shared bridge protocol and tool
+definitions, and adds no Matrix session, store owner, product policy, or
+independent login/sync engine. Existing bridge admission, membership, consent,
+session fencing, retry-ledger, and GUI-independence contracts apply unchanged.
+No new Matrix functionality is introduced; every command is an existing MCP
+tool with the same semantics.
 
-- Commands are a closed read-only set: `accounts`, `rooms`, `messages`,
-  `message`, and `search`. Each account operation requires `--account`, with
-  explicit room/event arguments where applicable. No raw tool execution, write
-  command, credential input, client-name override, or implicit GUI target exists.
+- Commands are generated from `koushi_mcp::tools::definitions()`: one command
+  per tool, named exactly as the tool (`koushi list_rooms`,
+  `koushi send_message`). A tool added to or changed in that table appears in
+  the CLI with no CLI code change. Options derive from the tool's
+  `input_schema`: property `room_id` becomes `--room-id`; a string or integer
+  property takes one value; a boolean property is a flag that sets `true`; an
+  array of strings is repeated once per element; an array of objects with
+  exactly one property is repeated once per element, each value filling that
+  property (`send_message --attachments <path>`). `required` is enforced, types
+  are checked by `tools::validate_arguments`, and the schema's `minimum`,
+  `maximum`, `minLength`, and `maxItems` bounds are checked locally as usage
+  errors. `--args-stdin` instead reads the complete MCP argument object as JSON
+  from stdin and cannot be combined with tool options. There is no other
+  method than `tools/call`, no credential input, client-name override, or
+  implicit GUI target; account-scoped tools require `--account-id` because
+  their schemas do. `koushi --help` lists the tools and `koushi <tool> --help`
+  is rendered from the tool's description and property descriptions.
 - The logical client name is `koushi-cli`. Grants are the host's existing
-  account/capability grants and remain revocable in App Settings → AI assistants.
+  account/capability grants (`read`, `send`, `draft`, `attachments`,
+  `message_actions`), requested per call exactly as the host requests them for
+  MCP; a read grant never implies any write grant. They remain revocable in
+  App Settings → AI assistants.
   Names are self-declared: this label is not process authentication or isolation
   from other processes of the same OS user. Account enumeration retains the
   bridge's existing pre-consent account-ID disclosure. No room allowlist is
@@ -2371,14 +2388,26 @@ flows remain the existing Core behavior behind this adapter.
   delivery time;
   expiry and Ctrl-C close the connection. An operation already admitted at the
   host retains its existing revocation/settlement semantics.
-- Search requires `--query-stdin` and non-terminal stdin, bounded to 16 KiB.
-  Queries never enter argv, environment, diagnostics, or automatic history.
-  Help/examples instruct callers to use a private input source, rather than a
-  shell literal containing confidential text. CLI options and error output
-  never echo rejected values.
+- Text arguments (`body`, `query`, `key`) are ordinary options, as in MCP.
+  Because argv reaches shell history and process listings, the same values
+  are accepted through `--args-stdin` (non-terminal stdin, UTF-8, bounded to
+  64 KiB), and help recommends that path for private text. Arguments never
+  enter environment variables, diagnostics, or automatic history. Help and
+  examples never place confidential text in a shell literal. CLI options and
+  error output never echo rejected values.
+- Writes keep the tool's own retry contract. The adapter never generates,
+  alters, or reuses a `client_request_id` on its own and never retries a call.
+  A write that reaches `--timeout` or Ctrl-C after submission may already have
+  been applied; its exit status is not proof that nothing was sent, and help
+  tells the caller to retry with the same `client_request_id` rather than
+  assume failure. Deduplication scope and lifetime are the host's (the
+  message-action retry ledger below for `edit_message` and
+  `send_thread_reply`, the send transaction id for `send_message`); the CLI
+  promises no exactly-once delivery beyond them.
 - Deliberately requested authorized stdout is a confidential product result,
-  not a diagnostic log. It may carry account/room/message/search DTOs, never
-  credentials or cryptographic material. There is no automatic result storage.
+  not a diagnostic log. It carries the tool's structured result (for example
+  account, room, message, search, draft, attachment-path, or write-outcome
+  DTOs), never credentials or cryptographic material. There is no automatic result storage.
   The default is indented JSON for people; `--json` emits one compact JSON
   object. Both carry `schema_version: 1`, `tool`, optional `account_id`, and
   `result`; the result retains bridge fields/provenance/cursors. JSON escaping
