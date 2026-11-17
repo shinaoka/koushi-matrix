@@ -43,7 +43,21 @@ fn help_documents_each_section_an_agent_needs() {
     }
     // Pagination continues only through these documented result fields.
     assert!(help.contains("result.next_cursor"));
-    assert!(help.contains("result.next"));
+    // A whole line, so the `result.next_cursor` mention above cannot satisfy it.
+    assert!(help.contains("result.next\n"), "missing result.next");
+}
+
+#[test]
+fn only_a_leading_help_is_a_command_and_help_after_one_is_a_usage_error() {
+    // `help` is a word, not a flag, so it is only recognized first. The help
+    // text says so; this pins that the text and the parser agree.
+    let output = cli()
+        .args(["rooms", "help"])
+        .output()
+        .expect("rejected process");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert_eq!(output.stderr, b"koushi: usage_error\n");
 }
 
 #[test]
@@ -325,7 +339,9 @@ mod unix {
             .stdin
             .take()
             .expect("stdin")
-            .write_all(b"SYNTHETIC_PRIVATE_QUERY\n")
+            // The help promises every trailing CR and LF is removed, not one
+            // line ending.
+            .write_all(b"SYNTHETIC_PRIVATE_QUERY\r\n\n\r\n")
             .expect("query");
         let output = child.wait_with_output().expect("output");
         assert_eq!(output.status.code(), Some(5));

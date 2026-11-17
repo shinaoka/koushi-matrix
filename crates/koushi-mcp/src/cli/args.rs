@@ -29,9 +29,12 @@ INSTRUCTIONS
   3. Run `koushi rooms --account <account_id>` to get room ids
      (--unread-only for rooms with unread activity).
   4. Read with `messages`, fetch one event with `message`, or `search`.
-  5. On exit 5 the first time, approve koushi-cli in the Koushi window: the
-     command waits for that in-app approval until --timeout. Nothing can
-     approve on the app's behalf, and piping input does not skip it.
+  5. A call that needs approval waits up to 40 s for it in the Koushi window,
+     or until --timeout, whichever comes first. If the wait runs out the
+     command exits 5: approve koushi-cli in Koushi and run it again. A denial
+     also exits 5, and is not asked again until you turn that permission on in
+     Koushi. Nothing can approve on the app's behalf, and piping input does not
+     skip it.
   6. Page explicitly: pass result.next_cursor back as --cursor (rooms) and
      result.next back as --from (messages, older history).
 
@@ -41,7 +44,8 @@ SYNOPSIS
   koushi messages --account <account_id> --room <room_id> [--limit <n>] [--from <cursor>] [options]
   koushi message --account <account_id> --room <room_id> --event <event_id> [options]
   koushi search --account <account_id> --query-stdin [--room <room_id>] [--limit <n>] [options]
-  koushi [<command> ...] --help | -h | help
+  koushi [<command> ...] --help | -h
+  koushi help
   koushi --version | -V
 
 COMMANDS
@@ -84,14 +88,17 @@ OPTIONS
   --json               Compact one-line JSON (default: indented JSON)
   --endpoint <path>    Private endpoint.json written by the app (default: see ENVIRONMENT)
   --timeout <seconds>  Whole-command deadline, including stdin and approval (1-120; default 75)
-  -h, --help, help     Print this help without connecting, also after a command
-  -V, --version        Print the CLI version
+  -h, --help           Print this help without connecting; accepted anywhere
+  help                 Print this help, but only as the first word: `koushi help`
+                       works, `koushi rooms help` is a usage error (exit 2)
+  -V, --version        Print the CLI version (only as the sole argument)
 
 STDIN
-  Only search reads stdin: UTF-8 to EOF, at most 16 KiB, one trailing line
-  ending removed. Terminal input is refused. Do not put confidential query text
-  in argv, shell literals, or environment variables; shell history and process
-  listings can expose them. Example: koushi search ... --query-stdin < query.txt
+  Only search reads stdin: UTF-8 to EOF, at most 16 KiB, with all trailing CR
+  and LF bytes removed. Terminal input is refused. Do not put confidential
+  query text in argv, shell literals, or environment variables; shell history
+  and process listings can expose them. Example:
+  koushi search ... --query-stdin < query.txt
 
 EXIT STATUS
   0    Success (also when stdout is a closed pipe)
