@@ -126,14 +126,23 @@ draft): proceed with changes, no critical findings. Applied: write help
 conditioned on a declared `client_request_id`; the suite added to the
 enforced inventory; the stdin bound aligned with the bridge frame; a help
 fallback for properties without a description; host-only bounds named in
-help. The user kept private text stdin-only. The integrated diff gets its own
-independent review before landing.
+help. The user kept private text stdin-only.
+
+Integrated-diff review (independent, different model family, of the diff at
+11f31aa7): merge with fixes; no critical findings, no authorization bypass,
+no private-text leak. Important: the 64-word argv cap let a repeated list
+option carry only about 30 elements, below `read_recent_activity`'s
+`maxItems` of 64. Minor: help bounds omitted `minLength`. Noted: help offered
+an option for argument shapes the parser rejects. All three are fixed in
+f390fad8: the cap is 160 words, named in help, with boundary tests; help
+names `minLength`; one rule decides whether a property gets an option, for
+parser and help alike.
 
 ## Evidence
 
 - RED first: the rewritten and new `tests/cli/` cases failed against the
   verb parser (17 of 23), then passed with the generated parser.
-- `cargo test -p koushi-mcp -p koushi-mcp-host`: all pass (`cli` 23, host
+- `cargo test -p koushi-mcp -p koushi-mcp-host`: all pass (`cli` 28, host
   `bridge` 58 including `a_cli_read_grant_admits_no_write_tool`, which fails
   when the write grants are injected). `cargo clippy -p koushi-mcp -p
   koushi-mcp-host --all-targets -- -D warnings` and `cargo fmt --check` on both
@@ -162,7 +171,10 @@ independent review before landing.
   examples. Where it stumbled: after a non-null `result.next` it read an
   empty page and searched to confirm nothing was missing, and the overview
   example chose `rooms[0]` of unread rooms. Help now says only a null cursor
-  ends paging and selects the room by name (tests first). Its other remarks
+  ends paging and selects the room by name (tests first). Core drops
+  non-message events from a page and returns the server's end token as
+  `next` (`koushi-core/src/timeline/direct_room_messages.rs`), so a page can
+  be empty while `next` is non-null. Its other remarks
   concern MCP tool descriptions shared with MCP clients, not CLI help, and
   are left as follow-ups: tools without an output schema list no result
   fields in help, and `draft_message` reports `status: "staged"` while
