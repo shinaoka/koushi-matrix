@@ -2389,7 +2389,8 @@ tool with the same semantics.
   expiry and Ctrl-C close the connection. An operation already admitted at the
   host retains its existing revocation/settlement semantics.
 - Private text arguments (`body`, `query`, `key`) have no option: they enter
-  only through `--args-stdin` (non-terminal stdin, UTF-8, bounded to 64 KiB),
+  only through `--args-stdin` (non-terminal stdin, UTF-8, bounded by the
+  bridge's 1 MiB frame limit),
   because argv reaches shell history and process listings. The CLI is for
   agents and scripts, which can write the argument object to a pipe; a tool
   with such a property is called through `--args-stdin` whenever it is set.
@@ -2399,9 +2400,10 @@ tool with the same semantics.
 - Writes keep the tool's own retry contract. The adapter never generates,
   alters, or reuses a `client_request_id` on its own and never retries a call.
   A write that reaches `--timeout` or Ctrl-C after submission may already have
-  been applied; its exit status is not proof that nothing was sent, and help
-  tells the caller to retry with the same `client_request_id` rather than
-  assume failure. Deduplication scope and lifetime are the host's (the
+  been applied; its exit status is not proof that nothing was sent. For a
+  tool whose schema declares `client_request_id`, help tells the caller to
+  retry with the same id rather than assume failure; for a write tool without
+  one, help points to the repeat semantics its description states. Deduplication scope and lifetime are the host's (the
   message-action retry ledger below for `edit_message` and
   `send_thread_reply`, the send transaction id for `send_message`); the CLI
   promises no exactly-once delivery beyond them.

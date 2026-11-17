@@ -43,14 +43,24 @@ koushi --version | -V
   It is stricter than MCP for `list_space_rooms.max_depth`, which the host
   clamps.
 - `--args-stdin` reads UTF-8 JSON from non-terminal stdin to EOF, at most
-  64 KiB, requires a JSON object, and excludes every tool option. It replaces
-  `--query-stdin`.
+  the bridge frame bound (`wire::MAX_FRAME_BYTES`, 1 MiB), so any body MCP can
+  send fits; it requires a JSON object and excludes every tool option. It
+  replaces `--query-stdin`. A request whose encoded frame still exceeds the
+  bound fails in `ipc::Client::call` as today.
 - `koushi --help` keeps the #1943 sections; COMMANDS lists every tool with the
   first sentence of its description. `koushi <tool> --help` prints NAME,
   DESCRIPTION (the full tool description), OPTIONS (one per property: flag,
-  value form, required, bounds, property description), and for a tool with
+  value form, required, bounds, property description; a property without a
+  description gets the type and required line only), and for a tool with
   `read_only: false` a WRITES paragraph: a timeout or Ctrl-C after submission
-  may already have applied the write; retry with the same `client_request_id`.
+  may already have applied the write. When the schema declares
+  `client_request_id` (`send_message`, `edit_message`, `send_thread_reply`),
+  the paragraph says to retry with the same id. Otherwise (`react_to_message`,
+  `unreact_to_message`, `delete_message`, `draft_message`) it says the tool
+  has no retry id and points to its description, which states what a repeat
+  does (`added: false`, `removed: 0`, `already_redacted`, `conflict`). Help
+  also names bounds only the host checks: a reaction key of at most 128 UTF-8
+  bytes and a draft body of at most 16 KiB.
   A tool with a private text property (`body`, `query`, `key`) gets no option
   for it; its help says that argument comes only through `--args-stdin`,
   because the CLI is for agents and argv reaches shell history and process
@@ -77,7 +87,9 @@ defer to the host's scope rather than promise exactly-once delivery.
 ## Tests (red first)
 
 The flat `tests/cli_process.rs` becomes the suite `tests/cli/` (one binary,
-listed in `docs/architecture/test-suites.md`) with feature modules:
+listed in `docs/architecture/test-suites.md` and in the `layouts` of
+`scripts/rust-test-suites.test.mjs`, so the suite is enforced) with feature
+modules:
 
 - `help.rs`: existing help tests, adapted to tool names.
 - `tool_table.rs`: for every `tools::definitions()` entry, `koushi --help`
@@ -106,3 +118,13 @@ Gates: `cargo test -p koushi-mcp`, `cargo test -p koushi-mcp-host --test
 bridge`, `cargo clippy -p koushi-mcp -p koushi-mcp-host --all-targets`,
 `cargo fmt --check`, `node scripts/check-rust-test-structure.mjs`,
 `node scripts/user-help.mjs --check`, `node scripts/check-agents-docs.mjs`.
+
+## Review
+
+Design review (independent, different model family, of the first canon
+draft): proceed with changes, no critical findings. Applied: write help
+conditioned on a declared `client_request_id`; the suite added to the
+enforced inventory; the stdin bound aligned with the bridge frame; a help
+fallback for properties without a description; host-only bounds named in
+help. The user kept private text stdin-only. The integrated diff gets its own
+independent review before landing.
