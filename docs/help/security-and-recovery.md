@@ -79,10 +79,10 @@ Two notices describe it, and each appears on its own:
   goes away when that response arrives.
 - **Sending is unavailable until Secure Backup is ready.** A notice beside the
   message box means every send is closed, in every room, encrypted or not: the
-  message box, the attachment button, thread replies, reactions, edits,
-  scheduled sends and resending a queued message. It goes away when Secure
-  Backup becomes ready, which can happen before or after the conversation list
-  is confirmed.
+  message box and its formatting, mention and emoji buttons, the attachment
+  button, thread replies, reactions, edits, scheduled sends and resending a
+  queued message. It goes away when Secure Backup becomes ready, which can
+  happen before or after the conversation list is confirmed.
 
 Opening a saved conversation does not mark it read for you or for your other
 clients. Take the offered verification, recovery, or setup action to be able to

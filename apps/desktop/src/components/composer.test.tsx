@@ -2158,3 +2158,117 @@ describe("mention autocomplete dismissal", () => {
     expect(container.querySelector(".composer-autocomplete")).not.toBeNull();
   });
 });
+
+// #1941: while sending is locked (Secure Backup is not ready) the body refuses
+// the keyboard, so no other control may write into it either.
+describe("read-only composer lock (#1941)", () => {
+  const writingControls = ["Bold", "Italic", "Link", "List", "Code", "Mention", "Emoji"];
+  // The controls whose handler writes through the editor's commit path; the
+  // emoji button is excluded because an attribute-less click there opens the
+  // picker instead of inserting.
+  const templateControls = ["Bold", "Italic", "Link", "List", "Code", "Mention"];
+
+  function renderComposer(canEdit: boolean, document = documentFromText("")) {
+    const onDocumentChange = vi.fn();
+    const props = {
+      surface: "main" as const,
+      composerMode: { kind: "plain" as const },
+      isSending: false,
+      roomName: "Direct room",
+      document,
+      mentionCandidates: [
+        {
+          key: "@alice:example.invalid",
+          label: "Alice",
+          target: { kind: "user" as const, user_id: "@alice:example.invalid", display_label: "Alice" }
+        }
+      ],
+      onCancelReply: () => undefined,
+      onSend: textSend(() => undefined),
+      onDocumentChange: textChange(onDocumentChange)
+    };
+    const rendered = render(<Composer {...props} canEdit={canEdit} />);
+    const editor = rendered.container.querySelector(".composer-inline-editor") as HTMLDivElement;
+    onDocumentChange.mockClear();
+    return {
+      ...rendered,
+      editor,
+      onDocumentChange,
+      setCanEdit: (next: boolean) => rendered.rerender(<Composer {...props} canEdit={next} />)
+    };
+  }
+
+  it("disables every control that would write into the locked body", () => {
+    const { editor } = renderComposer(false);
+    expect(editor.getAttribute("contenteditable")).toBe("false");
+    for (const name of writingControls) {
+      expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(true);
+    }
+  });
+
+  it("changes no text and saves no draft when the locked controls are pressed", () => {
+    const { editor, onDocumentChange } = renderComposer(false);
+
+    for (const name of writingControls) {
+      fireEvent.click(screen.getByRole("button", { name }));
+    }
+
+    expect(editor.textContent).toBe("");
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("dialog", { name: "Emoji" })).toBeNull();
+  });
+
+  it("refuses the write itself when a control is reachable while locked", () => {
+    const { editor, onDocumentChange } = renderComposer(false);
+
+    for (const name of templateControls) {
+      const button = screen.getByRole("button", { name });
+      // The editor refuses every write at one commit point, so a control that
+      // lost its disabled attribute still cannot inject a template.
+      button.removeAttribute("disabled");
+      fireEvent.click(button);
+    }
+
+    expect(editor.textContent).toBe("");
+    expect(onDocumentChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps the send button unpainted for a draft saved before the lock", () => {
+    renderComposer(false, documentFromText("Saved before the lock"));
+
+    const send = screen.getByRole("button", { name: "Send" });
+    expect((send as HTMLButtonElement).disabled).toBe(true);
+    expect(send.className).not.toContain("ready");
+  });
+
+  it("offers no mention rows for a locked draft that asks for them", () => {
+    const { container } = renderComposer(false, documentFromText("hey @al"));
+
+    expect(container.querySelector(".composer-autocomplete")).toBeNull();
+  });
+
+  it("closes an open emoji picker when the lock engages", async () => {
+    const { setCanEdit } = renderComposer(true);
+    const emojiButton = screen.getByRole("button", { name: "Emoji" });
+    fireEvent.click(emojiButton);
+    await screen.findByRole("dialog", { name: "Emoji" });
+
+    setCanEdit(false);
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Emoji" })).toBeNull());
+    expect((screen.getByRole("button", { name: "Emoji" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("writes again through the same controls once the lock lifts", () => {
+    const { onDocumentChange, setCanEdit } = renderComposer(false);
+
+    setCanEdit(true);
+    const bold = screen.getByRole("button", { name: "Bold" });
+    expect((bold as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(bold);
+
+    expect(onDocumentChange).toHaveBeenLastCalledWith("**bold**");
+    expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});

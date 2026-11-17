@@ -153,6 +153,23 @@ test("the provisional cache keeps the composer, thread and upload surfaces read-
   await expect(page.getByRole("button", { name: "Send" }).first()).toBeDisabled();
   expect(await page.evaluate(() => window.__harness.invocationsOf("send_text").length)).toBe(0);
 
+  // #1941: the formatting toolbar, mention and emoji take the same lock, so a
+  // press can neither insert a template, save a draft, nor light up Send.
+  await composer.click({ force: true });
+  for (const name of ["Bold", "Italic", "Link", "List", "Code", "Mention", "Emoji"]) {
+    const control = page.getByRole("button", { name, exact: true }).first();
+    await expect(control).toBeDisabled();
+    await control.click({ force: true });
+  }
+  await expect(composer).toHaveText("");
+  const lockedSend = page.getByRole("button", { name: "Send" }).first();
+  await expect(lockedSend).toBeDisabled();
+  await expect(lockedSend).not.toHaveClass(/\bready\b/);
+  await expect(page.getByRole("dialog", { name: "Emoji" })).toHaveCount(0);
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("set_composer_draft").length)
+  ).toBe(0);
+
   // Upload surface: the file picker trigger is disabled and a forced file
   // selection stages nothing, so nothing can be uploaded from a read-only shell.
   await expect(page.getByRole("button", { name: "Attach file", exact: true })).toBeDisabled();
