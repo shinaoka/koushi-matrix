@@ -4,6 +4,7 @@ import {
   captureAnchor,
   captureFreeScrollAnchor,
   capturePrependAnchor,
+  partitionHeightChangesByAnchor,
   wholePixelScrollTop
 } from "./TimelineViewportAnchors";
 import { linearVisibleNodeSpan, visibleNodeSpan } from "./TimelineViewportRows";
@@ -107,5 +108,42 @@ describe("visible range search (#1889)", () => {
   it("reports nothing when every row is outside the viewport", () => {
     expect(visibleNodeSpan(box, rows([-200, 900]))).toBeNull();
     expect(visibleNodeSpan(box, [])).toBeNull();
+  });
+});
+
+describe("height-change partition at the anchor (#1890 §2.2)", () => {
+  const rows = Array.from({ length: 10 }, (_, index) => ({ row_id: `$row${index}` }));
+
+  it("splits measured-height corrections above the anchor from the ones it may defer", () => {
+    const partition = partitionHeightChangesByAnchor(
+      rows,
+      ["$row2", "$row4", "$row6", "$row9"],
+      4
+    );
+    expect(partition.above).toEqual(["$row2"]);
+    expect(partition.below).toEqual(["$row4", "$row6", "$row9"]);
+  });
+
+  it("keeps the anchor row with the deferred half, because its own height does not move it", () => {
+    expect(partitionHeightChangesByAnchor(rows, ["$row3", "$row4"], 4)).toEqual({
+      above: ["$row3"],
+      below: ["$row4"]
+    });
+  });
+
+  it("defers every change when the anchor is unknown or is the first row", () => {
+    for (const anchorIndex of [-1, 0]) {
+      expect(partitionHeightChangesByAnchor(rows, ["$row1", "$row8"], anchorIndex)).toEqual({
+        above: [],
+        below: ["$row1", "$row8"]
+      });
+    }
+  });
+
+  it("defers a change whose row is not in the window", () => {
+    expect(partitionHeightChangesByAnchor(rows, ["$gone"], 5)).toEqual({
+      above: [],
+      below: ["$gone"]
+    });
   });
 });

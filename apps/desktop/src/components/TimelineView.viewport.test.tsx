@@ -16,6 +16,8 @@ import { setActiveLocaleProfile } from "../i18n/messages";
 import { KEY, baseTransport, message, mockTimelineRects } from "./timelineViewTestSupport";
 import { TimelineView, clearTimelineViewportSessionMemoryForTests } from "./TimelineView";
 
+const TIMED_ROOM_ROW_HEIGHT = 72;
+
 afterEach(() => {
   cleanup();
   clearTimelineViewportSessionMemoryForTests();
@@ -24,6 +26,80 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+
+/** A 72-px room that opens at the live edge, with the container a real scroller. */
+async function mountTimedRoom(rowCount: number) {
+  const onScrollDiagnosticsChange = vi.fn();
+  let listener: ((payload: CoreEventPayload) => void) | null = null;
+  const transport = baseTransport({
+    listenCoreEvents(nextListener) {
+      listener = nextListener;
+      return () => undefined;
+    }
+  });
+  const rects: Record<string, { top: number; height: number }> = {};
+  for (let index = 0; index < rowCount; index += 1) {
+    rects[`$row${index}`] = { top: index * TIMED_ROOM_ROW_HEIGHT, height: TIMED_ROOM_ROW_HEIGHT };
+  }
+  const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+  mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+  render(
+    <TimelineView
+      timelineKey={KEY}
+      roomId="!room:example.invalid"
+      transport={transport}
+      onReply={vi.fn()}
+      onScrollDiagnosticsChange={onScrollDiagnosticsChange}
+      listRefCallback={(element) => {
+        scrollContainerRef.current =
+          element?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null;
+      }}
+    />
+  );
+  // `getBy` rather than `findBy`: fake timers are installed by the caller.
+  const timeline = screen.getByTestId("timeline-view");
+  Object.defineProperties(timeline, {
+    scrollHeight: { value: rowCount * TIMED_ROOM_ROW_HEIGHT, writable: true, configurable: true },
+    clientHeight: { value: 600, configurable: true },
+    scrollTop: { value: 0, writable: true, configurable: true }
+  });
+  act(() => {
+    listener?.({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: Array.from({ length: rowCount }, (_, index) =>
+            message(`$row${index}`, `row ${index}`)
+          )
+        }
+      }
+    });
+  });
+  return {
+    timeline,
+    onScrollDiagnosticsChange,
+    /** A reader's own scroll, one frame in, so the scroll counts as active. */
+    async scrollTo(scrollTop: number) {
+      act(() => {
+        fireEvent.wheel(timeline, { deltaY: -40 });
+      });
+      timeline.scrollTop = scrollTop;
+      act(() => {
+        fireEvent.scroll(timeline);
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(40);
+        await Promise.resolve();
+      });
+    },
+    setRowHeight(index: number, height: number) {
+      rects[`$row${index}`] = { top: index * TIMED_ROOM_ROW_HEIGHT, height };
+    }
+  };
+}
 
 function forwardPagination(key: TimelineKey, state: PaginationState): CoreEventPayload {
   return {
@@ -2801,6 +2877,54 @@ describe("TimelineView", () => {
     expect(paddingTop).toBe(0);
     expect(renderedRows).toBeGreaterThan(0);
     expect(paddingTop + renderedRows * ROW_HEIGHT + paddingBottom).toBe(ROW_COUNT * ROW_HEIGHT);
+  });
+
+  it("commits a measured height above the anchor with the compensation, not on idle", async () => {
+    // #1890 §2.2: a row above the reader that measures shorter moves them, so
+    // its height has to land in the same pass as the anchor compensation. While
+    // the scroll is active the pass used to defer every commit, which is what
+    // made the position drift until the idle flush.
+    vi.useFakeTimers();
+    const { onScrollDiagnosticsChange, scrollTo, setRowHeight } = await mountTimedRoom(160);
+    const baseline = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    const baselineCommits = baseline?.heightModelCommits ?? 0;
+
+    // The reader scrolls into the middle of the room while the rows above them
+    // measure shorter than the 72 px estimate.
+    for (let index = 61; index <= 66; index += 1) {
+      setRowHeight(index, 40);
+    }
+    await scrollTo(4996);
+
+    const active = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    expect(active.heightModelCommits - baselineCommits).toBeGreaterThan(0);
+  });
+
+  it("leaves a measured height below the anchor to the idle commit and never moves the reader", async () => {
+    vi.useFakeTimers();
+    const { timeline, onScrollDiagnosticsChange, scrollTo, setRowHeight } =
+      await mountTimedRoom(160);
+    const baseline = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    const baselineCommits = baseline?.heightModelCommits ?? 0;
+
+    // The rows that measure shorter sit below the reader, so they only change
+    // the extent under them.
+    for (let index = 80; index <= 85; index += 1) {
+      setRowHeight(index, 40);
+    }
+    await scrollTo(4996);
+
+    const active = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    expect(active.heightModelCommits - baselineCommits).toBe(0);
+    expect(timeline.scrollTop).toBe(4996);
+
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      await Promise.resolve();
+    });
+    const settled = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    expect(settled.heightModelCommits - baselineCommits).toBeGreaterThan(0);
+    expect(timeline.scrollTop).toBe(4996);
   });
 
   it("re-measures an edited row when it comes back into the window", async () => {

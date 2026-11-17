@@ -45,6 +45,7 @@ import {
   centerTimelineRow,
   findTimelineEventNode,
   measureAnchorDelta,
+  partitionHeightChangesByAnchor,
   wholePixelScrollTop,
   roomScrollAnchorSignature,
   roomScrollAnchorStableSignature,
@@ -52,6 +53,7 @@ import {
   timelineRowInsideViewport,
   timelineSessionAnchorAgeBucket,
   timelineViewportSessionMemory,
+  type HeightChangesByAnchor,
   type ScrollAnchor,
   type TimelineSessionAnchorAgeBucket
 } from "./timeline/TimelineViewportAnchors";
@@ -3526,7 +3528,7 @@ export const TimelineView = memo(function TimelineView({
     // the model — `heightsFor` only reports the rows it is handed — so it is
     // memory hygiene, not a commit.
     rowHeights.retainResident(visibleRowsRef.current);
-    let changedRows = 0;
+    const changedRowIds: string[] = [];
     const nodes = Array.from(list.querySelectorAll<HTMLElement>(".timeline-item-frame"));
     if (nodes.length === 0) {
       mountedItemDomIdsRef.current = new Set();
@@ -3549,18 +3551,50 @@ export const TimelineView = memo(function TimelineView({
       // Recorded on every pass, so recency follows the viewport; only a height
       // that actually moved is a model change.
       if (rowHeights.record(row, node.getBoundingClientRect().height, listWidth)) {
-        changedRows += 1;
+        changedRowIds.push(domId);
       }
     }
     mountedItemDomIdsRef.current = mountedDomIds;
+    const changedRows = changedRowIds.length;
     const nextHeights = rowHeights.heightsFor(visibleRowsRef.current);
+    let heightsToCommit = nextHeights;
     if (
       changedRows === 0 &&
       !rowHeightsUnpublished(nextHeights, committedHeightsRef.current)
     ) {
       return;
     }
+    let deferredBelowAnchor: HeightChangesByAnchor | null = null;
     if (scrollActivityRef.current === "active" && !viewportTransactionRef.current.active()?.rangePrepared) {
+      // #1890 §2.2: a corrected height above the anchor moves the reader, so it
+      // lands in this pass together with the anchor compensation. Rows at or
+      // after the anchor only shift the extent below it and may wait for the
+      // scroll to settle.
+      const heldAnchor = viewportTransactionRef.current.active()?.anchor ?? stableAnchor();
+      const anchorIndex = heldAnchor
+        ? visibleRowsRef.current.findIndex((row) => row.row_id === heldAnchor.itemId)
+        : -1;
+      // Only a height that actually moved is a correction; a row measured for
+      // the first time at the estimate changes nothing.
+      const movedRowIds = changedRowIds.filter(
+        (rowId) =>
+          (committedHeightsRef.current.get(rowId) ?? virtualItemHeight) !==
+          nextHeights.get(rowId)
+      );
+      const partition = partitionHeightChangesByAnchor(
+        visibleRowsRef.current,
+        movedRowIds,
+        anchorIndex
+      );
+      if (partition.above.length > 0) {
+        heightsToCommit = new Map(nextHeights);
+        for (const rowId of partition.below) {
+          const previousHeight = committedHeightsRef.current.get(rowId);
+          if (previousHeight === undefined) heightsToCommit.delete(rowId);
+          else heightsToCommit.set(rowId, previousHeight);
+        }
+        deferredBelowAnchor = partition;
+      } else {
       // The heights are already recorded; only the commit waits for the scroll to
       // settle. A reset in between zeroes the count, and the next pass notices that
       // the model is behind via `residentHeightsUnpublished`.
@@ -3586,6 +3620,7 @@ export const TimelineView = memo(function TimelineView({
         })
       );
       return;
+      }
     }
     const container = containerRef.current;
     const measuredAtBottom = Boolean(windowReachesLiveEndRef.current && container && isScrolledToBottom(container));
@@ -3621,7 +3656,10 @@ export const TimelineView = memo(function TimelineView({
       });
       viewportTransactionRef.current.markMeasurementPending(transaction.id, rangeModelEpochRef.current + 1);
     }
-    committedHeightsRef.current = nextHeights;
+    committedHeightsRef.current = heightsToCommit;
+    if (deferredBelowAnchor) {
+      pendingMeasurementCountRef.current += deferredBelowAnchor.below.length;
+    }
     updateScrollDiagnostics((current) =>
       recordTimelineScrollHeightCommit(current, "initial")
     );
