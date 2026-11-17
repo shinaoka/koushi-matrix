@@ -22,6 +22,7 @@ contain wiring and crate-level attributes only, never test bodies.
 | `koushi-core-testkit` | `contracts` | Other shared Core integration contracts (login, media, request outcomes, wire DTOs, subscription residency) |
 | `koushi-core-testkit` | `stack_budget` (standalone) | Existing small-worker-stack process-abort proof, also run in release mode on Linux/Windows |
 | `koushi-core-testkit` | `runtime_navigation` (standalone) | Exact process-global navigation persistence counts; other runtime tests emit the same diagnostic events without the reader lock |
+| `koushi-mcp` | `cli` | The shipped `koushi` CLI process: help, generated tool commands, reads and writes against a fake app endpoint |
 | `koushi-mcp-host` | `bridge` | Host bridge, admission, consent and attachment contracts; retain each module's platform cfg |
 
 Other crates' small existing integration targets remain unchanged in this
