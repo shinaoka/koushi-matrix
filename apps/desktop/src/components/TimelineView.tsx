@@ -4019,7 +4019,12 @@ export const TimelineView = memo(function TimelineView({
         }
         const metrics = readViewportMetrics();
         const previousRange = virtualRangeRef.current;
-        const nextRange = commitVirtualRangeForMetrics(metrics);
+        // #1890: a range committed from a rAF lands in React's default lane and
+        // is rendered after paint, so the frame shows the old window at the new
+        // scrollTop — a one-frame gap at the trailing edge the reader can see
+        // while scrolling. Commit it in this frame instead, as the
+        // ResizeObserver path above already does for the same reason.
+        const nextRange = flushSync(() => commitVirtualRangeForMetrics(metrics));
         if (!virtualRangeEquals(previousRange, nextRange)) {
           // The jump remounted the window, so the rows under the viewport are
           // different DOM nodes now and no row was observed while the old

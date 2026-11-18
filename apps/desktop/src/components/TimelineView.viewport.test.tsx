@@ -3040,6 +3040,65 @@ function modelledExtent(timeline: HTMLElement): number {
     expect(extent).toBeLessThan(ROW_COUNT * TALL * 1.05);
   });
 
+  it("commits a scroll frame's window before the frame ends", async () => {
+    // #1890: a range set from a rAF is a default-lane update, so React renders
+    // it in a Scheduler task after paint and the frame shows the old window at
+    // the new scrollTop. That is the one-frame gap the round trip in
+    // `timeline-scroll-anchor-drift.spec.ts` counts. This runs the scroll and its
+    // frame outside `act` on purpose: a flush from `act` would hide the gap.
+    vi.useFakeTimers();
+    const ROW_HEIGHT = 48;
+    const ROW_COUNT = 120;
+    const CLIENT_HEIGHT = 600;
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const { timeline } = await mountTimedRoom(ROW_COUNT, ROW_HEIGHT);
+    const runFrames = () => {
+      for (const frame of frames.splice(0)) {
+        frame(0);
+      }
+    };
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      runFrames();
+      await Promise.resolve();
+    });
+
+    const mountedIndices = () =>
+      Array.from(timeline.querySelectorAll<HTMLElement>("[data-item-id]"))
+        .map((row) => Number.parseInt(row.dataset["itemId"]?.replace("$row", "-") ?? "", 10))
+        .map((value) => Math.abs(value))
+        .sort((a, b) => a - b);
+    const before = mountedIndices();
+    expect(before.length).toBeGreaterThan(0);
+
+    const newScrollTop = timeline.scrollTop - CLIENT_HEIGHT;
+    frames.length = 0;
+    // A wheel first: a bare scrollTop write is not user input, and the viewport
+    // would stay pinned to the live edge.
+    timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -40 }));
+    timeline.scrollTop = newScrollTop;
+    timeline.dispatchEvent(new Event("scroll"));
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames.splice(0)) {
+      frame(0);
+    }
+
+    const firstVisible = Math.floor(newScrollTop / ROW_HEIGHT);
+    const after = mountedIndices();
+    // The frame the reader is looking at has to be the window for the scrollTop
+    // it is scrolled to, not the one from before the wheel: the mounted range
+    // moves by the screen the scroll moved.
+    expect(Math.min(...after)).toBeLessThan(Math.min(...before));
+    expect(Math.min(...after)).toBeLessThanOrEqual(firstVisible);
+    expect(Math.max(...after)).toBeGreaterThanOrEqual(
+      firstVisible + Math.ceil(CLIENT_HEIGHT / ROW_HEIGHT) - 1
+    );
+  });
+
   it("re-measures an edited row when it comes back into the window", async () => {
     // #1890: the cache keys freshness on the item object the store hands over, so
     // an edited row keeps its old height only as an estimate until it remounts.

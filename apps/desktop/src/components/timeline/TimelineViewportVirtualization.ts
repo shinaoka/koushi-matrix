@@ -3,14 +3,13 @@ import type { TimelineDisplayRow } from "../../domain/timelineDisplayProjection"
 /**
  * Screens of overscan mounted on each side of the viewport.
  *
- * Measured, not assumed (#1890). With the estimate frozen at the opening
- * measurements (§2.3), a wheel sweep from the live edge to the top of a 120-row
- * room and back in one-screen steps shows a non-empty spacer on screen for 16
- * frames on both Chromium and WebKit, as slivers of 3 to 62 px in a 422 px
- * viewport (before §2.3 the same sweep showed a blank screen there). Two screens
- * remove the slivers but mount enough extra rows to exceed the window bounds two
- * drift specs assert. One screen is the largest value that keeps those specs
- * intact; the remaining slivers are the one frame the window lags a scroll by.
+ * Measured, not assumed (#1890). Over a 50-step wheel sweep from the live edge
+ * to the top of a 120-row room and back in one-screen steps, a 422 px viewport
+ * showed a non-empty spacer in 16 frames on Chromium and WebKit before the scroll
+ * frame committed its window synchronously, in none after: with one screen of
+ * overscan there is no margin left to hide a one-frame lag in the commit. Two
+ * screens would hide it with extra mounted rows instead, which is what #1890
+ * removes, and they exceed the window bounds the drift specs assert.
  */
 export const TIMELINE_VIRTUAL_OVERSCAN_SCREENS = 1;
 /** How often a focused navigation re-places a target that is still estimated. */

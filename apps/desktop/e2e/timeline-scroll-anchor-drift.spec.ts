@@ -673,27 +673,46 @@ test("a round trip through history keeps the reader's row and never shows a spac
   const beforeOffset = await offsetFromBottom();
   expect(Number.isFinite(beforeOffset)).toBe(true);
 
-  // Count every frame where a spacer is on screen, from here until the end.
+  // Count every frame that ends with a spacer on screen, from here until the
+  // end. The read is registered from the container's own scroll listener: that
+  // runs after the app's, so this rAF runs after the one that commits the window
+  // and samples the frame as it is painted. A chain started from here runs a
+  // frame earlier and would sample the pre-commit DOM.
   await page.evaluate(() => {
     const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]")!;
-    const state = { spacerFrames: 0, running: true };
+    const state = { spacerFrames: 0, maxSliverPx: 0, running: true, pending: false, lastFrame: -1 };
     (window as unknown as { __spacerWatch: typeof state }).__spacerWatch = state;
-    const sample = () => {
-      if (!state.running) return;
+    const readFrame = () => {
+      state.pending = false;
       const box = container.getBoundingClientRect();
+      let sliver = 0;
       for (const spacer of Array.from(
         container.querySelectorAll<HTMLElement>(".timeline-virtual-spacer")
       )) {
         const rect = spacer.getBoundingClientRect();
         // A spacer with no height is the list's own end, not a visible gap.
-        if (rect.height > 0 && rect.bottom > box.top && rect.top < box.bottom) {
-          state.spacerFrames += 1;
-          break;
-        }
+        if (rect.height <= 0) continue;
+        const visible = Math.min(rect.bottom, box.bottom) - Math.max(rect.top, box.top);
+        if (visible > 0) sliver = Math.max(sliver, visible);
       }
-      requestAnimationFrame(sample);
+      // The last read of a frame wins: a spacer that the same frame's commit
+      // removes was never painted.
+      if (sliver > 0) {
+        state.spacerFrames += 1;
+        state.maxSliverPx = Math.max(state.maxSliverPx, sliver);
+      }
     };
-    requestAnimationFrame(sample);
+    const scheduleRead = () => {
+      if (!state.running || state.pending) return;
+      state.pending = true;
+      requestAnimationFrame(readFrame);
+    };
+    container.addEventListener("scroll", scheduleRead, { passive: true });
+    (window as unknown as { __spacerWatchStop?: () => void }).__spacerWatchStop = () => {
+      state.running = false;
+      container.removeEventListener("scroll", scheduleRead);
+    };
+    scheduleRead();
   });
 
   const clientHeight = await timeline.evaluate((node) => node.clientHeight);
@@ -720,11 +739,12 @@ test("a round trip through history keeps the reader's row and never shows a spac
 
   const afterOffset = await offsetFromBottom();
   expect(Math.abs(afterOffset - beforeOffset)).toBeLessThanOrEqual(1);
-  const spacerFrames = await page.evaluate(() => {
-    const state = (window as unknown as { __spacerWatch: { spacerFrames: number; running: boolean } })
+  const spacerWatch = await page.evaluate(() => {
+    const stop = (window as unknown as { __spacerWatchStop?: () => void }).__spacerWatchStop;
+    stop?.();
+    const state = (window as unknown as { __spacerWatch: { spacerFrames: number } })
       .__spacerWatch;
-    state.running = false;
     return state.spacerFrames;
   });
-  expect(spacerFrames).toBe(0);
+  expect(spacerWatch).toBe(0);
 });
