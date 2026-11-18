@@ -134,6 +134,62 @@ test("a reply quote keeps the quoted message's mention as a pill", async ({ page
   ).toHaveCount(1);
 });
 
+test("a quoted mention pill has no underline, and a quoted link still has one", async ({ page }) => {
+  await gotoReadyShell(page);
+  const QUOTED_URL = "https://example.invalid/doc";
+  const formatted = {
+    html:
+      `<a href="${ELEMENT_MENTION_HREF}">${MENTION_LABEL}</a> see ` +
+      `<a href="${QUOTED_URL}">${QUOTED_URL}</a>`,
+    plain_text: `${MENTION_LABEL} see ${QUOTED_URL}`,
+    code_blocks: []
+  };
+  await seedTimelineItems(page, [
+    item("$quoted-underlined:example.invalid", {
+      body: formatted.plain_text,
+      formatted,
+      mentioned_user_ids: [MENTIONED_USER_ID]
+    }),
+    item("$quoter-underlined:example.invalid", {
+      body: "replying",
+      in_reply_to_event_id: "$quoted-underlined:example.invalid",
+      reply_quote: {
+        ...quote({ mentionedUserIds: [MENTIONED_USER_ID] }),
+        body_preview: formatted.plain_text,
+        formatted
+      }
+    })
+  ]);
+
+  // #1960: one mention looked plain in its message and underlined in the quote
+  // below it. Both are the same pill, so both must read `none`.
+  const decoration = (locator: ReturnType<ReturnType<Page["locator"]>["locator"]>) =>
+    locator.evaluate((node) => getComputedStyle(node).textDecorationLine);
+  const quotedPill = page.locator(
+    '[data-event-id="$quoter-underlined:example.invalid"] .reply-quote-body a.message-mention-pill'
+  );
+  await expect(quotedPill).toHaveCount(1);
+  expect(await decoration(quotedPill)).toBe("none");
+  expect(
+    await decoration(
+      page.locator(
+        '[data-event-id="$quoted-underlined:example.invalid"] .message-body a.message-mention-pill'
+      )
+    )
+  ).toBe("none");
+
+  // A quoted URL is still an ordinary link: the pill lost an underline, nothing
+  // else in the quote did. The quote body has no link styling of its own, so
+  // this `underline` is the engine's own `a` default — the appearance the fix
+  // must leave alone, pinned so a future rule cannot quietly start styling
+  // quoted links.
+  const quotedLink = page.locator(
+    '[data-event-id="$quoter-underlined:example.invalid"] .reply-quote-body a:not(.message-mention-pill)'
+  );
+  await expect(quotedLink).toHaveCount(1);
+  expect(await decoration(quotedLink)).toBe("underline");
+});
+
 test("a quote without mention facts stays a plain anchor, not a pill", async ({ page }) => {
   await gotoReadyShell(page);
   await seedTimelineItems(page, [

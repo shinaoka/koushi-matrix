@@ -84,6 +84,9 @@ export default defineConfig({
         /thread-summary-bidi\.spec\.ts$/,
         /mention-pill-rendering\.spec\.ts$/,
         /thread-mention-pill\.spec\.ts$/,
+        // #1960: the quoted pill's missing underline was a click-level detail
+        // read from computed styles, so both engines must agree.
+        /reply-quote-mention-pill\.spec\.ts$/,
         /upload-staging-scroll\.spec\.ts$/,
         // The account-tab spinner shape (#1544) was reported on macOS WebKit.
         /account-tab-spinner\.spec\.ts$/,
