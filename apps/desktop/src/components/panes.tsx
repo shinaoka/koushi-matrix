@@ -979,9 +979,24 @@ export function TimelinePane({
   const stagedUploadsReady = uploadStagingItemsAreSendable(stagedUploads);
   const mediaGallery = snapshot.state.ui.timeline.media_gallery ?? [];
   const mediaDownloads = snapshot.state.ui.timeline.media_downloads ?? {};
+  const mediaGalleryPagination = snapshot.state.ui.timeline.media_gallery_pagination ?? "idle";
   const galleryImageEntries = useMemo(
     () => imageViewerEntriesFromGallery(mediaGallery),
     [mediaGallery]
+  );
+  // #1969: page the room media browser. Rust owns coalescing and the end; the
+  // identity changes with the state, so a caller still at the end asks again.
+  const loadOlderMedia = useMemo(
+    () =>
+      timelineTransport?.paginateMediaGallery && timelineRoomId && mediaGalleryPagination !== "reachedStart"
+        ? () => {
+            if (mediaGalleryPagination === "loading") {
+              return;
+            }
+            void timelineTransport.paginateMediaGallery?.(timelineRoomId).catch(() => undefined);
+          }
+        : undefined,
+    [mediaGalleryPagination, timelineRoomId, timelineTransport]
   );
   const forwardDestinations = useAppStore(selectForwardDestinations);
   const mentionCandidates = useAppStore((state) =>
@@ -1097,10 +1112,26 @@ export function TimelinePane({
     (entry: TimelineDiagnosticLogEntry) => onTimelineDiagnosticLogEntry?.(entry)
   );
   const [galleryOpen, setGalleryOpen] = useState(false);
+  // #1969: an image is tracked by event id against the live image sequence,
+  // so older images the media browser adds extend navigation while it is open.
   const [viewer, setViewer] = useState<{
-    entries: MediaViewerEntry[];
-    index: number;
+    eventId: string;
+    single: MediaViewerEntry;
   } | null>(null);
+  const viewerInSequence = viewer
+    ? galleryImageEntries.some((entry) => entry.eventId === viewer.eventId)
+    : false;
+  const viewerEntries = viewer
+    ? viewerInSequence
+      ? galleryImageEntries
+      : [viewer.single]
+    : [];
+  const viewerIndex = viewer
+    ? Math.max(
+        0,
+        viewerEntries.findIndex((entry) => entry.eventId === viewer.eventId)
+      )
+    : 0;
   const jumpToLatestRef = useRef<(() => void) | null>(null);
   const registerJumpToLatest = useCallback((handler: (() => void) | null) => {
     jumpToLatestRef.current = handler;
@@ -1274,6 +1305,8 @@ export function TimelinePane({
         <RoomMediaGallery
           items={mediaGallery}
           mediaDownloads={mediaDownloads}
+          pagination={mediaGalleryPagination}
+          onLoadOlder={loadOlderMedia}
           onOpenItem={(index) => {
             const opened = mediaGallery[index];
             if (!opened) {
@@ -1281,15 +1314,10 @@ export function TimelinePane({
             }
             // #1810: an image opens in the room's image sequence; a file or
             // video opens alone, because the image viewer never walks past it.
-            const entry = mediaViewerEntryFromGallery(opened);
-            const at = galleryImageEntries.findIndex(
-              (candidate) => candidate.eventId === opened.event_id
-            );
-            setViewer(
-              at < 0
-                ? { entries: [entry], index: 0 }
-                : { entries: galleryImageEntries, index: at }
-            );
+            setViewer({
+              eventId: opened.event_id,
+              single: mediaViewerEntryFromGallery(opened)
+            });
           }}
         />
       ) : null}
@@ -1361,6 +1389,7 @@ export function TimelinePane({
               searchHighlightsByEventId={searchHighlightsByEventId}
               mediaDownloads={mediaDownloads}
               mediaGallery={mediaGallery}
+              onLoadOlderMedia={loadOlderMedia}
               replyQuoteThumbnails={
                 snapshot.state.ui.timeline.reply_quote_thumbnails ?? {}
               }
@@ -1485,13 +1514,17 @@ export function TimelinePane({
       />
       {viewer ? (
         <MediaViewer
-          index={viewer.index}
-          items={viewer.entries}
+          index={viewerIndex}
+          items={viewerEntries}
           mediaDownloads={mediaDownloads}
           onClose={() => setViewer(null)}
-          onSelectIndex={(next) =>
-            setViewer((current) => (current ? { ...current, index: next } : current))
-          }
+          onSelectIndex={(next) => {
+            const entry = viewerEntries[next];
+            if (entry) {
+              setViewer({ eventId: entry.eventId, single: entry });
+            }
+          }}
+          onNearOldest={viewerInSequence ? loadOlderMedia : undefined}
           onRequestDownload={
             timelineTransport && timelineRoomId
               ? (eventId) => {

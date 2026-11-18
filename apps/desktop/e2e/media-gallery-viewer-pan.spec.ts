@@ -93,6 +93,7 @@ async function seedGallery(page: Page, image: ImageCase): Promise<void> {
             timeline: {
               ...snapshot.state.ui.timeline,
               media_gallery: mediaGallery,
+              media_gallery_pagination: "idle",
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               media_downloads: mediaDownloads as any
             }

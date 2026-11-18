@@ -143,6 +143,9 @@ export function createTauriTimelineTransport(accountTabId?: string): TimelineTra
         timelineKey
       });
     },
+    async paginateMediaGallery(roomId: string) {
+      await invokeAccount("paginate_media_gallery", { roomId });
+    },
     async saveMediaFile(
       sourceRef: string,
       filename: string,

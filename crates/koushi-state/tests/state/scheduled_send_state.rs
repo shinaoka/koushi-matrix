@@ -448,6 +448,7 @@ fn timeline_pane_snapshot_contains_only_selected_room_scheduled_sends() {
         scheduled_sends: state.timeline.scheduled_sends.clone(),
         staged_uploads: Vec::new(),
         media_gallery: Vec::new(),
+        media_gallery_pagination: Default::default(),
         media_downloads: Default::default(),
         reply_quote_thumbnails: Default::default(),
         continuity: Default::default(),

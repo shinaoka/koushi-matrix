@@ -1738,6 +1738,14 @@ impl TimelineManagerActor {
                 ))
                 .await;
             }
+            TimelineCommand::PaginateMediaGallery { request_id, key } => {
+                Box::pin(self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::PaginateMediaGallery,
+                ))
+                .await;
+            }
             TimelineCommand::EditText {
                 request_id,
                 key,

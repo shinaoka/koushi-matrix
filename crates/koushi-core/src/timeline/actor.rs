@@ -348,6 +348,13 @@ pub(super) enum TimelineActorMessage {
         request_id: RequestId,
         quoted_event_id: String,
     },
+    /// #1969: load older media into the room gallery.
+    PaginateMediaGallery,
+    /// #1969: rows or a page outcome from the media browser task `serial`.
+    MediaBrowserUpdate {
+        serial: u64,
+        update: super::media_browser::MediaBrowserUpdate,
+    },
     MediaDownloadFinished {
         request_id: RequestId,
         event_id: String,
@@ -912,6 +919,13 @@ pub(super) struct TimelineActor {
     /// raw navigation indices never reach `ItemsUpdated`.
     pub(super) display_projection: DisplayProjectionState,
     pub(super) media_gallery_items: Vec<TimelineMediaGalleryItem>,
+    /// #1969: the pagination state last published with `media_gallery_items`.
+    pub(super) media_gallery_published_pagination: koushi_state::MediaGalleryPagination,
+    /// #1969: the actor-owned media-browser pagination state machine.
+    pub(super) media_gallery_pagination: koushi_state::MediaGalleryPagination,
+    /// #1969: the lazily started media-only timeline; dropped with the actor.
+    pub(super) media_browser: Option<super::media_browser::MediaBrowser>,
+    pub(super) next_media_browser_serial: u64,
     pub(super) fully_read_event_id: Option<String>,
     pub(super) server_confirmed_read_event_id: Option<String>,
     pub(super) local_viewed_boundary: Option<LocalViewedBoundary>,
@@ -1930,9 +1944,11 @@ impl TimelineActor {
         {
             let _ = action_tx.send(vec![action]).await;
         }
-        if let Some(action) =
-            media_gallery_updated_action(&key, initial_media_gallery_items.clone())
-        {
+        if let Some(action) = media_gallery_updated_action(
+            &key,
+            initial_media_gallery_items.clone(),
+            koushi_state::MediaGalleryPagination::Idle,
+        ) {
             let _ = action_tx.send(vec![action]).await;
         }
 
@@ -2112,6 +2128,10 @@ impl TimelineActor {
             receipt_endpoints,
             display_projection,
             media_gallery_items: initial_media_gallery_items,
+            media_gallery_published_pagination: koushi_state::MediaGalleryPagination::Idle,
+            media_gallery_pagination: koushi_state::MediaGalleryPagination::Idle,
+            media_browser: None,
+            next_media_browser_serial: 0,
             fully_read_event_id: initial_fully_read_event_id,
             server_confirmed_read_event_id: initial_server_confirmed_read_event_id,
             local_viewed_boundary: None,
@@ -2889,6 +2909,12 @@ impl TimelineActor {
             } => {
                 Box::pin(self.handle_request_reply_quote_thumbnail(request_id, quoted_event_id))
                     .await;
+            }
+            TimelineActorMessage::PaginateMediaGallery => {
+                Box::pin(self.handle_paginate_media_gallery()).await;
+            }
+            TimelineActorMessage::MediaBrowserUpdate { serial, update } => {
+                Box::pin(self.handle_media_browser_update(serial, update)).await;
             }
             TimelineActorMessage::MediaDownloadFinished {
                 request_id,

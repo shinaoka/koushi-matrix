@@ -1738,6 +1738,7 @@
           }
         },
         "media_gallery": [],
+        "media_gallery_pagination": "reachedStart",
         "reply_quote_thumbnails": {
           "$quoted-picture:example.invalid": {
             "height": 360,

@@ -26,6 +26,9 @@ pub struct TimelinePaneState {
     pub scheduled_sends: Vec<ScheduledSendItem>,
     pub staged_uploads: Vec<StagedUploadItem>,
     pub media_gallery: Vec<TimelineMediaGalleryItem>,
+    /// Whether the selected room's media browser can page further back.
+    #[serde(default)]
+    pub media_gallery_pagination: MediaGalleryPagination,
     #[serde(default)]
     pub media_downloads: std::collections::BTreeMap<String, TimelineMediaDownloadState>,
     /// #1769: thumbnails for quoted originals, keyed by the quoted event so
@@ -724,9 +727,28 @@ pub struct TimelineMediaGalleryThumbnail {
     pub height: Option<u64>,
 }
 
+/// Backward pagination of a room's media browser: the media-only timeline
+/// that lets the gallery reach media older than the loaded message window.
+/// The timeline actor owns the transitions; the reducer only mirrors them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MediaGalleryPagination {
+    /// Older media may exist; a `PaginateMediaGallery` command loads more.
+    #[default]
+    Idle,
+    /// A media-browser page is in flight; further requests coalesce into it.
+    Loading,
+    /// The media browser reached the room's first event: the gallery is complete.
+    ReachedStart,
+    /// The last page failed; a new request retries it.
+    Failed,
+}
+
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MediaGalleryStore {
     pub rooms: std::collections::BTreeMap<String, Vec<TimelineMediaGalleryItem>>,
+    #[serde(default)]
+    pub pagination: std::collections::BTreeMap<String, MediaGalleryPagination>,
 }
 
 impl MediaGalleryStore {
@@ -739,6 +761,18 @@ impl MediaGalleryStore {
                 .then_with(|| left.event_id.cmp(&right.event_id))
         });
         items
+    }
+
+    pub fn pagination_for_room(&self, room_id: &str) -> MediaGalleryPagination {
+        self.pagination.get(room_id).copied().unwrap_or_default()
+    }
+
+    pub fn replace_room_pagination(&mut self, room_id: &str, pagination: MediaGalleryPagination) {
+        if pagination == MediaGalleryPagination::Idle {
+            self.pagination.remove(room_id);
+        } else {
+            self.pagination.insert(room_id.to_owned(), pagination);
+        }
     }
 
     pub fn replace_room_items(&mut self, room_id: &str, items: Vec<TimelineMediaGalleryItem>) {
@@ -761,6 +795,8 @@ impl MediaGalleryStore {
 
     pub fn retain_rooms(&mut self, room_ids: &BTreeSet<String>) {
         self.rooms.retain(|room_id, _| room_ids.contains(room_id));
+        self.pagination
+            .retain(|room_id, _| room_ids.contains(room_id));
     }
 }
 

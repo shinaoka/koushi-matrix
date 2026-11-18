@@ -2145,6 +2145,7 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
         scheduled_sends: Vec::new(),
         staged_uploads: Vec::new(),
         media_gallery: Vec::new(),
+        media_gallery_pagination: koushi_state::MediaGalleryPagination::ReachedStart,
         media_downloads: {
             let mut m = BTreeMap::new();
             m.insert(

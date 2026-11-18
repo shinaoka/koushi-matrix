@@ -383,6 +383,24 @@ pub(super) fn build_request_reply_quote_thumbnail_command(
     ))
 }
 
+/// The gallery is per room, so the command always targets the room's main
+/// (live) timeline actor, which owns the media browser.
+pub(super) fn build_paginate_media_gallery_command(
+    request_id: koushi_protocol::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+) -> Option<CoreCommand> {
+    if room_id.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(
+        TimelineCommand::PaginateMediaGallery {
+            request_id,
+            key: build_timeline_key(account_key, room_id),
+        },
+    ))
+}
+
 pub(super) fn build_load_message_source_command(
     request_id: koushi_protocol::RequestId,
     account_key: AccountKey,
@@ -1469,6 +1487,24 @@ pub async fn request_reply_quote_thumbnail(
         timeline_key,
     ) else {
         return Err("quoted event id must not be blank".to_owned());
+    };
+    submit_core_command(state.inner(), command).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn paginate_media_gallery(
+    account_tab_id: Option<String>,
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<(), String> {
+    let account_key = account_key_from_snapshot(state.inner(), account_tab_id.as_deref()).await?;
+    let request_id = next_request_id_for(state.inner(), account_tab_id.as_deref()).await?;
+    let Some(command) = build_paginate_media_gallery_command(request_id, account_key, room_id)
+    else {
+        return Err("room id must not be blank".to_owned());
     };
     submit_core_command(state.inner(), command).await?;
     update_qa_window_title_from_state(&app, state.inner()).await;

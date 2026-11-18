@@ -683,7 +683,9 @@ Each account remains an in-process actor system in `koushi-core`:
   `TimelineItem.media` from SDK message content. Upload staging and room media
   gallery state are also Rust-owned: reducer backing stores are projected into
   `TimelinePaneState.staged_uploads` and `TimelinePaneState.media_gallery` for
-  the selected room. React renders those DTOs and dispatches typed commands
+  the selected room; the gallery reaches media older than the resident window
+  through the room actor's on-demand media browser (#1969, see the state
+  machine). React renders those DTOs and dispatches typed commands
   only; it does not infer Matrix media semantics, keep a parallel upload-staging
   store, synthesize gallery membership, own upload state, encrypted media
   metadata, or download behavior. Downloaded bytes and encrypted media keys or

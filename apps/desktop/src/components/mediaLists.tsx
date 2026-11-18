@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import {
   Clock3,
   Edit3,
@@ -16,6 +16,7 @@ import type {
   ScheduledSendItem,
   SearchResult,
   TimelineMediaDownloadState,
+  MediaGalleryPagination,
   TimelineMediaGalleryItem,
   TimelineMessage,
   TextRange,
@@ -49,22 +50,88 @@ import {
   type OpenContextMenu
 } from "../app/uiShared";
 
+/**
+ * #1969: the end of the gallery. While it is in view and Rust reports more
+ * media may exist, the gallery asks Rust for the next media-browser page; a
+ * page that adds nothing leaves it in view, so paging continues until media
+ * fills the view or the room start is reached.
+ */
+function MediaGalleryEnd({
+  pagination,
+  onLoadOlder
+}: {
+  pagination: MediaGalleryPagination;
+  onLoadOlder: () => void;
+}) {
+  const endRef = useRef<HTMLDivElement | null>(null);
+  const [endVisible, setEndVisible] = useState(false);
+
+  useEffect(() => {
+    const node = endRef.current;
+    if (!node) {
+      return;
+    }
+    if (typeof IntersectionObserver === "undefined") {
+      setEndVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      setEndVisible(entries.some((entry) => entry.isIntersecting));
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (endVisible && pagination === "idle") {
+      onLoadOlder();
+    }
+  }, [endVisible, onLoadOlder, pagination]);
+
+  return (
+    <div className="room-media-gallery-end" ref={endRef} role="status">
+      {pagination === "loading" ? <span>{t("mediaGallery.loadingOlder")}</span> : null}
+      {pagination === "failed" ? (
+        <>
+          <span>{t("mediaGallery.loadOlderFailed")}</span>
+          <button className="dialog-button" type="button" onClick={onLoadOlder}>
+            {t("mediaGallery.retry")}
+          </button>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 function RoomMediaGallery({
   items,
   mediaDownloads,
-  onOpenItem
+  onOpenItem,
+  pagination = "reachedStart",
+  onLoadOlder
 }: {
   items: TimelineMediaGalleryItem[];
   mediaDownloads: Record<string, TimelineMediaDownloadState>;
   onOpenItem: (index: number) => void;
+  /** #1969: Rust's media-browser state; absent where nothing can page. */
+  pagination?: MediaGalleryPagination;
+  onLoadOlder?: () => void;
 }) {
+  const canLoadOlder = onLoadOlder !== undefined && pagination !== "reachedStart";
+  const end = canLoadOlder ? (
+    <MediaGalleryEnd pagination={pagination} onLoadOlder={onLoadOlder} />
+  ) : null;
+
   if (items.length === 0) {
     return (
       <section className="room-media-gallery room-media-gallery-empty" role="region" aria-label={t("mediaGallery.region")}>
-        <div className="room-media-gallery-empty-state">
-          <ImageIcon size={ICON_SIZE.control} aria-hidden="true" />
-          <span>{t("mediaGallery.empty")}</span>
-        </div>
+        {canLoadOlder ? null : (
+          <div className="room-media-gallery-empty-state">
+            <ImageIcon size={ICON_SIZE.control} aria-hidden="true" />
+            <span>{t("mediaGallery.empty")}</span>
+          </div>
+        )}
+        {end}
       </section>
     );
   }
@@ -112,6 +179,7 @@ function RoomMediaGallery({
           </button>
         );
       })}
+      {end}
     </section>
   );
 }

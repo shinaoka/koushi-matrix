@@ -483,7 +483,12 @@ impl TimelineActor {
         // An off-window quoted original is not in `media_sources`; the
         // hydration ledger keeps its private source so the viewer can open it
         // (#1769).
-        let Some(entry) = self.reply_quote_media_source(&event_id) else {
+        // A gallery item older than the window resolves through the media
+        // browser's rows (#1969).
+        let Some(entry) = self
+            .reply_quote_media_source(&event_id)
+            .or_else(|| self.media_browser_source(&event_id))
+        else {
             trace_media_download_request(
                 "request_rejected",
                 request_id,
@@ -999,18 +1004,33 @@ impl TimelineActor {
         })
         .await;
     }
+    /// The gallery to publish: resident window media, plus the media
+    /// browser's rows once it runs (#1969).
+    pub(super) fn current_media_gallery_items(
+        &self,
+        window_items: &[TimelineItem],
+    ) -> Vec<TimelineMediaGalleryItem> {
+        super::media_browser::merge_media_gallery_items(
+            media_gallery_items_from_timeline_items(&self.key, window_items),
+            self.media_browser_gallery_items(),
+        )
+    }
+
     pub(super) async fn emit_media_gallery_if_changed(&mut self) {
-        let items = media_gallery_items_from_timeline_items(&self.key, &self.navigation_items);
-        if items == self.media_gallery_items {
+        let items = self.current_media_gallery_items(&self.navigation_items);
+        let pagination = self.media_gallery_pagination;
+        if items == self.media_gallery_items
+            && pagination == self.media_gallery_published_pagination
+        {
             return;
         }
-        if let Some(action) = media_gallery_updated_action(&self.key, items)
+        if let Some(action) = media_gallery_updated_action(&self.key, items.clone(), pagination)
             && !self.emit_action_reliable(action).await
         {
             return;
         }
-        self.media_gallery_items =
-            media_gallery_items_from_timeline_items(&self.key, &self.navigation_items);
+        self.media_gallery_items = items;
+        self.media_gallery_published_pagination = pagination;
     }
     pub(super) fn apply_sdk_media_cache_diff(
         media_sources: &mut HashMap<String, PrivateMediaEntry>,
@@ -1236,6 +1256,7 @@ pub(super) async fn download_media_to_cache(
 pub(super) fn media_gallery_updated_action(
     key: &TimelineKey,
     items: Vec<TimelineMediaGalleryItem>,
+    pagination: koushi_state::MediaGalleryPagination,
 ) -> Option<AppAction> {
     let TimelineKind::Room { room_id } = &key.kind else {
         return None;
@@ -1244,6 +1265,7 @@ pub(super) fn media_gallery_updated_action(
     Some(AppAction::MediaGalleryUpdated {
         room_id: room_id.clone(),
         items,
+        pagination,
     })
 }
 
@@ -1255,13 +1277,18 @@ pub(super) struct AuthoritativeMediaGalleryReplacement {
 pub(super) fn authoritative_media_gallery_replacement(
     key: &TimelineKey,
     current: &[TimelineMediaGalleryItem],
+    browser_items: Vec<TimelineMediaGalleryItem>,
+    pagination: koushi_state::MediaGalleryPagination,
     authoritative_items: &[TimelineItem],
 ) -> Option<AuthoritativeMediaGalleryReplacement> {
-    let items = media_gallery_items_from_timeline_items(key, authoritative_items);
+    let items = super::media_browser::merge_media_gallery_items(
+        media_gallery_items_from_timeline_items(key, authoritative_items),
+        browser_items,
+    );
     if items == current {
         return None;
     }
-    let action = media_gallery_updated_action(key, items.clone())?;
+    let action = media_gallery_updated_action(key, items.clone(), pagination)?;
     Some(AuthoritativeMediaGalleryReplacement { items, action })
 }
 
@@ -1286,7 +1313,7 @@ pub(super) fn media_gallery_items_from_timeline_items(
     gallery_items
 }
 
-fn media_gallery_item_from_timeline_item(
+pub(super) fn media_gallery_item_from_timeline_item(
     room_id: &str,
     item: &TimelineItem,
 ) -> Option<TimelineMediaGalleryItem> {

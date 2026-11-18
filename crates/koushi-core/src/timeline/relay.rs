@@ -1252,6 +1252,8 @@ impl TimelineActor {
         if let Some(replacement) = authoritative_media_gallery_replacement(
             &self.key,
             &self.media_gallery_items,
+            self.media_browser_gallery_items(),
+            self.media_gallery_published_pagination,
             &self.navigation_items,
         ) {
             if self.emit_action_reliable(replacement.action).await {

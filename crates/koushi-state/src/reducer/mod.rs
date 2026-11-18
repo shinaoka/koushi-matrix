@@ -1630,9 +1630,11 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::UploadStagingCleared { target } => {
             timeline::handle_upload_staging_cleared(state, target)
         }
-        AppAction::MediaGalleryUpdated { room_id, items } => {
-            timeline::handle_media_gallery_updated(state, room_id, items)
-        }
+        AppAction::MediaGalleryUpdated {
+            room_id,
+            items,
+            pagination,
+        } => timeline::handle_media_gallery_updated(state, room_id, items, pagination),
         AppAction::MediaDownloadUpdated {
             room_id,
             event_id,
@@ -2750,6 +2752,7 @@ pub(crate) fn select_active_room_after_room_list_update(
         scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
         staged_uploads: state.upload_staging.items_for_room(&room_id),
         media_gallery: state.media_gallery.items_for_room(&room_id),
+        media_gallery_pagination: state.media_gallery.pagination_for_room(&room_id),
         media_downloads: Default::default(),
         reply_quote_thumbnails: Default::default(),
         continuity: Default::default(),
@@ -2786,6 +2789,7 @@ pub(crate) fn select_active_room_for_navigation(
         scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
         staged_uploads: state.upload_staging.items_for_room(&room_id),
         media_gallery: state.media_gallery.items_for_room(&room_id),
+        media_gallery_pagination: state.media_gallery.pagination_for_room(&room_id),
         media_downloads: Default::default(),
         reply_quote_thumbnails: Default::default(),
         continuity: Default::default(),
@@ -2868,6 +2872,12 @@ pub(crate) fn refresh_timeline_media_gallery(state: &mut AppState) {
         .room_id
         .as_deref()
         .map(|room_id| state.media_gallery.items_for_room(room_id))
+        .unwrap_or_default();
+    state.timeline.media_gallery_pagination = state
+        .timeline
+        .room_id
+        .as_deref()
+        .map(|room_id| state.media_gallery.pagination_for_room(room_id))
         .unwrap_or_default();
 }
 

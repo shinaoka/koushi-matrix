@@ -124,6 +124,7 @@ export function baseTransport(
     unpinEvent: async () => undefined,
     downloadMedia: async () => undefined,
     requestReplyQuoteThumbnail: async () => undefined,
+    paginateMediaGallery: async () => undefined,
     downloadAvatarThumbnail: async () => undefined,
     loadMessageSource: async () => undefined,
     requestRoomKey: async () => undefined,

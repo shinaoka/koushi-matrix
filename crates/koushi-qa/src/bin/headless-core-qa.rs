@@ -124,6 +124,8 @@ mod scenario_identity;
 mod scenario_idle_sync_gap_inspection;
 #[path = "headless_core_qa/scenarios/mcp_message_actions.rs"]
 mod scenario_mcp_message_actions;
+#[path = "headless_core_qa/scenarios/media_gallery_history.rs"]
+mod scenario_media_gallery_history;
 #[path = "headless_core_qa/scenarios/notification_delivery.rs"]
 mod scenario_notification_delivery;
 #[path = "headless_core_qa/scenarios/read_state.rs"]

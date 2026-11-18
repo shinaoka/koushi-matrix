@@ -3198,6 +3198,31 @@ settles.
   the full file in the existing media viewer; the composer reply strip uses the
   same quote projection and a 32 px slot. Text, redacted, loading, failed,
   missing, and unsupported quotes render no slot.
+- **Room media browser (#1969).** The room's main `TimelineActor` owns the
+  gallery's `MediaGalleryPagination` (`Idle`, `Loading`, `ReachedStart`,
+  `Failed`), published with every `MediaGalleryUpdated` and mirrored by the
+  reducer into `TimelinePaneState.media_gallery_pagination` for the selected
+  room; the reducer never transitions it. A new actor starts at `Idle` with no
+  browser, and its first gallery publication resets the mirror.
+  `TimelineCommand::PaginateMediaGallery` from `Idle` or `Failed` moves to
+  `Loading`, starting the media browser on first use: a second SDK timeline
+  (`Live { hide_threaded_events: false }` plus an image/video/file/audio
+  message `event_filter`, as in Element X) whose task owns its diff stream and
+  the projected row accumulator that only that stream advances. The request
+  asks the task for one `paginate_backwards` page; a request while `Loading`
+  coalesces into it and one at `ReachedStart` is absorbed. The page settles
+  `Idle` (more may exist), `ReachedStart`, or `Failed`; a browser that stops
+  (start failure or stream end) while `Loading` settles `Failed` and is
+  dropped, so the next request starts a new one. Browser reports carry the
+  browser serial and are ignored after it is replaced or dropped. While a
+  browser runs, the published gallery is the union of resident window media
+  and browser rows by event id, newest first, and `DownloadMedia` for an
+  off-window gallery item resolves its private source from the browser rows
+  after `media_sources` and the reply-quote ledger. Live back-pagination runs
+  through the shared room event cache, so the main live timeline may also
+  receive the older events. The GUI requests a page while the gallery end is in
+  view, or while the viewer shows the oldest loaded image or its neighbour, and
+  pagination is `Idle`; `Failed` waits for an explicit Retry.
 
 `AppState.room_interactions[room_id]` carries the room's pinned-event
 projection plus the current pin/unpin operation state:

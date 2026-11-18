@@ -62,6 +62,12 @@ export interface TimelineTransport {
     quotedEventId: string,
     timelineKey?: TimelineKey
   ): Promise<void>;
+  /**
+   * #1969: page the room's media browser so the gallery reaches media older
+   * than the loaded timeline. Rust coalesces a request while a page is in
+   * flight and ignores one after the room start.
+   */
+  paginateMediaGallery?(roomId: string): Promise<void>;
   /** Save an already downloaded media file through the host desktop shell. */
   saveMediaFile?(
     sourceRef: string,

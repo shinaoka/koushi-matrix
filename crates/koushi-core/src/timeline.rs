@@ -61,6 +61,7 @@ pub(crate) mod html_sanitize;
 mod item_projection;
 mod manager;
 mod media;
+mod media_browser;
 mod mutation;
 pub(crate) use direct_attachment::{AttachmentFailure, fetch_attachment};
 pub(crate) use direct_message::run_direct_message_action;

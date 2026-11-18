@@ -15,7 +15,7 @@ use crate::state::{
     DirectoryRoomPreview, DirectoryRoomSummary, E2eeRecoveryState, EventNavigationFailureKind,
     EventNavigationSource, FilesViewScope, IdentityResetAuthType, InviteDestinationResult,
     InviteScopeSelection, JapaneseCatalogProfile, LiveEventReceiptSummaryUpdate, LiveEventReceipts,
-    LocalEncryptionHealth, LoginAttemptId, LoginFlow, MentionCandidate,
+    LocalEncryptionHealth, LoginAttemptId, LoginFlow, MediaGalleryPagination, MentionCandidate,
     MentionCandidatesCompleteness, MentionCandidatesFailureKind, MentionSurface,
     NativeAttentionDispatchId, NativeAttentionSoundOutcome, NativeAttentionState,
     NavigationPreferenceUpdate, NavigationState, OperationFailureKind, OwnProfile, PinnedEvent,
@@ -1468,9 +1468,12 @@ pub enum AppAction {
     UploadStagingCleared {
         target: crate::ComposerTarget,
     },
+    /// The room's whole gallery as the timeline actor last published it,
+    /// with its media-browser pagination state.
     MediaGalleryUpdated {
         room_id: String,
         items: Vec<TimelineMediaGalleryItem>,
+        pagination: MediaGalleryPagination,
     },
     MediaDownloadUpdated {
         room_id: String,

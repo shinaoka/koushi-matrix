@@ -7,6 +7,7 @@ import {
   MessageArticle,
   PinnedEventsList,
   PinnedMessagesEntry,
+  RoomMediaGallery,
   ScheduledMessagesList
 } from "./mediaLists";
 import { MediaViewer, mediaViewerEntryFromGallery } from "./mediaViewer";
@@ -249,4 +250,94 @@ describe("media gallery viewer header", () => {
       expect(headerText({ kind, size: 2048, width: 640, height: 480 })).toBe("2 KB");
     }
   );
+});
+
+describe("room media gallery older media (#1969)", () => {
+  function image(eventId: string): TimelineMediaGalleryItem {
+    return {
+      event_id: eventId,
+      room_id: "!room:example.invalid",
+      sender: null,
+      timestamp_ms: 1_800_000_000_000,
+      media: {
+        kind: "Image",
+        filename: "fixture.png",
+        source: { mxc_uri: "mxc://example.invalid/m", encrypted: false, encryption_version: null },
+        mimetype: "image/png",
+        size: 10,
+        width: 10,
+        height: 10,
+        thumbnail: null
+      }
+    };
+  }
+
+  it("pages older media while the gallery end is in view and Rust reports idle", () => {
+    const onLoadOlder = vi.fn();
+    render(
+      <RoomMediaGallery
+        items={[image("$a:example.invalid")]}
+        mediaDownloads={{}}
+        onOpenItem={() => undefined}
+        pagination="idle"
+        onLoadOlder={onLoadOlder}
+      />
+    );
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits while a page is in flight and stops at the room start", () => {
+    const onLoadOlder = vi.fn();
+    const { rerender } = render(
+      <RoomMediaGallery
+        items={[image("$a:example.invalid")]}
+        mediaDownloads={{}}
+        onOpenItem={() => undefined}
+        pagination="loading"
+        onLoadOlder={onLoadOlder}
+      />
+    );
+    expect(screen.getByText("Loading older media…")).toBeTruthy();
+    rerender(
+      <RoomMediaGallery
+        items={[image("$a:example.invalid")]}
+        mediaDownloads={{}}
+        onOpenItem={() => undefined}
+        pagination="reachedStart"
+        onLoadOlder={onLoadOlder}
+      />
+    );
+    expect(onLoadOlder).not.toHaveBeenCalled();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("offers a retry after a failed page instead of retrying on its own", () => {
+    const onLoadOlder = vi.fn();
+    render(
+      <RoomMediaGallery
+        items={[]}
+        mediaDownloads={{}}
+        onOpenItem={() => undefined}
+        pagination="failed"
+        onLoadOlder={onLoadOlder}
+      />
+    );
+    expect(onLoadOlder).not.toHaveBeenCalled();
+    expect(screen.queryByText("No media in this room")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it("says the room has no media only once the room start is reached", () => {
+    render(
+      <RoomMediaGallery
+        items={[]}
+        mediaDownloads={{}}
+        onOpenItem={() => undefined}
+        pagination="reachedStart"
+        onLoadOlder={() => undefined}
+      />
+    );
+    expect(screen.getByText("No media in this room")).toBeTruthy();
+  });
 });

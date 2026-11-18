@@ -1,9 +1,9 @@
 use koushi_state::{
     AppAction, AppState, ComposerDocument, ComposerInline, ComposerTarget,
-    ImageUploadCompressionMode, MentionTarget, RoomSummary, RoomTags, SessionInfo, SessionState,
-    StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind, TimelineMediaGalleryItem,
-    TimelineMediaGalleryMedia, TimelineMediaGallerySource, TimelineMediaGalleryThumbnail,
-    TimelineMediaKind, UiEvent, UploadStagingStore, reduce,
+    ImageUploadCompressionMode, MediaGalleryPagination, MentionTarget, RoomSummary, RoomTags,
+    SessionInfo, SessionState, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
+    TimelineMediaGalleryItem, TimelineMediaGalleryMedia, TimelineMediaGallerySource,
+    TimelineMediaGalleryThumbnail, TimelineMediaKind, UiEvent, UploadStagingStore, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -297,6 +297,7 @@ fn media_gallery_projection_is_ordered_and_room_scoped() {
                 gallery_item("$old", "room-a", 1_900_000_000_000),
                 gallery_item("$new", "room-a", 1_900_000_060_000),
             ],
+            pagination: MediaGalleryPagination::Idle,
         },
     );
     reduce(
@@ -304,6 +305,7 @@ fn media_gallery_projection_is_ordered_and_room_scoped() {
         AppAction::MediaGalleryUpdated {
             room_id: "room-b".to_owned(),
             items: vec![gallery_item("$other", "room-b", 1_900_000_090_000)],
+            pagination: MediaGalleryPagination::Idle,
         },
     );
 
@@ -319,6 +321,61 @@ fn media_gallery_projection_is_ordered_and_room_scoped() {
     );
     assert_eq!(state.timeline.media_gallery.len(), 1);
     assert_eq!(state.timeline.media_gallery[0].event_id, "$other");
+}
+
+#[test]
+fn media_gallery_pagination_is_room_scoped_and_follows_room_selection() {
+    let mut state = selected_room_state("room-a");
+
+    reduce(
+        &mut state,
+        AppAction::MediaGalleryUpdated {
+            room_id: "room-a".to_owned(),
+            items: vec![gallery_item("$a", "room-a", 1_900_000_000_000)],
+            pagination: MediaGalleryPagination::Loading,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::MediaGalleryUpdated {
+            room_id: "room-b".to_owned(),
+            items: vec![gallery_item("$b", "room-b", 1_900_000_000_000)],
+            pagination: MediaGalleryPagination::ReachedStart,
+        },
+    );
+    assert_eq!(
+        state.timeline.media_gallery_pagination,
+        MediaGalleryPagination::Loading
+    );
+
+    reduce(
+        &mut state,
+        AppAction::MediaGalleryUpdated {
+            room_id: "room-a".to_owned(),
+            items: vec![gallery_item("$a", "room-a", 1_900_000_000_000)],
+            pagination: MediaGalleryPagination::Failed,
+        },
+    );
+    assert_eq!(
+        state.timeline.media_gallery_pagination,
+        MediaGalleryPagination::Failed
+    );
+
+    reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "room-b".to_owned(),
+        },
+    );
+    assert_eq!(
+        state.timeline.media_gallery_pagination,
+        MediaGalleryPagination::ReachedStart
+    );
+    let serialized = serde_json::to_value(&state).expect("serialize app state");
+    assert_eq!(
+        serialized["timeline"]["media_gallery_pagination"],
+        "reachedStart"
+    );
 }
 
 #[test]
@@ -338,6 +395,7 @@ fn upload_staging_store_is_not_serialized_but_selected_projection_is() {
         AppAction::MediaGalleryUpdated {
             room_id: "room-a".to_owned(),
             items: vec![gallery_item("$media", "room-a", 1_900_000_000_000)],
+            pagination: MediaGalleryPagination::Idle,
         },
     );
 
