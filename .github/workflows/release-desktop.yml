@@ -134,7 +134,8 @@ jobs:
         run: npm --prefix apps/desktop audit --audit-level=high
       - name: Record the full-graph advisory
         if: steps.npm-audit-full.outcome == 'failure'
-        run: echo "::warning title=Full-graph npm audit::Development advisories are open (docs/agents/environment.md, #1965). The build proceeds; the runtime graph is gated by the next step."
+        run: |
+          echo "::warning title=Full-graph npm audit::Development advisories are open (docs/agents/environment.md, issue 1965). The build proceeds; the runtime graph is gated by the next step."
       - name: npm audit (runtime deps only)
         run: npm --prefix apps/desktop audit --omit=dev --audit-level=high
 
@@ -350,7 +351,8 @@ jobs:
         run: npm --prefix apps/desktop audit --audit-level=high
       - name: Record the full-graph advisory
         if: steps.npm-audit-full.outcome == 'failure'
-        run: echo "::warning title=Full-graph npm audit::Development advisories are open (docs/agents/environment.md, #1965). The build proceeds; the runtime graph is gated by the next step."
+        run: |
+          echo "::warning title=Full-graph npm audit::Development advisories are open (docs/agents/environment.md, issue 1965). The build proceeds; the runtime graph is gated by the next step."
       - name: npm audit (runtime deps only)
         run: npm --prefix apps/desktop audit --omit=dev --audit-level=high
 
@@ -470,7 +472,8 @@ jobs:
         run: npm --prefix apps/desktop audit --audit-level=high
       - name: Record the full-graph advisory
         if: steps.npm-audit-full.outcome == 'failure'
-        run: echo "::warning title=Full-graph npm audit::Development advisories are open (docs/agents/environment.md, #1965). The build proceeds; the runtime graph is gated by the next step."
+        run: |
+          echo "::warning title=Full-graph npm audit::Development advisories are open (docs/agents/environment.md, issue 1965). The build proceeds; the runtime graph is gated by the next step."
       - name: npm audit (runtime deps only)
         run: npm --prefix apps/desktop audit --omit=dev --audit-level=high
 
