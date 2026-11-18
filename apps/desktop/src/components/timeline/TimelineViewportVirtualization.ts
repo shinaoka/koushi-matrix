@@ -167,7 +167,8 @@ export function buildTimelineHeightModel(
   };
 }
 
-function timelineIndexAtOffset(offsets: readonly number[], offset: number): number {
+/** The row whose box contains `offset`, for the model's committed offsets. */
+export function timelineIndexAtOffset(offsets: readonly number[], offset: number): number {
   if (offsets.length <= 1) {
     return 0;
   }

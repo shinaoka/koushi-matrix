@@ -61,6 +61,34 @@ export function rowHeightsUnpublished(
   return false;
 }
 
+/**
+ * #1890 §2.4: whether every row above the viewport's top edge already carries the
+ * height the model committed. A row that left the window with an uncommitted
+ * measurement still sits in the model at its estimate, so the spacer above the
+ * reader is about to change: `scrollTop` is then not the true distance from the
+ * resident top, and a fetch decided on it would fire at the wrong place.
+ */
+export function rowHeightsSettledAbove(
+  cache: TimelineRowHeightCache,
+  rows: readonly TimelineDisplayRow[],
+  lastAboveIndex: number,
+  committed: ReadonlyMap<string, number>
+): boolean {
+  for (let index = 0; index < lastAboveIndex; index += 1) {
+    const row = rows[index];
+    // A height model older than the resident rows (the same total from fewer rows)
+    // can name an index past the end, and there is nothing above it to wait for.
+    if (row === undefined) {
+      return true;
+    }
+    const committedHeight = committed.get(row.row_id);
+    if ((cache.heightFor(row) ?? committedHeight) !== committedHeight) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /** Hard cap, so a residency that grows without a bound cannot grow this. */
 export const TIMELINE_ROW_HEIGHT_CACHE_MAX_ENTRIES = 4096;
 
@@ -170,6 +198,11 @@ export class TimelineRowHeightCache {
       }
     }
     return heights;
+  }
+
+  /** The stored height for one row, stale or fresh; `undefined` when unmeasured. */
+  heightFor(row: TimelineDisplayRow): number | undefined {
+    return this.entries.get(row.row_id)?.height;
   }
 
   /** Key change: the rows belong to a different timeline. */
