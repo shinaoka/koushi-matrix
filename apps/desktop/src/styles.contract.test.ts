@@ -629,6 +629,19 @@ describe("styles.css token system", () => {
     expect(rule).toContain("object-fit: cover");
   });
 
+  test("a mention pill has no underline in a message or in a reply quote (#1960)", () => {
+    // #1960: a pill is an `<a>`, so the browser's own link rule underlines it
+    // wherever no author rule removes the decoration. Only the message body had
+    // one (#1328), so the same pill was plain in its message and underlined in
+    // the quote below it. The pill owns that now, and the formatted-body link
+    // rule excludes the pill so its higher specificity cannot put it back.
+    expect(selectorBlock(".message-mention-pill")).toContain("text-decoration: none");
+    const bodyLink = selectorBlock(
+      ".message-body.message-formatted-body a:not(.message-mention-pill)"
+    );
+    expect(bodyLink).toContain("text-decoration: underline");
+  });
+
   test("only an openable reply quote gains pointer, hover, active, and focus states (#1592)", () => {
     const openable = selectorBlock(".reply-quote.is-openable");
     expect(openable).toContain("cursor: pointer");

@@ -4487,7 +4487,11 @@ button:disabled {
   margin: 0;
 }
 
-.message-body.message-formatted-body a {
+/* #1328: link styling for a formatted body. `:not` names the mention pill out of
+   this rule, so the pill's own class is never outranked here; the pill is not a
+   link to read. The guard adds no specificity to a decision: the pill's rules
+   and this one never match the same element. */
+.message-body.message-formatted-body a:not(.message-mention-pill) {
   color: var(--brand);
   text-decoration: underline;
   text-underline-offset: 2px;
@@ -4623,16 +4627,14 @@ button:disabled {
   background: color-mix(in srgb, var(--brand) 22%, var(--surface));
   font-weight: 650;
   text-overflow: ellipsis;
+  /* #1328, #1960: in a formatted body the pill is an `<a>`, so the engine's own
+     link rule underlines it wherever no author rule removes that. The pill
+     decides that here rather than in one container's exception: a message body
+     and a reply quote draw the same pill, and the quote is not a
+     `.message-body`. */
+  text-decoration: none;
   vertical-align: text-top;
   white-space: nowrap;
-}
-
-/* #1328: in a formatted body the pill is the `<a>` itself, and
-   `.message-body.message-formatted-body a` (0,2,1) sets the link underline at a
-   higher specificity than the pill's own class (0,1,0), so the pill read as an
-   ordinary underlined link. Name the anchor here so the pill styling wins. */
-.message-body.message-formatted-body a.message-mention-pill {
-  text-decoration: none;
 }
 
 .reply-quote {
