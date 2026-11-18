@@ -51,7 +51,7 @@
   "ai.control.heading": "You stay in control",
   "ai.control.grant": "Until you grant access, an assistant sees only your account ids.",
   "ai.control.scope": "Grant each assistant only the accounts it needs; nothing outside them is visible.",
-  "ai.control.flags": "Reading, sending, and attachments are separate permissions. Changes apply on the next call, and deleting a grant revokes it.",
+  "ai.control.flags": "Reading, sending, attachments, changing messages, and writing drafts are separate permissions. Changes apply on the next call, and deleting a grant revokes it.",
   "ai.control.plain": "A sent message is a normal message from your account; Koushi does not mark it as written by an assistant.",
   "ai.try.heading": "Then ask in your own words",
   "ai.try.unread": "Which rooms have unread messages? Summarize the Design room.",
