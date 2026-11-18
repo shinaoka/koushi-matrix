@@ -238,3 +238,61 @@ export function findTimelineEventNode(
     timelineEventIdentitySelector(identity, eventId)
   );
 }
+
+/** Put a mounted row at the middle of the container's visible band. */
+export function centerTimelineRow(container: HTMLElement, row: HTMLElement): void {
+  const containerRect = container.getBoundingClientRect();
+  const rowRect = row.getBoundingClientRect();
+  const centered =
+    container.scrollTop +
+    (rowRect.top - containerRect.top) -
+    Math.max(0, (container.clientHeight - rowRect.height) / 2);
+  container.scrollTop = Math.max(0, centered);
+}
+
+/** Whether a mounted row intersects the container's visible band. */
+export function timelineRowInsideViewport(
+  container: HTMLElement,
+  row: HTMLElement
+): boolean {
+  const containerRect = container.getBoundingClientRect();
+  const rowRect = row.getBoundingClientRect();
+  // Without a layout box there is no position to correct, so do not fight it.
+  if (rowRect.height === 0) {
+    return true;
+  }
+  return (
+    rowRect.bottom > containerRect.top &&
+    rowRect.top < containerRect.top + container.clientHeight
+  );
+}
+
+export type HeightChangesByAnchor = {
+  /** Rows above the anchor. Their new heights move the reader, so they must
+   * land in the same layout pass as the anchor compensation. */
+  above: string[];
+  /** Rows at or after the anchor, or every changed row when there is no anchor:
+   * they only change the scrollable extent below the reader and may wait. */
+  below: string[];
+};
+
+/** #1890 §2.2: split measured-height changes at the reader's anchor row. */
+export function partitionHeightChangesByAnchor(
+  rows: readonly { row_id: string }[],
+  changedRowIds: Iterable<string>,
+  anchorIndex: number
+): HeightChangesByAnchor {
+  const above: string[] = [];
+  const below: string[] = [];
+  if (anchorIndex <= 0) {
+    for (const rowId of changedRowIds) below.push(rowId);
+    return { above, below };
+  }
+  const indexByRowId = new Map(rows.map((row, index) => [row.row_id, index]));
+  for (const rowId of changedRowIds) {
+    const index = indexByRowId.get(rowId);
+    if (index !== undefined && index < anchorIndex) above.push(rowId);
+    else below.push(rowId);
+  }
+  return { above, below };
+}

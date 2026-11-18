@@ -170,7 +170,7 @@ test("initial timeline load and remount start at the live edge", async ({ page }
   await pushInitialTimelineItems(page, 30);
 
   const container = page.locator("[data-testid=timeline-view]");
-  await expect(container.locator("[data-item-id]")).toHaveCount(30);
+  await expect(container).toHaveAttribute("data-total-items", "30");
   await expectTimelineScrolledToBottom(container);
 
   await page.reload();
@@ -179,7 +179,7 @@ test("initial timeline load and remount start at the live edge", async ({ page }
   await pushInitialTimelineItems(page, 30);
 
   const remountedContainer = page.locator("[data-testid=timeline-view]");
-  await expect(remountedContainer.locator("[data-item-id]")).toHaveCount(30);
+  await expect(remountedContainer).toHaveAttribute("data-total-items", "30");
   await expectTimelineScrolledToBottom(remountedContainer);
 });
 
@@ -335,7 +335,7 @@ test("initial short load grows to the live edge on later PushBack", async ({ pag
     }
   );
 
-  await expect(container.locator("[data-item-id]")).toHaveCount(55);
+  await expect(container).toHaveAttribute("data-total-items", "55");
   await expectTimelineScrolledToBottom(container);
 });
 
@@ -387,7 +387,7 @@ test("short initial load stays stable when the user scrolls up slightly", async 
     }
   );
 
-  await expect(container.locator("[data-item-id]")).toHaveCount(55);
+  await expect(container).toHaveAttribute("data-total-items", "55");
   await expectTimelineScrolledToBottom(container);
 
   const maxScrollTop = await container.evaluate(
@@ -578,7 +578,7 @@ test("auto-backfill keeps a slight live-edge scroll stable before near-top prefe
   );
 
   const container = page.locator("[data-testid=timeline-view]");
-  await expect(container.locator("[data-item-id]")).toHaveCount(105);
+  await expect(container).toHaveAttribute("data-total-items", "105");
   await expectTimelineScrolledToBottom(container);
 
   const maxScrollTopBefore = await container.evaluate(
@@ -668,7 +668,7 @@ test("short timeline does not auto-backfill on a small scroll up from the live e
   );
 
   const container = page.locator("[data-testid=timeline-view]");
-  await expect(container.locator("[data-item-id]")).toHaveCount(50);
+  await expect(container).toHaveAttribute("data-total-items", "50");
   await expectTimelineScrolledToBottom(container);
 
   const maxScrollTop = await container.evaluate(
@@ -814,7 +814,7 @@ test("scrollback prepend keeps the anchor item visually stable and gates auto-ba
   );
 
   const container = page.locator("[data-testid=timeline-view]");
-  await expect(container.locator("[data-item-id]")).toHaveCount(30);
+  await expect(container).toHaveAttribute("data-total-items", "30");
 
   // The list must overflow the 400px viewport.
   const overflowing = await container.evaluate(
@@ -918,7 +918,7 @@ test("scrollback prepend keeps the anchor item visually stable and gates auto-ba
       ]
     }
   );
-  await expect(container.locator("[data-item-id]")).toHaveCount(40);
+  await expect(container).toHaveAttribute("data-total-items", "40");
 
   // ---- (d) anchor item's viewport position restored (bounded delta) ----
   const anchorAfter = await container.evaluate(
@@ -1100,12 +1100,12 @@ test("known-dimension media keeps row height stable across download completion",
     {
       key: timelineKey(),
       items: Array.from({ length: 100 }, (_, index) =>
-        index === 70 ? makeImageItem("$image70") : makeItem(`$m${index}`, `message ${index}`)
+        index === 95 ? makeImageItem("$image95") : makeItem(`$m${index}`, `message ${index}`)
       )
     }
   );
 
-  const frame = page.locator('[data-frame-item-id="$image70"]');
+  const frame = page.locator('[data-frame-item-id="$image95"]');
   await expect(frame).toBeVisible();
   const beforeHeight = await frame.evaluate((node) => node.getBoundingClientRect().height);
 
@@ -1117,7 +1117,7 @@ test("known-dimension media keeps row height stable across download completion",
           MediaDownloadCompleted: {
             request_id: "media-request",
             key,
-            event_id: "$image70",
+            event_id: "$image95",
             source_ref: "appmedia://synthetic-image",
             byte_count: 12345,
             mimetype: "image/png",
@@ -1132,7 +1132,7 @@ test("known-dimension media keeps row height stable across download completion",
   );
 
   await page.evaluate(() =>
-    window.__harness.setMediaDownloadState("$image70", {
+    window.__harness.setMediaDownloadState("$image95", {
       kind: "ready",
       source_ref: "appmedia://synthetic-image",
       width: 2048,
@@ -1183,14 +1183,14 @@ test("missing-dimension media keeps row height stable across download completion
     {
       key: timelineKey(),
       items: Array.from({ length: 100 }, (_, index) =>
-        index === 70
-          ? makeImageItemWithoutDimensions("$image-missing70")
+        index === 95
+          ? makeImageItemWithoutDimensions("$image-missing95")
           : makeItem(`$m${index}`, `message ${index}`)
       )
     }
   );
 
-  const frame = page.locator('[data-frame-item-id="$image-missing70"]');
+  const frame = page.locator('[data-frame-item-id="$image-missing95"]');
   await expect(frame).toBeVisible();
   const beforeHeight = await frame.evaluate((node) => node.getBoundingClientRect().height);
 
@@ -1202,7 +1202,7 @@ test("missing-dimension media keeps row height stable across download completion
           MediaDownloadCompleted: {
             request_id: "media-missing-request",
             key,
-            event_id: "$image-missing70",
+            event_id: "$image-missing95",
             source_ref: "appmedia://synthetic-image-missing",
             byte_count: 12345,
             mimetype: "image/png",
@@ -1216,7 +1216,7 @@ test("missing-dimension media keeps row height stable across download completion
     { key: timelineKey() }
   );
   await page.evaluate(() =>
-    window.__harness.setMediaDownloadState("$image-missing70", {
+    window.__harness.setMediaDownloadState("$image-missing95", {
       kind: "ready",
       source_ref: "appmedia://synthetic-image-missing",
       width: 2048,
@@ -1241,7 +1241,7 @@ test("link previews occupy space only after content becomes ready", async ({ pag
   });
   await waitAnimationFrames(page, 1);
 
-  const pendingItem = makePendingLinkPreviewItem("$preview70");
+  const pendingItem = makePendingLinkPreviewItem("$preview95");
   await page.evaluate(
     ({ key, items }) => {
       window.__harness.pushCoreEvent({
@@ -1255,12 +1255,12 @@ test("link previews occupy space only after content becomes ready", async ({ pag
     {
       key: timelineKey(),
       items: Array.from({ length: 100 }, (_, index) =>
-        index === 70 ? pendingItem : makeItem(`$m${index}`, `message ${index}`)
+        index === 95 ? pendingItem : makeItem(`$m${index}`, `message ${index}`)
       )
     }
   );
 
-  const frame = page.locator('[data-frame-item-id="$preview70"]');
+  const frame = page.locator('[data-frame-item-id="$preview95"]');
   const card = frame.locator(".link-preview-card");
   await expect(frame).toBeAttached();
   await expect(frame.locator(".link-preview-cards")).toHaveCount(0);
@@ -1452,20 +1452,35 @@ test("active upward input keeps the anchor stable when prepend arrives", async (
   await pushInitialTimelineItems(page, 100);
 
   const container = page.locator("[data-testid=timeline-view]");
-  await expect(container.locator("[data-item-id]")).toHaveCount(100);
+  await expect(container).toHaveAttribute("data-total-items", "100");
   await container.evaluate((node) => {
     node.scrollTop = 1_500;
     node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -40 }));
     node.dispatchEvent(new Event("scroll", { bubbles: true }));
   });
 
+  // The jump remounts the window; wait until a row of the new window actually
+  // intersects the viewport before anchoring on the first visible row.
+  await expect
+    .poll(() =>
+      container.evaluate((node) => {
+        const top = node.getBoundingClientRect().top;
+        return Array.from(node.querySelectorAll<HTMLElement>("[data-item-id]")).some((row) => {
+          const rect = row.getBoundingClientRect();
+          return rect.bottom > top && rect.top < top + node.clientHeight;
+        });
+      })
+    )
+    .toBe(true);
+
   const anchorBefore = await container.evaluate((node) => {
     const top = node.getBoundingClientRect().top;
     for (const row of node.querySelectorAll<HTMLElement>("[data-item-id]")) {
-      if (row.getBoundingClientRect().bottom > top) {
+      const rect = row.getBoundingClientRect();
+      if (rect.bottom > top && rect.top < top + node.clientHeight) {
         return {
           itemId: row.dataset["itemId"] ?? "",
-          offsetTop: row.getBoundingClientRect().top - top
+          offsetTop: rect.top - top
         };
       }
     }
@@ -1497,9 +1512,9 @@ test("active upward input keeps the anchor stable when prepend arrives", async (
   );
 
   await waitAnimationFrames(page, 1);
-  await expect
-    .poll(() => container.locator('[data-item-id^="$deferred-old"]').count())
-    .toBe(4);
+  // The prepended rows are far above the mounted window; the prepend itself is
+  // visible in the item count.
+  await expect(container).toHaveAttribute("data-total-items", "104");
 
   const anchorAfter = await container.evaluate((node, anchorId) => {
     const row = node.querySelector<HTMLElement>(`[data-item-id="${anchorId}"]`);
@@ -1689,12 +1704,29 @@ test("timeline navigation keeps the unread marker and bottom control independent
   await pushInitialTimelineItems(page, 30);
 
   const container = page.locator("[data-testid=timeline-view]");
-  await expect(container.locator("[data-item-id]")).toHaveCount(30);
+  await expect(container).toHaveAttribute("data-total-items", "30");
 
-  await container.evaluate((node) => {
-    node.scrollTop = 0;
-    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  // Leave the live edge and land on the unread marker's rows: only the mounted
+  // window renders a separator, so the reader has to be near the marker, and
+  // the marker's own position keeps this independent of the row height the model
+  // assumes for rows it has not measured. A bare scrollTop write is not user
+  // input and snaps back (see the prepend anchor test), so wheel first.
+  const markerRowTop = await container.evaluate((node) => {
+    const row = node.querySelector<HTMLElement>('[data-item-id="$m24"]');
+    if (!row) return null;
+    return Math.round(
+      node.scrollTop + row.getBoundingClientRect().top - node.getBoundingClientRect().top
+    );
   });
+  expect(markerRowTop).not.toBeNull();
+  await container.evaluate(
+    (node, target) => {
+      node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -40 }));
+      node.scrollTop = target;
+      node.dispatchEvent(new Event("scroll", { bubbles: true }));
+    },
+    Math.max(0, (markerRowTop ?? 0) - 200)
+  );
 
   await expect
     .poll(
@@ -1706,9 +1738,26 @@ test("timeline navigation keeps the unread marker and bottom control independent
     )
     .toMatchObject({
       roomId: ROOM_ID,
-      firstVisibleEventId: "$m00",
       atBottom: false
     });
+
+  // The report has to name the row the reader sees first, which is more than
+  // "not at the bottom". Both are read in one tick so a window shift between
+  // them cannot show up as a mismatch.
+  const observed = await container.evaluate((node) => {
+    const top = node.getBoundingClientRect().top;
+    const row = Array.from(node.querySelectorAll<HTMLElement>("[data-item-id]"))
+      .filter((candidate) => candidate.getBoundingClientRect().bottom > top)
+      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0];
+    return {
+      reported: window.__harness.invocationsOf("observe_timeline_viewport").at(-1)?.args as {
+        firstVisibleEventId?: string;
+      } | undefined,
+      dom: row?.getAttribute("data-item-id") ?? null
+    };
+  });
+  expect(observed.dom).not.toBeNull();
+  expect(observed.reported?.firstVisibleEventId).toBe(observed.dom);
 
   await page.evaluate(
     ({ key }) => {
@@ -1758,9 +1807,11 @@ test("scrolling to bottom reports the latest readable event to Rust", async ({ p
   await pushInitialTimelineItems(page, 40);
 
   const container = page.locator("[data-testid=timeline-view]");
-  await expect(container.locator("[data-item-id]")).toHaveCount(40);
+  await expect(container).toHaveAttribute("data-total-items", "40");
 
+  // Wheel first: a bare scrollTop write is not user input and stays live-edge.
   await container.evaluate((node) => {
+    node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -40 }));
     node.scrollTop = 0;
     node.dispatchEvent(new Event("scroll", { bubbles: true }));
   });
@@ -1772,7 +1823,9 @@ test("scrolling to bottom reports the latest readable event to Rust", async ({ p
     )
     .toMatchObject({ atBottom: false });
 
+  // Wheel first: a bare scrollTop write is not user input and stays live-edge.
   await container.evaluate((node) => {
+    node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 40 }));
     node.scrollTop = node.scrollHeight;
     node.dispatchEvent(new Event("scroll", { bubbles: true }));
   });

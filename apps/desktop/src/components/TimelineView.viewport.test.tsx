@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   focusedTimelineKey,
   roomTimelineKey,
+  threadTimelineKey,
   type CoreEventPayload,
   type PaginationState,
   type TimelineGapId,
@@ -15,6 +16,8 @@ import { setActiveLocaleProfile } from "../i18n/messages";
 import { KEY, baseTransport, message, mockTimelineRects } from "./timelineViewTestSupport";
 import { TimelineView, clearTimelineViewportSessionMemoryForTests } from "./TimelineView";
 
+const TIMED_ROOM_ROW_HEIGHT = 72;
+
 afterEach(() => {
   cleanup();
   clearTimelineViewportSessionMemoryForTests();
@@ -23,6 +26,80 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+
+/** A room that opens at the live edge, with the container a real scroller. */
+async function mountTimedRoom(rowCount: number, rowHeight = TIMED_ROOM_ROW_HEIGHT) {
+  const onScrollDiagnosticsChange = vi.fn();
+  let listener: ((payload: CoreEventPayload) => void) | null = null;
+  const transport = baseTransport({
+    listenCoreEvents(nextListener) {
+      listener = nextListener;
+      return () => undefined;
+    }
+  });
+  const rects: Record<string, { top: number; height: number }> = {};
+  for (let index = 0; index < rowCount; index += 1) {
+    rects[`$row${index}`] = { top: index * rowHeight, height: rowHeight };
+  }
+  const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+  mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+  render(
+    <TimelineView
+      timelineKey={KEY}
+      roomId="!room:example.invalid"
+      transport={transport}
+      onReply={vi.fn()}
+      onScrollDiagnosticsChange={onScrollDiagnosticsChange}
+      listRefCallback={(element) => {
+        scrollContainerRef.current =
+          element?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null;
+      }}
+    />
+  );
+  // `getBy` rather than `findBy`: fake timers are installed by the caller.
+  const timeline = screen.getByTestId("timeline-view");
+  Object.defineProperties(timeline, {
+    scrollHeight: { value: rowCount * rowHeight, writable: true, configurable: true },
+    clientHeight: { value: 600, configurable: true },
+    scrollTop: { value: 0, writable: true, configurable: true }
+  });
+  act(() => {
+    listener?.({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: Array.from({ length: rowCount }, (_, index) =>
+            message(`$row${index}`, `row ${index}`)
+          )
+        }
+      }
+    });
+  });
+  return {
+    timeline,
+    onScrollDiagnosticsChange,
+    /** A reader's own scroll, one frame in, so the scroll counts as active. */
+    async scrollTo(scrollTop: number) {
+      act(() => {
+        fireEvent.wheel(timeline, { deltaY: -40 });
+      });
+      timeline.scrollTop = scrollTop;
+      act(() => {
+        fireEvent.scroll(timeline);
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(40);
+        await Promise.resolve();
+      });
+    },
+    setRowHeight(index: number, height: number) {
+      rects[`$row${index}`] = { top: index * rowHeight, height };
+    }
+  };
+}
 
 function forwardPagination(key: TimelineKey, state: PaginationState): CoreEventPayload {
   return {
@@ -1075,12 +1152,15 @@ describe("TimelineView", () => {
       },
       updateScrollAnchor
     });
-    // Rows follow scrollTop, so each scroll step observes a new anchor.
+    // Rows follow scrollTop, so each scroll step observes a new anchor. The
+    // rows are 2,400 px tall together because the mounted window is derived
+    // from those measured heights: a fixture that places a 48 px row at
+    // offset 1,900 would model 96 px of content in a 2,400 px scroller.
     const scrollContainerRef: { current: HTMLElement | null } = { current: null };
     mockTimelineRects(
       {
-        "$first:example.invalid": { top: 1900, height: 48 },
-        "$second:example.invalid": { top: 2300, height: 48 }
+        "$first:example.invalid": { top: 0, height: 2350 },
+        "$second:example.invalid": { top: 2350, height: 50 }
       },
       { top: 0, height: 600 },
       scrollContainerRef
@@ -1148,10 +1228,12 @@ describe("TimelineView", () => {
     await waitFor(() => {
       expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
     });
-    // The one update carries where the scroll ended (150px up), not where it began.
+    // The one update carries where the scroll ended (150px up), not where it
+    // began: the tail row has left the viewport and the first row's bottom now
+    // sits 100 px below it.
     expect(updateScrollAnchor).toHaveBeenCalledWith(
       "!room:example.invalid",
-      expect.objectContaining({ event_id: "$first:example.invalid", edge: "bottom", offset_px: -302 })
+      expect.objectContaining({ event_id: "$first:example.invalid", edge: "bottom", offset_px: 100 })
     );
   });
 
@@ -1167,7 +1249,7 @@ describe("TimelineView", () => {
     expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
     expect(updateScrollAnchor).toHaveBeenCalledWith(
       "!room:example.invalid",
-      expect.objectContaining({ event_id: "$second:example.invalid", edge: "bottom" })
+      expect.objectContaining({ event_id: "$first:example.invalid", edge: "bottom" })
     );
   });
 
@@ -1190,7 +1272,7 @@ describe("TimelineView", () => {
     expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
     expect(updateScrollAnchor).toHaveBeenCalledWith(
       "!room:example.invalid",
-      expect.objectContaining({ event_id: "$second:example.invalid" })
+      expect.objectContaining({ event_id: "$first:example.invalid" })
     );
   });
 
@@ -1567,6 +1649,257 @@ describe("TimelineView", () => {
     await waitFor(() => {
       expect(liveEdgeTimeline.scrollTop).toBe(1400);
     });
+  });
+
+  it("opens a 100-row room at the live edge without mounting its first rows", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const rowHeight = 72;
+    const itemCount = 100;
+    const rects: Record<string, { top: number; height: number }> = {};
+    for (let index = 0; index < itemCount; index += 1) {
+      rects[`$row-${index}:example.invalid`] = { top: index * rowHeight, height: rowHeight };
+    }
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        listRefCallback={(element) => {
+          scrollContainerRef.current = element?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null;
+        }}
+      />
+    );
+    const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "scrollHeight", {
+      value: itemCount * rowHeight,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    // Every row ever mounted, not only the final window: a live-edge open that
+    // first mounts the top screen and then snaps to the bottom shows up here.
+    const everMounted = new Set<string>();
+    const record = () => {
+      for (const node of timeline.querySelectorAll<HTMLElement>("[data-event-id]")) {
+        everMounted.add(node.dataset["eventId"] ?? "");
+      }
+    };
+    const observer = new MutationObserver(record);
+    observer.observe(timeline, { childList: true, subtree: true });
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: Array.from({ length: itemCount }, (_, index) =>
+            message(`$row-${index}:example.invalid`, `message ${index}`)
+          )
+        }
+      }
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(itemCount * rowHeight - 600);
+    });
+    await waitFor(() => {
+      expect(
+        timeline.querySelector(`[data-event-id="$row-${itemCount - 1}:example.invalid"]`)
+      ).not.toBeNull();
+    });
+    record();
+    observer.disconnect();
+
+    expect([...everMounted]).not.toContain("$row-0:example.invalid");
+    expect(everMounted.size).toBeLessThanOrEqual(40);
+  });
+
+
+  it("drops a focused target from the window once the reader scrolls away", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const rowHeight = 72;
+    const itemCount = 200;
+    const targetIndex = 5;
+    const targetEventId = `$row-${targetIndex}:example.invalid`;
+    const focusedKey = focusedTimelineKey(
+      "@alice:example.invalid",
+      "!room:example.invalid",
+      targetEventId
+    );
+    const rects: Record<string, { top: number; height: number }> = {};
+    for (let index = 0; index < itemCount; index += 1) {
+      rects[`$row-${index}:example.invalid`] = { top: index * rowHeight, height: rowHeight };
+    }
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+    // jsdom implements no scrollIntoView; the placement must not need it to
+    // reach the target, so a no-op is enough here.
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    render(
+      <TimelineView
+        timelineKey={focusedKey}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        listRefCallback={(element) => {
+          scrollContainerRef.current =
+            element?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null;
+        }}
+      />
+    );
+    const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "scrollHeight", {
+      value: itemCount * rowHeight,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: focusedKey,
+            generation: 1,
+            items: Array.from({ length: itemCount }, (_, index) =>
+              message(`$row-${index}:example.invalid`, `message ${index}`)
+            )
+          }
+        }
+      });
+    });
+
+    // The jump keeps its target mounted while it owns the viewport.
+    await waitFor(() => {
+      expect(timeline.querySelector(`[data-event-id="${targetEventId}"]`)).not.toBeNull();
+    });
+
+    // The reader then scrolls to the live edge; the focused target is history.
+    act(() => {
+      timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 40 }));
+      timeline.scrollTop = itemCount * rowHeight - 600;
+      fireEvent.scroll(timeline);
+    });
+    await waitFor(() => {
+      expect(
+        timeline.querySelector(`[data-event-id="$row-${itemCount - 1}:example.invalid"]`)
+      ).not.toBeNull();
+    });
+
+    expect(timeline.querySelector(`[data-event-id="${targetEventId}"]`)).toBeNull();
+    expect(timeline.querySelectorAll("[data-event-id]").length).toBeLessThanOrEqual(60);
+  });
+
+
+  it("places a thread pane's pinned reply that sits outside the mounted window", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const rowHeight = 72;
+    const itemCount = 100;
+    const targetIndex = 5;
+    const targetEventId = `$row-${targetIndex}:example.invalid`;
+    const threadKey = threadTimelineKey(
+      "@alice:example.invalid",
+      "!room:example.invalid",
+      "$thread-root:example.invalid"
+    );
+    const rects: Record<string, { top: number; height: number }> = {};
+    for (let index = 0; index < itemCount; index += 1) {
+      rects[`$row-${index}:example.invalid`] = { top: index * rowHeight, height: rowHeight };
+    }
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    render(
+      <TimelineView
+        presentationContext="thread"
+        timelineKey={threadKey}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        onOpenThread={vi.fn()}
+        initialTargetEventId={targetEventId}
+        listRefCallback={(element) => {
+          scrollContainerRef.current =
+            element?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null;
+        }}
+      />
+    );
+    const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "scrollHeight", {
+      value: itemCount * rowHeight,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: threadKey,
+            generation: 1,
+            items: Array.from({ length: itemCount }, (_, index) =>
+              message(`$row-${index}:example.invalid`, `reply ${index}`)
+            )
+          }
+        }
+      });
+    });
+
+    // The pane opens at the live edge, so the pinned reply starts outside the
+    // mounted window; the jump has to reach it through the height model.
+    await waitFor(() => {
+      expect(timeline.querySelector(`[data-event-id="${targetEventId}"]`)).not.toBeNull();
+    });
+    expect(scrollIntoView).toHaveBeenCalled();
   });
 
 
@@ -2496,9 +2829,15 @@ describe("TimelineView", () => {
       });
     });
 
-    // Wheel through history: each step mounts and measures rows, and the next
-    // step unmounts them before the scroll has settled.
-    for (const scrollTop of [2000, 5000]) {
+    // Settle the opening window, then wheel through history one screen at a
+    // time: each step mounts and measures rows and the next step unmounts them,
+    // so what the reader passed has to survive in the height cache rather than
+    // in the DOM.
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      await Promise.resolve();
+    });
+    for (let scrollTop = 10_320; scrollTop >= 0; scrollTop -= 600) {
       act(() => {
         fireEvent.wheel(timeline, { deltaY: 40 });
       });
@@ -2507,7 +2846,7 @@ describe("TimelineView", () => {
         fireEvent.scroll(timeline);
       });
       await act(async () => {
-        vi.advanceTimersByTime(16);
+        vi.advanceTimersByTime(200);
         await Promise.resolve();
       });
     }
@@ -2538,6 +2877,226 @@ describe("TimelineView", () => {
     expect(paddingTop).toBe(0);
     expect(renderedRows).toBeGreaterThan(0);
     expect(paddingTop + renderedRows * ROW_HEIGHT + paddingBottom).toBe(ROW_COUNT * ROW_HEIGHT);
+  });
+
+  it("commits a measured height above the anchor with the compensation, not on idle", async () => {
+    // #1890 §2.2: a row above the reader that measures shorter moves them, so
+    // its height has to land in the same pass as the anchor compensation. While
+    // the scroll is active the pass used to defer every commit, which is what
+    // made the position drift until the idle flush.
+    vi.useFakeTimers();
+    const { onScrollDiagnosticsChange, scrollTo, setRowHeight } = await mountTimedRoom(160);
+    const baseline = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    const baselineCommits = baseline?.heightModelCommits ?? 0;
+
+    // The reader scrolls into the middle of the room while the rows above them
+    // measure shorter than the 72 px estimate.
+    for (let index = 61; index <= 66; index += 1) {
+      setRowHeight(index, 40);
+    }
+    await scrollTo(4996);
+
+    const active = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    expect(active.heightModelCommits - baselineCommits).toBeGreaterThan(0);
+  });
+
+  it("leaves a measured height below the anchor to the idle commit and never moves the reader", async () => {
+    vi.useFakeTimers();
+    const { timeline, onScrollDiagnosticsChange, scrollTo, setRowHeight } =
+      await mountTimedRoom(160);
+    const baseline = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    const baselineCommits = baseline?.heightModelCommits ?? 0;
+
+    // The rows that measure shorter sit below the reader, so they only change
+    // the extent under them.
+    for (let index = 80; index <= 85; index += 1) {
+      setRowHeight(index, 40);
+    }
+    await scrollTo(4996);
+
+    const active = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    expect(active.heightModelCommits - baselineCommits).toBe(0);
+    expect(timeline.scrollTop).toBe(4996);
+
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      await Promise.resolve();
+    });
+    const settled = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    expect(settled.heightModelCommits - baselineCommits).toBeGreaterThan(0);
+    expect(timeline.scrollTop).toBe(4996);
+  });
+
+/**
+ * The height model's extent for the whole list, as the DOM shows it: both
+ * spacer blocks the model's padding plus the rows it mounted.
+ */
+function modelledExtent(timeline: HTMLElement): number {
+  const padding = Array.from(
+    timeline.querySelectorAll<HTMLElement>(".timeline-virtual-spacer")
+  ).reduce((total, spacer) => total + Number.parseFloat(spacer.style.blockSize || "0"), 0);
+  const measured = Array.from(timeline.querySelectorAll<HTMLElement>("[data-item-id]")).reduce(
+    (total, row) => total + row.getBoundingClientRect().height,
+    0
+  );
+  return padding + measured;
+}
+
+  it("sizes the room from its first measurements, not from the 72 px constant", async () => {
+    // #1890 §2.3: every unmeasured row starts at what the open measured. With
+    // the 72 px constant in a 48 px room the model is a third too tall, which is
+    // the padding the round-trip test reaches.
+    vi.useFakeTimers();
+    const rowHeight = 48;
+    const rowCount = 160;
+    const { timeline } = await mountTimedRoom(rowCount, rowHeight);
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      await Promise.resolve();
+    });
+
+    const extent = modelledExtent(timeline);
+    expect(extent).toBeGreaterThan(rowCount * rowHeight * 0.95);
+    expect(extent).toBeLessThan(rowCount * rowHeight * 1.05);
+  });
+
+  it("freezes a new estimate for a new timeline key", async () => {
+    vi.useFakeTimers();
+    const ROW_COUNT = 160;
+    const SHORT = 48;
+    const TALL = 120;
+    const roomKey = (roomId: string): TimelineKey =>
+      roomTimelineKey(KEY.account_key, roomId);
+    const rects: Record<string, { top: number; height: number }> = {};
+    for (let index = 0; index < ROW_COUNT; index += 1) {
+      rects[`$row${index}`] = { top: index * SHORT, height: SHORT };
+    }
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+    let listener: ((payload: CoreEventPayload) => void) | null = null;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        listener = nextListener;
+        return () => undefined;
+      }
+    });
+    const seed = (key: TimelineKey) =>
+      act(() => {
+        listener?.({
+          kind: "Timeline",
+          event: {
+            InitialItems: {
+              request_id: null,
+              key,
+              generation: 1,
+              items: Array.from({ length: ROW_COUNT }, (_, index) =>
+                message(`$row${index}`, `row ${index}`)
+              )
+            }
+          }
+        });
+      });
+    const renderRoom = (roomId: string) => (
+      <TimelineView
+        timelineKey={roomKey(roomId)}
+        roomId={roomId}
+        transport={transport}
+        onReply={vi.fn()}
+        listRefCallback={(element) => {
+          scrollContainerRef.current =
+            element?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null;
+        }}
+      />
+    );
+
+    const { rerender } = render(renderRoom("!short:example.invalid"));
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperties(timeline, {
+      scrollHeight: { value: ROW_COUNT * SHORT, writable: true, configurable: true },
+      clientHeight: { value: 600, configurable: true },
+      scrollTop: { value: 0, writable: true, configurable: true }
+    });
+    seed(roomKey("!short:example.invalid"));
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      await Promise.resolve();
+    });
+    expect(modelledExtent(timeline)).toBeLessThan(ROW_COUNT * SHORT * 1.05);
+
+    for (let index = 0; index < ROW_COUNT; index += 1) {
+      rects[`$row${index}`] = { top: index * TALL, height: TALL };
+    }
+    rerender(renderRoom("!tall:example.invalid"));
+    seed(roomKey("!tall:example.invalid"));
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      await Promise.resolve();
+    });
+
+    // A key change clears the measurement cache, so the new room has to freeze
+    // its own estimate instead of keeping the previous room's.
+    const extent = modelledExtent(timeline);
+    expect(extent).toBeGreaterThan(ROW_COUNT * TALL * 0.95);
+    expect(extent).toBeLessThan(ROW_COUNT * TALL * 1.05);
+  });
+
+  it("commits a scroll frame's window before the frame ends", async () => {
+    // #1890: a range set from a rAF is a default-lane update, so React renders
+    // it in a Scheduler task after paint and the frame shows the old window at
+    // the new scrollTop. That is the one-frame gap the round trip in
+    // `timeline-scroll-anchor-drift.spec.ts` counts. This runs the scroll and its
+    // frame outside `act` on purpose: a flush from `act` would hide the gap.
+    vi.useFakeTimers();
+    const ROW_HEIGHT = 48;
+    const ROW_COUNT = 120;
+    const CLIENT_HEIGHT = 600;
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const { timeline } = await mountTimedRoom(ROW_COUNT, ROW_HEIGHT);
+    const runFrames = () => {
+      for (const frame of frames.splice(0)) {
+        frame(0);
+      }
+    };
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      runFrames();
+      await Promise.resolve();
+    });
+
+    const mountedIndices = () =>
+      Array.from(timeline.querySelectorAll<HTMLElement>("[data-item-id]"))
+        .map((row) => Number.parseInt(row.dataset["itemId"]?.replace("$row", "-") ?? "", 10))
+        .map((value) => Math.abs(value))
+        .sort((a, b) => a - b);
+    const before = mountedIndices();
+    expect(before.length).toBeGreaterThan(0);
+
+    const newScrollTop = timeline.scrollTop - CLIENT_HEIGHT;
+    frames.length = 0;
+    // A wheel first: a bare scrollTop write is not user input, and the viewport
+    // would stay pinned to the live edge.
+    timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -40 }));
+    timeline.scrollTop = newScrollTop;
+    timeline.dispatchEvent(new Event("scroll"));
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames.splice(0)) {
+      frame(0);
+    }
+
+    const firstVisible = Math.floor(newScrollTop / ROW_HEIGHT);
+    const after = mountedIndices();
+    // The frame the reader is looking at has to be the window for the scrollTop
+    // it is scrolled to, not the one from before the wheel: the mounted range
+    // moves by the screen the scroll moved.
+    expect(Math.min(...after)).toBeLessThan(Math.min(...before));
+    expect(Math.min(...after)).toBeLessThanOrEqual(firstVisible);
+    expect(Math.max(...after)).toBeGreaterThanOrEqual(
+      firstVisible + Math.ceil(CLIENT_HEIGHT / ROW_HEIGHT) - 1
+    );
   });
 
   it("re-measures an edited row when it comes back into the window", async () => {
