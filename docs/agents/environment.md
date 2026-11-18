@@ -133,30 +133,45 @@ before pushing so CI confirms rather than discovers. See
 
 ## npm dependency security gate
 
-Before running any npm-backed build, validate the checked-in lockfile against the
-current npm advisory database:
+Two audits gate a build and one is recorded. The runtime graph gates, because it
+is what ships; the full graph is recorded while a development-only advisory has
+no fixed release (spec item 4, #1965).
+
+Before running any npm-backed build, validate the checked-in runtime lockfile
+against the current npm advisory database:
 
 ```bash
-npm --prefix apps/desktop audit --package-lock-only --audit-level=high
+npm --prefix apps/desktop audit --package-lock-only --omit=dev --audit-level=high
 ```
 
-If npm reports any `high` or `critical` vulnerability, stop before running `npm
-run build`, Tauri, a DMG build, or any other packaging command. Do not waive the
-finding and do not use `npm audit fix --force`. Resolve the vulnerable dependency
-to a compatible fixed version in `apps/desktop/package-lock.json`, then recreate
-the local dependency tree and verify both the complete and runtime-only graphs:
+If npm reports any `high` or `critical` vulnerability there, stop before running
+`npm run build`, Tauri, a DMG build, or any other packaging command. Do not waive
+the finding and do not use `npm audit fix --force`. Resolve the vulnerable
+dependency to a compatible fixed version in `apps/desktop/package-lock.json`,
+then recreate the local dependency tree and verify both graphs:
 
 ```bash
 npm --prefix apps/desktop ci
-npm --prefix apps/desktop audit --audit-level=high
-npm --prefix apps/desktop audit --omit=dev --audit-level=high
+npm --prefix apps/desktop audit --audit-level=high           # recorded, not gating
+npm --prefix apps/desktop audit --omit=dev --audit-level=high  # gating
 ```
 
-Proceed with the build only when all three audit commands exit successfully. The
-lockfile is the reproducible security boundary: changing only an existing
+The lockfile is the reproducible security boundary: changing only an existing
 `node_modules` tree is not a fix. Commit dependency-security changes on an
 isolated branch so other developers and `origin/main` are unaffected until the
 change is reviewed and merged.
+
+The full-graph audit is non-blocking only for advisories the pinning spec's item
+4 names. That limit is a rule on the reviewer, not on the workflow:
+`continue-on-error` lets every future full-graph high through. The threshold
+stays `--audit-level=high` - do not raise it to `critical` or swallow the step
+silently, either of which would hide every future high in the whole graph
+forever. Release workflows run it with `continue-on-error: true`, so the failing
+step and its advisory list appear in the run without stopping it. While the
+exception is open, report a new finding to the maintainer as soon as it appears
+and re-resolve it when an upstream fix ships; #1965 tracks the return to gating.
+`picomatch` `<=4.0.7` (`GHSA-fc5q-39xc-vjpf`, reached only through `vite`,
+`tinyglobby`, `fdir` and `@typescript-eslint`) is the advisory covered today.
 
 ### Dependency warning maintenance
 

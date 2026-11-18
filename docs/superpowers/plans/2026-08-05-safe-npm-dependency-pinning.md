@@ -12,7 +12,9 @@
 
 - Preserve incompatible dependency major lines.
 - Do not modify the global Node.js or npm installation.
-- Require zero production and development vulnerabilities from `npm audit` before building.
+- Require zero production and development vulnerabilities from `npm audit` before
+  building. Superseded in part: the spec's verification item 4 records a dated
+  development-advisory exception instead (#1965).
 - Fixed security floors: `brace-expansion` 2.1.4/5.0.9, `ip-address` 10.4.0, `postcss` 8.5.25, `undici` 6.28.0/7.29.0.
 
 ---

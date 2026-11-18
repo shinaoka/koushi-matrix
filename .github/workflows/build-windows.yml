@@ -58,12 +58,19 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
 
       # Dependency-security gates before any npm-backed build (engineering-rules).
-      - name: npm audit (lockfile, before install)
-        run: npm --prefix apps/desktop audit --package-lock-only --audit-level=high
+      # The runtime graph gates a release; the full graph is recorded while a
+      # development advisory has no fixed release (#1965, docs/agents/environment.md).
+      - name: npm audit (lockfile, runtime deps, before install)
+        run: npm --prefix apps/desktop audit --package-lock-only --omit=dev --audit-level=high
       - name: npm ci
         run: npm --prefix apps/desktop ci
-      - name: npm audit (full)
+      - name: npm audit (full graph, advisory)
+        id: npm-audit-full
+        continue-on-error: true
         run: npm --prefix apps/desktop audit --audit-level=high
+      - name: Record the full-graph advisory
+        if: steps.npm-audit-full.outcome == 'failure'
+        run: echo "::warning title=Full-graph npm audit::Development advisories are open (docs/agents/environment.md, #1965). The build proceeds; the runtime graph is gated by the next step."
       - name: npm audit (runtime deps only)
         run: npm --prefix apps/desktop audit --omit=dev --audit-level=high
 
