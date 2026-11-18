@@ -226,7 +226,7 @@ async fn windows_unread_stdout_does_not_block_the_command_deadline() {
             .expect("response");
     });
     let mut child = Command::new(env!("CARGO_BIN_EXE_koushi"))
-        .args(["accounts", "--json", "--timeout", "1", "--endpoint"])
+        .args(["list_accounts", "--json", "--timeout", "1", "--endpoint"])
         .arg(path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

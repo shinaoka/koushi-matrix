@@ -103,23 +103,23 @@ try {
     await writeSensitivePayloadToPath(login, JSON.stringify({ username: user, password }), 10000);
     const info = await ready(app);
     const endpoint = ["--endpoint", info.endpoint];
-    const accounts = await call(["accounts", ...endpoint]);
+    const accounts = await call(["list_accounts", ...endpoint]);
     check(accounts.result.accounts.some(account => account.account_id === info.account_id), "cli_qa_accounts");
-    const account = ["--account", info.account_id];
-    const rooms = await call(["rooms", ...account, ...endpoint]);
+    const account = ["--account-id", info.account_id];
+    const rooms = await call(["list_rooms", ...account, ...endpoint]);
     const room = rooms.result.rooms.find(room => room.name === "Synthetic CLI QA");
     check(room?.is_encrypted === true, "cli_qa_encrypted_room");
-    const messages = await call(["messages", ...account, "--room", room.room_id, ...endpoint]);
+    const messages = await call(["read_room_messages", ...account, "--room-id", room.room_id, ...endpoint]);
     const message = messages.result.messages.find(message => message.body === "SYNTHETIC_CLI_SEARCH_PROOF");
     check(message?.event_id, "cli_qa_read");
-    const single = await call(["message", ...account, "--room", room.room_id, "--event", message.event_id, ...endpoint]);
+    const single = await call(["get_message", ...account, "--room-id", room.room_id, "--event-id", message.event_id, ...endpoint]);
     check(single.result.body === "SYNTHETIC_CLI_SEARCH_PROOF" && single.result.is_encrypted, "cli_qa_message");
     // Indexing is asynchronous. Poll bounded reads until the fixture is indexed;
     // this is readiness observation, not rerunning a failed test/workflow.
     const deadline = Date.now() + 30000;
     let found = false;
     while (Date.now() < deadline) {
-        const search = await call(["search", ...account, "--room", room.room_id, "--query-stdin", ...endpoint], "SYNTHETIC_CLI_SEARCH_PROOF");
+        const search = await call(["search_messages", "--args-stdin", ...endpoint], JSON.stringify({ account_id: info.account_id, room_ids: [room.room_id], query: "SYNTHETIC_CLI_SEARCH_PROOF" }));
         found = search.result.results?.some(result => result.event_id === message.event_id);
         if (found)
             break;

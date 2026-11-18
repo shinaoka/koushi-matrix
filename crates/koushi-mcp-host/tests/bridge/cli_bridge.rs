@@ -214,3 +214,67 @@ async fn first_cli_read_requires_an_in_app_answer_and_denial_returns_no_data() {
     }
     bridge.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cli_read_grant_admits_no_write_tool() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("app");
+    let accounts = cores(dir.path()).await;
+    let broker = ConsentBroker::new(data.clone(), ConsentMode::FailClosed);
+    let bridge = koushi_mcp_host::start(accounts, data.clone(), broker.clone()).expect("bridge");
+    broker
+        .set_permission("koushi-cli", FIRST, Need::Read, true)
+        .await
+        .expect("read grant");
+    let mut cli = connect(&data, "koushi-cli").await;
+    assert_eq!(
+        rooms(&mut cli, FIRST).await["structuredContent"]["rooms"][0]["room_id"],
+        "!first:example.invalid"
+    );
+    let room = "!first:example.invalid";
+    let event = "$event:example.invalid";
+    for (tool, arguments) in [
+        (
+            "send_message",
+            json!({"account_id":FIRST,"room_id":room,"body":"Synthetic body","client_request_id":"synthetic-request-1"}),
+        ),
+        (
+            "send_thread_reply",
+            json!({"account_id":FIRST,"room_id":room,"thread_root_event_id":event,"body":"Synthetic body","client_request_id":"synthetic-request-2"}),
+        ),
+        (
+            "draft_message",
+            json!({"account_id":FIRST,"room_id":room,"body":"Synthetic body"}),
+        ),
+        (
+            "react_to_message",
+            json!({"account_id":FIRST,"room_id":room,"event_id":event,"key":"+1"}),
+        ),
+        (
+            "delete_message",
+            json!({"account_id":FIRST,"room_id":room,"event_id":event}),
+        ),
+        (
+            "edit_message",
+            json!({"account_id":FIRST,"room_id":room,"event_id":event,"body":"Synthetic body","client_request_id":"synthetic-request-3"}),
+        ),
+        (
+            "unreact_to_message",
+            json!({"account_id":FIRST,"room_id":room,"event_id":event,"key":"+1"}),
+        ),
+    ] {
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            cli.call("tools/call", json!({"name":tool,"arguments":arguments})),
+        )
+        .await
+        .expect("bounded call")
+        .expect("host reply");
+        assert_eq!(response["isError"], true, "{tool}");
+        assert_eq!(
+            response["structuredContent"]["error"]["code"], "consent_required",
+            "{tool}"
+        );
+    }
+    bridge.shutdown().await;
+}

@@ -15,6 +15,8 @@ export const ALLOWED_NON_RUST_TARGETS = new Set([
   // Synthetic Element-compatibility fixtures for the room-history export (#59).
   "crates/koushi-core/tests/fixtures/room_history_export/source_events.json",
   "crates/koushi-core/tests/fixtures/room_history_export/element_expected.json",
+  // The generated koushi CLI surface, pinned as a reviewable diff.
+  "crates/koushi-mcp/tests/cli/surface.golden.txt",
   // Synthetic website search corpus and its golden results.
   "site/fixtures/search-corpus.json",
   "site/generated/search-scenes.json"

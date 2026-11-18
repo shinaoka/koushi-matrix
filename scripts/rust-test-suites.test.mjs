@@ -11,6 +11,7 @@ const layouts = [
   ["koushi-sdk", ["sdk"], []],
   ["koushi-core", ["core"], []],
   ["koushi-core-testkit", ["contracts", "runtime"], ["runtime_navigation", "stack_budget"]],
+  ["koushi-mcp", ["cli"], ["ipc_roundtrip", "room_messages_schema", "transport_security"]],
   ["koushi-mcp-host", ["bridge"], []],
 ];
 

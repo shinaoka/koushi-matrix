@@ -1,107 +1,63 @@
-//! The shipped CLI process, not a second implementation of its parser/renderer.
-use std::process::{Command, Stdio};
+//! Reads, input bounds, deadlines, output safety, and cancellation.
+use crate::support::cli;
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-fn cli() -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_koushi"));
-    command.stdin(Stdio::null());
-    command
-}
-
 #[test]
-fn help_is_available_without_the_app() {
-    let output = cli().arg("--help").output().expect("help process");
-    assert!(output.status.success());
-    let help = String::from_utf8(output.stdout).expect("help utf8");
-    assert!(help.contains("--query-stdin"));
-    assert!(help.contains("scrollback"));
-    assert!(output.stderr.is_empty());
-}
-
-#[test]
-fn help_documents_each_section_an_agent_needs() {
-    let output = cli().arg("--help").output().expect("help process");
-    let help = String::from_utf8(output.stdout).expect("help utf8");
-    for section in [
-        "NAME",
-        "DESCRIPTION",
-        "INSTRUCTIONS",
-        "SYNOPSIS",
-        "COMMANDS",
-        "OPTIONS",
-        "STDIN",
-        "EXIT STATUS",
-        "ENVIRONMENT",
-        "EXAMPLES",
-        "OUTPUT",
-    ] {
-        // A heading is a whole line, including the first line.
-        assert!(
-            format!("\n{help}").contains(&format!("\n{section}\n")),
-            "missing {section}"
-        );
-    }
-    // Pagination continues only through these documented result fields.
-    assert!(help.contains("result.next_cursor"));
-    // A whole line, so the `result.next_cursor` mention above cannot satisfy it.
-    assert!(help.contains("result.next\n"), "missing result.next");
-}
-
-#[test]
-fn only_a_leading_help_is_a_command_and_help_after_one_is_a_usage_error() {
-    // `help` is a word, not a flag, so it is only recognized first. The help
-    // text says so; this pins that the text and the parser agree.
-    let output = cli()
-        .args(["rooms", "help"])
-        .output()
-        .expect("rejected process");
-    assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
-    assert_eq!(output.stderr, b"koushi: usage_error\n");
-}
-
-#[test]
-fn help_after_a_command_prints_help_without_connecting() {
+fn rejects_bad_usage_and_private_text_in_argv_without_echo() {
+    const ACCOUNT: &str = "account:@member1:example.invalid";
     for args in [
-        vec!["search", "--help"],
-        vec![
-            "rooms",
-            "--account",
-            "account:@member1:example.invalid",
-            "-h",
-        ],
-        vec!["help"],
-    ] {
-        let output = cli().args(&args).output().expect("help process");
-        assert!(output.status.success(), "{args:?}");
-        let help = String::from_utf8(output.stdout).expect("help utf8");
-        assert!(help.contains("SYNOPSIS"), "{args:?}");
-        assert!(output.stderr.is_empty(), "{args:?}");
-    }
-}
-
-#[test]
-fn rejects_writes_missing_accounts_and_sensitive_query_argv_without_echo() {
-    for args in [
+        // The retired short verbs are not commands.
         vec!["send", "--body", "SYNTHETIC_PRIVATE_PAYLOAD"],
-        vec!["rooms"],
+        vec!["rooms", "--account", ACCOUNT],
+        // A schema-required property is enforced.
+        vec!["list_rooms"],
+        // Stray positional words and unknown options.
         vec![
-            "search",
-            "--account",
-            "account:@member1:example.invalid",
+            "search_messages",
+            "--account-id",
+            ACCOUNT,
             "SYNTHETIC_PRIVATE_PAYLOAD",
         ],
-        vec!["accounts", "--client-name", "codex"],
+        vec!["list_accounts", "--client-name", "codex"],
+        // Private text has no option: it enters only through --args-stdin.
         vec![
-            "rooms",
-            "--account",
-            "account:@member1:example.invalid",
-            "--limit",
-            "201",
+            "search_messages",
+            "--account-id",
+            ACCOUNT,
+            "--query",
+            "SYNTHETIC_PRIVATE_PAYLOAD",
         ],
+        // Schema bounds and types are checked before connecting.
+        vec!["list_rooms", "--account-id", ACCOUNT, "--limit", "201"],
+        vec![
+            "list_rooms",
+            "--account-id",
+            ACCOUNT,
+            "--limit",
+            "SYNTHETIC_PRIVATE_PAYLOAD",
+        ],
+        // A scalar option given twice.
+        vec![
+            "list_rooms",
+            "--account-id",
+            ACCOUNT,
+            "--account-id",
+            ACCOUNT,
+        ],
+        // A boolean option is a flag and takes no value.
+        vec![
+            "list_rooms",
+            "--account-id",
+            ACCOUNT,
+            "--unread-only",
+            "true",
+        ],
+        // --args-stdin carries the whole argument object.
+        vec!["list_rooms", "--args-stdin", "--account-id", ACCOUNT],
     ] {
-        let output = cli().args(args).output().expect("rejected process");
-        assert_eq!(output.status.code(), Some(2));
+        let output = cli().args(&args).output().expect("rejected process");
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
         assert!(output.stdout.is_empty());
         assert_eq!(output.stderr, b"koushi: usage_error\n");
     }
@@ -111,7 +67,7 @@ fn rejects_writes_missing_accounts_and_sensitive_query_argv_without_echo() {
 fn unavailable_app_has_a_stable_code_and_no_raw_path() {
     let dir = tempfile::tempdir().expect("tempdir");
     let output = cli()
-        .args(["accounts", "--json", "--endpoint"])
+        .args(["list_accounts", "--json", "--endpoint"])
         .arg(dir.path().join("SYNTHETIC_PRIVATE_PATH"))
         .output()
         .expect("unavailable process");
@@ -123,14 +79,7 @@ fn unavailable_app_has_a_stable_code_and_no_raw_path() {
 #[test]
 fn a_deadline_exits_even_when_stdin_is_open_without_eof() {
     let mut child = cli()
-        .args([
-            "search",
-            "--account",
-            "account:@member1:example.invalid",
-            "--query-stdin",
-            "--timeout",
-            "1",
-        ])
+        .args(["search_messages", "--args-stdin", "--timeout", "1"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -157,119 +106,43 @@ fn a_deadline_exits_even_when_stdin_is_open_without_eof() {
 }
 
 #[test]
-fn oversized_query_input_is_rejected_without_output_or_connection() {
+fn oversized_or_malformed_argument_input_is_rejected_without_output_or_connection() {
     use std::io::Write;
-    let mut child = cli()
-        .args([
-            "search",
-            "--account",
-            "account:@member1:example.invalid",
-            "--query-stdin",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn");
-    let _ = child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(&vec![b'q'; 16 * 1024 + 1]);
-    let output = child.wait_with_output().expect("output");
-    assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
-    assert_eq!(output.stderr, b"koushi: usage_error\n");
+    // The bound is the bridge frame, so any argument object MCP accepts fits.
+    let oversized = vec![b'q'; koushi_mcp::wire::MAX_FRAME_BYTES + 1];
+    for input in [
+        oversized.as_slice(),
+        b"SYNTHETIC_PRIVATE_PAYLOAD",
+        b"[\"SYNTHETIC_PRIVATE_PAYLOAD\"]",
+        b"{\"account_id\":\"account:@member1:example.invalid\"}",
+        b"{\"account_id\":\"account:@member1:example.invalid\",\"query\":\"q\",\"limit\":0}",
+        b"\xff\xfe",
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut child = cli()
+            .args(["search_messages", "--args-stdin", "--endpoint"])
+            .arg(dir.path().join("endpoint.json"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn");
+        let _ = child.stdin.take().expect("stdin").write_all(input);
+        let output = child.wait_with_output().expect("output");
+        // Exit 2, not 3: the input is refused before any connection attempt.
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, b"koushi: usage_error\n");
+    }
 }
 
 #[cfg(unix)]
 mod unix {
     use super::*;
-    use koushi_mcp::wire::{
-        ClientMessage, PROTOCOL_VERSION, ServerMessage, decode_line, encode_line,
-    };
+    use crate::support::app;
     use serde_json::{Value, json};
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::fs::PermissionsExt;
-    use std::os::unix::net::UnixListener;
-
-    fn app(
-        reply: Value,
-    ) -> (
-        tempfile::TempDir,
-        std::path::PathBuf,
-        std::thread::JoinHandle<Value>,
-        std::sync::mpsc::Receiver<()>,
-    ) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let socket = dir.path().join("mcp.sock");
-        let endpoint = dir.path().join("endpoint.json");
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
-            .expect("private directory");
-        let listener = UnixListener::bind(&socket).expect("bind");
-        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
-            .expect("socket mode");
-        std::fs::write(&endpoint, json!({"schema":1,"endpoint":socket,"token":"synthetic-token","pid":1,"app_version":"0"}).to_string()).expect("endpoint");
-        std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o600)).expect("mode");
-        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-        let thread = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept");
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .expect("timeout");
-            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
-            let mut line = String::new();
-            reader.read_line(&mut line).expect("hello");
-            let ClientMessage::Hello {
-                token,
-                client,
-                protocol,
-            } = decode_line(&line).expect("hello json")
-            else {
-                panic!("hello shape")
-            };
-            assert_eq!(token, "synthetic-token");
-            assert_eq!(client.name, "koushi-cli");
-            assert_eq!(protocol, PROTOCOL_VERSION);
-            stream
-                .write_all(
-                    encode_line(&ServerMessage::HelloOk {
-                        protocol: PROTOCOL_VERSION,
-                        connection_id: "fixture".into(),
-                        app_version: "0".into(),
-                    })
-                    .expect("encode")
-                    .as_bytes(),
-                )
-                .expect("hello response");
-            line.clear();
-            reader.read_line(&mut line).expect("request");
-            let ClientMessage::Request { id, method, params } =
-                decode_line(&line).expect("request json")
-            else {
-                panic!("request shape")
-            };
-            assert_eq!(method, "tools/call");
-            ready_tx.send(()).expect("request ready");
-            if reply.is_null() {
-                let mut byte = [0u8; 1];
-                assert_eq!(
-                    std::io::Read::read(&mut stream, &mut byte).expect("disconnected"),
-                    0
-                );
-                return params;
-            }
-            stream
-                .write_all(
-                    encode_line(&ServerMessage::success(id, reply))
-                        .expect("encode")
-                        .as_bytes(),
-                )
-                .expect("response");
-            params
-        });
-        (dir, endpoint, thread, ready_rx)
-    }
+    use std::io::Write;
+    use std::process::Command;
 
     #[test]
     fn reads_use_the_explicit_account_and_all_strings_are_terminal_safe() {
@@ -281,13 +154,14 @@ mod unix {
             let mut command = cli();
             command
                 .args([
-                    "rooms",
-                    "--account",
+                    "list_rooms",
+                    "--account-id",
                     "account:@member2:example.invalid",
                     "--limit",
                     "5",
                     "--cursor",
                     "next",
+                    "--unread-only",
                     "--endpoint",
                 ])
                 .arg(endpoint);
@@ -309,26 +183,18 @@ mod unix {
             let request = server.join().expect("server");
             assert_eq!(
                 request,
-                json!({"name":"list_rooms","arguments":{"account_id":"account:@member2:example.invalid","limit":5,"cursor":"next"}})
+                json!({"name":"list_rooms","arguments":{"account_id":"account:@member2:example.invalid","limit":5,"cursor":"next","unread_only":true}})
             );
         }
     }
 
     #[test]
-    fn search_reads_query_from_stdin_and_remote_error_details_never_print() {
+    fn search_reads_its_argument_object_from_stdin_and_remote_error_details_never_print() {
         let (_dir, endpoint, server, _ready) = app(
             json!({"isError":true,"structuredContent":{"error":{"code":"not_permitted","message":"SYNTHETIC_PRIVATE_PAYLOAD"}}}),
         );
         let mut child = cli()
-            .args([
-                "search",
-                "--account",
-                "account:@member1:example.invalid",
-                "--room",
-                "!room:example.invalid",
-                "--query-stdin",
-                "--endpoint",
-            ])
+            .args(["search_messages", "--args-stdin", "--endpoint"])
             .arg(endpoint)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -339,9 +205,9 @@ mod unix {
             .stdin
             .take()
             .expect("stdin")
-            // The help promises every trailing CR and LF is removed, not one
-            // line ending.
-            .write_all(b"SYNTHETIC_PRIVATE_QUERY\r\n\n\r\n")
+            .write_all(
+                br#"{"account_id":"account:@member1:example.invalid","query":"SYNTHETIC_PRIVATE_QUERY","room_ids":["!room:example.invalid"]}"#,
+            )
             .expect("query");
         let output = child.wait_with_output().expect("output");
         assert_eq!(output.status.code(), Some(5));
@@ -354,6 +220,101 @@ mod unix {
     }
 
     #[test]
+    fn a_blank_query_reaches_the_app_untrimmed() {
+        // The first CLI trimmed the query and refused a blank one locally
+        // (exit 2). Koushi now owns that rule, so the call goes through.
+        let (_dir, endpoint, server, _ready) =
+            app(json!({"isError":true,"structuredContent":{"error":{"code":"unsupported"}}}));
+        let mut child = cli()
+            .args(["search_messages", "--args-stdin", "--endpoint"])
+            .arg(endpoint)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(br#"{"account_id":"account:@member1:example.invalid","query":"   "}"#)
+            .expect("query");
+        let output = child.wait_with_output().expect("output");
+        assert_eq!(output.status.code(), Some(6));
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, b"koushi: unsupported\n");
+        assert_eq!(
+            server.join().expect("server")["arguments"],
+            json!({"account_id":"account:@member1:example.invalid","query":"   "})
+        );
+    }
+
+    #[test]
+    fn repeated_options_fill_arrays_in_order() {
+        let args = [
+            "read_recent_activity",
+            "--account-id",
+            "account:@member1:example.invalid",
+            "--room-ids",
+            "!b:example.invalid",
+            "--room-ids",
+            "!a:example.invalid",
+            "--from-timestamp-ms",
+            "0",
+        ];
+        let (_dir, endpoint, server, _ready) = app(json!({"isError":false,"structuredContent":{}}));
+        let output = cli()
+            .args(args)
+            .arg("--endpoint")
+            .arg(endpoint)
+            .output()
+            .expect("run");
+        assert!(output.status.success(), "{args:?}");
+        assert_eq!(
+            server.join().expect("server")["arguments"],
+            json!({"account_id":"account:@member1:example.invalid","room_ids":["!b:example.invalid","!a:example.invalid"],"from_timestamp_ms":0})
+        );
+    }
+
+    #[test]
+    fn a_maximal_room_list_fits_on_the_command_line() {
+        let rooms: Vec<String> = (0..64)
+            .map(|index| format!("!r{index}:example.invalid"))
+            .collect();
+        let mut args = vec![
+            "read_recent_activity".to_owned(),
+            "--account-id".to_owned(),
+            "account:@member1:example.invalid".to_owned(),
+            "--limit".to_owned(),
+            "100".to_owned(),
+            "--from-timestamp-ms".to_owned(),
+            "0".to_owned(),
+            "--to-timestamp-ms".to_owned(),
+            "1".to_owned(),
+            "--cursor".to_owned(),
+            "synthetic-cursor".to_owned(),
+            "--json".to_owned(),
+            "--timeout".to_owned(),
+            "20".to_owned(),
+        ];
+        for room in &rooms {
+            args.extend(["--room-ids".to_owned(), room.clone()]);
+        }
+        let (_dir, endpoint, server, _ready) = app(json!({"isError":false,"structuredContent":{}}));
+        let output = cli()
+            .args(&args)
+            .arg("--endpoint")
+            .arg(endpoint)
+            .output()
+            .expect("run");
+        assert!(output.status.success());
+        assert_eq!(
+            server.join().expect("server")["arguments"]["room_ids"],
+            json!(rooms)
+        );
+    }
+
+    #[test]
     fn pretty_output_expansion_is_bounded_before_any_stdout() {
         let mut result = Value::Array(vec![Value::Null; 100000]);
         for _ in 0..100 {
@@ -362,7 +323,7 @@ mod unix {
         let (_dir, endpoint, server, _ready) =
             app(json!({"isError":false,"structuredContent":result}));
         let output = cli()
-            .args(["accounts", "--endpoint"])
+            .args(["list_accounts", "--endpoint"])
             .arg(endpoint)
             .output()
             .expect("run");
@@ -379,7 +340,7 @@ mod unix {
         let (_dir, endpoint, server, _ready) =
             app(json!({"isError":false,"structuredContent":{"accounts":[]}}));
         let mut child = cli()
-            .args(["accounts", "--endpoint"])
+            .args(["list_accounts", "--endpoint"])
             .arg(endpoint)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -400,7 +361,7 @@ mod unix {
                 app(json!({"isError":false,"structuredContent":{"body":"x".repeat(500000)}}));
             let mut command = cli();
             command
-                .args(["accounts", "--json", "--endpoint"])
+                .args(["list_accounts", "--json", "--endpoint"])
                 .arg(endpoint);
             if !interrupt {
                 command.args(["--timeout", "1"]);
@@ -452,7 +413,7 @@ mod unix {
     fn ctrl_c_closes_the_active_socket_and_terminates() {
         let (_dir, endpoint, server, ready) = app(Value::Null);
         let mut child = cli()
-            .args(["accounts", "--endpoint"])
+            .args(["list_accounts", "--endpoint"])
             .arg(endpoint)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

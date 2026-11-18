@@ -18,7 +18,7 @@ const ROOM_NAME: &str = "Synthetic CLI QA";
 /// Room creation and the send each settle on their own HTTP response. The SDK
 /// lists a created room at once and its encryption state is fetched on demand,
 /// but the room name reaches the room list only through Sliding Sync, so
-/// neither acknowledgement means `koushi rooms` can find the room yet.
+/// neither acknowledgement means `koushi list_rooms` can find the room yet.
 /// Seeding withholds sync responses so that gap is open on every run rather
 /// than only on a slow machine, then waits for the room-list projection.
 pub(super) async fn seed(
