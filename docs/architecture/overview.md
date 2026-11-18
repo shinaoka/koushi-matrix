@@ -1921,6 +1921,16 @@ unavailable target explains itself in the existing navigation failure surface
 while the room is already selected; deletion, leaving the room, and unloaded
 history therefore never leave the user in an unrelated room.
 
+The webview holds a click pending until the owning tab publishes a ready
+snapshot whose `account_tab_id` still matches that tab, then opens the target
+once. A room, Space, or account tab the user selects is newer than a click still
+waiting for that snapshot, so the pending activation is retired instead of
+letting a later snapshot navigate away from the selection (#1953). Every command
+the activation issues names the `native_notification` navigation origin, and
+carries the Rust-minted `activation_id` — a process-local ordinal, never an
+account, room, or event — that joins the click's receipt to the navigation it
+caused.
+
 Activation is local to the running application. A notification shown by a
 terminated app no longer has a waiter, so clicking it only relaunches Koushi;
 the app does not navigate. That limitation is the supported behavior and is

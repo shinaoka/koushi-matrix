@@ -155,6 +155,12 @@ export function applyDeltaToState(
     return null;
   }
   const next: DesktopSnapshot = {
+    // #1953: a delta never carries the account scope, so it must be carried
+    // forward. Dropping it made the renderer unable to tell whether a snapshot
+    // still belonged to the tab it was rendering, which left deferred
+    // notification activations waiting for a stamp that only a full snapshot
+    // could restore.
+    account_tab_id: previous.account_tab_id,
     state_generation: delta.generation,
     state: applyStateDelta(previous.state, delta.changed.state),
     sidebar: delta.changed.sidebar ?? previous.sidebar,

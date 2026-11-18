@@ -1189,6 +1189,34 @@ describe("appStore projection cache", () => {
     expect(applyDeltaToState(previous, delta)).toEqual(applySnapshotToState(previous, next));
   });
 
+  // #1953: a delta carries no account scope of its own, so it must keep the one
+  // the backing snapshot declared. Dropping it made the renderer unable to tell
+  // whether a snapshot still belonged to the tab it rendered, which left a
+  // deferred notification activation waiting for an unrelated full snapshot.
+  test("a delta keeps the account scope the snapshot declared (#1953)", () => {
+    const snapshot = makeSnapshot();
+    snapshot.account_tab_id = "harness-account-tab";
+    setAppStoreSnapshot(snapshot);
+
+    expect(
+      applyAppStoreDelta({
+        generation: 1,
+        changed: {
+          state: {
+            domain: {
+              sync: { reconnecting: "network_offline" }
+            }
+          }
+        }
+      })
+    ).toBe(true);
+
+    expect(getAppStoreSnapshot()?.account_tab_id).toBe("harness-account-tab");
+    expect(getAppStoreSnapshot()?.state.domain.sync).toEqual({
+      reconnecting: "network_offline"
+    });
+  });
+
   test("ignores stale deltas after a full snapshot reset without applying or refreshing", () => {
     const snapshot = makeSnapshot();
     snapshot.state_generation = 4;

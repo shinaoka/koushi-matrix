@@ -703,8 +703,16 @@ export class TauriDesktopApi implements DesktopApi {
     return this.invokeCommand<CommandAdmission>("reorder_spaces", { spaceIds });
   }
 
-  async selectRoom(roomId: string, input?: import("./desktopApi").NavigationInput): Promise<CommandSettlement> {
-    return this.invokeCommand<CommandSettlement>("select_room", { roomId, ...(input ? { input } : {}) });
+  async selectRoom(
+    roomId: string,
+    input?: import("./desktopApi").NavigationInput,
+    activationId?: number
+  ): Promise<CommandSettlement> {
+    return this.invokeCommand<CommandSettlement>("select_room", {
+      roomId,
+      ...(input ? { input } : {}),
+      ...(activationId !== undefined ? { activationId } : {})
+    });
   }
 
   async beginComposerDraftRendererGeneration(): Promise<string> {
@@ -1339,8 +1347,16 @@ export class TauriDesktopApi implements DesktopApi {
     return this.invokeCommand<CommandSettlement>("open_pinned_event", { roomId, eventId });
   }
 
-  async openNotificationEvent(roomId: string, eventId: string): Promise<CommandSettlement> {
-    return this.invokeCommand<CommandSettlement>("open_notification_event", { roomId, eventId });
+  async openNotificationEvent(
+    roomId: string,
+    eventId: string,
+    activationId?: number
+  ): Promise<CommandSettlement> {
+    return this.invokeCommand<CommandSettlement>("open_notification_event", {
+      roomId,
+      eventId,
+      ...(activationId !== undefined ? { activationId } : {})
+    });
   }
 
   async openReplyQuoteEvent(roomId: string, eventId: string): Promise<CommandSettlement> {

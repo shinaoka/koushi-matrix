@@ -190,6 +190,10 @@ carry tokens and counts only. The full prohibited list is in
   snapshot (`state_generation`), timeline-store reset, and timeline replay before
   later deltas apply. A command generation ahead of appStore triggers one
   deterministic snapshot resync; it is not proof of renderer receipt or paint.
+- A delta carries changed slices only, never `account_tab_id`, so the merge must
+  carry the previous stamp forward. Dropping it left the renderer unable to tell
+  whether a snapshot still belonged to the tab it rendered, and a deferred
+  notification activation then waited for an unrelated full snapshot (#1953).
 - Tauri Channels are high-frequency only and measurement-gated. Keep crawler,
   typing, receipt, and presence semantics Rust-owned; a Channel transports Rust
   projections, not React-local state.

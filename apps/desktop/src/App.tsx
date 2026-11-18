@@ -926,6 +926,16 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
     };
   }, [applyAccountTabs]);
 
+  /**
+   * #1953: an explicit account selection is newer than any notification
+   * activation still waiting for its tab, so retire that activation first. The
+   * activation's own tab switch goes through {@link selectAccountTab} directly.
+   */
+  async function selectAccountTabFromUser(tabId: string): Promise<void> {
+    setPendingNotificationActivation(null);
+    await selectAccountTab(tabId);
+  }
+
   async function drainBeforeAccountSwitch(previous: string | null, next: string | null): Promise<boolean> {
     if (previous === null || previous === next) return true;
     return beforeAccountSwitchRef.current();
@@ -1081,7 +1091,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
       selectedAccountTabId={selectedTabId}
       accountScopedContentReady={accountScopedContentReady}
       platform={selectedSnapshot?.state.domain.locale_profile.platform}
-      onSelectAccountTab={selectAccountTab}
+      onSelectAccountTab={selectAccountTabFromUser}
       onAddAccountTab={addAccountTab}
       onRemoveSignedOutAccountTab={removeSignedOutAccountTab}
       onAccountTabAction={handleAccountTabAction}
@@ -1097,7 +1107,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           onNotificationActivationConsumed={consumeNotificationActivation}
           onNotificationActivated={receiveNotificationActivation}
           onRegisterBeforeAccountSwitch={registerBeforeAccountSwitch}
-          onSelectAccountTab={selectAccountTab}
+          onSelectAccountTab={selectAccountTabFromUser}
           onAddAccountTab={addAccountTab}
           onRemoveSignedOutAccountTab={removeSignedOutAccountTab}
           onAccountTabAction={handleAccountTabAction}
@@ -2030,6 +2040,32 @@ function AccountContent({
   const appendDiagnosticLog = useCallback((entry: TimelineDiagnosticLogEntry) => {
     diagnosticLogBuffer.append(entry);
   }, [diagnosticLogBuffer]);
+  /**
+   * #1953: a room, Space, account, or Home surface the user picks now is newer
+   * than an activation still waiting for its account's ready snapshot. Retire
+   * the activation so a late snapshot cannot navigate away from the selection.
+   *
+   * Only an input the user produced counts for a room or Space selection: a
+   * programmatic one is a restored or settled projection (the initial Home
+   * restore), not a newer intent.
+   *
+   * shortcut: event-navigation commands (activity rows, search results, pinned
+   * events, reply quotes) do not retire it; #1953 scopes retirement to the
+   * selection surface. Add them here when a stale click overrides one of them.
+   */
+  function retireDeferredNotificationActivation(
+    input: import("./backend/desktopApi").NavigationInput
+  ): void {
+    if (input === "programmatic" || !pendingNotificationActivation) {
+      return;
+    }
+    appendDiagnosticLog({
+      timestampMs: Date.now(),
+      source: "attention.notification_activation",
+      message: "stage=retired reason=newer_navigation"
+    });
+    onNotificationActivationConsumed(pendingNotificationActivation);
+  }
   const appendComposerSubmitDiagnostic = useCallback(
     (surface: "main" | "thread", stage: string, details: string) => {
       appendDiagnosticLog({
@@ -4106,7 +4142,7 @@ function AccountContent({
         (candidate) => candidate.room_id === selection.room_id && candidate.is_dm
       );
       if (room) {
-        await selectRoom(selection.room_id);
+        await selectRoom(selection.room_id, input);
         return;
       }
     }
@@ -4143,6 +4179,7 @@ function AccountContent({
   );
 
   async function selectSpace(spaceId: string | null, input: import("./backend/desktopApi").NavigationInput = "programmatic") {
+    retireDeferredNotificationActivation(input);
     setContextMenu(null);
     invalidatePeoplePanelForNavigation();
     if (spaceId === null) {
@@ -4163,6 +4200,7 @@ function AccountContent({
   }
 
   async function selectRoom(roomId: string, input: import("./backend/desktopApi").NavigationInput = "programmatic"): Promise<boolean> {
+    retireDeferredNotificationActivation(input);
     setContextMenu(null);
     const transitionStartedAt = Date.now();
     const selectedRoom = snapshot?.state.domain.rooms.find((room) => room.room_id === roomId);
@@ -4321,16 +4359,22 @@ function AccountContent({
   }
 
   async function openHomeActivityView(trigger: ActivityOpenTrigger = "activity_sidebar", input: import("./backend/desktopApi").NavigationInput = "programmatic") {
+    // Reached only from the sidebar and the Space rail: both are the user's own
+    // selection, so the input gate that protects programmatic restores does not
+    // apply here.
+    retireDeferredNotificationActivation("pointer");
     setHomeSelection({ kind: "activity" });
     await openHomeSelection({ kind: "activity" }, trigger, input);
   }
 
   async function openHomeExploreView() {
+    retireDeferredNotificationActivation("pointer");
     setHomeSelection({ kind: "explore" });
     await openHomeSelection({ kind: "explore" });
   }
 
   async function openHomeInvitesView() {
+    retireDeferredNotificationActivation("pointer");
     setHomeSelection({ kind: "invites" });
     await openHomeSelection({ kind: "invites" });
   }
@@ -5923,11 +5967,14 @@ function AccountContent({
   // replies and the notification navigation source for main-timeline events,
   // so an unavailable target is explained instead of silently landing at the
   // live edge. Rust decided the target and fenced the session before emitting
-  // the activation.
+  // the activation. Every command carries the activation origin and the
+  // Rust-minted activation ordinal, so the navigation ledger and diagnostics
+  // attribute the selection to this click without naming a room or account.
   async function openNotificationTarget(target: DesktopNotificationActivation) {
     const activation = desktopNotificationActivationPlan(target);
     if (accountTabId === null || activation.accountTabId !== accountTabId) return;
     const targetApi = api;
+    const activationId = target.activation_id;
     setPrimaryView("timeline");
     const plan = activation.target;
     if (plan.kind === "thread") {
@@ -5935,7 +5982,7 @@ function AccountContent({
         ? getAppStoreSnapshot()?.state.ui.navigation.active_room_id
         : null;
       if (activeRoomId !== plan.roomId) {
-        await settleCommand(targetApi.selectRoom(plan.roomId));
+        await settleCommand(targetApi.selectRoom(plan.roomId, "notification", activationId));
       }
       await settleCommand(targetApi.openThread(plan.roomId, plan.rootEventId, {
         pinnedReply: { event_id: plan.eventId }
@@ -5945,11 +5992,13 @@ function AccountContent({
     }
 
     if (plan.kind === "event") {
-      await settleCommand(targetApi.openNotificationEvent(plan.roomId, plan.eventId));
+      await settleCommand(
+        targetApi.openNotificationEvent(plan.roomId, plan.eventId, activationId)
+      );
       return;
     }
 
-    await settleCommand(targetApi.selectRoom(plan.roomId));
+    await settleCommand(targetApi.selectRoom(plan.roomId, "notification", activationId));
   }
 
   useEffect(() => {
@@ -7193,12 +7242,14 @@ function AccountContent({
       }
     };
 
+    // A context-menu entry is a pointer selection, not an internal projection:
+    // say so, so the navigation ledger and the pending-activation rule see it.
     if (intent.selectRoomId) {
-      runInBackground(selectRoom(intent.selectRoomId).then(() => applyIntentMode()));
+      runInBackground(selectRoom(intent.selectRoomId, "pointer").then(() => applyIntentMode()));
       return;
     }
     if (intent.selectSpaceId) {
-      runInBackground(selectSpace(intent.selectSpaceId).then(() => applyIntentMode()));
+      runInBackground(selectSpace(intent.selectSpaceId, "pointer").then(() => applyIntentMode()));
       return;
     }
     runInBackground(applyIntentMode());
