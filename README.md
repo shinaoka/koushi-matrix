@@ -66,8 +66,8 @@ so it never holds your encryption keys. Then just ask:
 - **Act:** send messages and replies, download attachments, and wait for new
   activity.
 - **You decide:** until you grant access, an assistant sees only account ids.
-  Reading, sending, and attachments are separate permissions, per assistant and
-  per account.
+  Reading, sending, attachments, changing messages, and writing drafts are
+  separate permissions, granted per assistant and per account.
 
 ```bash
 claude mcp add --scope user koushi -- /path/to/koushi-mcp --client-name claude-code

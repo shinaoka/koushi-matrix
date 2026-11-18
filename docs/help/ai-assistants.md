@@ -196,19 +196,19 @@ assistant's call waits for your answer (up to 40 seconds):
 - **Per account.** The first call that touches an account asks about that
   account only. Other accounts stay hidden until the assistant uses them and you
   approve them too.
-- **Per permission.** Reading, sending, attachments, and changing messages are
-  asked separately, when first needed. An assistant you allowed to read asks
-  again the first time it sends. The attachments permission covers both
-  downloading attachments and sending files from your computer, so an assistant
-  allowed to send text asks again the first time it sends a file. **Message
-  actions** covers reacting to, editing, and deleting messages the account
-  already sent; it is separate from sending, because rewriting an existing
-  message is not the same as writing a new one. **Drafts** lets the assistant
-  put text into a composer without sending it. It is weaker than sending and
-  asked for separately, so you can let an assistant draft while you keep every
-  send to yourself. The same **Drafts** permission lets it read that composer
-  back, which is how it learns whether you kept, edited, or cleared the draft it
-  staged. The answer carries the composer's text but never who typed it.
+- **Per permission.** Reading, sending, attachments, changing messages, and
+  writing drafts are asked separately, when first needed. An assistant you
+  allowed to read asks again the first time it sends. The attachments permission
+  covers both downloading attachments and sending files from your computer, so an
+  assistant allowed to send text asks again the first time it sends a file.
+  **Message actions** covers reacting to, editing, and deleting messages the
+  account already sent; it is separate from sending, because rewriting an
+  existing message is not the same as writing a new one. **Drafts** lets the
+  assistant put text into a composer without sending it. It is weaker than
+  sending and asked for separately, so you can let an assistant draft while you
+  keep every send to yourself. The same **Drafts** permission lets it read that
+  composer back, which is how it learns whether you kept, edited, or cleared the
+  draft it staged. The answer carries the composer's text but never who typed it.
 - **Allow** keeps that permission for that account. After you allow sending,
   later messages are sent without asking again.
 - **Deny** refuses that permission. Koushi remembers the denial until you turn
