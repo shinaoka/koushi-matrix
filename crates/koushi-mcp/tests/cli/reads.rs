@@ -220,50 +220,60 @@ mod unix {
     }
 
     #[test]
+    fn a_blank_query_reaches_the_app_untrimmed() {
+        // The first CLI trimmed the query and refused a blank one locally
+        // (exit 2). Koushi now owns that rule, so the call goes through.
+        let (_dir, endpoint, server, _ready) =
+            app(json!({"isError":true,"structuredContent":{"error":{"code":"unsupported"}}}));
+        let mut child = cli()
+            .args(["search_messages", "--args-stdin", "--endpoint"])
+            .arg(endpoint)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(br#"{"account_id":"account:@member1:example.invalid","query":"   "}"#)
+            .expect("query");
+        let output = child.wait_with_output().expect("output");
+        assert_eq!(output.status.code(), Some(6));
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, b"koushi: unsupported\n");
+        assert_eq!(
+            server.join().expect("server")["arguments"],
+            json!({"account_id":"account:@member1:example.invalid","query":"   "})
+        );
+    }
+
+    #[test]
     fn repeated_options_fill_arrays_in_order() {
-        for (args, arguments) in [
-            (
-                vec![
-                    "read_recent_activity",
-                    "--account-id",
-                    "account:@member1:example.invalid",
-                    "--room-ids",
-                    "!b:example.invalid",
-                    "--room-ids",
-                    "!a:example.invalid",
-                    "--from-timestamp-ms",
-                    "0",
-                ],
-                json!({"account_id":"account:@member1:example.invalid","room_ids":["!b:example.invalid","!a:example.invalid"],"from_timestamp_ms":0}),
-            ),
-            (
-                vec![
-                    "send_message",
-                    "--account-id",
-                    "account:@member1:example.invalid",
-                    "--room-id",
-                    "!a:example.invalid",
-                    "--attachments",
-                    "/synthetic/one.txt",
-                    "--attachments",
-                    "/synthetic/two.txt",
-                    "--client-request-id",
-                    "synthetic-request-1",
-                ],
-                json!({"account_id":"account:@member1:example.invalid","room_id":"!a:example.invalid","attachments":[{"path":"/synthetic/one.txt"},{"path":"/synthetic/two.txt"}],"client_request_id":"synthetic-request-1"}),
-            ),
-        ] {
-            let (_dir, endpoint, server, _ready) =
-                app(json!({"isError":false,"structuredContent":{}}));
-            let output = cli()
-                .args(&args)
-                .arg("--endpoint")
-                .arg(endpoint)
-                .output()
-                .expect("run");
-            assert!(output.status.success(), "{args:?}");
-            assert_eq!(server.join().expect("server")["arguments"], arguments);
-        }
+        let args = [
+            "read_recent_activity",
+            "--account-id",
+            "account:@member1:example.invalid",
+            "--room-ids",
+            "!b:example.invalid",
+            "--room-ids",
+            "!a:example.invalid",
+            "--from-timestamp-ms",
+            "0",
+        ];
+        let (_dir, endpoint, server, _ready) = app(json!({"isError":false,"structuredContent":{}}));
+        let output = cli()
+            .args(args)
+            .arg("--endpoint")
+            .arg(endpoint)
+            .output()
+            .expect("run");
+        assert!(output.status.success(), "{args:?}");
+        assert_eq!(
+            server.join().expect("server")["arguments"],
+            json!({"account_id":"account:@member1:example.invalid","room_ids":["!b:example.invalid","!a:example.invalid"],"from_timestamp_ms":0})
+        );
     }
 
     #[test]

@@ -5,8 +5,8 @@
 //! OUTPUT.
 use serde_json::Value;
 
-use super::STDIN_ONLY_PROPERTIES;
-use super::args::{has_option, item_property, option_name};
+use super::args::{item_property, option_name};
+use super::argv_option;
 use crate::tools::{ToolDefinition, definitions};
 
 const WIDTH: usize = 78;
@@ -83,12 +83,13 @@ const OVERVIEW_STDIN: &str = "
 STDIN
   With --args-stdin, stdin holds the tool's whole argument object as UTF-8
   JSON, read to EOF, at most 1 MiB; no other argument option may be given.
-  Terminal input is refused. Message bodies, search queries, and reaction
-  keys (body, query, key) have no option and enter only this way: this CLI
-  is for agents and scripts, and argv reaches shell history and process
-  listings. Write the object to the pipe from your program, or build it with
-  jq from a file you have chosen to protect (--rawfile), never from a shell
-  literal holding private text.
+  Terminal input is refused. Arguments that carry content have no option and
+  enter only this way: message text (body), search text (query), a reaction
+  key (key), and an attachment's local path (attachments). This CLI is for
+  agents and scripts, and argv reaches shell history and process listings.
+  Write the object to the pipe from your program, or build it with jq from a
+  file you have chosen to protect (--rawfile), never from a shell literal
+  holding private text or a path.
 
 WRITES
   A tool that sends, edits, reacts, deletes, or drafts may already have been
@@ -204,10 +205,14 @@ fn stdout_fact(tool: &ToolDefinition) -> String {
 }
 
 fn side_effects(tool: &ToolDefinition) -> &'static str {
-    if tool.read_only {
-        "none; it reads only and changes nothing the app shows."
-    } else {
-        "changes account or room state as the description says; see WRITES."
+    match (tool.name, tool.read_only) {
+        // Reads the room, writes Koushi's own media cache.
+        ("get_attachment", _) => {
+            "downloads the attachment into Koushi's media cache and returns that \
+             path; the room and the account are unchanged."
+        }
+        (_, true) => "none; it reads only and changes nothing the app shows.",
+        _ => "changes account or room state as the description says; see WRITES.",
     }
 }
 
@@ -231,13 +236,17 @@ pub(super) fn tool(tool: &ToolDefinition) -> String {
     // A required argument without an option makes --args-stdin the only form.
     let stdin_only_required = properties
         .iter()
-        .any(|(name, property)| required.contains(&name.as_str()) && !has_option(name, property));
+        .any(|(name, property)| required.contains(&name.as_str()) && !argv_option(name, property));
     let retry_id = properties
         .iter()
         .any(|(name, _)| name.as_str() == "client_request_id");
-    let private = properties
+    // Properties with no option: message text, a query, a reaction key, an
+    // attachment path. Help names them and sends every one through stdin.
+    let stdin_only: Vec<&str> = properties
         .iter()
-        .any(|(name, _)| STDIN_ONLY_PROPERTIES.contains(&name.as_str()));
+        .filter(|(name, property)| !argv_option(name, property))
+        .map(|(name, _)| name.as_str())
+        .collect();
 
     let mut text = format!("NAME\n  koushi {} - ", tool.name);
     text.push_str(first_sentence(tool.description));
@@ -268,9 +277,9 @@ pub(super) fn tool(tool: &ToolDefinition) -> String {
     }
     steps.push(if stdin_only_required {
         "Build the argument object (see STDIN) and pipe it to --args-stdin.".to_owned()
-    } else if private {
+    } else if !stdin_only.is_empty() {
         "Pass arguments as options, or the whole object through --args-stdin; \
-         private text goes only through --args-stdin."
+         an argument with no option (see COMMANDS) goes only through --args-stdin."
             .to_owned()
     } else {
         "Pass arguments as options, or the whole object through --args-stdin.".to_owned()
@@ -311,7 +320,7 @@ pub(super) fn tool(tool: &ToolDefinition) -> String {
         // Each option with its value stays on one line.
         let mut tokens = vec![format!("koushi {}", tool.name)];
         for (name, property) in &properties {
-            if !has_option(name, property) {
+            if !argv_option(name, property) {
                 continue;
             }
             let usage = format!("{}{}", option_name(name), value_form(property));
@@ -339,7 +348,7 @@ pub(super) fn tool(tool: &ToolDefinition) -> String {
             facts.push("required".to_owned());
         }
         facts.extend(bounds(property));
-        if has_option(name, property) {
+        if argv_option(name, property) {
             if property["type"] == "array" {
                 facts.push("repeat once per element".to_owned());
             }
@@ -383,12 +392,17 @@ pub(super) fn tool(tool: &ToolDefinition) -> String {
         .collect();
     stdin.push_str(&example.join(", "));
     stdin.push_str("}, and no argument option may be given. Terminal input is refused.");
-    if private {
-        stdin.push_str(
-            " Private text (body, query, key) enters only this way: this CLI is \
-             for agents and scripts, and argv reaches shell history and process \
-             listings.",
-        );
+    if !stdin_only.is_empty() {
+        stdin.push_str(&format!(
+            " {} {} only this way; this CLI is for agents and scripts, and argv \
+             reaches shell history and process listings.",
+            stdin_only.join(", "),
+            if stdin_only.len() == 1 {
+                "enters"
+            } else {
+                "enter"
+            },
+        ));
     }
     wrap(&mut text, &stdin, 2);
 
@@ -417,8 +431,9 @@ pub(super) fn tool(tool: &ToolDefinition) -> String {
     text.push_str(EXIT_STATUS_AND_ENVIRONMENT);
 
     text.push_str("\nEXAMPLES\n");
-    // A tool with private text is shown only with --args-stdin, which carries it.
-    if !private {
+    // A tool with an argument that has no option is shown only in the stdin
+    // form, which can carry it.
+    if stdin_only.is_empty() {
         let mut tokens = vec![format!("koushi {}", tool.name)];
         for (name, property) in &properties {
             if required.contains(&name.as_str()) {
@@ -485,18 +500,27 @@ fn shell_value(name: &str, property: &Value) -> String {
 }
 
 /// A copy-pasteable `jq -n ... | koushi <tool> --args-stdin --json` example
-/// with the required arguments; private text comes from a file.
+/// with the required arguments; text and paths come from a file.
 fn stdin_example(tool: &str, properties: &[(&String, &Value)], required: &[&str]) -> String {
     let mut lines = vec!["jq -n".to_owned()];
     let mut fields = Vec::new();
     for (name, property) in properties {
-        // The required arguments, plus private text, which is the content.
-        if !required.contains(&name.as_str()) && !STDIN_ONLY_PROPERTIES.contains(&name.as_str()) {
+        let option = argv_option(name, property);
+        // The required arguments, plus the ones without an option, which are
+        // the content.
+        if option && !required.contains(&name.as_str()) {
             continue;
         }
-        if STDIN_ONLY_PROPERTIES.contains(&name.as_str()) {
+        if !option && property["type"].as_str() == Some("string") {
             lines.push(format!("--rawfile {name} {name}.txt"));
             fields.push(format!("{name}: (${name} | rtrimstr(\"\\n\"))"));
+            continue;
+        }
+        if !option && property["type"].as_str() == Some("array") {
+            // A repeated option would put each element in argv; read the array
+            // from a file instead.
+            lines.push(format!("--rawfile {name} {name}.json"));
+            fields.push(format!("{name}: (${name} | fromjson)"));
             continue;
         }
         let value = shell_value(name, property);
@@ -650,8 +674,29 @@ mod tests {
     #[test]
     fn help_names_a_minimum_length() {
         let help = super::tool(&synthetic_tool(json!({
-            "label": {"type":"string","minLength":1}
+            "cursor": {"type":"string","minLength":1}
         })));
-        assert!(help.contains("--label <value>  (string, at least 1 character)"));
+        assert!(help.contains("--cursor <value>  (string, at least 1 character)"));
+    }
+
+    #[test]
+    fn a_text_property_outside_the_allowlist_has_no_option() {
+        // The reason #1958's review asked for an allowlist: a new string
+        // property must not get `--caption <private text>`.
+        let help = super::tool(&synthetic_tool(json!({
+            "caption": {"type":"string"},
+            "room_id": {"type":"string"}
+        })));
+        assert!(!help.contains("--caption"), "caption took an option");
+        assert!(
+            help.contains("--room-id <value>"),
+            "room_id lost its option"
+        );
+        assert!(
+            help.lines()
+                .any(|line| line.trim_start().starts_with("caption  (")
+                    && line.contains("only through --args-stdin")),
+            "caption is not named as stdin-only"
+        );
     }
 }

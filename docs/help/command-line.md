@@ -70,22 +70,25 @@ koushi send_message --args-stdin < private-arguments.json
 ```
 
 Each tool argument is an option: `room_id` becomes `--room-id`. A list
-argument is given once per element (`--room-ids`, or `--attachments <path>`
-for each file to send), and a true/false argument is a flag that sets it.
-The command line holds at most 160 words and 64 KiB; pass a longer list
-through `--args-stdin`.
+argument is given once per element (`--room-ids`), and a true/false argument is
+a flag that sets it. The command line holds at most 160 words and 64 KiB; pass
+a longer list through `--args-stdin`.
 
 `--args-stdin` instead reads the tool's whole argument object as JSON from
 standard input, for example
 `{"account_id": "...", "room_id": "...", "body": "...", "client_request_id": "..."}`.
 It accepts UTF-8 to EOF, at most 1 MiB, refuses terminal input, and cannot be
-combined with argument options. Message bodies, search queries, and reaction
-keys (`body`, `query`, `key`) have no option and enter only this way: the CLI
-is meant for agents and scripts, and shell history and process listings can
-expose command-line arguments. Write the object from your program into the
-pipe, or from a file you have chosen to protect; never put confidential text
-into shell literals, argv, or environment variables. The CLI creates no
-argument file or history.
+combined with argument options. Arguments that carry content have no option and
+enter only this way: `body` (message text), `query` (search text), `key` (a
+reaction), and `attachments` (local file paths). The CLI is meant for agents and
+scripts, and shell history and process listings can expose command-line
+arguments, including the names of files you send. Write the object from your
+program into the pipe, or from a file you have chosen to protect; never put
+confidential text or a local path into shell literals, argv, or environment
+variables. Every other argument is an identifier, a bound, or a flag. The CLI
+creates no argument file or history. A property added to a tool in a later
+version is stdin-only until the CLI classifies it, so an unfamiliar argument
+means `--args-stdin`.
 
 `list_rooms` returns `result.next_cursor`; pass it with `--cursor` for another
 page. `read_room_messages` returns `result.next`; pass it with `--from` to read
@@ -95,6 +98,36 @@ each tool's help, and the CLI refuses an out-of-range value before connecting.
 `search_messages` returns one bounded result set, without a continuation
 cursor. Results reflect the history Koushi can decrypt and index, so an empty
 result does not prove there were no messages.
+
+## Upgrading from the first CLI
+
+The first CLI release (up to v0.35.x) had five hand-written commands and was
+read-only. Commands are now named after the MCP tools, so those five were
+renamed rather than kept as aliases; an old name is an unknown tool and exits 2.
+
+| Up to v0.35.x | Now |
+| --- | --- |
+| `koushi accounts` | `koushi list_accounts` |
+| `koushi rooms` | `koushi list_rooms` |
+| `koushi messages` | `koushi read_room_messages` |
+| `koushi message` | `koushi get_message` |
+| `koushi search` | `koushi search_messages` |
+| `--account <id>` | `--account-id <id>` |
+| `--room <id>` | `--room-id <id>` |
+| `--event <id>` | `--event-id <id>` |
+| `--query-stdin` | the `query` property in `--args-stdin` |
+
+`--limit`, `--cursor`, `--from`, `--unread-only`, `--json`, `--endpoint`, and
+`--timeout` keep their names. `koushi --help` lists the current commands.
+
+The following limits also changed:
+
+- The command line holds 160 words instead of 32, and `--args-stdin` accepts
+  1 MiB of JSON instead of 16 KiB.
+- A `query` is no longer trimmed or refused locally when blank. Koushi itself
+  trims it and answers with an error, so a blank query exits 6 rather than 2.
+  Check the text before calling if you rely on the old exit status.
+- A `query` is still never placed in argv; it goes through `--args-stdin`.
 
 ## Writes and retries
 

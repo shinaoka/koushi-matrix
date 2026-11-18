@@ -254,6 +254,14 @@ async fn a_cli_read_grant_admits_no_write_tool() {
             "delete_message",
             json!({"account_id":FIRST,"room_id":room,"event_id":event}),
         ),
+        (
+            "edit_message",
+            json!({"account_id":FIRST,"room_id":room,"event_id":event,"body":"Synthetic body","client_request_id":"synthetic-request-3"}),
+        ),
+        (
+            "unreact_to_message",
+            json!({"account_id":FIRST,"room_id":room,"event_id":event,"key":"+1"}),
+        ),
     ] {
         let response = tokio::time::timeout(
             Duration::from_secs(5),

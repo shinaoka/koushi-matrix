@@ -25,11 +25,10 @@ koushi --version | -V
 
 | Schema property | CLI form |
 | --- | --- |
-| `"type": "string"` / `"integer"` | `--room-id <v>`, `--limit <n>`: one value |
-| `"type": "boolean"` | `--unread-only`: flag, sets `true` |
-| array of strings (`room_ids`) | `--room-ids <v>`, repeated per element |
-| array of one-property objects (`attachments: [{path}]`) | `--attachments <path>`, repeated, fills `path` |
-| `body`, `query`, `key` (private text) | no option: `--args-stdin` only |
+| `"type": "integer"` / `"boolean"` | `--limit <n>`: one value; `--unread-only`: flag, sets `true` |
+| `"type": "string"` on the allowlist (ids, cursors, `client_request_id`) | `--room-id <v>`: one value |
+| array of strings on the allowlist (`room_ids`) | `--room-ids <v>`, repeated per element |
+| any other string, or an array of one-property objects (`attachments: [{path}]`) | no option: `--args-stdin` only |
 | any other shape | `--args-stdin` only; help says so |
 
 - Names: `snake_case` → `--kebab-case`. A unit test asserts no generated
@@ -42,11 +41,12 @@ koushi --version | -V
   the schema before connecting. This keeps today's `--limit 201` usage error.
   It is stricter than MCP for `list_space_rooms.max_depth`, which the host
   clamps.
-- `--args-stdin` reads UTF-8 JSON from non-terminal stdin to EOF, at most
-  the bridge frame bound (`wire::MAX_FRAME_BYTES`, 1 MiB), so any body MCP can
-  send fits; it requires a JSON object and excludes every tool option. It
-  replaces `--query-stdin`. A request whose encoded frame still exceeds the
-  bound fails in `ipc::Client::call` as today.
+- `--args-stdin` reads UTF-8 JSON from non-terminal stdin to EOF, at most the
+  bridge frame bound (`wire::MAX_FRAME_BYTES`, 1 MiB) minus 1 KiB for the
+  request envelope around the object, so an object at the bound still fits one
+  frame and an oversized one is a usage error (exit 2) before connecting
+  rather than `unsupported` (exit 6) after. It requires a JSON object and
+  excludes every tool option. It replaces `--query-stdin`.
 - `koushi --help` keeps the #1943 sections; COMMANDS lists every tool with the
   first sentence of its description. `koushi <tool> --help` prints NAME,
   DESCRIPTION (the full tool description), SYNOPSIS, ARGUMENTS (one per property: flag,
@@ -61,12 +61,16 @@ koushi --version | -V
   does (`added: false`, `removed: 0`, `already_redacted`, `conflict`). Help
   also names bounds only the host checks: a reaction key of at most 128 UTF-8
   bytes and a draft body of at most 16 KiB.
-  A tool with a private text property (`body`, `query`, `key`) gets no option
-  for it; its help says that argument comes only through `--args-stdin`,
-  because the CLI is for agents and argv reaches shell history and process
-  listings, and shows the argument object to pipe. The closed list of private
-  property names lives beside the parser; `tool_table.rs` asserts that every
-  property it names exists in some tool, so a renamed property fails CI.
+  An argument that carries content gets no option; its help says it comes only
+  through `--args-stdin`, because the CLI is for agents and argv reaches shell
+  history and process listings, and shows the argument object to pipe. The
+  classification is an allowlist of identifier-valued property names
+  (`cli::ARGV_SAFE_PROPERTIES`) beside the parser, so it fails closed: `body`,
+  `query`, `key`, `attachments` (a local path), and any property added later
+  are stdin-only until someone classifies them. `tool_table.rs` asserts that
+  every text property of every tool lands on one side or the other, that the
+  allowlist has no stale entry, that a new name has no option, and pins the
+  whole generated surface in `surface.golden.txt`.
 
 ## Execution, consent and `client_request_id`
 

@@ -1,4 +1,4 @@
-// Bundles the `koushi-mcp` launcher and read-only `koushi` CLI with the desktop app (#1536).
+// Bundles the `koushi-mcp` launcher and the generated `koushi` CLI with the desktop app (#1536, #1944).
 //
 // Tauri copies `bundle.externalBin` entries during the desktop crate's
 // build script, and fails when the staged file is missing. The entry is

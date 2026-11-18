@@ -2365,16 +2365,28 @@ session fencing, retry-ledger, and GUI-independence contracts apply unchanged.
 No new Matrix functionality is introduced; every command is an existing MCP
 tool with the same semantics.
 
+Write tools are part of the surface. The CLI exposes the MCP table's write
+tools, not only its read tools, so the permission boundary is the host's
+per-account grant, not a CLI-side read-only filter. 2026-11-19: maintainer
+decision, owner-approved, on issue #1944; the earlier CLI shipped read-only and
+this reverses that limit deliberately. A file-path argument (`attachments`) is
+stdin-only: a local path in argv would appear in shell history and process
+listings.
+
 - Commands are generated from `koushi_mcp::tools::definitions()`: one command
   per tool, named exactly as the tool (`koushi list_rooms`,
   `koushi send_message`). A tool added to or changed in that table appears in
   the CLI with no CLI code change. Options derive from the tool's
   `input_schema`: property `room_id` becomes `--room-id`; a string or integer
   property takes one value; a boolean property is a flag that sets `true`; an
-  array of strings is repeated once per element; an array of objects with
-  exactly one property is repeated once per element, each value filling that
-  property (`send_message --attachments <path>`); `body`, `query`, and `key`
-  are the exception below. `required` is enforced, types are checked by
+  array of strings is repeated once per element. Which properties may take an
+  option at all is an allowlist of identifier-valued names
+  (`cli::ARGV_SAFE_PROPERTIES`: ids, cursors, `client_request_id`, and lists of
+  ids), and it fails closed: any other string or path property — `body`,
+  `query`, `key`, `attachments`, and any name added to the table later — gets
+  no option and enters only through `--args-stdin`. Integers and booleans are
+  bounds and flags, so they always take one. `required` is enforced, types are
+  checked by
   `tools::validate_arguments`, and the schema's `minimum`, `maximum`,
   `minLength`, and `maxItems` bounds are checked locally as usage errors. `--args-stdin` instead reads the complete MCP argument object as JSON
   from stdin and cannot be combined with tool options. There is no other
@@ -2398,12 +2410,14 @@ tool with the same semantics.
   delivery time;
   expiry and Ctrl-C close the connection. An operation already admitted at the
   host retains its existing revocation/settlement semantics.
-- Private text arguments (`body`, `query`, `key`) have no option: they enter
-  only through `--args-stdin` (non-terminal stdin, UTF-8, bounded by the
-  bridge's 1 MiB frame limit),
-  because argv reaches shell history and process listings. The CLI is for
-  agents and scripts, which can write the argument object to a pipe; a tool
-  with such a property is called through `--args-stdin` whenever it is set.
+- Arguments that carry content — message text (`body`, `query`, `key`) and an
+  attachment's local path (`attachments`) — have no option: they enter only
+  through `--args-stdin` (non-terminal stdin, UTF-8, bounded by the bridge's
+  1 MiB frame limit), because argv reaches shell history and process listings.
+  The classification is the fail-closed allowlist above, so a property added
+  later is private by default. The CLI is for agents and scripts, which can
+  write the argument object to a pipe; a tool with such a property is called
+  through `--args-stdin` whenever it is set.
   Arguments never enter environment variables, diagnostics, or automatic
   history. Help and examples never place confidential text in a shell
   literal. CLI options and error output never echo rejected values.

@@ -48,6 +48,28 @@ fn a_message_body_option_is_refused_without_echo() {
     assert_eq!(output.stderr, b"koushi: usage_error\n");
 }
 
+#[test]
+fn an_attachment_path_option_is_refused_without_echo() {
+    // A local path in argv reaches shell history and process listings.
+    let output = cli()
+        .args([
+            "send_message",
+            "--account-id",
+            "account:@member1:example.invalid",
+            "--room-id",
+            "!room:example.invalid",
+            "--client-request-id",
+            "synthetic-request-1",
+            "--attachments",
+            "/synthetic/private-path.txt",
+        ])
+        .output()
+        .expect("run");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert_eq!(output.stderr, b"koushi: usage_error\n");
+}
+
 #[cfg(unix)]
 mod unix {
     use super::*;
@@ -74,6 +96,41 @@ mod unix {
             .write_all(input.as_bytes())
             .expect("arguments");
         child.wait_with_output().expect("output")
+    }
+
+    #[test]
+    fn the_largest_accepted_argument_object_still_fits_one_frame() {
+        // The object shares the bridge frame with its request envelope, so an
+        // object at the local bound must reach the app rather than come back as
+        // `unsupported` after connecting; one byte past it is a usage error
+        // before connecting.
+        const HEAD: &str = r#"{"account_id":"account:@member1:example.invalid","query":""#;
+        const TAIL: &str = r#""}"#;
+        let pad = |size: usize| size - HEAD.len() - TAIL.len();
+        let argument = |size: usize| format!("{HEAD}{}{TAIL}", "x".repeat(pad(size)));
+        let bound = koushi_mcp::cli::MAX_ARGUMENT_BYTES;
+        let (_dir, endpoint, server, _ready) = app(json!({"isError":false,"structuredContent":{}}));
+        let output = run_with_stdin(
+            &["search_messages", "--args-stdin", "--json"],
+            &endpoint,
+            &argument(bound),
+        );
+        assert!(output.status.success(), "{:?}", output.status);
+        assert_eq!(
+            server.join().expect("server")["arguments"]["query"]
+                .as_str()
+                .expect("query")
+                .len(),
+            pad(bound)
+        );
+        let output = run_with_stdin(
+            &["search_messages", "--args-stdin", "--json"],
+            &endpoint,
+            &argument(bound + 1),
+        );
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, b"koushi: usage_error\n");
     }
 
     #[test]

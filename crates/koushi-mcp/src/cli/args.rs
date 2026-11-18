@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
-use super::{Failure, STDIN_ONLY_PROPERTIES};
+use super::{Failure, argv_option};
 use crate::tools::ToolDefinition;
 
 /// The command line's bounds, named in the overview help. 160 words fit 64
@@ -48,20 +48,6 @@ pub(super) fn item_property(property: &Value) -> Option<&str> {
             Some(name.as_str())
         }
         _ => None,
-    }
-}
-
-/// Whether a schema property has a generated option. Private text and any
-/// shape the parser cannot fill (nested objects, lists of numbers or of
-/// several-property objects) enter only through `--args-stdin`.
-pub(super) fn has_option(name: &str, property: &Value) -> bool {
-    if STDIN_ONLY_PROPERTIES.contains(&name) {
-        return false;
-    }
-    match property["type"].as_str() {
-        Some("string" | "integer" | "boolean") => true,
-        Some("array") => property["items"]["type"] == "string" || item_property(property).is_some(),
-        _ => false,
     }
 }
 
@@ -112,7 +98,7 @@ pub(super) fn parse(args: impl Iterator<Item = OsString>) -> Result<Action, Fail
             .map(|name| name.replace('-', "_"))
             .filter(|name| option_name(name) == *flag)
             .and_then(|name| properties.get(&name).map(|schema| (name, schema)))
-            .filter(|(name, schema)| has_option(name, schema));
+            .filter(|(name, schema)| argv_option(name, schema));
         let repeatable = property
             .as_ref()
             .is_some_and(|(_, schema)| schema["type"] == "array");

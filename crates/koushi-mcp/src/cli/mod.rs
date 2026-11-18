@@ -14,14 +14,49 @@ use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 
 use crate::wire::{ClientInfo, ErrorCode};
+use args::item_property;
 
-/// Private text properties: message bodies, search queries, and reaction
-/// keys. They get no option and enter only through `--args-stdin`, because
-/// argv reaches shell history and process listings.
-pub const STDIN_ONLY_PROPERTIES: [&str; 3] = ["body", "query", "key"];
+/// Properties whose value can only be an identifier, an opaque cursor, a
+/// caller-chosen id, or a list of ids. Everything else — message text, a
+/// search query, a reaction key, an attachment's local path — has no option
+/// and enters only through `--args-stdin`, because argv reaches shell history
+/// and process listings. Allowlist, not denylist: a property added to the tool
+/// table later is stdin-only until someone classifies it here.
+pub const ARGV_SAFE_PROPERTIES: [&str; 10] = [
+    "account_id",
+    "client_request_id",
+    "cursor",
+    "event_id",
+    "from",
+    "reply_to_event_id",
+    "room_id",
+    "room_ids",
+    "space_id",
+    "thread_root_event_id",
+];
 
-/// `--args-stdin` accepts any argument object that fits one bridge frame.
-const MAX_ARGUMENT_BYTES: usize = crate::wire::MAX_FRAME_BYTES;
+/// Whether a schema property gets a command-line option. Numbers and booleans
+/// are bounds and flags, so they always do; a string or list does only when it
+/// is on the argv-safe allowlist and the parser can fill it.
+pub fn argv_option(name: &str, property: &Value) -> bool {
+    match property["type"].as_str() {
+        // A bound or a flag carries no content.
+        Some("integer" | "boolean") => true,
+        Some("string") => ARGV_SAFE_PROPERTIES.contains(&name),
+        Some("array") => {
+            let fillable =
+                property["items"]["type"] == "string" || item_property(property).is_some();
+            fillable && ARGV_SAFE_PROPERTIES.contains(&name)
+        }
+        _ => false,
+    }
+}
+
+/// `--args-stdin` accepts any argument object that fits one bridge frame with
+/// its request envelope (method, tool name, id) around it. The reserve turns an
+/// object that is just under the frame into a usage error before connecting,
+/// instead of `unsupported` after.
+pub const MAX_ARGUMENT_BYTES: usize = crate::wire::MAX_FRAME_BYTES - 1024;
 const MAX_OUTPUT_BYTES: usize = 16 * crate::wire::MAX_FRAME_BYTES;
 
 /// Only closed codes and statuses can reach diagnostics. No remote detail or
