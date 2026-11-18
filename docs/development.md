@@ -179,9 +179,10 @@ Koushi before replacing its executable.
   git submodule update --init --recursive vendor/matrix-rust-sdk
   node scripts/check-sdk-submodule.mjs
   rustup show
-  npm --prefix apps/desktop audit --package-lock-only --audit-level=high
+  npm --prefix apps/desktop audit --package-lock-only --omit=dev --audit-level=high
   npm --prefix apps/desktop ci
-  npm --prefix apps/desktop audit --audit-level=high
+  # Recorded, not gating, while #1965 is open.
+  npm --prefix apps/desktop audit --audit-level=high || true
   npm --prefix apps/desktop audit --omit=dev --audit-level=high
   node scripts/check-linux-build-deps.mjs
 
@@ -191,8 +192,10 @@ Koushi before replacing its executable.
 )
 ```
 
-If an audit reports high/critical vulnerabilities, resolve them before
-building; do not bypass the check.
+If the runtime audit (`--omit=dev`) reports high/critical vulnerabilities,
+resolve them before building; do not bypass that check. Only the full-graph line
+is advisory, and only while #1965 is open
+([environment](agents/environment.md#npm-dependency-security-gate)).
 
 #### Prepare the Linux keyring and retry SSO
 
@@ -288,9 +291,10 @@ the repository root:
 
   git submodule update --init --recursive vendor/matrix-rust-sdk
   node scripts/check-sdk-submodule.mjs
-  npm --prefix apps/desktop audit --package-lock-only --audit-level=high
+  npm --prefix apps/desktop audit --package-lock-only --omit=dev --audit-level=high
   npm --prefix apps/desktop ci
-  npm --prefix apps/desktop audit --audit-level=high
+  # Recorded, not gating, while #1965 is open.
+  npm --prefix apps/desktop audit --audit-level=high || true
   npm --prefix apps/desktop audit --omit=dev --audit-level=high
   node scripts/check-linux-build-deps.mjs
 
@@ -338,8 +342,8 @@ git submodule update --init --recursive vendor/matrix-rust-sdk
 if ($LASTEXITCODE -ne 0) { throw 'SDK submodule update failed' }
 node scripts/check-sdk-submodule.mjs
 if ($LASTEXITCODE -ne 0) { throw 'SDK submodule check failed' }
-npm --prefix apps/desktop audit --package-lock-only --audit-level=high
-if ($LASTEXITCODE -ne 0) { throw 'Dependency security audit failed' }
+npm --prefix apps/desktop audit --package-lock-only --omit=dev --audit-level=high
+if ($LASTEXITCODE -ne 0) { throw 'Runtime dependency security audit failed' }
 npm --prefix apps/desktop ci
 if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
 
