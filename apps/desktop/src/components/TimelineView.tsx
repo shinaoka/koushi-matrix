@@ -656,10 +656,12 @@ export const TimelineView = memo(function TimelineView({
    * when the timeline key changes (the same place the measurement cache is
    * cleared). See `freezeEstimatedItemHeight`.
    */
-  const [frozenEstimate, setFrozenEstimate] = useState<number | null>(null);
-  const frozenEstimateRef = useRef<number | null>(null);
+  const [frozenEstimate, setFrozenEstimate] = useState<{
+    timelineKeyHash: string;
+    height: number;
+  } | null>(null);
+  const frozenEstimateRef = useRef<typeof frozenEstimate>(null);
   frozenEstimateRef.current = frozenEstimate;
-  const virtualItemHeight = frozenEstimate ?? TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
   const [measuredHeightVersion, setMeasuredHeightVersion] = useState(0);
   const [viewportTransactionRevision, setViewportTransactionRevision] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -905,6 +907,12 @@ export const TimelineView = memo(function TimelineView({
   const timelineKeyRef = useRef(timelineKey);
   timelineKeyRef.current = timelineKey;
   const timelineKeyHash = timelineStoreKeyId(timelineKey);
+  // Keyed, not just reset: the mount pass that freezes runs before the effects
+  // that clear the previous room's value, so a value from another key must not
+  // build this room's model.
+  const frozenEstimateForThisKey =
+    frozenEstimate?.timelineKeyHash === timelineKeyHash ? frozenEstimate.height : null;
+  const virtualItemHeight = frozenEstimateForThisKey ?? TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
   const timelineKeyHashRef = useRef(timelineKeyHash);
   useLayoutEffect(() => { timelineKeyHashRef.current = timelineKeyHash; }, [timelineKeyHash]);
   const sessionRoomScrollAnchorRef = useRef<TimelineScrollAnchor | null>(null);
@@ -3564,7 +3572,9 @@ export const TimelineView = memo(function TimelineView({
       // Recorded on every pass, so recency follows the viewport; only a height
       // that actually moved is a model change.
       const physicalHeight = node.getBoundingClientRect().height;
-      passHeights.push(physicalHeight);
+      if (frozenEstimateRef.current?.timelineKeyHash !== timelineKeyHash) {
+        passHeights.push(physicalHeight);
+      }
       if (rowHeights.record(row, physicalHeight, listWidth)) {
         changedRowIds.push(domId);
       }
@@ -3572,8 +3582,14 @@ export const TimelineView = memo(function TimelineView({
     mountedItemDomIdsRef.current = mountedDomIds;
     // #1890 §2.3: the first pass of an open that measured anything fixes the
     // estimate every unmeasured row will carry for the rest of it.
-    if (frozenEstimateRef.current === null && passHeights.length > 0) {
-      const frozen = freezeEstimatedItemHeight(passHeights);
+    if (
+      frozenEstimateRef.current?.timelineKeyHash !== timelineKeyHash &&
+      passHeights.length > 0
+    ) {
+      const frozen = {
+        timelineKeyHash,
+        height: freezeEstimatedItemHeight(passHeights)
+      };
       frozenEstimateRef.current = frozen;
       setFrozenEstimate(frozen);
     }
@@ -3592,15 +3608,29 @@ export const TimelineView = memo(function TimelineView({
       // lands in this pass together with the anchor compensation. Rows at or
       // after the anchor only shift the extent below it and may wait for the
       // scroll to settle.
-      const heldAnchor = viewportTransactionRef.current.active()?.anchor ?? stableAnchor();
+      // The same anchor the compensation below can act on: a jump or a pending
+      // room restore owns the viewport and has its own placement, so a correction
+      // that moves the reader has to wait for the idle commit there.
+      const heldAnchor =
+        viewportIntentRef.current.kind === "free-scroll" &&
+        !jumpViewportControlRef.current &&
+        !roomScrollAnchorRestorePendingRef.current
+          ? viewportTransactionRef.current.active()?.anchor ?? stableAnchor()
+          : null;
       const anchorIndex = heldAnchor
         ? visibleRowsRef.current.findIndex((row) => row.row_id === heldAnchor.itemId)
         : -1;
       // Only a height that actually moved is a correction; a row measured for
       // the first time at the estimate changes nothing.
+      // The fallback this pass compares against, not the state: in the pass that
+      // freezes, `virtualItemHeight` still carries the previous value.
+      const modelFallback =
+        frozenEstimateRef.current?.timelineKeyHash === timelineKeyHash
+          ? frozenEstimateRef.current.height
+          : TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
       const movedRowIds = changedRowIds.filter(
         (rowId) =>
-          (committedHeightsRef.current.get(rowId) ?? virtualItemHeight) !==
+          (committedHeightsRef.current.get(rowId) ?? modelFallback) !==
           nextHeights.get(rowId)
       );
       const partition = partitionHeightChangesByAnchor(

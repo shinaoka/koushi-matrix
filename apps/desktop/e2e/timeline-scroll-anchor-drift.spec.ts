@@ -680,7 +680,7 @@ test("a round trip through history keeps the reader's row and never shows a spac
   // frame earlier and would sample the pre-commit DOM.
   await page.evaluate(() => {
     const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]")!;
-    const state = { spacerFrames: 0, maxSliverPx: 0, running: true, pending: false, lastFrame: -1 };
+    const state = { spacerFrames: 0, maxSliverPx: 0, running: true, pending: false };
     (window as unknown as { __spacerWatch: typeof state }).__spacerWatch = state;
     const readFrame = () => {
       state.pending = false;

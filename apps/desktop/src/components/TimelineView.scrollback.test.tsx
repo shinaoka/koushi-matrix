@@ -396,11 +396,9 @@ describe("TimelineView", () => {
 
     const idleDiagnostics = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
     expect(idleDiagnostics.measurementFlushes - baselineMeasurementFlushes).toBe(1);
-    // Every range commit measures the rows it just mounted, so a windowed list
-    // commits the height model more often than the two passes mutated here. The
-    // upper bound is the real guard: a commit loop shows up as tens.
-    expect(idleDiagnostics.heightModelCommits - baselineHeightModelCommits).toBeGreaterThanOrEqual(2);
-    expect(idleDiagnostics.heightModelCommits - baselineHeightModelCommits).toBeLessThanOrEqual(8);
+    // Two mutated rows, two commits: one per row, and the windowed list's own
+    // mounts are already committed by the time this pass runs.
+    expect(idleDiagnostics.heightModelCommits - baselineHeightModelCommits).toBe(2);
   });
 
   it("does not defer measurements from a programmatic scroll echo", async () => {
