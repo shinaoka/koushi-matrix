@@ -2159,6 +2159,104 @@ describe("mention autocomplete dismissal", () => {
   });
 });
 
+// #1949: Cmd+B / Cmd+I (Ctrl+B / Ctrl+I away from macOS) must reach the same
+// inline format the Bold and Italic buttons apply, and must not fire where the
+// buttons would not: an IME composition owns the keys, and the read-only lock
+// takes the write path away.
+describe("composer format shortcuts (#1949)", () => {
+  function renderEditableComposer(canEdit = true, draft = "world") {
+    const onDocumentChange = vi.fn();
+    const props = {
+      surface: "main" as const,
+      composerMode: { kind: "plain" as const },
+      isSending: false,
+      roomName: "Direct room",
+      document: documentFromText(draft),
+      onCancelReply: () => undefined,
+      onSend: textSend(() => undefined),
+      onDocumentChange: textChange(onDocumentChange)
+    };
+    const rendered = render(<Composer {...props} canEdit={canEdit} />);
+    const editor = rendered.container.querySelector(".composer-inline-editor") as HTMLDivElement;
+    const typed = () => {
+      changeEditorText(editor, draft);
+      setInlineMentionEditorSelection(editor, 0, draft.length);
+    };
+    onDocumentChange.mockClear();
+    return { ...rendered, editor, onDocumentChange, typed };
+  }
+
+  function pressFormatKey(editor: HTMLElement, key: string, init: KeyboardEventInit = {}) {
+    // jsdom reports no platform, so the composer treats Ctrl as the modifier here
+    // (macOS uses Cmd; the Playwright spec covers that with the real platform).
+    const event = new KeyboardEvent("keydown", {
+      key,
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      ...init
+    });
+    act(() => {
+      editor.dispatchEvent(event);
+    });
+    return event;
+  }
+
+  it("wraps the selection from the keyboard exactly as the toolbar button does", () => {
+    for (const [key, name, expected] of [
+      ["b", "Bold", "**world**"],
+      ["i", "Italic", "_world_"]
+    ] as const) {
+      const byKeyboard = renderEditableComposer();
+      byKeyboard.typed();
+      const event = pressFormatKey(byKeyboard.editor, key);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(byKeyboard.editor.textContent).toBe(expected);
+      expect(byKeyboard.onDocumentChange).toHaveBeenLastCalledWith(expected);
+      cleanup();
+
+      const byToolbar = renderEditableComposer();
+      byToolbar.typed();
+      fireEvent.click(screen.getByRole("button", { name }));
+      expect(byToolbar.editor.textContent).toBe(expected);
+      cleanup();
+    }
+  });
+
+  it("inserts the placeholder pair at the caret when nothing is selected", () => {
+    const { editor, onDocumentChange, typed } = renderEditableComposer();
+    typed();
+    setInlineMentionEditorSelection(editor, 5, 5);
+
+    pressFormatKey(editor, "b");
+
+    expect(editor.textContent).toBe("world**bold**");
+    expect(onDocumentChange).toHaveBeenLastCalledWith("world**bold**");
+  });
+
+  it("leaves the keys to an IME composition", () => {
+    const { editor, onDocumentChange, typed } = renderEditableComposer();
+    typed();
+    onDocumentChange.mockClear();
+
+    const event = pressFormatKey(editor, "b", { isComposing: true });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(onDocumentChange).not.toHaveBeenCalled();
+  });
+
+  it("does nothing while the composer is locked", () => {
+    const { editor, onDocumentChange, typed } = renderEditableComposer(false);
+    typed();
+    onDocumentChange.mockClear();
+
+    pressFormatKey(editor, "b");
+
+    expect(onDocumentChange).not.toHaveBeenCalled();
+  });
+});
+
 // #1941: while sending is locked (Secure Backup is not ready) the body refuses
 // the keyboard, so no other control may write into it either.
 describe("read-only composer lock (#1941)", () => {

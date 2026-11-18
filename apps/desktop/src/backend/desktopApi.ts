@@ -313,10 +313,22 @@ export interface DesktopApi {
   ): Promise<ComposerResolvedAction>;
   selectSpace(spaceId: string | null, input?: NavigationInput): Promise<CommandAdmission>;
   reorderSpaces(spaceIds: string[]): Promise<CommandAdmission>;
-  selectRoom(roomId: string, input?: NavigationInput): Promise<CommandSettlement>;
+  /**
+   * `activationId` is the notification activation that asked for this selection
+   * (#1953); it is passed through, never interpreted, here.
+   */
+  selectRoom(
+    roomId: string,
+    input?: NavigationInput,
+    activationId?: number
+  ): Promise<CommandSettlement>;
   openActivityEvent(roomId: string, eventId: string): Promise<CommandSettlement>;
   openPinnedEvent(roomId: string, eventId: string): Promise<CommandSettlement>;
-  openNotificationEvent(roomId: string, eventId: string): Promise<CommandSettlement>;
+  openNotificationEvent(
+    roomId: string,
+    eventId: string,
+    activationId?: number
+  ): Promise<CommandSettlement>;
   openReplyQuoteEvent(roomId: string, eventId: string): Promise<CommandSettlement>;
   selectSearchResult(roomId: string, eventId: string): Promise<CommandSettlement>;
   openTimelineAtTimestamp(roomId: string, timestampMs: number): Promise<CommandSettlement>;

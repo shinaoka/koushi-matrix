@@ -645,7 +645,7 @@ test("thread panel scrollback invokes thread pagination command only", async ({
   });
 
   const threadTimeline = page.locator('aside[aria-label="Context panel"] [data-testid="timeline-view"]');
-  await expect(threadTimeline.locator("[data-item-id]")).toHaveCount(48);
+  await expect(threadTimeline).toHaveAttribute("data-total-items", "48");
   await expect(
     page
       .locator('aside[aria-label="Context panel"]')

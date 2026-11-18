@@ -83,6 +83,7 @@ describe("Tauri desktop attention port", () => {
     expect(eventName).toBe("koushi-desktop://notification-activated");
     const activation: DesktopNotificationActivation = {
       account_tab_id: "account:@alice:example.invalid",
+      activation_id: 3,
       room_id: "!room:example.invalid",
       event_id: "$event:example.invalid",
       thread_root_event_id: null

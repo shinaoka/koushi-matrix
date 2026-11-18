@@ -120,16 +120,15 @@ pub async fn select_room(
     account_tab_id: Option<String>,
     room_id: String,
     input: Option<NavigationInput>,
+    activation_id: Option<u64>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
+    let origin = input.unwrap_or_default().origin();
+    record_notification_activation_navigation(activation_id);
     let mut event_conn = account_connection(state.inner(), account_tab_id.as_deref()).await?;
     let generation = event_conn
-        .select_room_and_wait_with_origin(
-            room_id,
-            SELECT_ROOM_EVENT_TIMEOUT,
-            input.unwrap_or_default().origin(),
-        )
+        .select_room_and_wait_with_origin(room_id, SELECT_ROOM_EVENT_TIMEOUT, origin)
         .await
         .map_err(invoke_error_from_select_room_error)?;
     // Pinned-event bodies may require network fetches. Core schedules their
@@ -234,9 +233,11 @@ pub async fn open_notification_event(
     account_tab_id: Option<String>,
     room_id: String,
     event_id: String,
+    activation_id: Option<u64>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
+    record_notification_activation_navigation(activation_id);
     navigate_to_event(
         room_id,
         event_id,
@@ -246,6 +247,24 @@ pub async fn open_notification_event(
         state,
     )
     .await
+}
+
+/// Join a notification click's receipt to the navigation it caused (#1953).
+///
+/// Only the process-local activation ordinal is recorded, so the diagnostic
+/// export still names no account, room, or event.
+fn record_notification_activation_navigation(activation_id: Option<u64>) {
+    let Some(activation_id) = activation_id else {
+        return;
+    };
+    record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "desktop.native_notification",
+            "activation_navigation",
+        )
+        .field(DiagnosticField::correlation("activation", activation_id)),
+    );
 }
 
 /// Open the original message a reply quote points at.

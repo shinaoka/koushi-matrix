@@ -382,7 +382,7 @@ describe("desktop release scripts", () => {
       "scripts/desktop-release-version.mjs",
       "environment: release-macos",
       "APPLE_API_PRIVATE_KEY",
-      "npm --prefix apps/desktop audit --package-lock-only --audit-level=high",
+      "npm --prefix apps/desktop audit --package-lock-only --omit=dev --audit-level=high",
       "codesign --verify --deep --strict",
       "xcrun notarytool submit",
       "xcrun stapler staple",
@@ -419,6 +419,35 @@ describe("desktop release scripts", () => {
     expect(workflow).toMatch(
       /publish-release:[\s\S]*needs:\s*\[prepare, build-macos, build-windows, build-linux\]/
     );
+  });
+
+  test("npm audits gate the runtime graph and only record the full graph (#1965)", () => {
+    for (const workflowFile of ["release-desktop.yml", "build-windows.yml"]) {
+      const workflow = readFileSync(
+        new URL(`../../../../.github/workflows/${workflowFile}`, import.meta.url),
+        "utf8"
+      );
+
+      expect(workflow).toContain(
+        "name: npm audit (lockfile, runtime deps, before install)\n" +
+          "        run: npm --prefix apps/desktop audit --package-lock-only --omit=dev --audit-level=high\n"
+      );
+      expect(workflow).toContain(
+        "name: npm audit (full graph, advisory)\n" +
+          "        id: npm-audit-full\n" +
+          "        continue-on-error: true\n" +
+          "        run: npm --prefix apps/desktop audit --audit-level=high\n"
+      );
+      expect(workflow).toContain("if: steps.npm-audit-full.outcome == 'failure'");
+      expect(workflow).toContain(
+        "name: npm audit (runtime deps only)\n" +
+          "        run: npm --prefix apps/desktop audit --omit=dev --audit-level=high\n"
+      );
+      // The advisory text must stay shell-agnostic: the Windows jobs default to
+      // pwsh, where `|| true` is not a working failure swallow.
+      expect(workflow).not.toContain("audit --audit-level=high || true");
+      expect(workflow).not.toContain("audit --package-lock-only --audit-level=high");
+    }
   });
 
   test("desktop release workflow preserves trusted Rust build outputs across retries", () => {

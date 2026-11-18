@@ -26,7 +26,29 @@ Use npm overrides only where necessary to make the security floor explicit. Pres
 1. Preserve the existing failing audit result as the red condition: four high-severity vulnerable packages.
 2. Regenerate the lockfile using npm's compatible security fix resolution.
 3. Delete and recreate local dependencies with `npm ci` so verification does not rely on an incrementally mutated `node_modules`.
-4. Require `npm audit --json` to report zero known vulnerabilities across production and development dependencies.
+4. Require `npm audit --json` to report zero known vulnerabilities across
+   production and development dependencies **except** the development-only
+   advisories named in this item, which are recorded on every release instead of
+   gating it. The production graph itself is never excepted: item 5 gates it.
+   - **2026-11-18, `picomatch` `<=4.0.7` (`GHSA-fc5q-39xc-vjpf`, ReDoS), owner
+     decision (#1965).** Every high finding in `apps/desktop` is downstream of
+     this one package (`fdir` → `tinyglobby` → `vite` / `vitest` /
+     `@typescript-eslint`), and `4.0.7` is the newest published release, so the
+     vulnerable range cannot be excluded by a lockfile update or by the
+     `overrides` floor this policy prescribes. The requirement above was
+     therefore unsatisfiable and blocked every desktop release from 0.35.5 on.
+   - **Exception conditions, all required:** (a) the advisory is reachable only
+     from development dependencies; (b) the newest published release of the
+     affected package is inside the vulnerable range, so no compatible fixed
+     version exists; (c) item 5 still reports zero runtime vulnerabilities; and
+     (d) the package is named here with a tracking issue. A new development
+     advisory is a fresh finding, not part of this exception.
+   - **Tracking:** #1965 owns the restoration. Until it closes, the release
+     workflows run the full graph at the unchanged `--audit-level=high`
+     threshold with `continue-on-error: true` and record the advisory list, so a
+     future high is visible rather than silently passed. When a fixed release is
+     published and locked, the full graph returns to gating and this exception is
+     deleted.
 5. Require `npm audit --omit=dev --json` to report zero runtime vulnerabilities.
 6. Run TypeScript type checking and build the DMG from the same clean dependency graph.
 

@@ -155,7 +155,7 @@ backend, makes no update request, and never spawns `pkexec`, `sudo`, `dpkg`, or
 
    ```bash
    npm --prefix apps/desktop run release:version:check
-   npm --prefix apps/desktop audit --package-lock-only --audit-level=high
+   npm --prefix apps/desktop audit --package-lock-only --omit=dev --audit-level=high
    npm --prefix apps/desktop run typecheck
    npm --prefix apps/desktop run lint
    npm --prefix apps/desktop test -- --run src/scripts/releaseConfiguration.test.ts
@@ -180,7 +180,9 @@ The workflow:
 1. validates synchronized SemVer and requires an increase over the previous
    `main` commit;
 2. rejects an already-used release tag;
-3. runs the lockfile, full, and runtime-only npm vulnerability gates;
+3. gates on the runtime lockfile and runtime-only npm audits and records the
+   full-graph advisory ([environment](../agents/environment.md#npm-dependency-security-gate),
+   #1965);
 4. builds the macOS arm64 DMG and signed updater archive using the protected
    `release-macos` Environment;
 5. verifies both apps' signatures, notarization tickets, stapling, and
