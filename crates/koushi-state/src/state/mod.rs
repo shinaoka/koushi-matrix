@@ -374,7 +374,7 @@ pub struct ThreadDeliveryDiagnostic {
     pub thread_cache_mentions: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AppState {
     pub session: SessionState,
     #[serde(default)]
@@ -620,6 +620,83 @@ impl Default for AppState {
             cjk_text_policy: CjkTextPolicyState::default(),
             errors: Vec::new(),
         }
+    }
+}
+
+// #1985: `AppState` is the app's general diagnostic dump (`format!("{state:?}")`
+// is what a failing test or a log line prints), and it reaches account, room and
+// event identities, message text, drafts and previews through dozens of leaf
+// types. Its `Debug` therefore renders this account's shape: kinds, booleans and
+// counts. Sub-states whose own `Debug` is already a summary stay, because they
+// carry nothing private and their presence is what a reader looks for first.
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AppState")
+            .field("session", &self.session)
+            .field("session_lock_reason", &self.session_lock_reason)
+            .field("secure_backup_gate", &self.secure_backup_gate)
+            .field(
+                "sliding_sync_account_epoch",
+                &self.sliding_sync_account_epoch,
+            )
+            .field("session_disclosure_epoch", &self.session_disclosure_epoch)
+            .field("sliding_sync_capability", &self.sliding_sync_capability)
+            .field("thread_delivery", &self.thread_delivery)
+            .field("sync", &self.sync)
+            .field("conversation_access", &self.conversation_access())
+            .field("sync_generation", &self.sync_generation)
+            .field("navigation", &self.navigation)
+            .field("profile", &self.profile)
+            .field("activity", &self.activity)
+            .field("basic_operation", &self.basic_operation)
+            .field("current_session_status", &self.current_session_status)
+            .field("contact_security", &self.contact_security)
+            .field("files_view", &self.files_view)
+            .field("history_export", &self.history_export)
+            .field("local_encryption", &self.local_encryption)
+            .field("room_address_availability", &self.room_address_availability)
+            .field("room_management", &self.room_management)
+            .field("space_members", &self.space_members)
+            .field("timeline", &self.timeline)
+            .field("thread", &self.thread)
+            .field("mention_candidates", &self.mention_candidates)
+            .field("search_crawler", &self.search_crawler)
+            .field("live_signals", &self.live_signals)
+            .field("sender_device_advisories", &self.sender_device_advisories)
+            .field("composer_drafts", &self.composer_drafts)
+            .field("scheduled_sends", &self.scheduled_sends)
+            .field("upload_staging", &self.upload_staging)
+            .field("media_gallery", &self.media_gallery)
+            .field(
+                "sidebar_scope_preferences",
+                &self.settings.values.sidebar.scope_preferences.len(),
+            )
+            .field(
+                "notification_sinks",
+                &self.notification_delivery.sinks.len(),
+            )
+            .field("thread_unread", &self.thread_unread.len())
+            .field("locally_read_activity", &self.locally_read_activity.len())
+            .field("spaces", &self.spaces.len())
+            .field("rooms", &self.rooms.len())
+            .field("invites", &self.invites.len())
+            .field(
+                "room_notification_settings",
+                &self.room_notification_settings.len(),
+            )
+            .field(
+                "room_notification_awaiting_echo",
+                &self.room_notification_awaiting_echo.len(),
+            )
+            .field("room_interactions", &self.room_interactions.len())
+            .field("room_access", &self.room_access.len())
+            .field("room_access_observed", &self.room_access_observed.len())
+            .field("room_access_pre_send", &self.room_access_pre_send.len())
+            .field("space_child_links", &self.space_child_links.entries.len())
+            .field("threads_list_items", &self.threads_list.items().len())
+            .field("errors", &self.errors.len())
+            .finish()
     }
 }
 

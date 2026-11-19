@@ -141,12 +141,29 @@ impl fmt::Debug for AttachmentResult {
 
 /// User-facing scope used when opening the files view. The reducer resolves a
 /// space scope into the concrete child room ids before querying the index.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum FilesViewScope {
     Room { room_id: String },
     Space { space_id: String },
     Account,
+}
+
+// #1985: `FilesViewState` prints this scope, and both arms carry a room.
+impl fmt::Debug for FilesViewScope {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Room { .. } => formatter
+                .debug_struct("FilesViewScope::Room")
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::Space { .. } => formatter
+                .debug_struct("FilesViewScope::Space")
+                .field("space_id", &"RoomId(..)")
+                .finish(),
+            Self::Account => formatter.write_str("FilesViewScope::Account"),
+        }
+    }
 }
 
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -224,7 +241,7 @@ impl fmt::Debug for FilesViewState {
                 .field("scope", scope)
                 .field("filter", filter)
                 .field("sort", sort)
-                .field("message", message)
+                .field("has_message", &!message.is_empty())
                 .finish(),
         }
     }

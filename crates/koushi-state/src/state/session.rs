@@ -8,7 +8,7 @@ pub enum SessionLockReason {
     UnknownToken { soft_logout: bool },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SessionState {
     SignedOut,
     Restoring,
@@ -55,6 +55,73 @@ pub enum SessionState {
         failure: super::SlidingSyncCapabilityFailureKind,
     },
     LoggingOut,
+}
+
+// #1985: `Authenticating` carries the homeserver the reader typed, and every
+// other variant carries `SessionInfo`, which redacts itself.
+impl fmt::Debug for SessionState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SignedOut => formatter.write_str("SignedOut"),
+            Self::Restoring => formatter.write_str("Restoring"),
+            Self::LoggingOut => formatter.write_str("LoggingOut"),
+            Self::SwitchingAccount { info } => formatter
+                .debug_struct("SwitchingAccount")
+                .field("info", info)
+                .finish(),
+            Self::Authenticating { attempt_id, .. } => formatter
+                .debug_struct("Authenticating")
+                .field("homeserver", &"Homeserver(..)")
+                .field("attempt_id", attempt_id)
+                .finish(),
+            Self::Provisional { info, phase } => formatter
+                .debug_struct("Provisional")
+                .field("info", info)
+                .field("phase", phase)
+                .finish(),
+            Self::AwaitingVerification { info, gate } => formatter
+                .debug_struct("AwaitingVerification")
+                .field("info", info)
+                .field("gate", gate)
+                .finish(),
+            Self::Verifying {
+                info,
+                gate,
+                method,
+                flow_id,
+                sas_emojis,
+            } => formatter
+                .debug_struct("Verifying")
+                .field("info", info)
+                .field("gate", gate)
+                .field("method", method)
+                .field("flow_id", flow_id)
+                .field("sas_emoji_count", &sas_emojis.len())
+                .finish(),
+            Self::AwaitingBootstrapConfirmation {
+                info,
+                gate,
+                flow_id,
+            } => formatter
+                .debug_struct("AwaitingBootstrapConfirmation")
+                .field("info", info)
+                .field("gate", gate)
+                .field("flow_id", flow_id)
+                .finish(),
+            Self::Rejecting { info, reason } => formatter
+                .debug_struct("Rejecting")
+                .field("info", info)
+                .field("reason", reason)
+                .finish(),
+            Self::Ready(info) => formatter.debug_tuple("Ready").field(info).finish(),
+            Self::Locked(info) => formatter.debug_tuple("Locked").field(info).finish(),
+            Self::CapabilityBlocked { info, failure } => formatter
+                .debug_struct("CapabilityBlocked")
+                .field("info", info)
+                .field("failure", failure)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -499,13 +566,27 @@ pub enum RecoveryMethod {
     SecurityPhrase,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub homeserver: String,
     pub user_id: String,
     pub device_id: String,
     #[serde(default)]
     pub authentication_method: SessionAuthenticationMethod,
+}
+
+// #1985: the account's homeserver, user and device are private, and this struct
+// is reachable from the whole-`AppState` diagnostic dump.
+impl std::fmt::Debug for SessionInfo {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SessionInfo")
+            .field("homeserver", &"Homeserver(..)")
+            .field("user_id", &"UserId(..)")
+            .field("device_id", &"DeviceId(..)")
+            .field("authentication_method", &self.authentication_method)
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

@@ -62,7 +62,7 @@ impl ThreadsListScope {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[expect(
     clippy::large_enum_variant,
     reason = "pane state is held once and cloned rarely; a few hundred bytes does not justify boxing"
@@ -91,6 +91,56 @@ pub enum ThreadPaneState {
         intent: ThreadOpenIntent,
         failure_kind: OperationFailureKind,
     },
+}
+
+// #1985: `PinnedReply` carries the event the permalink pointed at.
+fn intent_name(intent: &ThreadOpenIntent) -> &'static str {
+    match intent {
+        ThreadOpenIntent::ExistingThread => "ExistingThread",
+        ThreadOpenIntent::NewThreadDraft => "NewThreadDraft",
+        ThreadOpenIntent::PinnedReply { .. } => "PinnedReply",
+    }
+}
+
+// #1985: every open variant carries a room and a thread root.
+impl std::fmt::Debug for ThreadPaneState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closed => formatter.write_str("Closed"),
+            Self::Opening { intent, .. } => formatter
+                .debug_struct("Opening")
+                .field("room_id", &"RoomId(..)")
+                .field("root_event_id", &"EventId(..)")
+                .field("intent", &intent_name(intent))
+                .finish(),
+            Self::Open {
+                intent,
+                is_subscribed,
+                composer,
+                staged_uploads,
+                ..
+            } => formatter
+                .debug_struct("Open")
+                .field("room_id", &"RoomId(..)")
+                .field("root_event_id", &"EventId(..)")
+                .field("intent", &intent_name(intent))
+                .field("is_subscribed", is_subscribed)
+                .field("composer", composer)
+                .field("staged_uploads", &staged_uploads.len())
+                .finish(),
+            Self::Failed {
+                intent,
+                failure_kind,
+                ..
+            } => formatter
+                .debug_struct("Failed")
+                .field("room_id", &"RoomId(..)")
+                .field("root_event_id", &"EventId(..)")
+                .field("intent", &intent_name(intent))
+                .field("failure_kind", failure_kind)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -167,7 +217,7 @@ impl ThreadsListState {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ThreadsListItem {
     pub room_id: String,
     pub root_event_id: String,
@@ -185,6 +235,48 @@ pub struct ThreadsListItem {
     /// value the room timeline chip shows.
     #[serde(default)]
     pub unread_count: u32,
+}
+
+// #1985: a row carries a room, two events, two senders, their labels, and two
+// body previews. This row is reachable from the whole-`AppState` diagnostic
+// dump, so it renders presence and counts instead.
+impl std::fmt::Debug for ThreadsListItem {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ThreadsListItem")
+            .field("room_id", &"RoomId(..)")
+            .field("root_event_id", &"EventId(..)")
+            .field("root_sender", &"UserId(..)")
+            .field(
+                "root_sender_label",
+                &self.root_sender_label.as_ref().map(|_| "SenderLabel(..)"),
+            )
+            .field(
+                "root_body_preview",
+                &self.root_body_preview.as_ref().map(|_| "MessageBody(..)"),
+            )
+            .field("root_timestamp_ms", &self.root_timestamp_ms)
+            .field(
+                "latest_event_id",
+                &self.latest_event_id.as_ref().map(|_| "EventId(..)"),
+            )
+            .field(
+                "latest_sender",
+                &self.latest_sender.as_ref().map(|_| "UserId(..)"),
+            )
+            .field(
+                "latest_sender_label",
+                &self.latest_sender_label.as_ref().map(|_| "SenderLabel(..)"),
+            )
+            .field(
+                "latest_body_preview",
+                &self.latest_body_preview.as_ref().map(|_| "MessageBody(..)"),
+            )
+            .field("latest_timestamp_ms", &self.latest_timestamp_ms)
+            .field("reply_count", &self.reply_count)
+            .field("unread_count", &self.unread_count)
+            .finish()
+    }
 }
 
 /// #1238: one thread root's SDK thread-cache attention, as observed by the room

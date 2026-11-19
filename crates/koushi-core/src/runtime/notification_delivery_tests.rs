@@ -1019,6 +1019,11 @@ async fn a_serverchan_test_send_posts_a_form_to_the_sendkey_path() {
     // The SendKey is in the URL path only: never in the form, the snapshot or its Debug.
     assert!(!form.values().any(|value| value.contains(SENDKEY)));
     let snapshot = connection.snapshot();
+    // #1985: the whole-`AppState` dump is a summary now, so this pins the
+    // assertion on the slices that carry delivery configuration, which is where
+    // a leaked key would actually appear.
+    assert!(!format!("{:?}", snapshot.settings.values.delivery).contains(SENDKEY));
+    assert!(!format!("{:?}", snapshot.notification_delivery).contains(SENDKEY));
     assert!(!format!("{snapshot:?}").contains(SENDKEY));
     assert!(
         !serde_json::to_string(&snapshot)
