@@ -1583,7 +1583,7 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
     }
 
     if scenario.should_run_stage(QaStage::ScheduledSend) {
-        run_scheduled_send_stage(&mut conn_a, &key_a, &room_id).await?;
+        run_scheduled_send_stage(&mut conn_a, &key_a, &room_id, &config.homeserver).await?;
     }
 
     if scenario.should_run_stage(QaStage::TimelineStress) {

@@ -83,12 +83,6 @@ function checkDockerAvailable() {
   }
 }
 
-/**
- * Tuwunel 2.0 enables MSC4140 delayed events by default. With
- * `max_scheduled = 0` it stops advertising `org.matrix.msc4140`, so the
- * `scheduled_send` lane keeps covering the local fallback until Core retires
- * delivered server-handle items (#1973). Remove the table with that fix.
- */
 export function tuwunelConfig({ serverName, port, dataDir }) {
   return `[global]
 server_name = ${tomlString(serverName)}
@@ -101,9 +95,6 @@ yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse = true
 allow_federation = false
 allow_room_creation = true
 trusted_servers = []
-
-[global.rooms.delayed_events]
-max_scheduled = 0
 `;
 }
 

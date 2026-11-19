@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use koushi_state::{
-    AppAction, AppState, ScheduledSendItem, ScheduledSendStore, SessionState, reduce,
+    AppAction, AppState, ScheduledSendHandle, ScheduledSendItem, ScheduledSendStore, SessionState,
+    reduce,
 };
 
 use super::composer_draft_session_key;
@@ -90,10 +91,23 @@ impl super::AppActor {
         if !self.state.conversation_access().send_admitted {
             return None;
         }
-        let next_send_at_ms = self.state.scheduled_sends.next_local_send_at_ms()?;
+        // #1973: a server-handle item is woken for a delivery check, a grace
+        // period after its due time; it is never sent from here.
+        let next_server_check_at_ms = self
+            .state
+            .scheduled_sends
+            .next_server_send_at_ms()
+            .map(|send_at_ms| send_at_ms.saturating_add(server_check_grace_ms()));
+        let next_wake_at_ms = [
+            self.state.scheduled_sends.next_local_send_at_ms(),
+            next_server_check_at_ms,
+        ]
+        .into_iter()
+        .flatten()
+        .min()?;
         let now_ms = crate::time::current_epoch_ms();
         Some(Duration::from_millis(
-            next_send_at_ms.saturating_sub(now_ms),
+            next_wake_at_ms.saturating_sub(now_ms),
         ))
     }
 
@@ -107,14 +121,57 @@ impl super::AppActor {
         if !self.state.conversation_access().send_admitted {
             return false;
         }
+        let now_ms = crate::time::current_epoch_ms();
+        if let Some(item) = self.state.scheduled_sends.next_local_due(now_ms) {
+            return self.dispatch_scheduled_send(item).await;
+        }
         let Some(item) = self
             .state
             .scheduled_sends
-            .next_local_due(crate::time::current_epoch_ms())
+            .next_server_check_due(now_ms.saturating_sub(server_check_grace_ms()))
         else {
             return false;
         };
-        self.dispatch_scheduled_send(item).await
+        self.check_server_scheduled_send(item).await
+    }
+
+    /// #1973: ask the account actor whether the homeserver has sent a due
+    /// server-handle item. The local timer never sends it.
+    async fn check_server_scheduled_send(&mut self, item: ScheduledSendItem) -> bool {
+        let ScheduledSendHandle::Server { delay_id } = item.handle else {
+            return false;
+        };
+        let Some(origin_session_key) = scheduled_send_session_key(&self.state) else {
+            return false;
+        };
+        let scheduled_id = item.scheduled_id;
+        let effects = self
+            .reduce_app_action(AppAction::ScheduledSendServerCheckStarted {
+                scheduled_id: scheduled_id.clone(),
+                delay_id: delay_id.clone(),
+            })
+            .await;
+        self.handle_ui_event_effects(&effects).await;
+
+        if !self
+            .account_actor
+            .send(AccountMessage::CheckServerScheduledSend {
+                origin_session_key,
+                scheduled_id: scheduled_id.clone(),
+                delay_id: delay_id.clone(),
+            })
+            .await
+        {
+            let defer_effects = self
+                .reduce_app_action(AppAction::ScheduledSendServerCheckDeferred {
+                    scheduled_id,
+                    delay_id,
+                    recheck_at_ms: crate::scheduled_send::server_scheduled_send_recheck_at_ms(),
+                })
+                .await;
+            self.handle_ui_event_effects(&defer_effects).await;
+        }
+        true
     }
 
     async fn dispatch_scheduled_send(&mut self, item: ScheduledSendItem) -> bool {
@@ -159,6 +216,10 @@ impl super::AppActor {
         }
         true
     }
+}
+
+fn server_check_grace_ms() -> u64 {
+    crate::scheduled_send::SERVER_SCHEDULED_SEND_CHECK_GRACE.as_millis() as u64
 }
 
 pub(super) fn scheduled_send_session_key(

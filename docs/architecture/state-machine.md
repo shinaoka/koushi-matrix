@@ -2275,6 +2275,15 @@ tokens, paths, or raw errors.
   only `ScheduledSendHandle::Local` items through the account actor with the
   captured room/thread target and deterministic transaction id. Server
   `ScheduledSendHandle::Server` items are never fired by the local timer.
+- #1973: the homeserver fires a `Server` item, so Core only confirms delivery.
+  A grace period after its due time, `AppActor` reduces
+  `ScheduledSendServerCheckStarted` and asks `AccountActor`, which reads the
+  user's MSC4140 delayed-event listing. When the listing no longer holds the
+  item's `delay_id` as scheduled, `ScheduledSendServerDelivered` removes the
+  item; while it does, or when the listing cannot be read,
+  `ScheduledSendServerCheckDeferred` moves its due time to the next check. All
+  three carry the `delay_id` they concern and do nothing once a reschedule has
+  replaced that handle. No message is sent by this check.
 - `AccountActor` owns MSC4140 side effects because it owns the SDK session.
   It detects `org.matrix.msc4140` through the SDK `/versions` unstable feature
   set, creates delayed message events through Ruma's
@@ -2285,10 +2294,12 @@ tokens, paths, or raw errors.
 - Server MSC4140 delayed-event support is represented by the capability and
   handle boundary; GUI code must not call raw Matrix delayed-event APIs or run
   its own schedule timer.
-- Headless core QA covers the local fallback with the `scheduled_send` scenario.
-  Its tokens are private-data-free: `scheduled_capability=local_fallback`,
-  `scheduled_create=ok`, `scheduled_reschedule=ok`, `scheduled_cancel=ok`, and
-  `scheduled_fire=ok`.
+- Headless core QA covers both paths with the `scheduled_send` scenario: the
+  MSC4140 path on Tuwunel, which advertises delayed events, and the local
+  fallback on the Synapse fixture. Its tokens are private-data-free:
+  `scheduled_capability=matches_server` (Core projected the path `/versions`
+  advertises), `scheduled_create=ok`, `scheduled_reschedule=ok`,
+  `scheduled_cancel=ok`, and `scheduled_fire=ok`.
 
 ```mermaid
 stateDiagram-v2
@@ -2299,6 +2310,8 @@ stateDiagram-v2
     Queued --> Queued: ScheduledSendCapabilityChanged
     Queued --> Empty: ScheduledSendCancelled [known id]
     Queued --> Empty: ScheduledSendDispatched [known Local handle] / route SendText
+    Queued --> Queued: ScheduledSendServerCheckStarted/Deferred [same Server handle]
+    Queued --> Empty: ScheduledSendServerDelivered [same Server handle]
     Queued --> Empty: RoomListUpdated [room pruned] / retain joined rooms
     Queued --> Empty: LogoutRequested/SessionCleared
     Empty --> Empty: ScheduledSendPersistenceFailed [Ready] / publish local-save failure

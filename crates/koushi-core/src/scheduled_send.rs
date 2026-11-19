@@ -8,6 +8,13 @@ use matrix_sdk::ruma::api::FeatureFlag;
 
 pub(crate) const MSC4140_FEATURE: &str = "org.matrix.msc4140";
 pub(crate) const LOCAL_SCHEDULED_SEND_RETRY_DELAY: Duration = Duration::from_secs(30);
+/// #1973: how long after a server-handle item's due time Core first asks the
+/// homeserver whether it sent the delayed event, so a punctual server has
+/// already finalised it.
+pub(crate) const SERVER_SCHEDULED_SEND_CHECK_GRACE: Duration = Duration::from_secs(2);
+/// How long Core waits before asking again when the homeserver still holds the
+/// delayed event as scheduled, or could not be asked.
+pub(crate) const SERVER_SCHEDULED_SEND_RECHECK_DELAY: Duration = Duration::from_secs(10);
 
 pub(crate) fn capability_from_unstable_features(
     features: &BTreeSet<FeatureFlag>,
@@ -39,6 +46,33 @@ pub(crate) fn local_scheduled_send_retry_at_ms() -> u64 {
         .saturating_add(LOCAL_SCHEDULED_SEND_RETRY_DELAY.as_millis() as u64)
 }
 
+pub(crate) fn server_scheduled_send_recheck_at_ms() -> u64 {
+    crate::time::current_epoch_ms()
+        .saturating_add(SERVER_SCHEDULED_SEND_RECHECK_DELAY.as_millis() as u64)
+}
+
+/// Whether the homeserver's listing of the user's delayed events still holds
+/// `delay_id` as scheduled. Every finalised status retires the item: sent,
+/// errored, and cancelled (#1975 review). Cancel matters because MSC4140 is per
+/// user, so another device can cancel the event while the server keeps a
+/// finalised entry; read as scheduled, the item is rechecked every
+/// `SERVER_SCHEDULED_SEND_RECHECK_DELAY` for as long as the app runs.
+pub(crate) fn delayed_event_still_scheduled(
+    delayed_events: &[matrix_sdk::ruma::api::client::delayed_events::DelayedEventData],
+    delay_id: &str,
+) -> bool {
+    use matrix_sdk::ruma::api::client::delayed_events::DelayedEventStatus;
+
+    delayed_events.iter().any(|event| {
+        event.delay_id == delay_id
+            && event.status() == DelayedEventStatus::Scheduled
+            // Belt as well as `status()`: a listing can carry the event id or the
+            // error without `finalised_ts`, which `status()` reads as scheduled.
+            && event.event_id.is_none()
+            && event.error.is_none()
+    })
+}
+
 pub(crate) fn scheduled_send_transaction_id(scheduled_id: &str) -> String {
     let sanitized = scheduled_id
         .chars()
@@ -66,9 +100,57 @@ mod tests {
     use matrix_sdk::ruma::api::FeatureFlag;
 
     use super::{
-        MSC4140_FEATURE, capability_from_unstable_features, scheduled_send_transaction_id,
-        server_delay_timeout,
+        MSC4140_FEATURE, capability_from_unstable_features, delayed_event_still_scheduled,
+        scheduled_send_transaction_id, server_delay_timeout,
     };
+
+    fn listed_delayed_events(
+        entries: serde_json::Value,
+    ) -> Vec<matrix_sdk::ruma::api::client::delayed_events::DelayedEventData> {
+        serde_json::from_value(entries).expect("synthetic delayed-event listing")
+    }
+
+    #[test]
+    fn delayed_event_listing_decides_whether_a_server_item_is_still_scheduled() {
+        // #1973: shape of a Tuwunel 2.0 / Synapse listing entry.
+        let scheduled = listed_delayed_events(serde_json::json!([{
+            "delay_id": "delay-pending",
+            "room_id": "!room:example.test",
+            "type": "m.room.message",
+            "content": { "msgtype": "m.text", "body": "synthetic" },
+            "delay": 2000,
+            "running_since": 1_900_000_000_000_u64
+        }]));
+        assert!(delayed_event_still_scheduled(&scheduled, "delay-pending"));
+        assert!(!delayed_event_still_scheduled(&scheduled, "delay-sent"));
+        assert!(!delayed_event_still_scheduled(&[], "delay-pending"));
+
+        let finalised = listed_delayed_events(serde_json::json!([{
+            "delay_id": "delay-pending",
+            "room_id": "!room:example.test",
+            "type": "m.room.message",
+            "content": { "msgtype": "m.text", "body": "synthetic" },
+            "delay": 2000,
+            "running_since": 1_900_000_000_000_u64,
+            "event_id": "$sent:example.test"
+        }]));
+        assert!(!delayed_event_still_scheduled(&finalised, "delay-pending"));
+
+        // #1975 review: cancelling from another device leaves a finalised entry
+        // with neither an event id nor an error. Treating it as scheduled polls
+        // the listing every 10 s and never retires the item. The wire spelling is
+        // `finalised_ts`; a wrong key deserialises to `None`, i.e. scheduled.
+        let cancelled = listed_delayed_events(serde_json::json!([{
+            "delay_id": "delay-pending",
+            "room_id": "!room:example.test",
+            "type": "m.room.message",
+            "content": { "msgtype": "m.text", "body": "synthetic" },
+            "delay": 2000,
+            "running_since": 1_900_000_000_000_u64,
+            "finalised_ts": 1_900_000_002_000_u64
+        }]));
+        assert!(!delayed_event_still_scheduled(&cancelled, "delay-pending"));
+    }
 
     #[test]
     fn scheduled_send_transaction_id_is_deterministic_and_matrix_safe() {

@@ -462,6 +462,82 @@ pub(crate) fn handle_scheduled_send_cancelled_or_dispatched(
     Vec::new()
 }
 
+pub(crate) fn handle_scheduled_send_server_check_started(
+    state: &mut AppState,
+    scheduled_id: String,
+    delay_id: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    state
+        .scheduled_sends
+        .start_server_check(&scheduled_id, &delay_id);
+    Vec::new()
+}
+
+pub(crate) fn handle_scheduled_send_server_check_deferred(
+    state: &mut AppState,
+    scheduled_id: String,
+    delay_id: String,
+    recheck_at_ms: u64,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        abandon_server_check(state, &scheduled_id, &delay_id);
+        return Vec::new();
+    }
+
+    let Some(item) =
+        state
+            .scheduled_sends
+            .defer_server_check(&scheduled_id, &delay_id, recheck_at_ms)
+    else {
+        return Vec::new();
+    };
+    scheduled_send_room_changed(state, item.room_id)
+}
+
+pub(crate) fn handle_scheduled_send_server_delivered(
+    state: &mut AppState,
+    scheduled_id: String,
+    delay_id: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        // The confirmation is dropped with the session, not applied, so the item
+        // must not stay marked in flight; the next wake checks it again.
+        abandon_server_check(state, &scheduled_id, &delay_id);
+        return Vec::new();
+    }
+
+    let Some(item) = state
+        .scheduled_sends
+        .remove_delivered_server(&scheduled_id, &delay_id)
+    else {
+        return Vec::new();
+    };
+    scheduled_send_room_changed(state, item.room_id)
+}
+
+/// Release the in-flight mark of a check whose result a reducer dropped because
+/// the session was not Ready (#1973 review). Nothing the UI shows changes, so no
+/// effect is emitted.
+fn abandon_server_check(state: &mut AppState, scheduled_id: &str, delay_id: &str) {
+    state
+        .scheduled_sends
+        .abandon_server_check(scheduled_id, delay_id);
+}
+
+/// Refresh the selected-room projection when a scheduled item of that room
+/// changed.
+fn scheduled_send_room_changed(state: &mut AppState, room_id: String) -> Vec<AppEffect> {
+    if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
+        refresh_timeline_scheduled_sends(state);
+        return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
+    }
+    Vec::new()
+}
+
 pub(crate) fn handle_upload_staging_changed(
     state: &mut AppState,
     target: crate::ComposerTarget,

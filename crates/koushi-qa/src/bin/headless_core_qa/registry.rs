@@ -754,7 +754,7 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "room_history_export=ok",
         ],
         QaStage::ScheduledSend => &[
-            "scheduled_capability=local_fallback",
+            "scheduled_capability=matches_server",
             "scheduled_create=ok",
             "scheduled_reschedule=ok",
             "scheduled_cancel=ok",
@@ -974,7 +974,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "history_export_attachments=ok",
         "history_export_resume=ok",
         "room_history_export=ok",
-        "scheduled_capability=local_fallback",
+        "scheduled_capability=matches_server",
         "scheduled_create=ok",
         "scheduled_reschedule=ok",
         "scheduled_cancel=ok",

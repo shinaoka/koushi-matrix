@@ -1362,9 +1362,12 @@ normal QA-title mode and cannot change product title semantics.
   create/cancel/reschedule requests live in `AccountActor` through SDK/Ruma APIs.
   The local fallback timer must consider only `ScheduledSendHandle::Local` items;
   server handles are owned by the homeserver and must not be fired by the local
-  timer. Do not add browser timers, React-local scheduled-message maps, raw
-  Matrix delayed-event calls, or logs/screenshots containing scheduled message
-  bodies or server delayed-event handles.
+  timer. Core only confirms a due server item's delivery against the MSC4140
+  delayed-event listing and then retires it (#1973); any finalised entry retires
+  it, including an event another device cancelled. Do not add browser timers,
+  React-local scheduled-message maps, raw Matrix delayed-event calls, or
+  logs/screenshots containing scheduled message bodies or server delayed-event
+  handles.
 - Browser-headless proof for scheduled send drives the real Composer `Send later`
   control and scheduled-message list, records typed `schedule_send`,
   `reschedule_scheduled_send`, and `cancel_scheduled_send` IPC calls, and verifies

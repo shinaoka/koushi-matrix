@@ -949,6 +949,95 @@ impl ScheduledSendStore {
         Some(item.clone())
     }
 
+    /// The server-handle item whose due time is at or before `cutoff_ms` and
+    /// whose delivery is not already being checked (#1973). The homeserver
+    /// fires these; Core only confirms delivery and retires them.
+    pub fn next_server_check_due(&self, cutoff_ms: u64) -> Option<ScheduledSendItem> {
+        self.items
+            .values()
+            .filter(|item| matches!(item.handle, ScheduledSendHandle::Server { .. }))
+            .filter(|item| !item.is_dispatching)
+            .filter(|item| item.send_at_ms <= cutoff_ms)
+            .min_by(|left, right| scheduled_send_order(left, right))
+            .cloned()
+    }
+
+    pub fn next_server_send_at_ms(&self) -> Option<u64> {
+        self.items
+            .values()
+            .filter(|item| matches!(item.handle, ScheduledSendHandle::Server { .. }))
+            .filter(|item| !item.is_dispatching)
+            .map(|item| item.send_at_ms)
+            .min()
+    }
+
+    /// Mark a delivery check in flight, only while the item still carries the
+    /// server handle being checked.
+    pub fn start_server_check(
+        &mut self,
+        scheduled_id: &str,
+        delay_id: &str,
+    ) -> Option<ScheduledSendItem> {
+        let item = self.server_item_mut(scheduled_id, delay_id)?;
+        item.is_dispatching = true;
+        Some(item.clone())
+    }
+
+    /// The server still holds the event as scheduled (or could not be asked):
+    /// check again at `recheck_at_ms`.
+    pub fn defer_server_check(
+        &mut self,
+        scheduled_id: &str,
+        delay_id: &str,
+        recheck_at_ms: u64,
+    ) -> Option<ScheduledSendItem> {
+        let item = self.server_item_mut(scheduled_id, delay_id)?;
+        item.is_dispatching = false;
+        // #1973 review: this overwrites the time the user chose. It is deliberate
+        // and harmless: a server item is only deferred once it is past due and
+        // merely awaiting confirmation, so the stored time has no send left to
+        // schedule; it drifts by the recheck delay until the server finalises the
+        // event, and a confirmation on restart retires the item instead of sending.
+        item.send_at_ms = recheck_at_ms;
+        Some(item.clone())
+    }
+
+    /// Clear an in-flight check whose result never reached a reducer (#1973
+    /// review): the session stopped being ready before the reply arrived, so the
+    /// reply is dropped and nothing would ever clear the flag, leaving the item
+    /// unchecked until the app restarts. The item stays due, so the next wake
+    /// after the session is Ready checks it again.
+    pub fn abandon_server_check(
+        &mut self,
+        scheduled_id: &str,
+        delay_id: &str,
+    ) -> Option<ScheduledSendItem> {
+        let item = self.server_item_mut(scheduled_id, delay_id)?;
+        item.is_dispatching = false;
+        Some(item.clone())
+    }
+
+    /// The server no longer holds `delay_id` as scheduled: retire the item. A
+    /// result for a handle that a reschedule has since replaced is ignored.
+    pub fn remove_delivered_server(
+        &mut self,
+        scheduled_id: &str,
+        delay_id: &str,
+    ) -> Option<ScheduledSendItem> {
+        self.server_item_mut(scheduled_id, delay_id)?;
+        self.items.remove(scheduled_id)
+    }
+
+    fn server_item_mut(
+        &mut self,
+        scheduled_id: &str,
+        delay_id: &str,
+    ) -> Option<&mut ScheduledSendItem> {
+        self.items.get_mut(scheduled_id).filter(|item| {
+            matches!(&item.handle, ScheduledSendHandle::Server { delay_id: held } if held == delay_id)
+        })
+    }
+
     pub fn next_due(&self, now_ms: u64) -> Option<ScheduledSendItem> {
         self.items
             .values()
