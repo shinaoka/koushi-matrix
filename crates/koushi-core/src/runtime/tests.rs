@@ -5860,6 +5860,7 @@ mod direct_history;
 
 #[path = "tests/assistant_drafts.rs"]
 mod assistant_drafts;
+mod scheduled_send_lock;
 
 #[path = "tests/mcp_thread_reply_reveal.rs"]
 mod mcp_thread_reply_reveal;

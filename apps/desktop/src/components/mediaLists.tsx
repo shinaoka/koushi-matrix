@@ -189,6 +189,7 @@ function ScheduledMessagesList({
   items,
   onCancel,
   onReschedule,
+  canEdit,
   mathModeEnabled,
   onMathModeChange,
   renderItemMeta
@@ -197,6 +198,11 @@ function ScheduledMessagesList({
   items: ScheduledSendItem[];
   onCancel: (scheduledId: string) => void;
   onReschedule: (scheduledId: string, body: string, sendAtMs: number) => void;
+  /**
+   * The composer's send admission (#1983). A locked session must not offer a
+   * second editable box for a pending send.
+   */
+  canEdit: boolean;
   /**
    * Optional per-item context (destination room label, thread-reply flag). The
    * selected-room pane omits it; the scoped right panel supplies it.
@@ -210,6 +216,12 @@ function ScheduledMessagesList({
   const [editBody, setEditBody] = useState("");
   const [editValue, setEditValue] = useState("");
 
+  // #1983: the lock can arrive while the editor is already open, so the editor
+  // closes with it instead of leaving a box the composer refuses to accept.
+  useEffect(() => {
+    if (!canEdit) setEditingId(null);
+  }, [canEdit]);
+
   if (items.length === 0) {
     return null;
   }
@@ -222,6 +234,12 @@ function ScheduledMessagesList({
 
   function submitEdit(event: FormEvent<HTMLFormElement>, item: ScheduledSendItem) {
     event.preventDefault();
+    // #1983: every write from this list converges here, so the lock is checked
+    // once on the way out rather than at each control that could reach it.
+    if (!canEdit) {
+      setEditingId(null);
+      return;
+    }
     const sendAtMs = scheduledSendTimestampFromInput(editValue);
     if (sendAtMs === null) {
       return;
@@ -268,6 +286,7 @@ function ScheduledMessagesList({
                 >
                   <Composer
                     editorOnly
+                    canEdit={canEdit}
                     ariaLabel={t("scheduled.bodyInput")}
                     composerMode={{ kind: "plain" }}
                     draftKey={`scheduled:${item.scheduled_id}`}
@@ -316,6 +335,7 @@ function ScheduledMessagesList({
                     className="timeline-send-bar-action"
                     type="button"
                     aria-label={t("scheduled.edit")}
+                    disabled={!canEdit}
                     onClick={() => openEdit(item)}
                   >
                     <Edit3 size={ICON_SIZE.micro} aria-hidden="true" />

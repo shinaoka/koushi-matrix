@@ -173,6 +173,14 @@ fn send_admission_covers_every_composer_surface() {
             send_at_ms: 1,
             draft_revision: 1.into(),
         }),
+        // #1983: editing a pending send is a write like scheduling it, so the
+        // panel's editor waits for the same admission the composer body does.
+        CoreCommand::App(AppCommand::RescheduleScheduledSend {
+            request_id: id,
+            scheduled_id: "scheduled".to_owned(),
+            body: "synthetic".to_owned(),
+            send_at_ms: 2,
+        }),
     ] {
         assert!(
             command.requires_send_admission(),

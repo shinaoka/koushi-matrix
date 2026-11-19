@@ -1456,6 +1456,7 @@ export function TimelinePane({
         items={snapshot.state.ui.timeline.scheduled_sends}
         onCancel={onCancelScheduledSendStable}
         onReschedule={onRescheduleScheduledSendStable}
+        canEdit={canEdit}
         mathModeEnabled={snapshot.state.domain.settings.values.composer.math_mode}
         onMathModeChange={onComposerMathModeChangeStable}
       />

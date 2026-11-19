@@ -311,6 +311,7 @@ const defaultProps = {
   activeSpace: space,
   activeSpaceName: space.display_name,
   isRecoveryBusy: false,
+  composerReadOnly: false,
   mode: "people" as const,
   peoplePanelScope: { kind: "room" as const, roomId: room.room_id },
   recoverySecretFilled: false,
