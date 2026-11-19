@@ -32,7 +32,7 @@ pub enum MissingTargetPolicy {
     Fail,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[derive(Default)]
 pub enum EventNavigationState {
@@ -50,6 +50,15 @@ pub enum EventNavigationState {
         generation: u64,
         source: EventNavigationSource,
     },
+    /// #1981: the target is already a row of the live room timeline. The main
+    /// pane stays live and the renderer scrolls to and emphasizes `event_id`
+    /// once per `generation`.
+    InPlace {
+        generation: u64,
+        source: EventNavigationSource,
+        #[serde(rename = "eventId")]
+        event_id: String,
+    },
     Failed {
         generation: u64,
         source: EventNavigationSource,
@@ -59,13 +68,14 @@ pub enum EventNavigationState {
 }
 
 impl EventNavigationState {
-    pub fn generation(self) -> u64 {
+    pub fn generation(&self) -> u64 {
         match self {
             Self::Idle => 0,
             Self::Opening { generation, .. }
             | Self::Anchored { generation, .. }
             | Self::LiveFallback { generation, .. }
-            | Self::Failed { generation, .. } => generation,
+            | Self::InPlace { generation, .. }
+            | Self::Failed { generation, .. } => *generation,
         }
     }
 }
@@ -88,6 +98,14 @@ impl fmt::Debug for EventNavigationState {
                 .debug_struct("EventNavigationLiveFallback")
                 .field("generation", generation)
                 .field("source", source)
+                .finish(),
+            Self::InPlace {
+                generation, source, ..
+            } => formatter
+                .debug_struct("EventNavigationInPlace")
+                .field("generation", generation)
+                .field("source", source)
+                .field("event_id", &"EventId(..)")
                 .finish(),
             Self::Failed {
                 generation,

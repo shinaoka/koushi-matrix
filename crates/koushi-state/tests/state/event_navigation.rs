@@ -234,7 +234,7 @@ fn event_navigation_wire_and_debug_are_private_safe() {
         source: EventNavigationSource::Activity,
         failure_kind: EventNavigationFailureKind::TargetMissing,
     };
-    let wire = serde_json::to_value(state).expect("serialize event navigation");
+    let wire = serde_json::to_value(&state).expect("serialize event navigation");
     assert_eq!(wire["kind"], "failed");
     assert_eq!(wire["source"], "activity");
     assert_eq!(wire["failureKind"], "targetMissing");
@@ -312,11 +312,190 @@ fn dismissing_a_navigation_failure_clears_it_without_cancelling_a_live_navigatio
             source: EventNavigationSource::Pinned,
         },
     );
-    let opening = state.navigation.event_navigation;
+    let opening = state.navigation.event_navigation.clone();
     reduce(&mut state, AppAction::EventNavigationFailureDismissed);
     assert_eq!(&state.navigation.event_navigation, &opening);
 
     // Dismissing while idle is a no-op.
     reduce(&mut state, AppAction::EventNavigationFailureDismissed);
     assert_eq!(&state.navigation.event_navigation, &opening);
+}
+
+/// #1981: a reply-quote target already shown by the live room timeline settles
+/// in place. The terminal carries the target so the renderer can scroll to and
+/// emphasize that row, and it obeys the same latest-wins fencing as `Anchored`.
+#[test]
+fn an_in_place_settle_carries_the_target_and_is_generation_fenced() {
+    let mut state = ready_navigation_state();
+    reduce(
+        &mut state,
+        AppAction::EventNavigationStarted {
+            source: EventNavigationSource::ReplyQuote,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::EventNavigationStarted {
+            source: EventNavigationSource::ReplyQuote,
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::EventNavigationInPlace {
+            generation: 1,
+            event_id: "$stale-target:example.invalid".to_owned(),
+        },
+    );
+    assert!(
+        matches!(
+            &state.navigation.event_navigation,
+            EventNavigationState::Opening { generation: 2, .. }
+        ),
+        "a superseded navigation's in-place settle is inert"
+    );
+
+    reduce(
+        &mut state,
+        AppAction::EventNavigationInPlace {
+            generation: 2,
+            event_id: "$quoted-original:example.invalid".to_owned(),
+        },
+    );
+    assert_eq!(
+        &state.navigation.event_navigation,
+        &EventNavigationState::InPlace {
+            generation: 2,
+            source: EventNavigationSource::ReplyQuote,
+            event_id: "$quoted-original:example.invalid".to_owned(),
+        }
+    );
+    assert_eq!(
+        state.navigation.main_timeline_anchor, None,
+        "an in-place settle never anchors the main pane"
+    );
+
+    // A newer intent replaces it like any other terminal.
+    reduce(
+        &mut state,
+        AppAction::EventNavigationStarted {
+            source: EventNavigationSource::ReplyQuote,
+        },
+    );
+    assert!(matches!(
+        &state.navigation.event_navigation,
+        EventNavigationState::Opening { generation: 3, .. }
+    ));
+}
+
+#[test]
+fn an_in_place_settle_is_rejected_while_the_main_pane_is_anchored() {
+    let mut state = ready_navigation_state();
+    state.navigation.active_room_id = Some("room-a".to_owned());
+    state.timeline.room_id = Some("room-a".to_owned());
+    reduce(
+        &mut state,
+        AppAction::EnterAnchoredTimeline {
+            room_id: "room-a".to_owned(),
+            event_id: "$anchor:example.invalid".to_owned(),
+        },
+    );
+    assert!(state.navigation.main_timeline_anchor.is_some());
+    reduce(
+        &mut state,
+        AppAction::EventNavigationStarted {
+            source: EventNavigationSource::ReplyQuote,
+        },
+    );
+    let opening = state.navigation.event_navigation.clone();
+    reduce(
+        &mut state,
+        AppAction::EventNavigationInPlace {
+            generation: opening.generation(),
+            event_id: "$quoted-original:example.invalid".to_owned(),
+        },
+    );
+    assert_eq!(
+        &state.navigation.event_navigation, &opening,
+        "the live room timeline is not on screen, so there is no row to settle on"
+    );
+}
+
+#[test]
+fn return_to_live_and_room_removal_clear_an_in_place_settle() {
+    let settled = || {
+        let mut state = ready_navigation_state();
+        state.navigation.active_room_id = Some("room-a".to_owned());
+        state.timeline.room_id = Some("room-a".to_owned());
+        reduce(
+            &mut state,
+            AppAction::EventNavigationStarted {
+                source: EventNavigationSource::ReplyQuote,
+            },
+        );
+        let generation = state.navigation.event_navigation.generation();
+        reduce(
+            &mut state,
+            AppAction::EventNavigationInPlace {
+                generation,
+                event_id: "$quoted-original:example.invalid".to_owned(),
+            },
+        );
+        assert!(matches!(
+            &state.navigation.event_navigation,
+            EventNavigationState::InPlace { .. }
+        ));
+        state
+    };
+
+    let mut state = settled();
+    reduce(
+        &mut state,
+        AppAction::ReturnMainTimelineToLive {
+            room_id: "room-a".to_owned(),
+        },
+    );
+    assert_eq!(
+        &state.navigation.event_navigation,
+        &EventNavigationState::Idle
+    );
+
+    let mut state = settled();
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: Vec::new(),
+            rooms: Vec::new(),
+        },
+    );
+    assert_eq!(
+        &state.navigation.event_navigation,
+        &EventNavigationState::Idle
+    );
+
+    let mut state = settled();
+    reduce(&mut state, AppAction::LogoutRequested);
+    assert_eq!(
+        &state.navigation.event_navigation,
+        &EventNavigationState::Idle
+    );
+}
+
+#[test]
+fn an_in_place_settle_wire_names_the_target_and_debug_redacts_it() {
+    let state = EventNavigationState::InPlace {
+        generation: 7,
+        source: EventNavigationSource::ReplyQuote,
+        event_id: "$quoted-original:example.invalid".to_owned(),
+    };
+    let wire = serde_json::to_value(&state).expect("serialize event navigation");
+    assert_eq!(wire["kind"], "inPlace");
+    assert_eq!(wire["source"], "replyQuote");
+    assert_eq!(wire["generation"], 7);
+    assert_eq!(wire["eventId"], "$quoted-original:example.invalid");
+    let debug = format!("{state:?}");
+    assert!(
+        !debug.contains("quoted-original"),
+        "Debug must not print the event id: {debug}"
+    );
 }

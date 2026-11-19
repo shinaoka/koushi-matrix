@@ -457,6 +457,7 @@ export const TimelineView = memo(function TimelineView({
   suppressPaginationUi = false,
   automaticBackfillEligible = true,
   initialTargetEventId = null,
+  inPlaceTarget = null,
   isAnchored = false,
   onReturnToLive,
   liveLatestEventId = null,
@@ -521,6 +522,12 @@ export const TimelineView = memo(function TimelineView({
   automaticBackfillEligible?: boolean;
   /** Event ID to center once a thread timeline has materialized its rows. */
   initialTargetEventId?: string | null;
+  /**
+   * #1981: Rust's in-place event-navigation target for the live room view: the
+   * content event of a row this view already shows. Scrolled into view and
+   * emphasized once per `generation`.
+   */
+  inPlaceTarget?: { eventId: string; generation: number } | null;
   // #161: main pane is anchored to a jump-to-date event; the live-edge control
   // returns to the live timeline instead of scrolling within the focused window.
   isAnchored?: boolean;
@@ -845,6 +852,10 @@ export const TimelineView = memo(function TimelineView({
   /** Tracks whether the current focused key already centered its target row. */
   const focusedTargetRestoreAppliedRef = useRef<string | null>(null);
   const focusedTargetPlacementAttemptsRef = useRef(0);
+  /** #1981: the in-place navigation generation already scrolled into view. */
+  const inPlaceTargetAppliedRef = useRef<number | null>(null);
+  /** #1981: bounded placement attempts for the current in-place generation. */
+  const inPlaceTargetAttemptsRef = useRef({ generation: -1, attempts: 0 });
   const initialThreadTargetRestoreAppliedRef = useRef<string | null>(null);
   /** Deduplicates privacy-safe focused-target restoration diagnostics. */
   const lastFocusedTargetRestoreDiagnosticRef = useRef<string | null>(null);
@@ -943,6 +954,13 @@ export const TimelineView = memo(function TimelineView({
   const pinnedTargetEventId =
     focusedTimelineTargetEventId ??
     (presentationContext === "thread" ? initialTargetEventId : null);
+  // #1981: only a live room view shows the rows Core matched by content id.
+  const inPlaceTargetEventId =
+    roomTimelineRoomId !== null && presentationContext === "room"
+      ? (inPlaceTarget?.eventId ?? null)
+      : null;
+  const inPlaceTargetGeneration =
+    inPlaceTargetEventId !== null ? (inPlaceTarget?.generation ?? null) : null;
   const items = getItems(store, timelineKey);
   const navigationSnapshot = store.keys.get(timelineKeyHash)?.navigation ?? null;
   const displayWindow = navigationSnapshot?.display_window ?? null;
@@ -2331,11 +2349,19 @@ export const TimelineView = memo(function TimelineView({
   // takes the viewport back, the target is history and the window follows the
   // viewport like any other, so it must not stay pinned to the target index.
   const pinnedTargetWideningIndex = useCallback(
-    (rows: readonly TimelineDisplayRow[]) =>
-      pinnedTargetEventId !== null && jumpViewportControlRef.current
-        ? rows.findIndex((row) => row.activity_event_id === pinnedTargetEventId)
-        : -1,
-    [pinnedTargetEventId]
+    (rows: readonly TimelineDisplayRow[]) => {
+      if (!jumpViewportControlRef.current) {
+        return -1;
+      }
+      if (pinnedTargetEventId !== null) {
+        return rows.findIndex((row) => row.activity_event_id === pinnedTargetEventId);
+      }
+      if (inPlaceTargetEventId !== null) {
+        return rows.findIndex((row) => row.content_event_id === inPlaceTargetEventId);
+      }
+      return -1;
+    },
+    [inPlaceTargetEventId, pinnedTargetEventId]
   );
   const commitVirtualRangeForMetrics = useCallback(
     (metrics: TimelineViewportMetrics) => {
@@ -3534,6 +3560,84 @@ export const TimelineView = memo(function TimelineView({
     visibleRows
   ]);
 
+  // #1981: Core settled a reply-quote jump on a row this live view already
+  // shows. Scroll it into view once per navigation generation. The row is
+  // matched by its content event, because a moved thread root sits at its
+  // latest reply's position. Core read its own display window, which can run
+  // ahead of the diffs applied here, so a missing row is retried as items
+  // arrive, a bounded number of times, and otherwise left alone: the view never
+  // repairs navigation state.
+  useLayoutEffect(() => {
+    if (
+      inPlaceTargetEventId === null ||
+      inPlaceTargetGeneration === null ||
+      !timelineInitialized ||
+      inPlaceTargetAppliedRef.current === inPlaceTargetGeneration
+    ) {
+      return;
+    }
+    if (inPlaceTargetAttemptsRef.current.generation !== inPlaceTargetGeneration) {
+      inPlaceTargetAttemptsRef.current = { generation: inPlaceTargetGeneration, attempts: 0 };
+    }
+    const container = containerRef.current;
+    if (
+      !container ||
+      inPlaceTargetAttemptsRef.current.attempts >= FOCUSED_TARGET_PLACEMENT_ATTEMPTS
+    ) {
+      return;
+    }
+    inPlaceTargetAttemptsRef.current.attempts += 1;
+    const targetRow = findTimelineEventNode(container, "content", inPlaceTargetEventId);
+    if (targetRow) {
+      releaseViewportIntent();
+      jumpViewportControlRef.current = true;
+      advanceViewportEpoch();
+      runWithScrollWriteReason("jumpToEvent", () => {
+        targetRow.scrollIntoView({ block: "center", inline: "nearest" });
+      });
+      inPlaceTargetAppliedRef.current = inPlaceTargetGeneration;
+      captureStableAnchor(container);
+      updateViewportMetrics();
+      return;
+    }
+    // A virtualized row outside the mounted range: place it from the height
+    // model, then center the mounted row on the next run.
+    const targetIndex = visibleRows.findIndex(
+      (row) => row.content_event_id === inPlaceTargetEventId
+    );
+    if (targetIndex < 0) {
+      return;
+    }
+    const targetTop = timelineHeightModel.offsets[targetIndex] ?? 0;
+    const targetHeight = timelineItemHeightAtIndex(timelineHeightModel, targetIndex);
+    releaseViewportIntent();
+    jumpViewportControlRef.current = true;
+    advanceViewportEpoch();
+    runWithScrollWriteReason("jumpToEvent", () => {
+      container.scrollTop = Math.max(
+        0,
+        viewportMetricsRef.current.listOffsetTop +
+          targetTop +
+          targetHeight / 2 -
+          container.clientHeight / 2
+      );
+    });
+    updateViewportMetrics();
+  }, [
+    advanceViewportEpoch,
+    captureStableAnchor,
+    inPlaceTargetEventId,
+    inPlaceTargetGeneration,
+    items,
+    releaseViewportIntent,
+    runWithScrollWriteReason,
+    timelineHeightModel,
+    timelineInitialized,
+    updateViewportMetrics,
+    virtualWindow.virtualized,
+    visibleRows
+  ]);
+
   useLayoutEffect(() => {
     if (!virtualWindow.virtualized) {
       mountedItemDomIdsRef.current = new Set();
@@ -4475,7 +4579,8 @@ export const TimelineView = memo(function TimelineView({
                     (contentEventId === initialTargetEventId ||
                       activityEventId === initialTargetEventId)) ||
                   (focusedTimelineTargetEventId !== null &&
-                    contentEventId === focusedTimelineTargetEventId)
+                    contentEventId === focusedTimelineTargetEventId) ||
+                  (inPlaceTargetEventId !== null && contentEventId === inPlaceTargetEventId)
                 }
                 onRequestRoomKey={onRequestRoomKey}
                 onRequestHistoryKeys={onRequestHistoryKeys}

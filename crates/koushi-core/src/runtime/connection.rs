@@ -1561,6 +1561,10 @@ impl CoreConnection {
                 | EventNavigationState::LiveFallback {
                     generation: current,
                     ..
+                }
+                | EventNavigationState::InPlace {
+                    generation: current,
+                    ..
                 } if current == generation => Some(Ok(snapshot.clone())),
                 EventNavigationState::Failed {
                     generation: current,

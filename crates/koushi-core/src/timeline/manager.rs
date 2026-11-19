@@ -268,6 +268,13 @@ pub(crate) enum TimelineMessage {
             >,
         >,
     },
+    /// #1981: whether `key`'s retained timeline currently shows `event_id` as
+    /// a display row. `false` when the key has no retained timeline.
+    TimelineShowsEvent {
+        key: TimelineKey,
+        event_id: String,
+        response: oneshot::Sender<bool>,
+    },
     Command(TimelineCommand),
     CommandWithComposerFormatting {
         command: TimelineCommand,
@@ -1015,6 +1022,20 @@ impl TimelineManagerActor {
                         let _ = response.send(Err(
                             crate::view_scope_lifecycle::ScopeError::SourceUnavailable,
                         ));
+                    }
+                }
+                TimelineMessage::TimelineShowsEvent {
+                    key,
+                    event_id,
+                    response,
+                } => {
+                    if let Some(handle) = self.timelines.get(&key) {
+                        let _ = Box::pin(
+                            handle.send(TimelineActorMessage::ShowsEvent { event_id, response }),
+                        )
+                        .await;
+                    } else {
+                        let _ = response.send(false);
                     }
                 }
                 TimelineMessage::Shutdown { acknowledged } => {

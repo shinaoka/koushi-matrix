@@ -1356,6 +1356,14 @@ fn return_main_pane_to_live_for_accepted_send(
         super::thread::handle_close_focused_context(state);
         super::navigation::handle_return_main_timeline_to_live(state, room_id.to_owned());
     }
+    // #1981: the send moves the reader to the live edge, so an in-place
+    // reply-quote target must not be scrolled to or emphasized again.
+    if matches!(
+        state.navigation.event_navigation,
+        crate::state::EventNavigationState::InPlace { .. }
+    ) {
+        state.navigation.event_navigation = crate::state::EventNavigationState::Idle;
+    }
     Some(AppEffect::CancelPendingMainTimelineNavigation {
         room_id: room_id.to_owned(),
     })

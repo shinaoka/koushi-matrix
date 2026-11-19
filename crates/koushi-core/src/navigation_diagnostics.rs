@@ -59,7 +59,7 @@ impl Capture {
             _ => None,
         };
         Self {
-            event: state.navigation.event_navigation,
+            event: state.navigation.event_navigation.clone(),
             anchor: state.navigation.main_timeline_anchor.clone(),
             account: info.map(|info| AccountIdentity::new(info, state.session_disclosure_epoch)),
             space: state.navigation.active_space_id.clone(),
@@ -237,6 +237,7 @@ impl NavigationObservation {
             }
             AppAction::EventNavigationAnchored { .. }
             | AppAction::EventNavigationLiveFallback { .. }
+            | AppAction::EventNavigationInPlace { .. }
             | AppAction::EventNavigationFailed { .. }
             | AppAction::EventNavigationCleared => {
                 (NavigationCause::EventNavigation, true, false, None)
@@ -291,6 +292,7 @@ impl NavigationObservation {
                 action,
                 AppAction::EventNavigationAnchored { .. }
                     | AppAction::EventNavigationLiveFallback { .. }
+                    | AppAction::EventNavigationInPlace { .. }
             ),
         };
         if matches!(

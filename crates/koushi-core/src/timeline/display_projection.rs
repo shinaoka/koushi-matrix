@@ -1360,6 +1360,26 @@ pub(super) fn item_occupies_display_row(item: &TimelineItem) -> bool {
     item.thread_root.is_none() && !item.is_hidden
 }
 
+/// #1981: whether `items` (a published display window) shows `event_id` as a
+/// row. A row is matched by the content event it renders, so a moved thread
+/// root matches its root event and never its latest-reply activity event.
+pub(super) fn display_items_show_event(items: &[TimelineItem], event_id: &str) -> bool {
+    items.iter().any(|item| {
+        item_occupies_display_row(item)
+            && match item
+                .display_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.content_event_id.as_deref())
+            {
+                Some(content_event_id) => content_event_id == event_id,
+                None => matches!(
+                    &item.id,
+                    TimelineItemId::Event { event_id: id } if id == event_id
+                ),
+            }
+    })
+}
+
 /// #873: first canonical index of the live-edge window.
 ///
 /// The window is sized in *displayed rows*, so a run of suppressed thread
@@ -2254,6 +2274,10 @@ mod bounded_visibility_tests;
 #[cfg(test)]
 #[path = "display_projection/issue_1692_tests.rs"]
 mod issue_1692_tests;
+
+#[cfg(test)]
+#[path = "display_projection/issue_1981_tests.rs"]
+mod issue_1981_tests;
 
 #[cfg(test)]
 #[path = "display_projection/send_state_tests.rs"]

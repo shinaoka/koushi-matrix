@@ -4388,6 +4388,7 @@ async fn event_navigation_external_room_selection_fences_stale_work() {
             event_id: event_id.to_owned(),
             generation: 1,
             result: crate::account::RoomEventLookupResult::Failed,
+            shown_in_live_room: false,
         })
         .expect("delayed stale lookup");
     focused_projection_tx
@@ -4565,6 +4566,7 @@ async fn run_event_navigation_latest_source_case(
             event_id: event_a.to_owned(),
             generation: 1,
             result: crate::account::RoomEventLookupResult::Failed,
+            shown_in_live_room: false,
         })
         .expect("delayed first lookup");
     focused_projection_tx
@@ -4801,6 +4803,7 @@ async fn run_event_navigation_external_supersession_case(command: CoreCommand) {
             event_id: event_id.to_owned(),
             generation: 1,
             result: crate::account::RoomEventLookupResult::Failed,
+            shown_in_live_room: false,
         })
         .expect("delayed stale lookup");
     focused_projection_tx
@@ -4940,6 +4943,7 @@ async fn current_event_navigation_deadline_failure_clears_focused_owner_and_fenc
         event_id: event_id.clone(),
         generation,
         result: crate::account::RoomEventLookupResult::Failed,
+        shown_in_live_room: false,
     };
     actor.pending_event_navigation = Some(pending.clone());
     actor.pending_focused_navigation = Some(PendingFocusedNavigation {
@@ -5636,6 +5640,7 @@ async fn scheduled_sends_open_command_emits_the_projection_through_the_runtime()
 mod activity_renderer_states;
 mod anchored_send;
 mod navigation_network;
+mod reply_quote_in_place;
 mod search_navigation_owner;
 mod search_thread_target;
 mod settings_loading;

@@ -244,7 +244,7 @@ impl super::AppActor {
         // #1364: the activity cache advances from the authoritative room list
         // and from the persisted load; the runtime writes it when it changed.
         let previous_room_activity = self.state.room_activity.clone();
-        let previous_event_navigation = self.state.navigation.event_navigation;
+        let previous_event_navigation = self.state.navigation.event_navigation.clone();
         let previous_scheduled_session = scheduled_send_session_key(&self.state);
         let previous_scheduled_sends = self.state.scheduled_sends.clone();
         let internal_event_navigation_select = is_internal_event_navigation_select(
@@ -353,7 +353,7 @@ impl super::AppActor {
         if internal_event_navigation_select {
             // Room selection owns the room/timeline projection, but its ordinary
             // reducer transition must not close the outer event-navigation owner.
-            self.state.navigation.event_navigation = previous_event_navigation;
+            self.state.navigation.event_navigation = previous_event_navigation.clone();
         }
         if composer_draft_session_key(&self.state) != previous_session {
             self.view_scopes.retire_session();
