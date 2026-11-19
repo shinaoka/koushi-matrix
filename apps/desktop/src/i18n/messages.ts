@@ -484,6 +484,9 @@ export type MessageId =
   | "mediaGallery.close"
   | "mediaGallery.encrypted"
   | "mediaGallery.empty"
+  | "mediaGallery.loadingOlder"
+  | "mediaGallery.loadOlderFailed"
+  | "mediaGallery.retry"
   | "mediaGallery.next"
   | "mediaGallery.noPreview"
   | "mediaGallery.open"
@@ -2810,6 +2813,9 @@ const en: Catalog = {
   "mediaGallery.close": "Close media viewer",
   "mediaGallery.encrypted": "Encrypted",
   "mediaGallery.empty": "No media in this room",
+  "mediaGallery.loadingOlder": "Loading older media…",
+  "mediaGallery.loadOlderFailed": "Couldn't load older media",
+  "mediaGallery.retry": "Retry",
   "mediaGallery.next": "Next media",
   "mediaGallery.noPreview": "No preview",
   "mediaGallery.open": "Open media gallery",
@@ -5183,6 +5189,9 @@ const ja: Catalog = {
   "mediaGallery.close": "メディアビューアを閉じる",
   "mediaGallery.encrypted": "暗号化済み",
   "mediaGallery.empty": "このルームにはメディアがありません",
+  "mediaGallery.loadingOlder": "以前のメディアを読み込み中…",
+  "mediaGallery.loadOlderFailed": "以前のメディアを読み込めませんでした",
+  "mediaGallery.retry": "再試行",
   "mediaGallery.next": "次のメディア",
   "mediaGallery.noPreview": "プレビューなし",
   "mediaGallery.open": "メディアギャラリーを開く",

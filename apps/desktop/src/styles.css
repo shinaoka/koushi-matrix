@@ -11821,3 +11821,16 @@ button.channel-access-pill:focus-visible {
 
 .history-key-recovery { max-inline-size: 100%; margin-block: 0.5rem; }
 .history-key-recovery .message-send-action { white-space: normal; text-align: start; }
+
+/* #1969: the gallery end spans the grid; it carries the older-media status
+   and is the in-view trigger for the next media-browser page. */
+.room-media-gallery-end {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-block-size: 1px;
+  color: var(--text-faint);
+  font-size: 12px;
+}

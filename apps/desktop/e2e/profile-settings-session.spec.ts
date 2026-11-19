@@ -56,6 +56,7 @@ async function gotoSignedOutAuth(page: Page): Promise<void> {
             scheduled_sends: [],
             staged_uploads: [],
             media_gallery: [],
+            media_gallery_pagination: "idle",
             media_downloads: {},
             continuity: { kind: "unknown" }
           }

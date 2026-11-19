@@ -3955,6 +3955,7 @@ fn assert_upload_ux_state_contract(room_id: &str) -> Result<(), String> {
                 media_gallery_contract_item("$old-media", room_id, 1_900_000_000_000),
                 media_gallery_contract_item("$new-media", room_id, 1_900_000_060_000),
             ],
+            pagination: koushi_state::MediaGalleryPagination::Idle,
         },
     );
     if state.timeline.media_gallery.len() != 2

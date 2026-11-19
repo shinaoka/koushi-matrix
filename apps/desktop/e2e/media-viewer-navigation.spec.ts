@@ -136,6 +136,7 @@ async function seedRoomImages(page: Page, ready: number[] = [0, 1, 2]): Promise<
           timeline: {
             ...snapshot.state.ui.timeline,
             media_gallery: mediaGallery,
+            media_gallery_pagination: "idle",
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             media_downloads: mediaDownloads as any
           }

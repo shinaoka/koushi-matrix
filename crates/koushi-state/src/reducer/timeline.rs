@@ -565,12 +565,16 @@ pub(crate) fn handle_media_gallery_updated(
     state: &mut AppState,
     room_id: String,
     items: Vec<crate::state::TimelineMediaGalleryItem>,
+    pagination: crate::state::MediaGalleryPagination,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) || !room_exists(state, &room_id) {
         return Vec::new();
     }
 
     state.media_gallery.replace_room_items(&room_id, items);
+    state
+        .media_gallery
+        .replace_room_pagination(&room_id, pagination);
     if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
         refresh_timeline_media_gallery(state);
         return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];

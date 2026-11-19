@@ -1100,6 +1100,16 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
     if scenario.should_run_stage(QaStage::Media) {
         let proxy = media_proxy.as_ref().expect("media stage uses media proxy");
         run_media_stage(&mut conn_a, &mut conn_b, &key_a, &key_b, proxy).await?;
+        let recovery_secret = bootstrap_recovery_secret_a.as_ref().ok_or_else(|| {
+            "media gallery history: primary recovery secret unavailable".to_owned()
+        })?;
+        super::scenario_media_gallery_history::run_media_gallery_history_stage(
+            &config,
+            recovery_secret,
+            &mut conn_a,
+            &key_a,
+        )
+        .await?;
     }
 
     if scenario.should_run_stage(QaStage::LinkPreview) {

@@ -58,6 +58,7 @@ fn ready_selected_room_state() -> AppState {
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
+            media_gallery_pagination: Default::default(),
             media_downloads: Default::default(),
             reply_quote_thumbnails: Default::default(),
             continuity: Default::default(),

@@ -268,3 +268,62 @@ describe("media viewer image switching (#1810)", () => {
     );
   });
 });
+
+describe("media viewer older media (#1969)", () => {
+  it("asks for older media at the oldest loaded image and its neighbour", () => {
+    const onNearOldest = vi.fn();
+    renderViewer(2, { onNearOldest });
+    expect(onNearOldest).toHaveBeenCalledTimes(1);
+    cleanup();
+
+    const nearOldest = vi.fn();
+    renderViewer(1, { onNearOldest: nearOldest });
+    expect(nearOldest).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not page while far from the oldest loaded image", () => {
+    const onNearOldest = vi.fn();
+    renderViewer(0, {
+      onNearOldest,
+      items: [...items, ...items.map((item) => ({ ...item, eventId: `${item.eventId}-older` }))]
+    });
+    expect(onNearOldest).not.toHaveBeenCalled();
+  });
+
+  it("asks again when the caller's pagination settles while still at the end", () => {
+    const first = vi.fn();
+    const { rerender } = renderViewer(2, { onNearOldest: first });
+    const second = vi.fn();
+    rerender(
+      <MediaViewer
+        index={2}
+        items={items}
+        mediaDownloads={mediaDownloads}
+        onClose={vi.fn()}
+        onSelectIndex={vi.fn()}
+        onNearOldest={second}
+      />
+    );
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it("enables Next once older images extend the sequence", () => {
+    const { rerender } = renderViewer(2);
+    const next = () => screen.getByRole("button", { name: "Next media" }) as HTMLButtonElement;
+    expect(next().disabled).toBe(true);
+    const older = mediaViewerEntryFromGallery(
+      galleryItem("$nav-0:example.invalid", "nav-0.png", 160)
+    );
+    rerender(
+      <MediaViewer
+        index={2}
+        items={[...items, older]}
+        mediaDownloads={mediaDownloads}
+        onClose={vi.fn()}
+        onSelectIndex={vi.fn()}
+      />
+    );
+    expect(next().disabled).toBe(false);
+  });
+});

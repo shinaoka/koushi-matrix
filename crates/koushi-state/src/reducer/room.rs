@@ -580,6 +580,7 @@ fn handle_room_list_updated_with_crawler(
                 scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
                 staged_uploads: state.upload_staging.items_for_room(&room_id),
                 media_gallery: state.media_gallery.items_for_room(&room_id),
+                media_gallery_pagination: state.media_gallery.pagination_for_room(&room_id),
                 media_downloads: Default::default(),
                 reply_quote_thumbnails: Default::default(),
                 continuity: Default::default(),

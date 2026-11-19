@@ -235,6 +235,7 @@ export function MediaViewer({
   onClose,
   onSelectIndex,
   onRequestDownload,
+  onNearOldest,
   actionsFor,
   onSaveMediaFile
 }: {
@@ -245,6 +246,12 @@ export function MediaViewer({
   onSelectIndex: (index: number) => void;
   /** Asks Rust for a download the viewer needs; absent where none may start. */
   onRequestDownload?: (eventId: string) => void;
+  /**
+   * #1969: called while the viewer shows the oldest loaded image or its
+   * neighbour, so older images arrive before navigation reaches the end. The
+   * sequence is newest first; absent for a viewer outside the room sequence.
+   */
+  onNearOldest?: () => void;
   actionsFor?: (eventId: string) => MediaViewerActions | null;
   onSaveMediaFile?: TimelineTransport["saveMediaFile"];
 }) {
@@ -379,6 +386,12 @@ export function MediaViewer({
       document.removeEventListener("pointerdown", handlePointerDown);
     };
   }, [closeActionMenu, isActionMenuOpen]);
+
+  useEffect(() => {
+    if (onNearOldest && items.length > 0 && safeIndex >= items.length - 2) {
+      onNearOldest();
+    }
+  }, [items.length, onNearOldest, safeIndex]);
 
   // The viewer asks for whatever it shows and prefetches the immediate
   // neighbours, so a swipe does not land on a placeholder (#1810).

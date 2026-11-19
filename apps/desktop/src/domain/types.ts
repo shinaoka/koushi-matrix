@@ -2468,6 +2468,8 @@ export interface TimelinePaneState {
   scheduled_sends: ScheduledSendItem[];
   staged_uploads: StagedUploadItem[];
   media_gallery: TimelineMediaGalleryItem[];
+  /** #1969: whether the room media browser can page further back. */
+  media_gallery_pagination: MediaGalleryPagination;
   media_downloads: Record<string, TimelineMediaDownloadState>;
   reply_quote_thumbnails: Record<string, TimelineMediaDownloadState>;
   continuity: TimelineContinuityState;
@@ -2630,6 +2632,9 @@ export interface TimelineMediaGalleryMedia {
   height: number | null;
   thumbnail: TimelineMediaGalleryThumbnail | null;
 }
+
+/** Mirror of Rust `MediaGalleryPagination` (#1969). */
+export type MediaGalleryPagination = "idle" | "loading" | "reachedStart" | "failed";
 
 export interface TimelineMediaGalleryItem {
   event_id: string;

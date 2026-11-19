@@ -469,6 +469,7 @@ export const TimelineView = memo(function TimelineView({
   searchHighlightsByEventId = EMPTY_SEARCH_HIGHLIGHTS,
   mediaDownloads = EMPTY_MEDIA_DOWNLOADS,
   mediaGallery = [],
+  onLoadOlderMedia,
   replyQuoteThumbnails = EMPTY_REPLY_QUOTE_THUMBNAILS,
   continuity = { kind: "unknown" },
   roomScrollAnchor: _persistedRoomScrollAnchor = null,
@@ -546,6 +547,10 @@ export const TimelineView = memo(function TimelineView({
    * tests), which leaves the viewer in the single-image mode of #163.
    */
   mediaGallery?: readonly TimelineMediaGalleryItem[];
+  /** #1969: pages the room media browser on the viewer's near-oldest trigger;
+   * only set while pagination is idle, so a failed page waits for an explicit
+   * Retry (#1971). */
+  onLoadOlderMedia?: () => void;
   replyQuoteThumbnails?: Record<string, TimelineMediaDownloadState>;
   continuity?: TimelineContinuityState;
   roomScrollAnchor?: TimelineScrollAnchor | null;
@@ -4573,6 +4578,9 @@ export const TimelineView = memo(function TimelineView({
             void transport.downloadMedia(roomId, eventId, timelineKey).catch(() => undefined);
           }}
           actionsFor={mediaViewerActionsFor}
+          onNearOldest={
+            mediaViewerEntries === viewerGalleryEntries ? onLoadOlderMedia : undefined
+          }
           onSaveMediaFile={transport.saveMediaFile}
         />
       ) : null}

@@ -230,6 +230,7 @@ impl CoreCommand {
                 | TimelineCommand::UploadAndSendMedia { request_id, .. }
                 | TimelineCommand::DownloadMedia { request_id, .. }
                 | TimelineCommand::RequestReplyQuoteThumbnail { request_id, .. }
+                | TimelineCommand::PaginateMediaGallery { request_id, .. }
                 | TimelineCommand::EditText { request_id, .. }
                 | TimelineCommand::Redact { request_id, .. }
                 | TimelineCommand::SendReaction { request_id, .. }

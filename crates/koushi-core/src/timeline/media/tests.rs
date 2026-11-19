@@ -134,8 +134,14 @@ fn relay_overflow_authoritative_snapshot_replaces_media_gallery_and_emits_action
         TimelineMediaKind::Image,
     )];
     let old_gallery = media_gallery_items_from_timeline_items(&key, &old_navigation);
-    let replacement = authoritative_media_gallery_replacement(&key, &old_gallery, &new_navigation)
-        .expect("changed authoritative snapshot must emit gallery replacement");
+    let replacement = authoritative_media_gallery_replacement(
+        &key,
+        &old_gallery,
+        Vec::new(),
+        koushi_state::MediaGalleryPagination::Idle,
+        &new_navigation,
+    )
+    .expect("changed authoritative snapshot must emit gallery replacement");
     assert_eq!(replacement.items.len(), 1);
     assert_eq!(replacement.items[0].event_id, "$new:test");
     assert!(matches!(

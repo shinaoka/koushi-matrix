@@ -183,6 +183,11 @@ an image outside it opens on its own without navigation. Changing the image
 resets zoom and pan to the fitted view. The **Room info → Files** gallery opens
 the same viewer, which covers files and videos too.
 
+The gallery and the viewer are not limited to the messages loaded in the
+timeline. Scrolling to the end of the gallery, or reaching the oldest loaded
+image in the viewer, loads older media from the room's history until the start
+of the room. If loading fails, the gallery shows **Retry**.
+
 ## Room changes and unavailable content
 
 Topic and avatar changes appear as notices. Room replacement notices include a

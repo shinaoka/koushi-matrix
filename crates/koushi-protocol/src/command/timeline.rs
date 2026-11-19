@@ -352,6 +352,14 @@ pub enum TimelineCommand {
         key: TimelineKey,
         quoted_event_id: String,
     },
+    /// Load older media into the room gallery through the room's media-only
+    /// browser timeline, starting that timeline on first use. A request while
+    /// a page is in flight coalesces into it; after the room start it is a
+    /// no-op. The result is the next `MediaGalleryUpdated` publication.
+    PaginateMediaGallery {
+        request_id: RequestId,
+        key: TimelineKey,
+    },
     EditText {
         request_id: RequestId,
         key: TimelineKey,
@@ -601,6 +609,11 @@ impl fmt::Debug for TimelineCommand {
                 .field("request_id", request_id)
                 .field("key", key)
                 .field("quoted_event_id", &"EventId(..)")
+                .finish(),
+            Self::PaginateMediaGallery { request_id, key } => formatter
+                .debug_struct("PaginateMediaGallery")
+                .field("request_id", request_id)
+                .field("key", key)
                 .finish(),
             Self::EditText {
                 request_id,
