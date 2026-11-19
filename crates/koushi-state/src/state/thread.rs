@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
@@ -18,12 +19,23 @@ pub enum ThreadOpenIntent {
 /// snapshot field as a stable scope key (`home`, `space:<space_id>`, or the
 /// room id) so older state consumers keep their correlation contract while
 /// the actor can aggregate the resolved room ids in Rust.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ThreadsListScope {
     Room { room_id: String },
     Home,
     Space { space_id: String },
+}
+
+// #1979: the scope names one room or space, so its Debug is a placeholder.
+impl fmt::Debug for ThreadsListScope {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Room { .. } => "Room { room_id: RoomId(..) }",
+            Self::Home => "Home",
+            Self::Space { .. } => "Space { space_id: SpaceId(..) }",
+        })
+    }
 }
 
 impl ThreadsListScope {

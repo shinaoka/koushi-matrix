@@ -243,35 +243,32 @@ pub enum SearchIndexMessage {
     Redact { event_id: String },
 }
 
-// Redact body/filename from Debug — they are visible UI state but must not
-// leak into internal log strings (spec: "SendText and EditText redact body
-// in Debug and errors"; same principle applies here).
+// Redact bodies, filenames and Matrix identifiers from Debug — bodies and
+// filenames are visible UI state, and the identifiers are boundary values
+// (spec: "SendText and EditText redact body in Debug and errors"; #1979).
 impl std::fmt::Debug for SearchIndexMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Upsert {
-                room_id, event_id, ..
-            } => f
+            Self::Upsert { .. } => f
                 .debug_struct("SearchIndexMessage::Upsert")
-                .field("room_id", room_id)
-                .field("event_id", event_id)
+                .field("room_id", &"RoomId(..)")
+                .field("event_id", &"EventId(..)")
+                .field("sender", &"UserId(..)")
                 .field("body", &"MessageBody(..)")
                 .field("attachment", &"Attachment(..)")
                 .finish(),
-            Self::Edit {
-                edit_event_id,
-                target_event_id,
-                ..
-            } => f
+            Self::Edit { .. } => f
                 .debug_struct("SearchIndexMessage::Edit")
-                .field("edit_event_id", edit_event_id)
-                .field("target_event_id", target_event_id)
+                .field("room_id", &"RoomId(..)")
+                .field("edit_event_id", &"EventId(..)")
+                .field("target_event_id", &"EventId(..)")
+                .field("sender", &"UserId(..)")
                 .field("body", &"MessageBody(..)")
                 .field("attachment", &"Attachment(..)")
                 .finish(),
-            Self::Redact { event_id } => f
+            Self::Redact { .. } => f
                 .debug_struct("SearchIndexMessage::Redact")
-                .field("event_id", event_id)
+                .field("event_id", &"EventId(..)")
                 .finish(),
         }
     }

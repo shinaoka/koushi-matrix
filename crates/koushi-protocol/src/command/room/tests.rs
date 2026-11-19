@@ -351,3 +351,28 @@ fn room_access_draft_wire_shape_is_camel_case() {
     assert_eq!(parsed_toggle, toggle);
     assert!(!format!("{toggle:?}").contains("!space:example.invalid"));
 }
+
+// #1979: `InviteTargets` redacted the room id but printed its scope, which
+// names the parent space.
+#[test]
+fn invite_targets_debug_redacts_the_parent_space_id() {
+    let invite = RoomCommand::InviteTargets {
+        request_id: fake_rid(40),
+        room_id: "!private-room:example.invalid".to_owned(),
+        user_ids: vec!["@private-invitee:example.invalid".to_owned()],
+        scope: koushi_state::InviteScopeSelection::ParentSpaceAndRoom {
+            space_id: "!private-space:example.invalid".to_owned(),
+        },
+    };
+
+    let debug = format!("{invite:?}");
+    assert!(debug.contains("RoomId(..)"), "{debug}");
+    assert!(debug.contains("SpaceId(..)"), "{debug}");
+    assert!(debug.contains("user_count: 1"), "{debug}");
+    assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
+    assert!(!debug.contains("!private-space:example.invalid"), "{debug}");
+    assert!(
+        !debug.contains("@private-invitee:example.invalid"),
+        "{debug}"
+    );
+}

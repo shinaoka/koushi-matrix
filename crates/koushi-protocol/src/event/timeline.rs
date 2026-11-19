@@ -15,7 +15,7 @@ use crate::ids::{RequestId, TimelineBatchId, TimelineGeneration, TimelineKey};
 pub enum CjkTextPolicyEvent {
     JapaneseCatalogProfileChanged { profile: JapaneseCatalogProfile },
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ThreadsListEvent {
     Opened {
@@ -43,6 +43,63 @@ pub enum ThreadsListEvent {
         failure_kind: OperationFailureKind,
     },
 }
+
+// #1979: `ThreadsListItem` carries the thread's room id, root event id, senders,
+// and both body previews, so the item list is counted rather than printed.
+impl fmt::Debug for ThreadsListEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct(match self {
+            Self::Opened { .. } => "Opened",
+            Self::Updated { .. } => "Updated",
+            Self::PaginationCompleted { .. } => "PaginationCompleted",
+            Self::Failed { .. } => "Failed",
+        });
+        match self {
+            Self::Opened {
+                request_id,
+                items,
+                end_reached,
+                ..
+            } => debug
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("items_len", &items.len())
+                .field("end_reached", end_reached),
+            Self::Updated {
+                request_id,
+                items,
+                is_paginating,
+                end_reached,
+                ..
+            } => debug
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("items_len", &items.len())
+                .field("is_paginating", is_paginating)
+                .field("end_reached", end_reached),
+            Self::PaginationCompleted {
+                request_id,
+                items,
+                end_reached,
+                ..
+            } => debug
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("items_len", &items.len())
+                .field("end_reached", end_reached),
+            Self::Failed {
+                request_id,
+                failure_kind,
+                ..
+            } => debug
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("failure_kind", failure_kind),
+        }
+        .finish()
+    }
+}
+
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TimelineEvent {
     InitialItems {
@@ -403,7 +460,7 @@ impl fmt::Debug for TimelineDisplayLabelUpdate {
             .finish()
     }
 }
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelineViewportObservation {
     #[serde(default)]
     pub display_window_revision: Option<u64>,
@@ -418,6 +475,28 @@ pub struct TimelineViewportObservation {
     /// sender that does not report it.
     #[serde(default)]
     pub bottom_arrival: TimelineBottomArrival,
+}
+
+// #1979: boundary payload; the visible event ids are private, so the gaps are
+// counted along with them.
+impl fmt::Debug for TimelineViewportObservation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimelineViewportObservation")
+            .field("display_window_revision", &self.display_window_revision)
+            .field(
+                "first_visible_event_id",
+                &self.first_visible_event_id.as_ref().map(|_| "EventId(..)"),
+            )
+            .field(
+                "last_visible_event_id",
+                &self.last_visible_event_id.as_ref().map(|_| "EventId(..)"),
+            )
+            .field("visible_gap_count", &self.visible_gap_ids.len())
+            .field("at_bottom", &self.at_bottom)
+            .field("bottom_arrival", &self.bottom_arrival)
+            .finish()
+    }
 }
 /// How a timeline viewport reached its current live edge (#872).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -997,7 +1076,7 @@ pub struct RoomKeyRequestStateDto {
     pub stage: RoomKeyRequestStage,
     pub withheld_code: Option<RoomKeyRequestWithheldCode>,
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelineUnableToDecrypt {
     pub session_id: Option<String>,
     pub reason: TimelineUnableToDecryptReason,
@@ -1008,6 +1087,24 @@ pub struct TimelineUnableToDecrypt {
     /// Closed terminal-guidance token (issue #478), present when automatic
     /// recovery is exhausted or impossible.
     pub recovery_guidance: Option<String>,
+}
+
+// #1979: the session id is a megolm fingerprint, the same class the message
+// source already redacts.
+impl fmt::Debug for TimelineUnableToDecrypt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimelineUnableToDecrypt")
+            .field(
+                "session_id",
+                &self.session_id.as_ref().map(|_| "SessionId(..)"),
+            )
+            .field("reason", &self.reason)
+            .field("can_request_keys", &self.can_request_keys)
+            .field("recovery_stage", &self.recovery_stage)
+            .field("recovery_guidance", &self.recovery_guidance)
+            .finish()
+    }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1182,7 +1279,7 @@ impl fmt::Debug for LinkPreview {
             .finish()
     }
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ThreadSummaryDto {
     pub reply_count: u32,
     pub latest_event_id: Option<String>,
@@ -1197,6 +1294,34 @@ pub struct ThreadSummaryDto {
     /// unread count and carries no mention information.
     #[serde(default)]
     pub unread_count: u32,
+}
+
+// #1979: boundary DTO; the latest event id, sender and body preview are private.
+impl fmt::Debug for ThreadSummaryDto {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ThreadSummaryDto")
+            .field("reply_count", &self.reply_count)
+            .field(
+                "latest_event_id",
+                &self.latest_event_id.as_ref().map(|_| "EventId(..)"),
+            )
+            .field(
+                "latest_sender",
+                &self.latest_sender.as_ref().map(|_| "UserId(..)"),
+            )
+            .field(
+                "latest_sender_label",
+                &self.latest_sender_label.as_ref().map(|_| "SenderLabel(..)"),
+            )
+            .field(
+                "latest_body_preview",
+                &self.latest_body_preview.as_ref().map(|_| "MessageBody(..)"),
+            )
+            .field("latest_timestamp_ms", &self.latest_timestamp_ms)
+            .field("unread_count", &self.unread_count)
+            .finish()
+    }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]

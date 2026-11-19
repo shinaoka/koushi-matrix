@@ -1,6 +1,6 @@
 use super::super::{CoreCommand, test_support::fake_rid};
 use super::*;
-use crate::ids::AccountKey;
+use crate::ids::{AccountKey, TimelineKind};
 use koushi_state::{ImageUploadCompressionMode, MentionIntent, MentionTarget};
 
 fn test_session_key() -> crate::SessionKeyId {
@@ -305,5 +305,97 @@ fn submit_text_and_reply_debug_redact_timeline_key_and_transaction_id() {
         assert!(!debug.contains("@a:test"), "{debug}");
         assert!(!debug.contains("$event:test"), "{debug}");
         assert!(!debug.contains("secret submit body"), "{debug}");
+    }
+}
+
+// #1979: `EditText` printed its event id raw while every neighbouring arm in
+// the same impl prints `EventId(..)`.
+#[test]
+fn edit_text_debug_redacts_event_id() {
+    let command = TimelineCommand::EditText {
+        request_id: fake_rid(80),
+        key: TimelineKey::room(AccountKey("@a:test".to_owned()), "!room:test"),
+        event_id: "$private-event:test".to_owned(),
+        document: koushi_state::ComposerDocument::from_plain_text("private edit".to_owned()),
+    };
+
+    let debug = format!("{command:?}");
+    assert!(debug.contains("EditText"), "{debug}");
+    assert!(debug.contains("EventId(..)"), "{debug}");
+    assert!(debug.contains("ComposerDocument(..)"), "{debug}");
+    assert!(!debug.contains("$private-event:test"), "{debug}");
+    assert!(!debug.contains("!room:test"), "{debug}");
+    assert!(!debug.contains("private edit"), "{debug}");
+}
+
+// #1979: the thirteen arms that printed `key` raw leaked the account id, the
+// room id, and a thread's root event id.
+#[test]
+fn no_timeline_command_debug_prints_its_timeline_key() {
+    let key = || {
+        TimelineKey::room(
+            AccountKey("@private-user:test".to_owned()),
+            "!private-room:test",
+        )
+    };
+    let thread_key = || TimelineKey {
+        account_key: AccountKey("@private-user:test".to_owned()),
+        kind: TimelineKind::Thread {
+            room_id: "!private-room:test".to_owned(),
+            root_event_id: "$private-root:test".to_owned(),
+        },
+    };
+    let commands = vec![
+        TimelineCommand::Subscribe {
+            request_id: fake_rid(81),
+            key: key(),
+            initial_backfill: InitialBackfillPolicy::Disabled,
+        },
+        TimelineCommand::EnsureSubscribed {
+            request_id: fake_rid(82),
+            key: key(),
+            replay_existing: false,
+        },
+        TimelineCommand::Unsubscribe {
+            request_id: fake_rid(83),
+            key: key(),
+        },
+        TimelineCommand::Paginate {
+            request_id: fake_rid(84),
+            key: key(),
+            direction: crate::event::PaginationDirection::Backward,
+            event_count: 20,
+        },
+        TimelineCommand::RequestReplyQuoteThumbnail {
+            request_id: fake_rid(85),
+            key: key(),
+            quoted_event_id: "$private-event:test".to_owned(),
+        },
+        TimelineCommand::RequestRoomKey {
+            request_id: fake_rid(86),
+            key: thread_key(),
+            event_id: "$private-event:test".to_owned(),
+            origin: KeyRequestOrigin::User,
+        },
+        TimelineCommand::DownloadMedia {
+            request_id: fake_rid(87),
+            key: key(),
+            event_id: "$private-event:test".to_owned(),
+            selection: MediaDownloadSelection::File,
+        },
+        TimelineCommand::LoadMessageSource {
+            request_id: fake_rid(88),
+            key: thread_key(),
+            event_id: "$private-event:test".to_owned(),
+        },
+    ];
+
+    assert_eq!(commands.len(), 8);
+    for command in commands {
+        let debug = format!("{command:?}");
+        assert!(debug.contains("TimelineKey(..)"), "{debug}");
+        assert!(!debug.contains("@private-user:test"), "{debug}");
+        assert!(!debug.contains("!private-room:test"), "{debug}");
+        assert!(!debug.contains("$private-root:test"), "{debug}");
     }
 }

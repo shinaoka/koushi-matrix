@@ -222,24 +222,36 @@ pub enum E2eeTrustEvent {
 impl fmt::Debug for E2eeTrustEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::VerificationProgress { state, .. } => formatter
+            Self::VerificationProgress {
+                account_key, state, ..
+            } => formatter
                 .debug_struct("VerificationProgress")
-                .field("account_key", &"AccountKey(..)")
+                .field("account_key", account_key)
                 .field("state", &verification_state_name(state))
                 .finish(),
-            Self::CrossSigningChanged { status, .. } => formatter
+            Self::CrossSigningChanged {
+                account_key,
+                status,
+                ..
+            } => formatter
                 .debug_struct("CrossSigningChanged")
-                .field("account_key", &"AccountKey(..)")
+                .field("account_key", account_key)
                 .field("status", &cross_signing_status_name(status))
                 .finish(),
-            Self::KeyBackupChanged { status, .. } => formatter
+            Self::KeyBackupChanged {
+                account_key,
+                status,
+                ..
+            } => formatter
                 .debug_struct("KeyBackupChanged")
-                .field("account_key", &"AccountKey(..)")
+                .field("account_key", account_key)
                 .field("status", &key_backup_status_name(status))
                 .finish(),
-            Self::IdentityResetChanged { state, .. } => formatter
+            Self::IdentityResetChanged {
+                account_key, state, ..
+            } => formatter
                 .debug_struct("IdentityResetChanged")
-                .field("account_key", &"AccountKey(..)")
+                .field("account_key", account_key)
                 .field("state", &identity_reset_state_name(state))
                 .finish(),
         }

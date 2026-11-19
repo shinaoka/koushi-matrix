@@ -17,6 +17,7 @@ use koushi_state::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 
 pub type AppStateSnapshot = koushi_state::AppState;
 
@@ -32,11 +33,25 @@ pub struct CoreCommandAdmission {
 }
 
 /// Non-receipt room signals that can change without replacing receipt rows.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RoomLiveSignalMetadata {
     pub fully_read_event_id: Option<String>,
     pub typing_user_ids: Vec<String>,
     pub typing_users: Vec<LiveTypingUser>,
+}
+
+// #1979: boundary payload; the read marker and typing senders are private.
+impl fmt::Debug for RoomLiveSignalMetadata {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RoomLiveSignalMetadata")
+            .field(
+                "fully_read_event_id",
+                &self.fully_read_event_id.as_ref().map(|_| "EventId(..)"),
+            )
+            .field("typing_user_count", &self.typing_user_ids.len())
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
