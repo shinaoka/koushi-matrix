@@ -1388,14 +1388,22 @@ the focused-context path, where the focused row applies the transient target
 emphasis. Other sources never ask and keep their documented paths.
 
 `InPlace` is presentation for the live view the reader was looking at. The
-renderer scrolls the row whose content event is `event_id` to the centre once
-per `generation` and applies the same transient target emphasis. Core read its
-own display window, which can be ahead of the diffs the renderer has applied,
-so the renderer retries a missing row as items arrive, a bounded number of
-times, and otherwise does nothing: it never repairs or reports navigation
-state. A newer intent and every outer navigation cleanup clear `InPlace` like
-`Anchored`, and an accepted main-composer send clears it too, because the send
-moves the reader to the live edge.
+renderer scrolls the row whose content event is `event_id` towards the centre,
+starting again for each `generation`, and applies the same transient target
+emphasis. Core read its own display window, which can be ahead of the diffs the
+renderer has applied, so the renderer retries a missing row as items arrive and
+places it a bounded number of times, and otherwise does nothing: it never repairs
+or reports navigation state. A run that placed nothing spends no placement. The
+settle has arrived only when the row's whole box is inside the timeline's visible
+band — a row taller than the band, or one without a layout box, is judged by
+intersection — and only against a height model that has stopped changing, because
+the measurement a jump defers can move the row afterwards. Such a row is
+recentred rather than left just above the band, and every correction is bounded
+by the same placement budget (#1987). The reader's own scroll ends the jump:
+after it, no item or measurement change moves the view back to the row. A newer
+intent and every outer navigation cleanup clear `InPlace` like `Anchored`, and an
+accepted main-composer send clears it too, because the send moves the reader to
+the live edge.
 
 ```mermaid
 stateDiagram-v2
