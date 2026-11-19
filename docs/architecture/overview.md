@@ -1882,9 +1882,14 @@ OFF raises no banner). Linux uses `notify-rust` with an explicit freedesktop
 time instead of a generic caller, marks the category `im.received`, escapes
 `&`, `<`, and `>` in the body because servers render markup there, and inlines
 an available avatar as `image-data` so no image file and no media URL reaches
-the OS. Windows uses its typed default-click response and the installed
-application's AppUserModelID, and carries the payload text without a platform
-image. Neither relies on the desktop
+the OS. It shows each banner under an id derived from the room, so a newer
+message in the same room replaces that room's banner instead of stacking a
+second one: one entry per chat (#1975). The notification server keys replacement
+on the id it already holds, and that id is the room id hashed with a per-process
+key, so it cannot be read back as a room identifier; a banner left behind by a
+previous run is therefore not the one a new message replaces. Windows uses its
+typed default-click response and the installed application's AppUserModelID, and
+carries the payload text without a platform image. Neither relies on the desktop
 `tauri-plugin-notification` click path. macOS uses the bundled app's
 `UNUserNotificationCenter` through `mac-usernotifications`, with asynchronous
 responses and bounded, cancellable activation lifetimes; the deprecated

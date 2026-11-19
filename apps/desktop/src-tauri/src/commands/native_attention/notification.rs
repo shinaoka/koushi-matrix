@@ -418,6 +418,9 @@ struct LinuxBannerSpec {
     category: &'static str,
     /// Opaque renderable-thumbnail cache reference of the sender's avatar.
     avatar: Option<String>,
+    /// The freedesktop notification id this room's banner is shown with (#1975);
+    /// see [`banner_notification_id`] for its derivation.
+    notification_id: u32,
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -429,7 +432,34 @@ fn linux_banner_spec(payload: &NativeNotificationPayload, product_name: &str) ->
         desktop_entry: product_name.to_owned(),
         category: "im.received",
         avatar: payload.sender_avatar.clone(),
+        notification_id: banner_notification_id(&payload.target.room_id),
     }
+}
+
+/// The freedesktop notification id one room's banner is shown with (#1975).
+///
+/// Replacement is keyed by the id the notification server already holds, so the
+/// same room has to keep one value for as long as its banner is on screen, and
+/// two rooms must not share it. The room id is hashed with a per-process random
+/// key instead of being passed through: `replaces_id` travels over the session
+/// bus, and a plain digest of a room id is reversible, which would put a room
+/// identifier on the OS surface that engineering rule 9 keeps out. The price is
+/// that the id is not the same after a restart, so a banner left behind by a
+/// previous run is not the one a new message replaces.
+#[cfg(any(target_os = "linux", test))]
+fn banner_notification_id(room_id: &str) -> u32 {
+    static SALT: std::sync::OnceLock<std::collections::hash_map::RandomState> =
+        std::sync::OnceLock::new();
+    let mut hasher = std::hash::BuildHasher::build_hasher(
+        SALT.get_or_init(std::collections::hash_map::RandomState::new),
+    );
+    std::hash::Hash::hash(room_id, &mut hasher);
+    let digest = std::hash::Hasher::finish(&hasher);
+    // The servers that receive this count their own ids up from 1, so a low value
+    // could name a notification another application owns and replace that one.
+    // The top bit is never part of such a counter, and it also keeps the id away
+    // from zero, which freedesktop reads as "not a replacement".
+    ((digest as u32) ^ ((digest >> 32) as u32)) | 0x8000_0000
 }
 
 /// Escape the banner body for the freedesktop markup subset Plasma renders: a
@@ -462,6 +492,7 @@ fn linux_banner(spec: &LinuxBannerSpec) -> notify_rust::Notification {
         .summary(&spec.summary)
         .body(&spec.body)
         .appname(&spec.app_name)
+        .id(spec.notification_id)
         .hint(notify_rust::Hint::DesktopEntry(spec.desktop_entry.clone()))
         .hint(notify_rust::Hint::Category(spec.category.to_owned()))
         .action("default", "Open");
