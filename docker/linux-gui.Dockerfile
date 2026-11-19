@@ -1,8 +1,8 @@
 FROM node:22.22.3-bookworm
 
 ARG RUST_TOOLCHAIN=1.96.0
-ARG TUWUNEL_VERSION=v1.7.1
-ARG TUWUNEL_ZST_URL=https://github.com/matrix-construct/tuwunel/releases/download/v1.7.1/v1.7.1-release-all-x86_64-v1-linux-gnu-tuwunel.zst
+ARG TUWUNEL_VERSION=v2.0.0
+ARG TUWUNEL_ZST_URL=https://github.com/matrix-construct/tuwunel/releases/download/v2.0.0-assets/v2.0.0-assets-release-default-x86_64-v1-linux-gnu-tuwunel.zst
 
 ENV DEBIAN_FRONTEND=noninteractive \
     RUST_TOOLCHAIN=${RUST_TOOLCHAIN} \

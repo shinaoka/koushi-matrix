@@ -77,10 +77,11 @@ async function readReceiptPopulation({ homeserver, accessToken, roomId, eventId 
  * Decide whether the fixture's 1500-reader premise holds on this server.
  *
  * A lane may only run `avatar_demand` when the server reports the seeded
- * population back. tuwunel's pinned Simplified Sliding Sync receipt packing
- * collapses every reader of one event into a single user, so the lane would
- * wait out its deadline for a population the server cannot report; that is
- * declared per server in `homeserverFixtureCapabilities`. A declared
+ * population back. A server whose Simplified Sliding Sync receipt packing
+ * collapses every reader of one event into a single user (Tuwunel before
+ * 2.0.0) would make the lane wait out its deadline for a population it cannot
+ * report; such a limitation is declared per server in
+ * `homeserverFixtureCapabilities`. A declared
  * limitation is re-checked here, so a server that starts reporting the full
  * population fails loudly instead of staying silently skipped (#1168).
  */

@@ -75,21 +75,21 @@ jobs:
             build-essential pkg-config libssl-dev
       - name: Submodule sync guard
         run: node scripts/check-sdk-submodule.mjs
-      - name: Cache Tuwunel v1.7.1 download
+      - name: Cache Tuwunel v2.0.0 download
         if: matrix.server == 'tuwunel'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: ~/.cache/koushi/tuwunel/v1.7.1
-          key: tuwunel-v1.7.1-x86_64-v1-linux-gnu-64d6b60a781e2dad74e840ed6e211eced8c4206ce2d307fe62bbc62e3ffcc983
-      - name: Install Tuwunel v1.7.1
+          path: ~/.cache/koushi/tuwunel/v2.0.0
+          key: tuwunel-v2.0.0-x86_64-v1-linux-gnu-1e4df9d39b6a62d4c98fd8732c57525b03e4c61654df1d2b7cfb61da9af97a0d
+      - name: Install Tuwunel v2.0.0
         if: matrix.server == 'tuwunel'
         env:
-          TUWUNEL_URL: https://github.com/matrix-construct/tuwunel/releases/download/v1.7.1/v1.7.1-release-all-x86_64-v1-linux-gnu-tuwunel.zst
-          TUWUNEL_SHA256: 64d6b60a781e2dad74e840ed6e211eced8c4206ce2d307fe62bbc62e3ffcc983
+          TUWUNEL_URL: https://github.com/matrix-construct/tuwunel/releases/download/v2.0.0-assets/v2.0.0-assets-release-default-x86_64-v1-linux-gnu-tuwunel.zst
+          TUWUNEL_SHA256: 1e4df9d39b6a62d4c98fd8732c57525b03e4c61654df1d2b7cfb61da9af97a0d
         run: |
           sudo apt-get install -y --no-install-recommends zstd
-          mkdir -p "$HOME/.cache/koushi/tuwunel/v1.7.1" "$HOME/.local/bin"
-          archive="$HOME/.cache/koushi/tuwunel/v1.7.1/tuwunel.zst"
+          mkdir -p "$HOME/.cache/koushi/tuwunel/v2.0.0" "$HOME/.local/bin"
+          archive="$HOME/.cache/koushi/tuwunel/v2.0.0/tuwunel.zst"
           if [[ ! -s "$archive" ]]; then
             curl --proto '=https' --tlsv1.2 -fsSLo "$archive" "$TUWUNEL_URL"
           fi
@@ -217,21 +217,21 @@ jobs:
             build-essential pkg-config libssl-dev
       - name: Submodule sync guard
         run: node scripts/check-sdk-submodule.mjs
-      - name: Cache Tuwunel v1.7.1 download
+      - name: Cache Tuwunel v2.0.0 download
         if: matrix.server == 'tuwunel'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: ~/.cache/koushi/tuwunel/v1.7.1
-          key: tuwunel-v1.7.1-x86_64-v1-linux-gnu-64d6b60a781e2dad74e840ed6e211eced8c4206ce2d307fe62bbc62e3ffcc983
-      - name: Install Tuwunel v1.7.1
+          path: ~/.cache/koushi/tuwunel/v2.0.0
+          key: tuwunel-v2.0.0-x86_64-v1-linux-gnu-1e4df9d39b6a62d4c98fd8732c57525b03e4c61654df1d2b7cfb61da9af97a0d
+      - name: Install Tuwunel v2.0.0
         if: matrix.server == 'tuwunel'
         env:
-          TUWUNEL_URL: https://github.com/matrix-construct/tuwunel/releases/download/v1.7.1/v1.7.1-release-all-x86_64-v1-linux-gnu-tuwunel.zst
-          TUWUNEL_SHA256: 64d6b60a781e2dad74e840ed6e211eced8c4206ce2d307fe62bbc62e3ffcc983
+          TUWUNEL_URL: https://github.com/matrix-construct/tuwunel/releases/download/v2.0.0-assets/v2.0.0-assets-release-default-x86_64-v1-linux-gnu-tuwunel.zst
+          TUWUNEL_SHA256: 1e4df9d39b6a62d4c98fd8732c57525b03e4c61654df1d2b7cfb61da9af97a0d
         run: |
           sudo apt-get install -y --no-install-recommends zstd
-          mkdir -p "$HOME/.cache/koushi/tuwunel/v1.7.1" "$HOME/.local/bin"
-          archive="$HOME/.cache/koushi/tuwunel/v1.7.1/tuwunel.zst"
+          mkdir -p "$HOME/.cache/koushi/tuwunel/v2.0.0" "$HOME/.local/bin"
+          archive="$HOME/.cache/koushi/tuwunel/v2.0.0/tuwunel.zst"
           if [[ ! -s "$archive" ]]; then
             curl --proto '=https' --tlsv1.2 -fsSLo "$archive" "$TUWUNEL_URL"
           fi
