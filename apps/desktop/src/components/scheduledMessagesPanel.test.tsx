@@ -40,6 +40,7 @@ function panelProps(overrides: Partial<PanelProps> = {}): PanelProps {
     activeSpace: null,
     activeSpaceName: "Synthetic Workspace",
     isRecoveryBusy: false,
+    composerReadOnly: false,
     mode: "scheduledMessages" as const,
     recoverySecretFilled: false,
     recoverySecretInputRef: { current: null },
@@ -253,6 +254,107 @@ describe("scheduled messages right panel", () => {
     expect(onRescheduleScheduledSend).toHaveBeenCalledWith(
       "scheduled-1",
       "Edited body",
+      expect.any(Number)
+    );
+  });
+});
+
+// #1983: the read-only lock closes the composer body, so the panel's editor must
+// not open a second, editable box for the same send, and a save must not reach
+// the reschedule command either.
+describe("scheduled messages sending lock (#1983)", () => {
+  it("does not open the editor while sending is locked", () => {
+    const onRescheduleScheduledSend = vi.fn();
+    render(
+      <ContextualRightPanel
+        {...panelProps({
+          snapshot: openSnapshot([scheduledItem({})]),
+          composerReadOnly: true,
+          onRescheduleScheduledSend
+        })}
+      />
+    );
+
+    const edit = screen.getByRole("button", { name: t("scheduled.edit") });
+    expect((edit as HTMLButtonElement).disabled).toBe(true);
+    // The reason the control is unavailable, not just an inert button.
+    expect(screen.getByText(t("composer.sendBlockedSecureBackup"))).toBeTruthy();
+
+    fireEvent.click(edit);
+    expect(screen.queryByRole("textbox", { name: t("scheduled.bodyInput") })).toBeNull();
+    expect(screen.queryByLabelText(t("scheduled.timeInput"))).toBeNull();
+    expect(onRescheduleScheduledSend).not.toHaveBeenCalled();
+  });
+
+  it("drops an already-open editor when the lock arrives", () => {
+    const onRescheduleScheduledSend = vi.fn();
+    const { rerender } = render(
+      <ContextualRightPanel
+        {...panelProps({
+          snapshot: openSnapshot([scheduledItem({})]),
+          onRescheduleScheduledSend
+        })}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: t("scheduled.edit") }));
+    const body = screen.getByRole("textbox", { name: t("scheduled.bodyInput") });
+    body.textContent = "Edited while locked";
+    fireEvent.input(body);
+    fireEvent.change(screen.getByLabelText(t("scheduled.timeInput")), {
+      target: { value: "2031-02-03T04:05" }
+    });
+
+    // The lock arrives while the editor is open: the box and the time field go
+    // away with it, so neither can be changed, and nothing is saved.
+    rerender(
+      <ContextualRightPanel
+        {...panelProps({
+          snapshot: openSnapshot([scheduledItem({})]),
+          composerReadOnly: true,
+          onRescheduleScheduledSend
+        })}
+      />
+    );
+    expect(screen.queryByRole("textbox", { name: t("scheduled.bodyInput") })).toBeNull();
+    expect(screen.queryByLabelText(t("scheduled.timeInput"))).toBeNull();
+    expect(onRescheduleScheduledSend).not.toHaveBeenCalled();
+  });
+
+  it("edits normally again once the lock is released", () => {
+    const onRescheduleScheduledSend = vi.fn();
+    const { rerender } = render(
+      <ContextualRightPanel
+        {...panelProps({
+          snapshot: openSnapshot([scheduledItem({})]),
+          composerReadOnly: true,
+          onRescheduleScheduledSend
+        })}
+      />
+    );
+
+    rerender(
+      <ContextualRightPanel
+        {...panelProps({
+          snapshot: openSnapshot([scheduledItem({})]),
+          composerReadOnly: false,
+          onRescheduleScheduledSend
+        })}
+      />
+    );
+
+    const edit = screen.getByRole("button", { name: t("scheduled.edit") });
+    expect((edit as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText(t("composer.sendBlockedSecureBackup"))).toBeNull();
+
+    fireEvent.click(edit);
+    const body = screen.getByRole("textbox", { name: t("scheduled.bodyInput") });
+    body.textContent = "Edited after unlock";
+    fireEvent.input(body);
+    fireEvent.click(screen.getByRole("button", { name: t("scheduled.save") }));
+    expect(onRescheduleScheduledSend).toHaveBeenCalledWith(
+      "scheduled-1",
+      "Edited after unlock",
       expect.any(Number)
     );
   });

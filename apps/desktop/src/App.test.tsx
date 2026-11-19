@@ -1022,6 +1022,7 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <ContextualRightPanel
+        composerReadOnly={false}
         activeRoom={snapshot.state.domain.rooms[0] ?? null}
         activeSpace={snapshot.state.domain.spaces[0] ?? null}
         activeSpaceName="Home"
@@ -1075,6 +1076,7 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <ContextualRightPanel
+        composerReadOnly={false}
         activeRoom={snapshot.state.domain.rooms[0] ?? null}
         activeSpace={snapshot.state.domain.spaces[0] ?? null}
         activeSpaceName="Home"
@@ -1124,6 +1126,7 @@ describe("ContextualRightPanel", () => {
 
     const render = () => renderToStaticMarkup(
       <ContextualRightPanel
+        composerReadOnly={false}
         activeRoom={snapshot.state.domain.rooms[0] ?? null}
         activeSpace={snapshot.state.domain.spaces[0] ?? null}
         activeSpaceName="Home"
@@ -1222,6 +1225,7 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <ContextualRightPanel
+        composerReadOnly={false}
         activeRoom={snapshot.state.domain.rooms[0] ?? null}
         activeSpace={snapshot.state.domain.spaces[0] ?? null}
         activeSpaceName="Home"
@@ -1311,6 +1315,7 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <ContextualRightPanel
+        composerReadOnly={false}
         activeRoom={snapshot.state.domain.rooms[0] ?? null}
         activeSpace={snapshot.state.domain.spaces[0] ?? null}
         activeSpaceName="Home"
@@ -1393,6 +1398,7 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <ContextualRightPanel
+        composerReadOnly={false}
         activeRoom={snapshot.state.domain.rooms[0] ?? null}
         activeSpace={snapshot.state.domain.spaces[0] ?? null}
         activeSpaceName="Home"
@@ -1450,6 +1456,7 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <ContextualRightPanel
+        composerReadOnly={false}
         activeRoom={snapshot.state.domain.rooms[0] ?? null}
         activeSpace={snapshot.state.domain.spaces[0] ?? null}
         activeSpaceName="Home"
@@ -1636,6 +1643,7 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <ContextualRightPanel
+        composerReadOnly={false}
         activeRoom={null}
         activeSpace={null}
         activeSpaceName="Home"

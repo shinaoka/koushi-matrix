@@ -116,7 +116,7 @@ export function ContextualRightPanel({
   sendingAccount = null,
   onSettingsScopeChange = () => undefined,
   displayDensity = "comfortable",
-  composerReadOnly = false,
+  composerReadOnly,
   isRecoveryBusy,
   mode,
   threadsListScope = { kind: "home" },
@@ -275,8 +275,12 @@ export function ContextualRightPanel({
   activeSpace: DesktopSnapshot["state"]["domain"]["spaces"][number] | null;
   activeSpaceName: string;
   displayDensity?: DisplayDensity;
-  /** #1748: Rust-projected send admission; the thread composer is read-only. */
-  composerReadOnly?: boolean;
+  /**
+   * #1748: Rust-projected send admission; the thread composer and the
+   * scheduled-send editor are read-only. Required since #1983: a caller that
+   * omits it would reopen an editable box whose save the runtime refuses.
+   */
+  composerReadOnly: boolean;
   isRecoveryBusy: boolean;
   mode: RightPanelMode;
   threadsListScope?: ThreadsListScope;
@@ -1100,6 +1104,14 @@ export function ContextualRightPanel({
     return (
       <aside className="thread-pane" aria-label={t("panel.context")}>
         <PanelHeader title={t("scheduled.title")} onClose={onClosePanel} />
+        {composerReadOnly ? (
+          // #1983: this panel edits a pending send, so it is locked by the same
+          // admission as the composer and says why. The selected-room pane does
+          // not repeat it: its composer notice sits beside the same list.
+          <div className="composer-read-only-notice" role="status">
+            {t("composer.sendBlockedSecureBackup")}
+          </div>
+        ) : null}
         {scheduledItems.length === 0 ? (
           <p className="panel-empty-state">{t("scheduled.panelEmpty")}</p>
         ) : (
@@ -1108,6 +1120,7 @@ export function ContextualRightPanel({
             items={scheduledItems}
             onCancel={onCancelScheduledSend}
             onReschedule={onRescheduleScheduledSend}
+            canEdit={!composerReadOnly}
             // #1903: the editor's math switch reads the app-scoped setting; a
             // mount without it falls back to "on" with a no-op handler.
             mathModeEnabled={composerSettings.math_mode}

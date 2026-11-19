@@ -137,6 +137,7 @@ describe("scheduled message editing", () => {
         ]}
         onCancel={() => undefined}
         onReschedule={onReschedule}
+        canEdit
         mathModeEnabled={false}
         onMathModeChange={() => undefined}
       />
@@ -151,6 +152,38 @@ describe("scheduled message editing", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save scheduled send" }));
 
     expect(onReschedule).toHaveBeenCalledWith("scheduled-1", "Edited **body**", expect.any(Number));
+  });
+
+  // #1983: the same list renders inside the selected-room pane, so the lock has
+  // to hold at the component itself, not only through the right panel's wiring.
+  it("refuses to open the editor while sending is locked", () => {
+    const onReschedule = vi.fn();
+    render(
+      <ScheduledMessagesList
+        capability="localFallback"
+        items={[
+          {
+            scheduled_id: "scheduled-1",
+            room_id: "!room:example.invalid",
+            body: "Original body",
+            send_at_ms: Date.UTC(2030, 0, 1, 12, 0),
+            handle: { kind: "local" }
+          }
+        ]}
+        onCancel={() => undefined}
+        onReschedule={onReschedule}
+        canEdit={false}
+        mathModeEnabled={false}
+        onMathModeChange={() => undefined}
+      />
+    );
+
+    expect(
+      (screen.getByRole("button", { name: "Edit scheduled send" }) as HTMLButtonElement).disabled
+    ).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Edit scheduled send" }));
+    expect(screen.queryByRole("textbox", { name: "Scheduled message" })).toBeNull();
+    expect(onReschedule).not.toHaveBeenCalled();
   });
 });
 
