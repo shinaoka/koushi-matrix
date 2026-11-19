@@ -52,14 +52,24 @@ pub(crate) fn server_scheduled_send_recheck_at_ms() -> u64 {
 }
 
 /// Whether the homeserver's listing of the user's delayed events still holds
-/// `delay_id` as scheduled. An entry that already carries a sent event id or a
-/// send error is finalised, not scheduled.
+/// `delay_id` as scheduled. Every finalised status retires the item: sent,
+/// errored, and cancelled (#1975 review). Cancel matters because MSC4140 is per
+/// user, so another device can cancel the event while the server keeps a
+/// finalised entry; read as scheduled, the item is rechecked every
+/// `SERVER_SCHEDULED_SEND_RECHECK_DELAY` for as long as the app runs.
 pub(crate) fn delayed_event_still_scheduled(
     delayed_events: &[matrix_sdk::ruma::api::client::delayed_events::DelayedEventData],
     delay_id: &str,
 ) -> bool {
+    use matrix_sdk::ruma::api::client::delayed_events::DelayedEventStatus;
+
     delayed_events.iter().any(|event| {
-        event.delay_id == delay_id && event.event_id.is_none() && event.error.is_none()
+        event.delay_id == delay_id
+            && event.status() == DelayedEventStatus::Scheduled
+            // Belt as well as `status()`: a listing can carry the event id or the
+            // error without `finalised_ts`, which `status()` reads as scheduled.
+            && event.event_id.is_none()
+            && event.error.is_none()
     })
 }
 
@@ -125,6 +135,21 @@ mod tests {
             "event_id": "$sent:example.test"
         }]));
         assert!(!delayed_event_still_scheduled(&finalised, "delay-pending"));
+
+        // #1975 review: cancelling from another device leaves a finalised entry
+        // with neither an event id nor an error. Treating it as scheduled polls
+        // the listing every 10 s and never retires the item. The wire spelling is
+        // `finalised_ts`; a wrong key deserialises to `None`, i.e. scheduled.
+        let cancelled = listed_delayed_events(serde_json::json!([{
+            "delay_id": "delay-pending",
+            "room_id": "!room:example.test",
+            "type": "m.room.message",
+            "content": { "msgtype": "m.text", "body": "synthetic" },
+            "delay": 2000,
+            "running_since": 1_900_000_000_000_u64,
+            "finalised_ts": 1_900_000_002_000_u64
+        }]));
+        assert!(!delayed_event_still_scheduled(&cancelled, "delay-pending"));
     }
 
     #[test]

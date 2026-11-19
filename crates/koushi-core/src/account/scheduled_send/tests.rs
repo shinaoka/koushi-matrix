@@ -677,6 +677,38 @@ async fn server_item_check_defers_while_scheduled_and_retires_once_sent() {
     );
     drop(pending);
 
+    // Cancelled from another device: the server keeps a finalised entry with no
+    // event id and no error. Read as scheduled, the item would defer every 10 s
+    // for as long as the app runs (#1975 review).
+    let cancelled = wiremock::Mock::given(method("GET"))
+        .and(path(LISTING))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "delayed_events": [{
+                "delay_id": "delay-check",
+                "room_id": "!scheduled-check:localhost",
+                "type": "m.room.message",
+                "content": { "msgtype": "m.text", "body": "synthetic" },
+                "delay": 60000,
+                "running_since": 1_900_000_000_000_u64,
+                "finalised_ts": 1_900_000_060_000_u64
+            }]
+        })))
+        .mount_as_scoped(server.server())
+        .await;
+    assert!(handle.send(check("delay-check")).await);
+    let cancelled_result = next_server_check_result(&mut action_rx)
+        .await
+        .expect("the cancelled check must be answered");
+    assert!(
+        matches!(
+            &cancelled_result,
+            AppAction::ScheduledSendServerDelivered { scheduled_id, delay_id }
+                if scheduled_id == "scheduled-check" && delay_id == "delay-check"
+        ),
+        "a delayed event cancelled elsewhere must retire: {cancelled_result:?}"
+    );
+    drop(cancelled);
+
     // The homeserver sent it: the listing no longer holds the delay id.
     let _sent = wiremock::Mock::given(method("GET"))
         .and(path(LISTING))

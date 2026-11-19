@@ -957,7 +957,27 @@ impl ScheduledSendStore {
     ) -> Option<ScheduledSendItem> {
         let item = self.server_item_mut(scheduled_id, delay_id)?;
         item.is_dispatching = false;
+        // #1973 review: this overwrites the time the user chose. It is deliberate
+        // and harmless: a server item is only deferred once it is past due and
+        // merely awaiting confirmation, so the stored time has no send left to
+        // schedule; it drifts by the recheck delay until the server finalises the
+        // event, and a confirmation on restart retires the item instead of sending.
         item.send_at_ms = recheck_at_ms;
+        Some(item.clone())
+    }
+
+    /// Clear an in-flight check whose result never reached a reducer (#1973
+    /// review): the session stopped being ready before the reply arrived, so the
+    /// reply is dropped and nothing would ever clear the flag, leaving the item
+    /// unchecked until the app restarts. The item stays due, so the next wake
+    /// after the session is Ready checks it again.
+    pub fn abandon_server_check(
+        &mut self,
+        scheduled_id: &str,
+        delay_id: &str,
+    ) -> Option<ScheduledSendItem> {
+        let item = self.server_item_mut(scheduled_id, delay_id)?;
+        item.is_dispatching = false;
         Some(item.clone())
     }
 

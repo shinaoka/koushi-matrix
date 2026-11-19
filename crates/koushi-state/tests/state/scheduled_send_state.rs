@@ -742,6 +742,62 @@ fn server_check_result_for_a_replaced_handle_is_ignored() {
 }
 
 #[test]
+fn a_check_result_that_arrives_without_a_ready_session_does_not_wedge_the_item() {
+    // #1973 review: the reply is dropped when the session stops being Ready, so
+    // the in-flight mark has to be released too, or nothing re-checks the item
+    // until the app restarts.
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendCreated {
+            item: server_item("sched-1", "room-a", 1_900_000_000_000, "delay-1"),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendServerCheckStarted {
+            scheduled_id: "sched-1".to_owned(),
+            delay_id: "delay-1".to_owned(),
+        },
+    );
+    assert!(
+        state
+            .scheduled_sends
+            .next_server_check_due(u64::MAX)
+            .is_none(),
+        "a check in flight is not started twice"
+    );
+
+    state.session = SessionState::Restoring;
+    for action in [
+        AppAction::ScheduledSendServerCheckDeferred {
+            scheduled_id: "sched-1".to_owned(),
+            delay_id: "delay-1".to_owned(),
+            recheck_at_ms: 1_900_000_010_000,
+        },
+        AppAction::ScheduledSendServerDelivered {
+            scheduled_id: "sched-1".to_owned(),
+            delay_id: "delay-1".to_owned(),
+        },
+    ] {
+        assert!(reduce(&mut state, action).is_empty());
+        assert_eq!(
+            state
+                .scheduled_sends
+                .next_server_check_due(u64::MAX)
+                .map(|item| item.scheduled_id),
+            Some("sched-1".to_owned()),
+            "a dropped result must leave the item due for the next wake"
+        );
+    }
+    // The dropped deferred result must not move the user's time either.
+    assert_eq!(
+        state.scheduled_sends.items["sched-1"].send_at_ms,
+        1_900_000_000_000
+    );
+}
+
+#[test]
 fn server_check_actions_never_touch_local_items() {
     let mut state = selected_room_state("room-a");
     reduce(

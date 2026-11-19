@@ -484,6 +484,7 @@ pub(crate) fn handle_scheduled_send_server_check_deferred(
     recheck_at_ms: u64,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
+        abandon_server_check(state, &scheduled_id, &delay_id);
         return Vec::new();
     }
 
@@ -503,6 +504,9 @@ pub(crate) fn handle_scheduled_send_server_delivered(
     delay_id: String,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
+        // The confirmation is dropped with the session, not applied, so the item
+        // must not stay marked in flight; the next wake checks it again.
+        abandon_server_check(state, &scheduled_id, &delay_id);
         return Vec::new();
     }
 
@@ -513,6 +517,15 @@ pub(crate) fn handle_scheduled_send_server_delivered(
         return Vec::new();
     };
     scheduled_send_room_changed(state, item.room_id)
+}
+
+/// Release the in-flight mark of a check whose result a reducer dropped because
+/// the session was not Ready (#1973 review). Nothing the UI shows changes, so no
+/// effect is emitted.
+fn abandon_server_check(state: &mut AppState, scheduled_id: &str, delay_id: &str) {
+    state
+        .scheduled_sends
+        .abandon_server_check(scheduled_id, delay_id);
 }
 
 /// Refresh the selected-room projection when a scheduled item of that room
