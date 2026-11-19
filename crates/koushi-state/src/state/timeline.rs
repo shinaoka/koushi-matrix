@@ -648,7 +648,7 @@ impl fmt::Debug for TimelineMediaGalleryItem {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("TimelineMediaGalleryItem")
-            .field("event_id", &self.event_id)
+            .field("event_id", &"EventId(..)")
             .field("room_id", &"RoomId(..)")
             .field("sender", &self.sender.as_ref().map(|_| "UserId(..)"))
             .field(

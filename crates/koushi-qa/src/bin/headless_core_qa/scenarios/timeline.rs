@@ -3981,6 +3981,7 @@ fn assert_upload_ux_state_contract(room_id: &str) -> Result<(), String> {
     );
     for private in [
         room_id,
+        "$new-media",
         "private-one.jpg",
         "private staged caption",
         "mxc://example.invalid/private-gallery",
