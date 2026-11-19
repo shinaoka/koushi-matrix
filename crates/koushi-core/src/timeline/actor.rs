@@ -212,6 +212,11 @@ pub(super) enum TimelineActorMessage {
             >,
         >,
     },
+    /// #1981: whether the published display window shows `event_id` as a row.
+    ShowsEvent {
+        event_id: String,
+        response: oneshot::Sender<bool>,
+    },
     RoomSubscriptionCheckpoint(MatrixRoomSubscriptionCheckpoint),
     /// Ordered generation advance for a retained room whose subscription set
     /// changed because another room was added/removed (issue #518). The actor
@@ -2552,6 +2557,12 @@ impl TimelineActor {
                     }
                     Box::pin(self.start_pending_timeline_gap_inspection()).await;
                 }
+            }
+            TimelineActorMessage::ShowsEvent { event_id, response } => {
+                let _ = response.send(super::display_projection::display_items_show_event(
+                    self.display_projection.display_items(),
+                    &event_id,
+                ));
             }
             TimelineActorMessage::ReadReceiptWindow {
                 source,

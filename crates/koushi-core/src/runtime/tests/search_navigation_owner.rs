@@ -387,7 +387,8 @@ impl Harness {
                     .borrow_and_update()
                     .state
                     .navigation
-                    .event_navigation;
+                    .event_navigation
+                    .clone();
                 if state.generation() > superseded
                     && !matches!(state, EventNavigationState::Opening { .. })
                 {

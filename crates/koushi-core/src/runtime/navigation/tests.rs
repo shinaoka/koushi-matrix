@@ -608,6 +608,7 @@ async fn event_navigation_deadline_is_latest_wins() {
         event_id: "$event-a:example.invalid".to_owned(),
         generation: 11,
         result: crate::account::RoomEventLookupResult::Failed,
+        shown_in_live_room: false,
     };
     let b = EventNavigationPrepared {
         request_id: RequestId {
@@ -618,6 +619,7 @@ async fn event_navigation_deadline_is_latest_wins() {
         event_id: "$event-b:example.invalid".to_owned(),
         generation: 12,
         result: crate::account::RoomEventLookupResult::Failed,
+        shown_in_live_room: false,
     };
 
     let a_handle = super::spawn_event_navigation_deadline(tx.clone(), a.clone(), duration);

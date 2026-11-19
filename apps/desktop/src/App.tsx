@@ -1588,6 +1588,12 @@ function AccountContent({
     snapshot?.state.ui.navigation.main_timeline_anchor?.event_id ?? null;
   const eventNavigation = snapshot?.state.ui.navigation.event_navigation;
   useEffect(() => {
+    // #1981: an in-place settle scrolls the live room timeline, so that view
+    // must be the one on screen; the right panel keeps whatever it shows.
+    if (eventNavigation?.kind === "inPlace") {
+      setPrimaryView("timeline");
+      return;
+    }
     if (eventNavigation?.kind !== "anchored" && eventNavigation?.kind !== "liveFallback") {
       return;
     }

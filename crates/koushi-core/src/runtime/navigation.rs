@@ -85,6 +85,10 @@ pub(super) struct EventNavigationPrepared {
     pub(super) event_id: String,
     pub(super) generation: u64,
     pub(super) result: crate::account::RoomEventLookupResult,
+    /// #1981: the live room timeline's display window already shows the
+    /// target as a row, so `result` is `Located` without a thread root and no
+    /// network lookup ran.
+    pub(super) shown_in_live_room: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -215,6 +219,56 @@ pub(super) fn focused_navigation_outcome_after_reduce(
 }
 
 impl AppActor {
+    /// #1981: the main pane renders `room_id`'s live Room timeline, not an
+    /// anchored history window.
+    fn main_pane_shows_live_room(&self, room_id: &str) -> bool {
+        self.state.navigation.active_room_id.as_deref() == Some(room_id)
+            && self.state.navigation.main_timeline_anchor.is_none()
+    }
+
+    /// #1981: settle on the row the live room timeline already shows. The main
+    /// pane stays live; the published `InPlace` target is what the renderer
+    /// scrolls to and emphasizes.
+    async fn settle_event_navigation_in_place(
+        &mut self,
+        request_id: RequestId,
+        generation: u64,
+        event_id: String,
+    ) {
+        let Some(pending) = self
+            .pending_event_navigation
+            .as_ref()
+            .filter(|pending| pending.request_id == request_id && pending.generation == generation)
+            .cloned()
+        else {
+            return;
+        };
+        self.pending_event_navigation.take();
+        stop_event_navigation_task(&mut self.event_navigation_deadline_task).await;
+        let before_state = self.snapshot_tx.borrow().state.clone();
+        let effects = reduce(
+            &mut self.state,
+            AppAction::EventNavigationInPlace {
+                generation,
+                event_id,
+            },
+        );
+        self.handle_ui_event_effects(&effects).await;
+        let published_generation = self
+            .publish_state_delta(&before_state)
+            .unwrap_or(self.state_generation);
+        record(DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.event_navigation",
+            "in_place",
+        ));
+        self.emit(CoreEvent::IntentLifecycle {
+            request_id: pending.request_id,
+            outcome: IntentOutcome::Committed,
+            published_generation,
+        });
+    }
+
     async fn settle_event_navigation_live_fallback(
         &mut self,
         request_id: RequestId,
@@ -601,6 +655,7 @@ impl AppActor {
                 event_id,
                 generation,
                 result: crate::account::RoomEventLookupResult::Failed,
+                shown_in_live_room: false,
             },
             EVENT_NAVIGATION_TIMEOUT,
         ));
@@ -700,8 +755,41 @@ impl AppActor {
         let room_id = pending.room_id.clone();
         let event_id = pending.event_id.clone();
         let generation = pending.generation;
+        // Only a room that was already on screen: a navigation that just
+        // changed rooms mounts a new live view whose own entry restore must
+        // not race an in-place scroll.
+        let ask_live_room = pending.source == EventNavigationSource::ReplyQuote
+            && outcome == IntentOutcome::BenignNoOp(IntentNoOpReason::AlreadyActive)
+            && self.main_pane_shows_live_room(&room_id);
         self.event_navigation_task = Some(super::AbortOnDrop::new(crate::executor::spawn(
             async move {
+                // #1981: a quoted original the live room timeline already shows
+                // settles in place. Its answer is a projection fact, so it needs
+                // neither the network lookup nor a focused build.
+                if ask_live_room {
+                    let (shown_tx, shown_rx) = tokio::sync::oneshot::channel();
+                    let shown = account_actor
+                        .send(crate::account::AccountMessage::RoomTimelineShowsEvent {
+                            room_id: room_id.clone(),
+                            event_id: event_id.clone(),
+                            response_tx: shown_tx,
+                        })
+                        .await
+                        && shown_rx.await.unwrap_or(false);
+                    if shown {
+                        let _ = prepared_tx.send(EventNavigationPrepared {
+                            request_id,
+                            room_id,
+                            event_id,
+                            generation,
+                            result: crate::account::RoomEventLookupResult::Located {
+                                thread_root_event_id: None,
+                            },
+                            shown_in_live_room: true,
+                        });
+                        return;
+                    }
+                }
                 let (response_tx, response_rx) = tokio::sync::oneshot::channel();
                 let result = if account_actor
                     .send(crate::account::AccountMessage::EnsureRoomEventCached {
@@ -724,6 +812,7 @@ impl AppActor {
                     event_id,
                     generation,
                     result,
+                    shown_in_live_room: false,
                 });
             },
         )));
@@ -804,6 +893,18 @@ impl AppActor {
                 prepared.event_id,
                 root_event_id,
             ))
+            .await;
+            return;
+        }
+
+        // #1981: the main pane may have left the live room while the query was
+        // in flight; the focused path below still opens the target then.
+        if prepared.shown_in_live_room && self.main_pane_shows_live_room(&prepared.room_id) {
+            self.settle_event_navigation_in_place(
+                prepared.request_id,
+                prepared.generation,
+                prepared.event_id,
+            )
             .await;
             return;
         }

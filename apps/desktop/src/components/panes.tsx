@@ -922,6 +922,17 @@ export function TimelinePane({
   // timeline; the right panel is not opened.
   const mainTimelineAnchorEventId =
     snapshot.state.ui.navigation.main_timeline_anchor?.event_id ?? null;
+  // #1981: a reply-quote jump Core settled on a row of the live room timeline.
+  const eventNavigation = snapshot.state.ui.navigation.event_navigation;
+  const inPlaceEventId = eventNavigation.kind === "inPlace" ? eventNavigation.eventId : null;
+  const inPlaceGeneration = eventNavigation.kind === "inPlace" ? eventNavigation.generation : null;
+  const inPlaceTarget = useMemo(
+    () =>
+      inPlaceEventId !== null && inPlaceGeneration !== null && !mainTimelineAnchorEventId
+        ? { eventId: inPlaceEventId, generation: inPlaceGeneration }
+        : null,
+    [inPlaceEventId, inPlaceGeneration, mainTimelineAnchorEventId]
+  );
   const timelineKey = useMemo(() => {
     if (!currentUserId || !timelineRoomId) {
       return null;
@@ -1356,6 +1367,7 @@ export function TimelinePane({
               timelineKey={timelineKey!}
               accountTabId={accountTabId}
               isAnchored={Boolean(mainTimelineAnchorEventId)}
+              inPlaceTarget={inPlaceTarget}
               onReturnToLive={onReturnToLive}
               liveLatestEventId={liveLatestEventId}
               transport={timelineTransport}

@@ -557,3 +557,39 @@ fn live_main_send_preserves_independent_right_panel_focused_context() {
         EventNavigationState::Idle
     );
 }
+
+/// #1981: an in-place reply-quote target is presentation for the live pane the
+/// reader was looking at. Sending moves the reader to the live edge, so the
+/// target must not outlive the send and be scrolled to or emphasized again.
+#[test]
+fn accepted_send_clears_an_in_place_navigation_target() {
+    let mut state = selected_room_state();
+    reduce(
+        &mut state,
+        AppAction::EventNavigationStarted {
+            source: EventNavigationSource::ReplyQuote,
+        },
+    );
+    let generation = state.navigation.event_navigation.generation();
+    reduce(
+        &mut state,
+        AppAction::EventNavigationInPlace {
+            generation,
+            event_id: "$quoted-original:example.test".to_owned(),
+        },
+    );
+    assert!(matches!(
+        state.navigation.event_navigation,
+        EventNavigationState::InPlace { .. }
+    ));
+
+    reduce(
+        &mut state,
+        accepted("sub-in-place", ROOM, "txn-in-place", "hi"),
+    );
+
+    assert_eq!(
+        state.navigation.event_navigation,
+        EventNavigationState::Idle
+    );
+}

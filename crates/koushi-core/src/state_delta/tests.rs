@@ -304,7 +304,7 @@ fn navigation_delta_retains_event_navigation() {
             .changed
             .navigation
             .as_ref()
-            .map(|navigation| navigation.event_navigation),
+            .map(|navigation| navigation.event_navigation.clone()),
         Some(koushi_state::EventNavigationState::Opening {
             generation: 1,
             source: koushi_state::EventNavigationSource::Activity,

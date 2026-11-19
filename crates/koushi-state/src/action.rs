@@ -1293,6 +1293,12 @@ pub enum AppAction {
     EventNavigationLiveFallback {
         generation: u64,
     },
+    /// #1981: Core found the target already shown as a row of the live room
+    /// timeline, so the navigation settles there without a focused timeline.
+    EventNavigationInPlace {
+        generation: u64,
+        event_id: String,
+    },
     EventNavigationFailed {
         generation: u64,
         kind: EventNavigationFailureKind,

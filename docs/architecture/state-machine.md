@@ -1329,13 +1329,16 @@ stateDiagram-v2
     Opening --> Opening: newer outer navigation accepted / old Superseded
     Opening --> Anchored: exact generation + request + target + projection identity
     Opening --> LiveFallback: exact owner + authoritative Missing + Activity/Search policy
+    Opening --> InPlace: exact owner + ReplyQuote + live room view already shows the target row
     Opening --> Failed: exact owner + current timeout or coarse current failure
     Opening --> Idle: room/thread/date-jump/return-live/anchored-send/logout/account/session/room cleanup
     Anchored --> Opening: newer intent
     LiveFallback --> Opening: newer intent
+    InPlace --> Opening: newer intent
     Failed --> Opening: newer intent
     Anchored --> Idle: outer navigation cleanup
     LiveFallback --> Idle: outer navigation cleanup
+    InPlace --> Idle: outer navigation cleanup / accepted main-composer send
     Failed --> Idle: outer navigation cleanup
 ```
 
@@ -1367,9 +1370,32 @@ A reply quote's open-original activation is the same outer operation with source
 `Loading`, `Missing`, `Unsupported`, and `Failed` quotes stay inert. The source
 uses the failing missing-target policy: a deleted or forbidden original settles
 `Failed` and uses the existing navigation-failure surface instead of landing at
-the live edge. Presentation opens the focused context at the event, where the
-row applies the transient target emphasis, rather than scrolling the main room
-timeline; React never builds the permalink or decides openability.
+the live edge. React never builds the permalink or decides openability.
+
+Presentation depends on whether the original is already on screen (#1981).
+When the internal room selection found the room already active
+(`AlreadyActive`) and the main pane shows that room's live timeline (no
+`main_timeline_anchor`), Core first asks the live `Room` timeline actor whether
+its current display window holds a row whose content event is the original
+(`item_occupies_display_row`, matched by `content_event_id`, so a moved thread
+root matches its root and never its latest-reply activity). A yes settles
+`InPlace { generation, source, event_id }` with `Committed`: no network lookup,
+no focused build, no anchor, and the main pane stays live. Opening a focused
+context there would swap the pane away and, because that focused window starts
+at the room's live tail, straight back through the live-edge return. Any other
+answer, a room change, an anchored main pane, or a missing timeline actor keeps
+the focused-context path, where the focused row applies the transient target
+emphasis. Other sources never ask and keep their documented paths.
+
+`InPlace` is presentation for the live view the reader was looking at. The
+renderer scrolls the row whose content event is `event_id` to the centre once
+per `generation` and applies the same transient target emphasis. Core read its
+own display window, which can be ahead of the diffs the renderer has applied,
+so the renderer retries a missing row as items arrive, a bounded number of
+times, and otherwise does nothing: it never repairs or reports navigation
+state. A newer intent and every outer navigation cleanup clear `InPlace` like
+`Anchored`, and an accepted main-composer send clears it too, because the send
+moves the reader to the live edge.
 
 ```mermaid
 stateDiagram-v2
@@ -2825,6 +2851,7 @@ stateDiagram-v2
   After every acceptance, revision, target-room, and duplicate guard:
   - an anchored main pane applies the `CloseFocusedContext` transition and then
     the `ReturnMainTimelineToLive` transition (event navigation becomes `Idle`);
+  - an `InPlace` reply-quote target becomes `Idle` (#1981);
   - the reducer always emits `CancelPendingMainTimelineNavigation { room_id }`.
     Core then cancels every main-pane navigation for that room that the
     reducer cannot observe: a Focused navigation awaiting its projection ACK

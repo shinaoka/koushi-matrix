@@ -233,6 +233,27 @@ pub(crate) fn handle_event_navigation_live_fallback(
     Vec::new()
 }
 
+/// #1981: settle the current navigation on a row the live room timeline
+/// already shows. Only a live main pane has that row on screen.
+pub(crate) fn handle_event_navigation_in_place(
+    state: &mut AppState,
+    generation: u64,
+    event_id: String,
+) -> Vec<AppEffect> {
+    let Some(source) = event_navigation_opening_source(state, generation) else {
+        return Vec::new();
+    };
+    if state.navigation.main_timeline_anchor.is_some() {
+        return Vec::new();
+    }
+    state.navigation.event_navigation = EventNavigationState::InPlace {
+        generation,
+        source,
+        event_id,
+    };
+    Vec::new()
+}
+
 pub(crate) fn handle_event_navigation_failed(
     state: &mut AppState,
     generation: u64,

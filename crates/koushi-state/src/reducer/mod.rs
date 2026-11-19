@@ -1475,6 +1475,10 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::EventNavigationLiveFallback { generation } => {
             navigation::handle_event_navigation_live_fallback(state, generation)
         }
+        AppAction::EventNavigationInPlace {
+            generation,
+            event_id,
+        } => navigation::handle_event_navigation_in_place(state, generation, event_id),
         AppAction::EventNavigationFailed { generation, kind } => {
             navigation::handle_event_navigation_failed(state, generation, kind)
         }

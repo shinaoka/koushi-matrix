@@ -1455,6 +1455,14 @@ export type EventNavigationState =
   | { kind: "opening"; generation: number; source: EventNavigationSource }
   | { kind: "anchored"; generation: number; source: EventNavigationSource }
   | { kind: "liveFallback"; generation: number; source: EventNavigationSource }
+  // #1981: the target is already a row of the live room timeline; the main
+  // pane stays live and scrolls to and emphasizes `eventId` once per generation.
+  | {
+      kind: "inPlace";
+      generation: number;
+      source: EventNavigationSource;
+      eventId: string;
+    }
   | {
       kind: "failed";
       generation: number;

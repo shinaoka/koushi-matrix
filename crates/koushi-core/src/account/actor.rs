@@ -361,6 +361,14 @@ pub(crate) enum AccountMessage {
         event_id: String,
         response_tx: oneshot::Sender<super::RoomEventLookupResult>,
     },
+    /// #1981: whether the active account's live `Room` timeline currently
+    /// shows `event_id` as a display row. `false` when no such timeline is
+    /// retained.
+    RoomTimelineShowsEvent {
+        room_id: String,
+        event_id: String,
+        response_tx: oneshot::Sender<bool>,
+    },
     #[cfg(test)]
     ConfigureEventCacheFetchForTesting {
         fetch: oneshot::Receiver<super::RoomEventLookupResult>,
@@ -2265,6 +2273,27 @@ impl AccountActor {
                     )
                     .await;
                     let _ = response_tx.send(result);
+                }
+                AccountMessage::RoomTimelineShowsEvent {
+                    room_id,
+                    event_id,
+                    response_tx,
+                } => {
+                    if let Some(account_key) = self.active_account_key() {
+                        let _ = Box::pin(self.timeline_manager.send(
+                            crate::timeline::TimelineMessage::TimelineShowsEvent {
+                                key: TimelineKey {
+                                    account_key,
+                                    kind: TimelineKind::Room { room_id },
+                                },
+                                event_id,
+                                response: response_tx,
+                            },
+                        ))
+                        .await;
+                    } else {
+                        let _ = response_tx.send(false);
+                    }
                 }
                 AccountMessage::RepairRoomTimeline {
                     request_id,
