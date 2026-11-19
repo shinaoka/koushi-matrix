@@ -276,7 +276,10 @@ released, not reliably zeroized. No credential, device or trust mutation occurs.
    attachment names, room/user/event/transaction IDs, local filesystem paths,
    URLs from rooms, raw SDK errors, or secrets. Redacted `Debug` may expose
    variant names, request ids, enum kinds, booleans, counts, lengths, and
-   placeholders such as `Snippet(..)` or `RoomId(..)`.
+   placeholders such as `Snippet(..)` or `RoomId(..)`. An aggregate that holds
+   most of the application state (`AppState`, `AppStateSnapshot`, a state
+   delta) writes its own `Debug`: count, flag and kind, never a raw identity or
+   text.
 4. QA asserts on `CoreEvent` and `AppStateSnapshot`, never on log output.
 5. QA output is tokenized before it becomes an artifact. Captured logs must
    not contain raw Matrix IDs, room IDs, event IDs, transaction IDs, user IDs,

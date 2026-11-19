@@ -81,6 +81,12 @@ rendered sink). Making the dump opaque would leave those assertions vacuous; the
 alternative is to retarget them at the secret type and then redact the dump, which
 is its own change.
 
+That follow-up is #1985
+([worklog](2026-11-19-issue1985-appstate-debug.md)): `AppState` and
+`StateDeltaChangedSlices` now render shape, `SessionInfo` / `SessionState` /
+`SyncState` / `ThreadsListItem` / both panes redact on their own, and the
+notification-delivery assertion was retargeted at the delivery slices.
+
 Also left deliberately: the 45 arms that print `&"TimelineKey(..)"` now duplicate
 what the type prints. Collapsing them means re-binding `key` in 45 patterns with no
 change to the output, so it is a separate cleanup.

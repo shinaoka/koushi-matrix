@@ -4,6 +4,7 @@ mod account_notifications_state;
 mod active_session_account_management;
 mod activity_state;
 mod alias_submission_failure;
+mod appstate_debug;
 mod assistant_drafts;
 mod attachment_files_view_state;
 mod attention_surface;

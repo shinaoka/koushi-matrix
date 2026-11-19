@@ -37,25 +37,21 @@ impl fmt::Debug for BasicOperationState {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Idle => formatter.write_str("Idle"),
-            Self::CreatingRoom { request_id, name } => formatter
+            Self::CreatingRoom { request_id, .. } => formatter
                 .debug_struct("CreatingRoom")
                 .field("request_id", request_id)
-                .field("name", name)
+                .field("name", &"RoomName(..)")
                 .finish(),
-            Self::CreatingSpace { request_id, name } => formatter
+            Self::CreatingSpace { request_id, .. } => formatter
                 .debug_struct("CreatingSpace")
                 .field("request_id", request_id)
-                .field("name", name)
+                .field("name", &"SpaceName(..)")
                 .finish(),
-            Self::LinkingSpaceChild {
-                request_id,
-                space_id,
-                child_room_id,
-            } => formatter
+            Self::LinkingSpaceChild { request_id, .. } => formatter
                 .debug_struct("LinkingSpaceChild")
                 .field("request_id", request_id)
-                .field("space_id", space_id)
-                .field("child_room_id", child_room_id)
+                .field("space_id", &"RoomId(..)")
+                .field("child_room_id", &"RoomId(..)")
                 .finish(),
             Self::StartingDirectMessage { request_id, .. } => formatter
                 .debug_struct("StartingDirectMessage")

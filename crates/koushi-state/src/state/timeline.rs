@@ -14,7 +14,7 @@ use super::composer_draft::{
 use super::media_download::TimelineMediaDownloadState;
 use super::settings::ImageUploadCompressionMode;
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelinePaneState {
     pub room_id: Option<String>,
     pub is_subscribed: bool,
@@ -37,6 +37,28 @@ pub struct TimelinePaneState {
     pub reply_quote_thumbnails: std::collections::BTreeMap<String, TimelineMediaDownloadState>,
     #[serde(default)]
     pub continuity: TimelineContinuityState,
+}
+
+// #1985: the pane reaches the room, the composer's draft, scheduled message
+// bodies and staged upload names, so a diagnostic dump reports its shape.
+impl fmt::Debug for TimelinePaneState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimelinePaneState")
+            .field("room_id", &self.room_id.as_ref().map(|_| "RoomId(..)"))
+            .field("is_subscribed", &self.is_subscribed)
+            .field("is_paginating_backwards", &self.is_paginating_backwards)
+            .field("composer", &self.composer)
+            .field("scheduled_send_capability", &self.scheduled_send_capability)
+            .field("scheduled_sends", &self.scheduled_sends.len())
+            .field("staged_uploads", &self.staged_uploads.len())
+            .field("media_gallery", &self.media_gallery.len())
+            .field("media_gallery_pagination", &self.media_gallery_pagination)
+            .field("media_downloads", &self.media_downloads.len())
+            .field("reply_quote_thumbnails", &self.reply_quote_thumbnails.len())
+            .field("continuity", &self.continuity)
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2562,7 +2584,7 @@ impl fmt::Debug for ComposerDraftStore {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ComposerState {
     #[serde(default)]
     pub accepted_submission_ids: VecDeque<SubmissionId>,
@@ -2584,6 +2606,49 @@ pub struct ComposerState {
     pub assistant_draft: Option<AssistantDraftMarker>,
 }
 
+// #1985: the draft and its document are the reader's own text.
+impl fmt::Debug for ComposerState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ComposerState")
+            .field(
+                "accepted_submission_count",
+                &self.accepted_submission_ids.len(),
+            )
+            .field(
+                "pending_submission",
+                &self
+                    .pending_submission_id
+                    .as_ref()
+                    .map(|_| "SubmissionId(..)"),
+            )
+            .field(
+                "pending_transaction",
+                &self
+                    .pending_transaction_id
+                    .as_ref()
+                    .map(|_| "TransactionId(..)"),
+            )
+            .field(
+                "pending_send_kind",
+                &self.pending_send_kind.as_ref().map(send_kind_name),
+            )
+            .field("draft_revision", &self.draft_revision)
+            .field(
+                "last_accepted_clear_revision",
+                &self.last_accepted_clear_revision,
+            )
+            .field("draft_len", &self.draft.chars().count())
+            .field("document", &self.document)
+            .field("mode", &composer_mode_name(&self.mode))
+            .field(
+                "assistant_draft",
+                &self.assistant_draft.as_ref().map(|_| "AssistantDraft(..)"),
+            )
+            .finish()
+    }
+}
+
 pub(crate) const MAX_ACCEPTED_SUBMISSION_TOMBSTONES: usize = 128;
 
 impl ComposerState {
@@ -2592,6 +2657,21 @@ impl ComposerState {
             self.accepted_submission_ids.pop_front();
         }
         self.accepted_submission_ids.push_back(submission_id);
+    }
+}
+
+// #1985: `Reply` carries the event being replied to.
+fn send_kind_name(kind: &PendingComposerSendKind) -> &'static str {
+    match kind {
+        PendingComposerSendKind::Plain => "Plain",
+        PendingComposerSendKind::Reply { .. } => "Reply",
+    }
+}
+
+fn composer_mode_name(mode: &ComposerMode) -> &'static str {
+    match mode {
+        ComposerMode::Plain => "Plain",
+        ComposerMode::Reply { .. } => "Reply",
     }
 }
 
