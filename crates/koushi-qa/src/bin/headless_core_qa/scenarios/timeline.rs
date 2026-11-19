@@ -3981,6 +3981,7 @@ fn assert_upload_ux_state_contract(room_id: &str) -> Result<(), String> {
     );
     for private in [
         room_id,
+        state.timeline.media_gallery[0].event_id.as_str(),
         "private-one.jpg",
         "private staged caption",
         "mxc://example.invalid/private-gallery",

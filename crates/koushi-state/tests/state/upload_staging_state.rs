@@ -366,7 +366,8 @@ fn upload_staging_debug_redacts_private_names_captions_and_mxc() {
     let gallery = gallery_item("$media", "!private-room:example.invalid", 1_900_000_000_000);
     let debug = format!("{gallery:?}");
     assert!(debug.contains("TimelineMediaGalleryItem"), "{debug}");
-    assert!(debug.contains("$media"), "{debug}");
+    assert!(!debug.contains("$media"), "{debug}");
+    assert!(debug.contains("EventId(..)"), "{debug}");
     assert!(!debug.contains("private-image.png"), "{debug}");
     assert!(
         !debug.contains("mxc://example.invalid/private-image"),
