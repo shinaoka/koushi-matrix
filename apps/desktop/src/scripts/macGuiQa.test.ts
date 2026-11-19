@@ -23,6 +23,8 @@ describe("desktop release scripts", () => {
     expect(tuwunel).toContain('address = ["127.0.0.1"]');
     expect(tuwunel).toContain('database_path = "/tmp/tuwunel-data"');
     expect(tuwunel).toContain("allow_federation = false");
+    // #1973: keep the scheduled_send lane on the local fallback for now.
+    expect(tuwunel).toContain("[global.rooms.delayed_events]\nmax_scheduled = 0");
   });
 
   test("headless basic operations docs mention the Linux GUI local scenarios and aggregators", () => {

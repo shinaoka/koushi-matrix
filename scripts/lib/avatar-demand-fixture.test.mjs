@@ -3,13 +3,14 @@ import test from "node:test";
 
 import { classifyAvatarReceiptReadback } from "./avatar-demand-fixture.mjs";
 
-const TUWUNEL = { supported: false, limitation: "sss_receipt_packing_single_reader" };
+// No pinned server declares a limitation since Tuwunel 2.0; this models one.
+const LIMITED = { supported: false, limitation: "sss_receipt_packing_single_reader" };
 const SYNAPSE = { supported: true, limitation: "" };
 
-test("declared tuwunel limitation is honored only while the packing loss is measured", () => {
+test("a declared limitation is honored only while the packing loss is measured", () => {
   const classification = classifyAvatarReceiptReadback({
     serverKind: "tuwunel",
-    capability: TUWUNEL,
+    capability: LIMITED,
     readback: { stored: 1500, packed: 1 },
     expected: 1500
   });
@@ -26,7 +27,7 @@ test("a server that starts reporting the full population must fail instead of st
     () =>
       classifyAvatarReceiptReadback({
         serverKind: "tuwunel",
-        capability: TUWUNEL,
+        capability: LIMITED,
         readback: { stored: 1500, packed: 1500 },
         expected: 1500
       }),
@@ -39,7 +40,7 @@ test("an unreadable population cannot be excused by a declared limitation", () =
     () =>
       classifyAvatarReceiptReadback({
         serverKind: "tuwunel",
-        capability: TUWUNEL,
+        capability: LIMITED,
         readback: { stored: 1500, packed: null },
         expected: 1500
       }),

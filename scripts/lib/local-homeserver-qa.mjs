@@ -83,6 +83,12 @@ function checkDockerAvailable() {
   }
 }
 
+/**
+ * Tuwunel 2.0 enables MSC4140 delayed events by default. With
+ * `max_scheduled = 0` it stops advertising `org.matrix.msc4140`, so the
+ * `scheduled_send` lane keeps covering the local fallback until Core retires
+ * delivered server-handle items (#1973). Remove the table with that fix.
+ */
 export function tuwunelConfig({ serverName, port, dataDir }) {
   return `[global]
 server_name = ${tomlString(serverName)}
@@ -95,6 +101,9 @@ yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse = true
 allow_federation = false
 allow_room_creation = true
 trusted_servers = []
+
+[global.rooms.delayed_events]
+max_scheduled = 0
 `;
 }
 
@@ -146,14 +155,11 @@ export function homeserverFixtureCapabilities(
     throw new Error(`unknown local homeserver kind: ${serverKind}`);
   }
 
-  // tuwunel 1.7.1 packs every receipt row of one event into a single user
-  // (`pack_receipts` inserts by event ID and replaces the sibling entries), so
-  // the 1500-reader avatar fixture can never be read back there. See
-  // docs/agents/troubleshooting.md. Synapse reports the full population.
-  const multiReaderReceipts =
-    serverKind === "tuwunel"
-      ? { supported: false, limitation: "sss_receipt_packing_single_reader" }
-      : { supported: true, limitation: "" };
+  // Both pinned servers report the full receipt population. Tuwunel before
+  // 2.0 packed every receipt of one event into a single user (fixed upstream
+  // in 2.0.0); the avatar fixture re-checks this on every run, so a server
+  // that regresses fails the lane. See docs/agents/troubleshooting.md.
+  const multiReaderReceipts = { supported: true, limitation: "" };
 
   return {
     simplifiedSlidingSync: {

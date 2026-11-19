@@ -375,7 +375,7 @@ end.
 
 - Build the committed lane image with `docker build -f
   docker/linux-gui.Dockerfile -t koushi-desktop-linux-gui:basic-ops .`
-- The committed image includes `tuwunel` (pinned `v1.7.1`) and `zstd`, so the
+- The committed image includes `tuwunel` (pinned `v2.0.0`) and `zstd`, so the
   local homeserver lanes run entirely inside the container.
 - The Docker recipe pins Rust toolchain `1.96.0` for reproducibility.
 - The lane image includes `libnss-wrapper` so the numeric container UID can be
