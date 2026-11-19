@@ -103,6 +103,9 @@ Rules:
    avatar thumbnail reference (#1907). The label is never a Matrix user id, the
    avatar reference is a session cache reference rather than a media URL or
    homeserver identifier, and with the option OFF none of the three is present.
+   The freedesktop banner id is the room id hashed with a per-process key, not a
+   room identifier: it tells the notification server which banner to replace, and
+   the room id cannot be recovered from it (#1975).
    The same minimization governs a notification this device relays, whether by
    mail or through a relay sink added later: by default the body carries only the safe room
    display label, the kind, and the counts, and no room, event, sender, or
