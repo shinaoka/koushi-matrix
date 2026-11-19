@@ -728,6 +728,7 @@ pub(super) async fn run_scheduled_send_stage(
     conn: &mut CoreConnection,
     key: &TimelineKey,
     room_id: &str,
+    homeserver: &str,
 ) -> Result<(), String> {
     const SCHEDULED_CREATE_BODY: &str = "Koushi scheduled create QA body";
     const SCHEDULED_FIRE_BODY: &str = "Koushi scheduled fire QA body";
@@ -780,13 +781,21 @@ pub(super) async fn run_scheduled_send_stage(
     create_result.map_err(|error| format!("scheduled_send: submit create failed: {error}"))?;
 
     let created = wait_for_scheduled_send_count(conn, 1, "scheduled_send create").await?;
-    if created.timeline.scheduled_send_capability != ScheduledSendCapability::LocalFallback {
-        return Err(
-            "scheduled_send: local fallback capability was not projected to the snapshot"
-                .to_owned(),
-        );
+    // #1973: the lane's room is unencrypted, so Core must take the path the
+    // homeserver itself advertises: MSC4140 delayed events where offered (and
+    // then retire the item once the server sends it), the local fallback
+    // otherwise. The expectation is read from `/versions` without Core.
+    let advertised = advertised_scheduled_send_capability(homeserver).await?;
+    let projected = created.timeline.scheduled_send_capability;
+    if projected != advertised {
+        return Err(format!(
+            "scheduled_send: projected capability {} does not match the server's {}",
+            scheduled_capability_token(projected),
+            scheduled_capability_token(advertised)
+        ));
     }
-    println!("scheduled_capability=local_fallback");
+    println!("scheduled_path={}", scheduled_capability_token(projected));
+    println!("scheduled_capability=matches_server");
     println!("scheduled_create=ok");
 
     let scheduled_id = created
@@ -967,6 +976,39 @@ pub(super) async fn run_scheduled_send_stage(
     Ok(())
 }
 
+/// The scheduled-send path the homeserver advertises, read from an
+/// unauthenticated `/versions` request that does not go through Core.
+async fn advertised_scheduled_send_capability(
+    homeserver: &str,
+) -> Result<ScheduledSendCapability, String> {
+    let client = matrix_sdk::Client::builder()
+        .homeserver_url(homeserver)
+        .build()
+        .await
+        .map_err(|_| "scheduled_send: versions probe client could not be built".to_owned())?;
+    let features = client
+        .unstable_features()
+        .await
+        .map_err(|_| "scheduled_send: versions probe failed".to_owned())?;
+    Ok(
+        if features.contains(&matrix_sdk::ruma::api::FeatureFlag::from(
+            "org.matrix.msc4140",
+        )) {
+            ScheduledSendCapability::ServerDelayedEvents
+        } else {
+            ScheduledSendCapability::LocalFallback
+        },
+    )
+}
+
+fn scheduled_capability_token(capability: ScheduledSendCapability) -> &'static str {
+    match capability {
+        ScheduledSendCapability::Unknown => "unknown",
+        ScheduledSendCapability::ServerDelayedEvents => "server_delayed_events",
+        ScheduledSendCapability::LocalFallback => "local_fallback",
+    }
+}
+
 fn scheduled_qa_epoch_ms(offset: Duration) -> u64 {
     SystemTime::now()
         .checked_add(offset)
@@ -1080,7 +1122,12 @@ async fn wait_for_scheduled_send_fired(
 
         let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
             .await
-            .map_err(|_| format!("{label}: timed out waiting for scheduled-send dispatch"))?
+            .map_err(|_| {
+                format!(
+                    "{label}: timed out waiting for scheduled-send dispatch \
+                     (queue_removed={queue_removed} timeline_observed={timeline_observed})"
+                )
+            })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {

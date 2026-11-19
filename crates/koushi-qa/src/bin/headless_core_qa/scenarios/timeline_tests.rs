@@ -1269,7 +1269,7 @@ fn scheduled_send_scenario_runs_after_timeline_and_reports_private_tokens() {
             "timeline=ok",
             "timeline_nav=ok",
             "hide_redacted=ok",
-            "scheduled_capability=local_fallback",
+            "scheduled_capability=matches_server",
             "scheduled_create=ok",
             "scheduled_reschedule=ok",
             "scheduled_cancel=ok",

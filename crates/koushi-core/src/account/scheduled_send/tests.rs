@@ -586,6 +586,161 @@ async fn server_delayed_schedule_uses_the_command_formatting_options() {
     let _ = handle.send(AccountMessage::Shutdown).await;
 }
 
+#[tokio::test]
+async fn server_item_check_defers_while_scheduled_and_retires_once_sent() {
+    use wiremock::matchers::{method, path};
+
+    const LISTING: &str = "/_matrix/client/unstable/org.matrix.msc4140/delayed_events";
+    let server = MatrixMockServer::new().await;
+    server
+        .mock_versions()
+        .with_feature(crate::scheduled_send::MSC4140_FEATURE, true)
+        .with_feature("org.matrix.simplified_msc3575", true)
+        .ok()
+        .mount()
+        .await;
+    let account = SessionKeyId {
+        homeserver: server.uri(),
+        user_id: "@schedule-check:localhost".to_owned(),
+        device_id: "SCHEDULE-CHECK".to_owned(),
+    };
+    let session = MatrixClientSession::from_client_for_testing(
+        server.client_builder().build().await,
+        SessionInfo {
+            homeserver: account.homeserver.clone(),
+            user_id: account.user_id.clone(),
+            device_id: account.device_id.clone(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        },
+    );
+    let credential_dir = tempdir().expect("credential tempdir");
+    let data_dir = tempdir().expect("data tempdir");
+    let (handle, mut action_rx, _event_rx) = spawn_actor_with_dirs_and_registry(
+        credential_dir.path(),
+        data_dir.path(),
+        Arc::new(ComposerDraftLeaseRegistry::new()),
+    );
+    configure_synthetic_oidc_session(
+        &handle,
+        session,
+        RequestId {
+            connection_id: RuntimeConnectionId(62),
+            sequence: 1,
+        },
+    )
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let actions =
+                recv_account_action_with_sliding_sync_effects(&handle, &mut action_rx).await;
+            if matches!(actions.as_slice(), [AppAction::LoginSucceeded { .. }]) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the synthetic session must log in");
+
+    let check = |delay_id: &str| AccountMessage::CheckServerScheduledSend {
+        origin_session_key: account.clone(),
+        scheduled_id: "scheduled-check".to_owned(),
+        delay_id: delay_id.to_owned(),
+    };
+    // The homeserver still holds the delayed event: check again later.
+    let pending = wiremock::Mock::given(method("GET"))
+        .and(path(LISTING))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "delayed_events": [{
+                "delay_id": "delay-check",
+                "room_id": "!scheduled-check:localhost",
+                "type": "m.room.message",
+                "content": { "msgtype": "m.text", "body": "synthetic" },
+                "delay": 60000,
+                "running_since": 1_900_000_000_000_u64
+            }]
+        })))
+        .mount_as_scoped(server.server())
+        .await;
+    assert!(handle.send(check("delay-check")).await);
+    let deferred = next_server_check_result(&mut action_rx)
+        .await
+        .expect("the pending check must be answered");
+    assert!(
+        matches!(
+            &deferred,
+            AppAction::ScheduledSendServerCheckDeferred { scheduled_id, delay_id, recheck_at_ms }
+                if scheduled_id == "scheduled-check"
+                    && delay_id == "delay-check"
+                    && *recheck_at_ms > crate::time::current_epoch_ms()
+        ),
+        "a still-scheduled delayed event must defer: {deferred:?}"
+    );
+    drop(pending);
+
+    // The homeserver sent it: the listing no longer holds the delay id.
+    let _sent = wiremock::Mock::given(method("GET"))
+        .and(path(LISTING))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "delayed_events": [] })),
+        )
+        .mount_as_scoped(server.server())
+        .await;
+    assert!(handle.send(check("delay-check")).await);
+    let delivered = next_server_check_result(&mut action_rx)
+        .await
+        .expect("the delivered check must be answered");
+    assert!(
+        matches!(
+            &delivered,
+            AppAction::ScheduledSendServerDelivered { scheduled_id, delay_id }
+                if scheduled_id == "scheduled-check" && delay_id == "delay-check"
+        ),
+        "a delayed event the server no longer lists must retire: {delivered:?}"
+    );
+
+    // A check for another session never retires anything.
+    let other_session = AccountMessage::CheckServerScheduledSend {
+        origin_session_key: SessionKeyId {
+            device_id: "OTHER-DEVICE".to_owned(),
+            ..account.clone()
+        },
+        scheduled_id: "scheduled-check".to_owned(),
+        delay_id: "delay-check".to_owned(),
+    };
+    assert!(handle.send(other_session).await);
+    let foreign = next_server_check_result(&mut action_rx)
+        .await
+        .expect("the foreign-session check must be answered");
+    assert!(
+        matches!(foreign, AppAction::ScheduledSendServerCheckDeferred { .. }),
+        "a check from a replaced session must not retire the item: {foreign:?}"
+    );
+
+    let _ = handle.send(AccountMessage::Shutdown).await;
+}
+
+async fn next_server_check_result(
+    action_rx: &mut mpsc::Receiver<Vec<AppAction>>,
+) -> Result<AppAction, tokio::time::error::Elapsed> {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let Some(actions) = action_rx.recv().await else {
+                panic!("account actor stopped before answering the check");
+            };
+            for action in actions {
+                if matches!(
+                    action,
+                    AppAction::ScheduledSendServerCheckDeferred { .. }
+                        | AppAction::ScheduledSendServerDelivered { .. }
+                ) {
+                    return action;
+                }
+            }
+        }
+    })
+    .await
+}
+
 #[test]
 fn scheduled_dispatch_targets_its_origin_session() {
     let origin = SessionKeyId {

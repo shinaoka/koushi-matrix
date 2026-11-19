@@ -131,7 +131,7 @@ typing=ok
 presence=ok
 live_signals=ok
 edit_redact_search=ok
-scheduled_capability=local_fallback
+scheduled_capability=matches_server
 scheduled_create=ok
 scheduled_reschedule=ok
 scheduled_cancel=ok
@@ -433,7 +433,7 @@ ja_catalog=ok
 cjk_normalize=ok
 cjk_collation=ok
 joined_room_restore=ok
-scheduled_capability=local_fallback
+scheduled_capability=matches_server
 scheduled_create=ok
 scheduled_reschedule=ok
 scheduled_cancel=ok
@@ -463,15 +463,17 @@ send-vs-commit contracts.
 `joined_room_restore=ok` proves the explicit #30 MVP restore scope from
 Rust-observed joined-room hydration progress. It must not be described as a
 backup-wide restore token.
-`scheduled_capability=local_fallback`, `scheduled_create=ok`,
+`scheduled_capability=matches_server`, `scheduled_create=ok`,
 `scheduled_reschedule=ok`, `scheduled_cancel=ok`, and `scheduled_fire=ok` prove
-the Rust/core-owned scheduled-send local fallback queue and timer. The lane
-selects a room, schedules/reschedules/cancels a future message, schedules a due
-message, and observes Rust state removal plus timeline dispatch without printing
-message bodies, room IDs, transaction IDs, server handles, or raw SDK errors.
-Homeservers that advertise `org.matrix.msc4140` through `/versions` are routed
-through AccountActor-owned SDK/Ruma delayed-event requests instead; the local
-fallback timer is intentionally limited to Local handles.
+the Rust/core-owned scheduled-send queue. The lane selects an unencrypted room,
+checks that Core projects the path the homeserver advertises in `/versions`
+(printed as `scheduled_path=server_delayed_events` or `local_fallback`),
+schedules/reschedules/cancels a future message, schedules a due message, and
+observes Rust state removal plus timeline delivery without printing message
+bodies, room IDs, transaction IDs, server handles, or raw SDK errors. Tuwunel
+2.0 advertises `org.matrix.msc4140`, so it covers the AccountActor-owned
+delayed-event path, including retiring the item once the server sends it
+(#1973); the Synapse fixture does not, so it covers the local fallback timer.
 
 ### History export
 

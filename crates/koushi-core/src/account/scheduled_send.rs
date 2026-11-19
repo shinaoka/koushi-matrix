@@ -277,6 +277,63 @@ impl AccountActor {
         .await;
     }
 
+    /// #1973: the homeserver fires a server-handle item itself, so Core only
+    /// confirms delivery. The item is retired once the user's delayed-event
+    /// listing no longer holds its `delay_id` as scheduled; otherwise, or when
+    /// the listing cannot be read, the check is deferred. Nothing is sent here.
+    pub(super) async fn handle_check_server_scheduled_send(
+        &self,
+        origin_session_key: SessionKeyId,
+        scheduled_id: String,
+        delay_id: String,
+    ) {
+        let delivered = match &self.session {
+            Some(session)
+                if scheduled_dispatch_targets_active_session(
+                    self.session_key_id.as_ref(),
+                    &origin_session_key,
+                ) =>
+            {
+                self.server_delayed_event_delivered(session, &delay_id)
+                    .await
+            }
+            _ => None,
+        };
+        let action = if delivered == Some(true) {
+            AppAction::ScheduledSendServerDelivered {
+                scheduled_id,
+                delay_id,
+            }
+        } else {
+            AppAction::ScheduledSendServerCheckDeferred {
+                scheduled_id,
+                delay_id,
+                recheck_at_ms: crate::scheduled_send::server_scheduled_send_recheck_at_ms(),
+            }
+        };
+        self.send_actions(vec![action]).await;
+    }
+
+    /// `Some(true)` when the homeserver no longer holds `delay_id` as
+    /// scheduled, `Some(false)` while it does, `None` when it cannot be asked.
+    async fn server_delayed_event_delivered(
+        &self,
+        session: &MatrixClientSession,
+        delay_id: &str,
+    ) -> Option<bool> {
+        use matrix_sdk::ruma::api::client::delayed_events::get_all_delayed_events;
+
+        let response = session
+            .client()
+            .send(get_all_delayed_events::unstable::Request::new())
+            .await
+            .ok()?;
+        Some(!crate::scheduled_send::delayed_event_still_scheduled(
+            &response.delayed_events,
+            delay_id,
+        ))
+    }
+
     pub(super) async fn handle_cancel_server_delayed_send(
         &self,
         request_id: RequestId,

@@ -333,6 +333,12 @@ pub(crate) enum AccountMessage {
         scheduled_id: String,
         delay_id: String,
     },
+    /// #1973: ask the homeserver whether a due server-handle item was sent.
+    CheckServerScheduledSend {
+        origin_session_key: SessionKeyId,
+        scheduled_id: String,
+        delay_id: String,
+    },
     RescheduleServerDelayedSend {
         request_id: RequestId,
         scheduled_id: String,
@@ -2157,6 +2163,18 @@ impl AccountActor {
                         thread_root_event_id,
                         body,
                         formatting_options,
+                    ))
+                    .await;
+                }
+                AccountMessage::CheckServerScheduledSend {
+                    origin_session_key,
+                    scheduled_id,
+                    delay_id,
+                } => {
+                    Box::pin(self.handle_check_server_scheduled_send(
+                        origin_session_key,
+                        scheduled_id,
+                        delay_id,
                     ))
                     .await;
                 }

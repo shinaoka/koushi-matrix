@@ -596,3 +596,172 @@ fn an_auth_sync_failure_withdraws_the_scheduled_send_persistence_notice() {
     );
     assert!(effects.contains(&koushi_state::AppEffect::EmitUiEvent(UiEvent::ErrorChanged)));
 }
+
+fn server_item(id: &str, room_id: &str, send_at_ms: u64, delay_id: &str) -> ScheduledSendItem {
+    ScheduledSendItem {
+        handle: ScheduledSendHandle::Server {
+            delay_id: delay_id.to_owned(),
+        },
+        ..scheduled_item(id, room_id, send_at_ms)
+    }
+}
+
+#[test]
+fn delivered_server_item_leaves_the_queue_and_the_projection() {
+    // #1973: the homeserver fires a server-handle item itself; once Core sees
+    // the delayed event is no longer scheduled the item must leave the queue.
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendCreated {
+            item: server_item("sched-1", "room-a", 1_900_000_000_000, "delay-1"),
+        },
+    );
+    assert_eq!(
+        state
+            .scheduled_sends
+            .next_server_check_due(1_900_000_000_000)
+            .map(|item| item.scheduled_id),
+        Some("sched-1".to_owned())
+    );
+    assert!(state.scheduled_sends.next_local_due(u64::MAX).is_none());
+
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendServerCheckStarted {
+            scheduled_id: "sched-1".to_owned(),
+            delay_id: "delay-1".to_owned(),
+        },
+    );
+    assert!(
+        state
+            .scheduled_sends
+            .next_server_check_due(u64::MAX)
+            .is_none(),
+        "a check in flight is not started twice"
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::ScheduledSendServerDelivered {
+            scheduled_id: "sched-1".to_owned(),
+            delay_id: "delay-1".to_owned(),
+        },
+    );
+    assert!(state.scheduled_sends.items.is_empty());
+    assert!(state.timeline.scheduled_sends.is_empty());
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        koushi_state::AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })
+            if room_id == "room-a"
+    )));
+}
+
+#[test]
+fn deferred_server_check_waits_until_the_recheck_time() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendCreated {
+            item: server_item("sched-1", "room-a", 1_900_000_000_000, "delay-1"),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendServerCheckStarted {
+            scheduled_id: "sched-1".to_owned(),
+            delay_id: "delay-1".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendServerCheckDeferred {
+            scheduled_id: "sched-1".to_owned(),
+            delay_id: "delay-1".to_owned(),
+            recheck_at_ms: 1_900_000_010_000,
+        },
+    );
+
+    assert_eq!(state.scheduled_sends.items.len(), 1);
+    assert!(
+        state
+            .scheduled_sends
+            .next_server_check_due(1_900_000_009_999)
+            .is_none()
+    );
+    assert_eq!(
+        state.scheduled_sends.next_server_send_at_ms(),
+        Some(1_900_000_010_000)
+    );
+}
+
+#[test]
+fn server_check_result_for_a_replaced_handle_is_ignored() {
+    // A reschedule cancels the old delayed event and creates a new one, so a
+    // late "no longer scheduled" answer for the old handle must not retire the
+    // rescheduled item.
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendCreated {
+            item: server_item("sched-1", "room-a", 1_900_000_000_000, "delay-old"),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendRescheduled {
+            scheduled_id: "sched-1".to_owned(),
+            body: "rescheduled".to_owned(),
+            send_at_ms: 1_900_000_060_000,
+            handle: ScheduledSendHandle::Server {
+                delay_id: "delay-new".to_owned(),
+            },
+        },
+    );
+
+    for action in [
+        AppAction::ScheduledSendServerCheckStarted {
+            scheduled_id: "sched-1".to_owned(),
+            delay_id: "delay-old".to_owned(),
+        },
+        AppAction::ScheduledSendServerCheckDeferred {
+            scheduled_id: "sched-1".to_owned(),
+            delay_id: "delay-old".to_owned(),
+            recheck_at_ms: 1,
+        },
+        AppAction::ScheduledSendServerDelivered {
+            scheduled_id: "sched-1".to_owned(),
+            delay_id: "delay-old".to_owned(),
+        },
+    ] {
+        assert!(reduce(&mut state, action).is_empty());
+    }
+    let item = &state.scheduled_sends.items["sched-1"];
+    assert_eq!(item.send_at_ms, 1_900_000_060_000);
+    assert!(!item.is_dispatching);
+}
+
+#[test]
+fn server_check_actions_never_touch_local_items() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendCreated {
+            item: scheduled_item("sched-local", "room-a", 1_900_000_000_000),
+        },
+    );
+    assert!(
+        state
+            .scheduled_sends
+            .next_server_check_due(u64::MAX)
+            .is_none()
+    );
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendServerDelivered {
+            scheduled_id: "sched-local".to_owned(),
+            delay_id: "anything".to_owned(),
+        },
+    );
+    assert_eq!(state.scheduled_sends.items.len(), 1);
+}

@@ -1600,6 +1600,24 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         | AppAction::ScheduledSendDispatched { scheduled_id } => {
             timeline::handle_scheduled_send_cancelled_or_dispatched(state, scheduled_id)
         }
+        AppAction::ScheduledSendServerCheckStarted {
+            scheduled_id,
+            delay_id,
+        } => timeline::handle_scheduled_send_server_check_started(state, scheduled_id, delay_id),
+        AppAction::ScheduledSendServerCheckDeferred {
+            scheduled_id,
+            delay_id,
+            recheck_at_ms,
+        } => timeline::handle_scheduled_send_server_check_deferred(
+            state,
+            scheduled_id,
+            delay_id,
+            recheck_at_ms,
+        ),
+        AppAction::ScheduledSendServerDelivered {
+            scheduled_id,
+            delay_id,
+        } => timeline::handle_scheduled_send_server_delivered(state, scheduled_id, delay_id),
         AppAction::ScheduledSendPersistenceFailed { message } => {
             timeline::handle_scheduled_send_persistence_failed(state, message)
         }

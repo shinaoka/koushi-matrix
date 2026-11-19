@@ -1436,6 +1436,26 @@ pub enum AppAction {
     ScheduledSendDispatched {
         scheduled_id: String,
     },
+    /// #1973: Core is asking the homeserver whether a server-handle item's
+    /// delayed event is still scheduled. The handle is carried so a result for a
+    /// replaced handle cannot touch the rescheduled item.
+    ScheduledSendServerCheckStarted {
+        scheduled_id: String,
+        delay_id: String,
+    },
+    /// The homeserver still holds the delayed event as scheduled, or could not
+    /// be asked; check again at `recheck_at_ms`.
+    ScheduledSendServerCheckDeferred {
+        scheduled_id: String,
+        delay_id: String,
+        recheck_at_ms: u64,
+    },
+    /// The homeserver no longer holds the delayed event as scheduled: it has
+    /// sent it, so the item leaves the queue.
+    ScheduledSendServerDelivered {
+        scheduled_id: String,
+        delay_id: String,
+    },
     /// The account's scheduled-send store could not be written locally (#1159).
     /// Acceptance and durable local persistence are different facts, so the
     /// reservation must not look saved on this device until a later save
