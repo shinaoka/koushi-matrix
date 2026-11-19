@@ -100,7 +100,11 @@ impl MediaBrowser {
 }
 
 /// Element X's media filter: image, video, file and audio room messages.
-/// Encrypted events always pass the SDK filter so they can still decrypt.
+/// An event only reaches this filter once the shared event cache has decrypted
+/// it, so undecryptable media is dropped here; a late decryption re-adds an
+/// event only when it was already inside this timeline's window. Media that
+/// arrived undecryptable outside the window stays absent until the browser
+/// restarts, which is Element X's behaviour as well.
 fn media_event_filter(event: &AnySyncTimelineEvent, rules: &RoomVersionRules) -> bool {
     if !default_event_filter(event, rules) {
         return false;

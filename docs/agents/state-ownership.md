@@ -1154,10 +1154,11 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   filename/mimetype/size/dimensions/encrypted flag and `MediaUploadProgress`, but
   it must not parse Matrix event content, render MXC URIs, store downloaded bytes,
   or synthesize upload/download lifecycle state.
-- `TimelinePaneState` includes `staged_uploads` and `media_gallery`. GUI code must
-  render these Rust projections and dispatch typed commands only; do not keep
-  upload staging/gallery maps in React, synthesize a gallery from DOM rows, or
-  parse Matrix media events in the webview.
+- `TimelinePaneState` includes `staged_uploads`, `media_gallery`, and
+  `media_gallery_pagination`. GUI code must render these Rust projections and
+  dispatch typed commands only; do not keep upload staging/gallery maps or a
+  pagination state in React, synthesize a gallery from DOM rows, or parse Matrix
+  media events in the webview.
 - Core owns downloaded-media save policy through `MediaSaveFilesystem`: source
   emptiness/URL/absolute checks, canonical cache/source containment, symlink and
   component-prefix rejection, destination admission, parent creation ordering,

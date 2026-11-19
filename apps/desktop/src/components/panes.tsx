@@ -998,6 +998,12 @@ export function TimelinePane({
         : undefined,
     [mediaGalleryPagination, timelineRoomId, timelineTransport]
   );
+  // #1971: only an idle pagination pages on its own. The viewer refires its
+  // near-oldest effect whenever this callback's identity changes, so a failed
+  // page has to wait for the Retry the gallery offers instead of retrying from
+  // the viewer.
+  const viewerLoadOlderMedia =
+    mediaGalleryPagination === "idle" ? loadOlderMedia : undefined;
   const forwardDestinations = useAppStore(selectForwardDestinations);
   const mentionCandidates = useAppStore((state) =>
     selectMentionCandidates(state, timelineRoomId, "main")
@@ -1389,7 +1395,7 @@ export function TimelinePane({
               searchHighlightsByEventId={searchHighlightsByEventId}
               mediaDownloads={mediaDownloads}
               mediaGallery={mediaGallery}
-              onLoadOlderMedia={loadOlderMedia}
+              onLoadOlderMedia={viewerLoadOlderMedia}
               replyQuoteThumbnails={
                 snapshot.state.ui.timeline.reply_quote_thumbnails ?? {}
               }
@@ -1524,7 +1530,7 @@ export function TimelinePane({
               setViewer({ eventId: entry.eventId, single: entry });
             }
           }}
-          onNearOldest={viewerInSequence ? loadOlderMedia : undefined}
+          onNearOldest={viewerInSequence ? viewerLoadOlderMedia : undefined}
           onRequestDownload={
             timelineTransport && timelineRoomId
               ? (eventId) => {

@@ -545,7 +545,9 @@ export const TimelineView = memo(function TimelineView({
    * tests), which leaves the viewer in the single-image mode of #163.
    */
   mediaGallery?: readonly TimelineMediaGalleryItem[];
-  /** #1969: pages the room media browser; absent when nothing can page. */
+  /** #1969: pages the room media browser on the viewer's near-oldest trigger;
+   * only set while pagination is idle, so a failed page waits for an explicit
+   * Retry (#1971). */
   onLoadOlderMedia?: () => void;
   replyQuoteThumbnails?: Record<string, TimelineMediaDownloadState>;
   continuity?: TimelineContinuityState;
