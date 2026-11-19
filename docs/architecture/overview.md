@@ -2296,7 +2296,8 @@ UI responsibilities:
   wheel, touch, keyboard, or scrollbar intent. Programmatic restore and
   live-edge scroll echoes are not explicit user demand.
 - Block a request until initialization/resync, projection layout, virtual
-  layout, and anchor restoration are settled. Keep one request epoch active
+  layout, settled heights above the viewport, and anchor restoration are
+  settled. Keep one request epoch active
   through backward-page projection. `Paginating`, a front insertion, or a
   replacement `Reset` projection proves that Core accepted the request. Core snapshots the observable oldest event before
   and after the SDK call and reports whether a prepend is expected. An accepted
@@ -2333,6 +2334,12 @@ UI responsibilities:
 - Treat scroll position, measured heights, overscan windows, and virtual-list
   cache as UI state. These values never cross into core and never affect Matrix
   ordering.
+- Measure the near-top prefetch from the resident list's own top edge
+  (`scrollTop - list.offsetTop <= max(80, 2 * clientHeight)`), never from the
+  mounted window's start or a remount, and only while every row above the viewport
+  carries the height the committed model uses. A model whose measured heights
+  are still pending makes that distance wrong, so the request waits for the
+  commit (`measurement_above_unsettled`) instead of firing early.
 - Report only viewport facts needed by the Rust navigation projection:
   first visible event id, last visible event id, and whether the view is at the
   bottom. GUI code may scroll to Rust-provided anchors, but it must not derive

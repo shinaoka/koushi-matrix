@@ -32,8 +32,10 @@ function snapshot(
     clientHeight: 600,
     scrollHeight: 1_200,
     scrollTop: 400,
+    listOffsetTop: 0,
     nearTopThreshold: 160,
     genuineUserScroll: false,
+    measurementSettledAbove: true,
     ...overrides
   };
 }
@@ -97,6 +99,10 @@ describe("evaluateTimelineBackfill", () => {
       {
         reason: "virtual_layout_unsettled",
         overrides: { virtualLayoutSettled: false }
+      },
+      {
+        reason: "measurement_above_unsettled",
+        overrides: { measurementSettledAbove: false }
       },
       { reason: "anchor_unsettled", overrides: { anchorSettled: false } },
       { reason: "request_in_flight", overrides: { requestInFlight: true } },
@@ -167,6 +173,34 @@ describe("evaluateTimelineBackfill", () => {
         })
       )
     ).toEqual({ kind: "request", demand: "underfilled" });
+  });
+
+  test("the prefetch distance is measured from the list's own top edge (#1890)", () => {
+    const twoScreens = { clientHeight: 600, nearTopThreshold: 1_200 };
+    // A sticky bar above the list is not distance the reader scrolled through: at
+    // the same physical offset the list's own top is 240 px closer.
+    expect(
+      evaluateTimelineBackfill(
+        snapshot({ ...twoScreens, scrollTop: 1_300, listOffsetTop: 240 })
+      )
+    ).toEqual({ kind: "request", demand: "near_top_prefetch" });
+    expect(
+      evaluateTimelineBackfill(
+        snapshot({ ...twoScreens, scrollTop: 1_300, listOffsetTop: 0 })
+      )
+    ).toEqual({ kind: "idle", reason: "no_demand" });
+  });
+
+  test("a pending measurement above the viewport withholds the request (#1890)", () => {
+    expect(
+      evaluateTimelineBackfill(
+        snapshot({ scrollTop: 80, measurementSettledAbove: false })
+      )
+    ).toEqual({
+      kind: "blocked",
+      demand: "near_top_prefetch",
+      reason: "measurement_above_unsettled"
+    });
   });
 
   test("does not let projected height hide a DOM underfill", () => {

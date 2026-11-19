@@ -70,6 +70,7 @@ export type TimelineBackfillBlocker =
   | "suppressed_ui"
   | "projection_unsettled"
   | "virtual_layout_unsettled"
+  | "measurement_above_unsettled"
   | "anchor_unsettled"
   | "request_in_flight"
   | "retry_waiting_for_transition"
@@ -102,8 +103,17 @@ export interface TimelineBackfillSnapshot {
   clientHeight: number;
   scrollHeight: number;
   scrollTop: number;
+  /** The item list's own offset inside the scroller (sticky bars above it). */
+  listOffsetTop: number;
   nearTopThreshold: number;
   genuineUserScroll: boolean;
+  /**
+   * #1890 §2.4: every row above the viewport's top edge already carries the
+   * measured height the committed model uses. While one does not, `scrollTop`
+   * counts a spacer that is about to change, so it is not the reader's true
+   * distance from the resident top.
+   */
+  measurementSettledAbove: boolean;
 }
 
 function demandForSnapshot(
@@ -115,6 +125,10 @@ function demandForSnapshot(
   if (snapshot.clientHeight <= 0) {
     return null;
   }
+  // #1890 §2.4: the prefetch distance is measured from the resident list's own
+  // top edge, not from the scroller's, so a sticky bar above the list does not
+  // spend part of the two screens.
+  const residentScrollTop = snapshot.scrollTop - snapshot.listOffsetTop;
 
   const projectedUnderfilled =
     snapshot.projectedContentHeight <= 0 ||
@@ -123,7 +137,7 @@ function demandForSnapshot(
   if (projectedUnderfilled && domUnderfilled) {
     return "underfilled";
   }
-  if (snapshot.scrollTop <= snapshot.nearTopThreshold) {
+  if (residentScrollTop <= snapshot.nearTopThreshold) {
     return "near_top_prefetch";
   }
   return null;
@@ -138,6 +152,7 @@ function blockerForSnapshot(
   if (snapshot.suppressPaginationUi) return "suppressed_ui";
   if (!snapshot.projectionSettled) return "projection_unsettled";
   if (!snapshot.virtualLayoutSettled) return "virtual_layout_unsettled";
+  if (!snapshot.measurementSettledAbove) return "measurement_above_unsettled";
   if (!snapshot.anchorSettled) return "anchor_unsettled";
   if (snapshot.requestInFlight) return "request_in_flight";
   if (snapshot.retryBlocked) return "retry_waiting_for_transition";

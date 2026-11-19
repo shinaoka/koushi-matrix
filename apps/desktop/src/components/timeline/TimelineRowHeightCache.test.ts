@@ -7,6 +7,7 @@ import {
   TIMELINE_ROW_HEIGHT_CACHE_MAX_ENTRIES,
   TimelineRowHeightCache,
   noteTimelineFontsLoaded,
+  rowHeightsSettledAbove,
   rowHeightsUnpublished
 } from "./TimelineRowHeightCache";
 
@@ -148,5 +149,38 @@ describe("rowHeightsUnpublished", () => {
     // A row that left residency, and a row that joined it.
     expect(rowHeightsUnpublished(new Map([["event:$a", 40]]), committed)).toBe(true);
     expect(rowHeightsUnpublished(new Map([["event:$a", 40], ["event:$b", 60], ["event:$c", 40]]), committed)).toBe(true);
+  });
+});
+
+describe("rowHeightsSettledAbove", () => {
+  it("is false while a row above the viewport has an uncommitted measurement", () => {
+    const cache = new TimelineRowHeightCache();
+    const [first, second, third] = rows(3);
+    cache.record(first!, ROW_HEIGHT, WIDTH);
+    cache.record(second!, ROW_HEIGHT + 20, WIDTH);
+    cache.record(third!, ROW_HEIGHT, WIDTH);
+    const committed = new Map([
+      [first!.row_id, ROW_HEIGHT],
+      [third!.row_id, ROW_HEIGHT]
+    ]);
+
+    // The two rows before index 2 are above the viewport: the second one grew
+    // past what the model committed, so the spacer above is about to change.
+    expect(rowHeightsSettledAbove(cache, [first!, second!, third!], 2, committed)).toBe(false);
+    // Only the row before index 1 is above it, and that one is committed.
+    expect(rowHeightsSettledAbove(cache, [first!, second!, third!], 1, committed)).toBe(true);
+    // Rows at or after the boundary never count, so an unsettled row below the
+    // viewport does not withhold a request.
+    expect(rowHeightsSettledAbove(cache, [first!, second!, third!], 0, committed)).toBe(true);
+  });
+
+  it("is true for an unmeasured row above the viewport", () => {
+    // No measurement exists, so the model's estimate is all there is and nothing
+    // is owed: waiting for one would strand a room whose history is not mounted.
+    const cache = new TimelineRowHeightCache();
+    const [first, second] = rows(2);
+    expect(rowHeightsSettledAbove(cache, [first!, second!], 2, new Map())).toBe(true);
+    cache.record(first!, ROW_HEIGHT, WIDTH);
+    expect(rowHeightsSettledAbove(cache, [first!, second!], 2, new Map())).toBe(false);
   });
 });

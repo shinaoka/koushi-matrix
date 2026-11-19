@@ -8,6 +8,7 @@
  */
 
 import { expect, test, type Page } from "@playwright/test";
+import { SCROLL_EDGE_TOLERANCE_PX } from "../src/components/timeline/TimelineViewportObservation";
 import { roomTimelineKey } from "../src/domain/coreEvents";
 
 const HARNESS_ROOM_ID = "!harness-room:example.invalid";
@@ -635,6 +636,210 @@ test("the observed viewport matches the physically visible rows", async ({ page 
   await expect
     .poll(async () => (await compareObservation()).observed, { timeout: 10_000 })
     .toEqual((await compareObservation()).physical);
+});
+
+/** The app harness control surface the request probe drives. */
+type RequestProbeHarness = {
+  invocationsOf(command: string): readonly unknown[];
+  currentSnapshot(): unknown;
+  setCommandResponse(command: string, response: () => unknown): void;
+};
+
+type RequestProbe = {
+  /** Every row height the row really had while it passed through the window. */
+  heights: Map<string, number>;
+  requests: Array<{
+    firstVisibleId: string | null;
+    scrollTop: number;
+    clientHeight: number;
+    listOffsetTop: number;
+  }>;
+  release: Array<() => void>;
+};
+
+/**
+ * #1890 §2.4/§2.5: the fetch trigger is a distance from the *resident* top, so the
+ * distance it reads has to be the reader's true one. The request is sampled at the
+ * moment the page command is invoked — v1's form sampled `scrollTop` two frames
+ * later, which conflates the trigger with the compensation that follows it — and
+ * the true offset of the row that was first visible at that moment is rebuilt from
+ * the heights every row was actually laid out with on its way past the window.
+ */
+test("older history is requested within two screens of the resident top", async ({ page }) => {
+  await gotoReadyApp(page);
+  // Rows that are not all the same height: the real app lays bodies out at their
+  // content height, so a room whose history is uniform would not exercise the
+  // measurement this contract rests on (the 2a honesty caveat).
+  const itemCount = 120;
+  const seededItems = Array.from({ length: itemCount }, (_, index) =>
+    makeEventItem(
+      index,
+      index % 4 === 3 ? `${"a longer body line\n".repeat(5)}end ${index}` : undefined
+    )
+  );
+  await seedTimelineWithItems(page, seededItems);
+  const timeline = page.locator("[data-testid=timeline-view]");
+  await expect(timeline).toHaveAttribute("data-total-items", String(itemCount));
+  await waitAnimationFrames(page, 6);
+
+  await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]")!;
+    const harness = (window as unknown as { __harness: RequestProbeHarness }).__harness;
+    const probe: RequestProbe = { heights: new Map(), requests: [], release: [] };
+    (window as unknown as { __requestProbe: RequestProbe }).__requestProbe = probe;
+
+    const record = (node: Element) => {
+      const id = (node as HTMLElement).dataset["itemId"];
+      if (!id) return;
+      const height = node.getBoundingClientRect().height;
+      if (height > 0) probe.heights.set(id, height);
+    };
+    const observer = new ResizeObserver((entries) =>
+      entries.forEach((entry) => record(entry.target))
+    );
+    const observeMounted = () => {
+      for (const node of container.querySelectorAll("[data-item-id]")) {
+        if ((node as unknown as { probed?: boolean }).probed) continue;
+        (node as unknown as { probed?: boolean }).probed = true;
+        observer.observe(node);
+        record(node);
+      }
+    };
+    observeMounted();
+    new MutationObserver(observeMounted).observe(container, { childList: true, subtree: true });
+
+    // Held, not answered: the request stays in flight, which is what lets the spec
+    // assert that no second one follows it.
+    harness.setCommandResponse("paginate_timeline_backwards", () => {
+      const viewportTop = container.getBoundingClientRect().top;
+      const rows = Array.from(container.querySelectorAll<HTMLElement>("[data-item-id]"));
+      const firstVisible =
+        rows.find((row) => row.getBoundingClientRect().bottom > viewportTop + 0.5) ?? null;
+      probe.requests.push({
+        firstVisibleId: firstVisible?.dataset["itemId"] ?? null,
+        scrollTop: container.scrollTop,
+        clientHeight: container.clientHeight,
+        listOffsetTop: container.querySelector<HTMLElement>(".timeline-item-list")?.offsetTop ?? 0
+      });
+      return new Promise((resolve) => probe.release.push(() => resolve(harness.currentSnapshot())));
+    });
+  });
+
+  const requests = () =>
+    page.evaluate(() => window.__harness.invocationsOf("paginate_timeline_backwards").length);
+  const clientHeight = await timeline.evaluate((node) => Math.round(node.clientHeight));
+  const resetLedger = () =>
+    page.evaluate(() => {
+      const probe = (window as unknown as { __requestProbe: RequestProbe }).__requestProbe;
+      probe.release.forEach((release) => release());
+      probe.release = [];
+      probe.requests = [];
+      window.__harness.clearInvocations();
+    });
+  const distanceToBottom = () =>
+    page.evaluate(() => {
+      const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]")!;
+      return container.scrollHeight - container.clientHeight - container.scrollTop;
+    });
+
+  await timeline.hover();
+  let requested = 0;
+  // A room whose first window laid out can already have asked for history, and a
+  // page that never comes back keeps the next request blocked. Answering it and
+  // replacing the timeline is how this test starts from a state it owns; the second
+  // attempt is insurance for that state, never for the distance the reader travelled.
+  for (let attempt = 0; attempt < 2 && requested === 0; attempt += 1) {
+    if (attempt > 0) {
+      await page.evaluate(
+        async ({ key, nextItems }) => {
+          await window.__harness.pushCoreEvent({
+            kind: "Timeline",
+            event: {
+              InitialItems: { request_id: null, key, generation: 3, items: nextItems }
+            }
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any);
+        },
+        { key: TIMELINE_KEY, nextItems: seededItems }
+      );
+      await waitAnimationFrames(page, 8);
+    }
+    await page.evaluate(() => {
+      const probe = (window as unknown as { __requestProbe: RequestProbe }).__requestProbe;
+      probe.release.forEach((release) => release());
+      probe.release = [];
+      probe.requests = [];
+      window.__harness.clearInvocations();
+    });
+    // Up to the resident top, one screen per step. The bound is the content, not a
+    // constant: a slower or shorter window simply needs more steps, and a step that
+    // runs out would look like a request that never came.
+    for (let step = 0; step < 200; step += 1) {
+      if ((await timelineScrollTop(page)) <= 0) break;
+      if ((await requests()) > 0) break;
+      await page.mouse.wheel(0, -clientHeight);
+      await waitAnimationFrames(page, 3);
+    }
+    requested = await requests();
+  }
+  expect(requested).toBe(1);
+
+  // One at a time: while that page is in flight, more scrolling to the same place
+  // must not start another request.
+  for (let step = 0; step < 2; step += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    await page.mouse.wheel(0, -Math.round(clientHeight / 2));
+    // eslint-disable-next-line no-await-in-loop
+    await waitAnimationFrames(page, 3);
+  }
+  expect(await requests()).toBe(1);
+
+  // Answer the page, then bring the rows above the sampled one into the window so
+  // each of them has been laid out at least once and its real height is recorded.
+  await page.evaluate(() => {
+    const harness = (window as unknown as { __harness: RequestProbeHarness }).__harness;
+    const probe = (window as unknown as { __requestProbe: RequestProbe }).__requestProbe;
+    probe.release.forEach((release) => release());
+    probe.release = [];
+    harness.setCommandResponse("paginate_timeline_backwards", () => harness.currentSnapshot());
+    const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]")!;
+    container.scrollTop = 0;
+    container.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await waitAnimationFrames(page, 8);
+
+  const measurement = await page.evaluate(() => {
+    const probe = (window as unknown as { __requestProbe: RequestProbe }).__requestProbe;
+    const request = probe.requests[0]!;
+    const sampledIndex = request.firstVisibleId
+      ? Number(/-([0-9]{4}):/.exec(request.firstVisibleId)?.[1] ?? Number.NaN)
+      : Number.NaN;
+    let trueOffset = 0;
+    let unmeasured = 0;
+    for (let index = 0; index < sampledIndex; index += 1) {
+      const id = `$scroll-anchor-item-${String(index).padStart(4, "0")}:example.invalid`;
+      const height = probe.heights.get(id);
+      if (height === undefined) unmeasured += 1;
+      else trueOffset += height;
+    }
+    return {
+      sampledIndex,
+      trueOffset: Math.round(trueOffset),
+      unmeasured,
+      clientHeight: request.clientHeight,
+      scrollTop: request.scrollTop,
+      listOffsetTop: request.listOffsetTop
+    };
+  });
+
+  // The premise of the measurement: the sampled row is not the first row (a
+  // request from the top edge proves nothing), and every row above it was really
+  // laid out at some point, so their sum is the reader's true distance.
+  expect(measurement.sampledIndex).toBeGreaterThan(0);
+  expect(measurement.unmeasured).toBe(0);
+  expect(measurement.trueOffset).toBeLessThanOrEqual(
+    2 * measurement.clientHeight + SCROLL_EDGE_TOLERANCE_PX
+  );
 });
 
 /**

@@ -72,6 +72,7 @@ import {
   buildTimelineHeightModel, calculateTimelineItemIndexRange, calculateTimelineVirtualRange,
   EMPTY_TIMELINE_ITEM_INDEX_RANGE, EMPTY_TIMELINE_RANGE, FOCUSED_TARGET_PLACEMENT_ATTEMPTS,
   freezeEstimatedItemHeight,
+  timelineIndexAtOffset,
   timelineItemHeightAtIndex, timelineItemIndexInRange, timelineItemIndexRangeEquals,
   timelineLiveEdgeScrollTop, timelineRangeIncludingIndex, TIMELINE_ESTIMATED_ITEM_HEIGHT_PX,
   virtualRangeEquals,
@@ -171,6 +172,7 @@ type TimelineBackfillEvaluationTrigger
 import {
   TimelineRowHeightCache,
   noteTimelineFontsLoaded,
+  rowHeightsSettledAbove,
   rowHeightsUnpublished
 } from "./timeline/TimelineRowHeightCache";
 import {
@@ -3805,6 +3807,8 @@ export const TimelineView = memo(function TimelineView({
       const clientHeight = Math.round(container.clientHeight);
       const scrollHeight = Math.round(container.scrollHeight);
       const scrollTop = Math.round(container.scrollTop);
+      const listOffsetTop = Math.round(listRef.current?.offsetTop ?? 0);
+      const residentScrollTop = scrollTop - listOffsetTop;
       const projectedContentHeight = Math.round(timelineHeightModel.totalHeight);
       const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
       const threshold = timelineBackfillThreshold(clientHeight);
@@ -3830,11 +3834,23 @@ export const TimelineView = memo(function TimelineView({
         anchorSettled:
           viewportTransactionRef.current.active() === null &&
           !roomScrollAnchorRestorePendingRef.current,
+        // #1890 §2.4: the rows above the viewport are what the reader's distance
+        // is made of, so their measurements have to be in the model first. Outside
+        // the prefetch distance no request can follow, so the scan is skipped.
+        measurementSettledAbove:
+          residentScrollTop > threshold ||
+          rowHeightsSettledAbove(
+            rowHeights,
+            visibleRowsRef.current,
+            timelineIndexAtOffset(timelineHeightModel.offsets, residentScrollTop),
+            committedHeightsRef.current
+          ),
         itemCount: items.length,
         projectedContentHeight,
         clientHeight,
         scrollHeight,
         scrollTop,
+        listOffsetTop,
         nearTopThreshold: threshold,
         genuineUserScroll
       });
