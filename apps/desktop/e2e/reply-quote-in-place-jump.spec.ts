@@ -198,6 +198,21 @@ test("a reply quote already in the live window settles without swapping the pane
   expect(after.scrollTop).toBeLessThan(before.scrollTop - 200);
   expect(after.rowTop).not.toBeNull();
   expect(after.targetMarked).toBe(true);
+  // #1987: the settle exists so the reader arrives at the quoted message, so the
+  // row's box has to sit inside the timeline's visible area instead of just
+  // above it. The reported geometry keeps a failure readable.
+  await expect
+    .poll(async () => {
+      const geometry = await timelineGeometry(page, QUOTED_EVENT_ID);
+      const { rowTop, rowBottom, viewTop, viewBottom } = geometry;
+      if (rowTop === null || rowBottom === null) {
+        return "the quoted row is not mounted";
+      }
+      return rowTop >= viewTop && rowBottom <= viewBottom
+        ? "visible"
+        : `row ${rowTop}..${rowBottom} outside ${viewTop}..${viewBottom}`;
+    })
+    .toBe("visible");
   // No anchored control: nothing was anchored, so there is nothing to return
   // from, and the right panel is untouched.
   await expect(page.locator(".timeline-navigation-pill", { hasText: jumpToLatest() })).toHaveCount(

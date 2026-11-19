@@ -250,6 +250,24 @@ export function centerTimelineRow(container: HTMLElement, row: HTMLElement): voi
   container.scrollTop = Math.max(0, centered);
 }
 
+/**
+ * Whether a mounted row's whole box is inside the container's visible band
+ * (#1987). A row taller than the band can never be contained and a row without a
+ * layout box has no position to judge, so both fall back to intersection.
+ */
+export function timelineRowFullyInsideViewport(
+  container: HTMLElement,
+  row: HTMLElement
+): boolean {
+  const containerRect = container.getBoundingClientRect();
+  const rowRect = row.getBoundingClientRect();
+  const bandHeight = container.clientHeight;
+  if (rowRect.height === 0 || rowRect.height >= bandHeight) {
+    return timelineRowInsideViewport(container, row);
+  }
+  return rowRect.top >= containerRect.top && rowRect.bottom <= containerRect.top + bandHeight;
+}
+
 /** Whether a mounted row intersects the container's visible band. */
 export function timelineRowInsideViewport(
   container: HTMLElement,

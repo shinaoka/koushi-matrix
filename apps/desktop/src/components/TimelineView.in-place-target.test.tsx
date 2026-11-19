@@ -17,8 +17,11 @@ const ROOM_KEY = roomTimelineKey("@alice:example.invalid", ROOM);
 const ORIGINAL = "$quoted-original:example.invalid";
 
 let restoreScrollIntoView = () => undefined;
+let restoreLayout = () => undefined;
 
 afterEach(() => {
+  restoreLayout();
+  restoreLayout = () => undefined;
   restoreScrollIntoView();
   restoreScrollIntoView = () => undefined;
   cleanup();
@@ -147,6 +150,67 @@ describe("in-place reply-quote target (#1981)", () => {
     });
     await screen.findByText("Quoted original");
     expect(view.scrolled).toEqual([ORIGINAL]);
+  });
+
+  // #1987: jsdom has no layout, so this case supplies one. The row lives at content
+  // offset 1000 inside a 200 px band, and its box follows the container's scroll, so
+  // the settle has to keep correcting until the whole row is inside the band instead
+  // of stopping one row above it.
+  it("keeps recentring until the whole row is inside the visible band (#1987)", async () => {
+    const ROW_CONTENT_TOP = 1000;
+    const BAND_HEIGHT = 200;
+    const ROW_HEIGHT = 72;
+    const originalRect = Element.prototype.getBoundingClientRect;
+    const originalClientHeight = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientHeight"
+    );
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      if (this.getAttribute("data-content-event-id") === ORIGINAL) {
+        const container = document.querySelector<HTMLElement>('[data-testid="timeline-view"]');
+        const top = ROW_CONTENT_TOP - (container?.scrollTop ?? 0);
+        return { top, bottom: top + ROW_HEIGHT, height: ROW_HEIGHT } as DOMRect;
+      }
+      return { top: 0, bottom: BAND_HEIGHT, height: BAND_HEIGHT } as DOMRect;
+    };
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get() {
+        return BAND_HEIGHT;
+      }
+    });
+    restoreLayout = () => {
+      Element.prototype.getBoundingClientRect = originalRect;
+      if (originalClientHeight) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", originalClientHeight);
+      }
+    };
+
+    const view = await renderLiveRoom({ eventId: ORIGINAL, generation: 1 });
+    await screen.findByText("Quoted original");
+
+    const container = screen.getByTestId("timeline-view");
+    // Centred: the row's top moves to (band - row) / 2 = 64.
+    expect(container.scrollTop).toBe(ROW_CONTENT_TOP - 64);
+    expect(
+      Math.abs(originalRow().getBoundingClientRect().top - (BAND_HEIGHT - ROW_HEIGHT) / 2)
+    ).toBeLessThan(1);
+
+    // The generation is settled, so a later arrival does not move the reader again.
+    const settled = container.scrollTop;
+    view.emit({
+      kind: "Timeline",
+      event: {
+        ItemsUpdated: {
+          key: ROOM_KEY,
+          generation: 1,
+          batch_id: 2,
+          diffs: [{ PushBack: { item: message("$newer-after-settle:example.invalid", "Later") } }]
+        }
+      }
+    });
+    await screen.findByText("Later");
+    expect(container.scrollTop).toBe(settled);
   });
 
   it("does nothing without an in-place target", async () => {

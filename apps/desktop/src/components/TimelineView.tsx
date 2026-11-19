@@ -50,6 +50,7 @@ import {
   roomScrollAnchorSignature,
   roomScrollAnchorStableSignature,
   restoreRoomScrollAnchor,
+  timelineRowFullyInsideViewport,
   timelineRowInsideViewport,
   timelineSessionAnchorAgeBucket,
   timelineViewportSessionMemory,
@@ -856,6 +857,10 @@ export const TimelineView = memo(function TimelineView({
   const inPlaceTargetAppliedRef = useRef<number | null>(null);
   /** #1981: bounded placement attempts for the current in-place generation. */
   const inPlaceTargetAttemptsRef = useRef({ generation: -1, attempts: 0 });
+  /** #1987: the height model the in-place settle last verified its row against. */
+  const inPlaceTargetSettledModelRef = useRef<ReturnType<typeof buildTimelineHeightModel> | null>(
+    null
+  );
   const initialThreadTargetRestoreAppliedRef = useRef<string | null>(null);
   /** Deduplicates privacy-safe focused-target restoration diagnostics. */
   const lastFocusedTargetRestoreDiagnosticRef = useRef<string | null>(null);
@@ -3578,36 +3583,69 @@ export const TimelineView = memo(function TimelineView({
     }
     if (inPlaceTargetAttemptsRef.current.generation !== inPlaceTargetGeneration) {
       inPlaceTargetAttemptsRef.current = { generation: inPlaceTargetGeneration, attempts: 0 };
+      inPlaceTargetSettledModelRef.current = null;
     }
     const container = containerRef.current;
-    if (
-      !container ||
-      inPlaceTargetAttemptsRef.current.attempts >= FOCUSED_TARGET_PLACEMENT_ATTEMPTS
-    ) {
+    if (!container) {
       return;
     }
-    inPlaceTargetAttemptsRef.current.attempts += 1;
+    if (
+      inPlaceTargetAttemptsRef.current.attempts > 0 &&
+      !jumpViewportControlRef.current
+    ) {
+      // The reader scrolled away from the settle, so the jump is over. Nothing
+      // here may take the viewport back on a later item or measurement change.
+      inPlaceTargetAppliedRef.current = inPlaceTargetGeneration;
+      return;
+    }
+    if (inPlaceTargetAttemptsRef.current.attempts >= FOCUSED_TARGET_PLACEMENT_ATTEMPTS) {
+      inPlaceTargetAppliedRef.current = inPlaceTargetGeneration;
+      return;
+    }
     const targetRow = findTimelineEventNode(container, "content", inPlaceTargetEventId);
     if (targetRow) {
+      const placed = inPlaceTargetAttemptsRef.current.attempts > 0;
+      if (placed && timelineRowFullyInsideViewport(container, targetRow)) {
+        // #1987: the row is reached only once its whole box is inside the band,
+        // and only against a layout that has stopped moving: the height commit
+        // this jump defers can still move it, so the verdict waits for the model
+        // to hold still between two runs.
+        if (inPlaceTargetSettledModelRef.current === timelineHeightModel) {
+          inPlaceTargetAppliedRef.current = inPlaceTargetGeneration;
+        } else {
+          inPlaceTargetSettledModelRef.current = timelineHeightModel;
+        }
+        return;
+      }
+      const firstPlacement = !placed;
+      inPlaceTargetAttemptsRef.current.attempts += 1;
       releaseViewportIntent();
       jumpViewportControlRef.current = true;
       advanceViewportEpoch();
       runWithScrollWriteReason("jumpToEvent", () => {
-        targetRow.scrollIntoView({ block: "center", inline: "nearest" });
+        if (firstPlacement) {
+          targetRow.scrollIntoView({ block: "center", inline: "nearest" });
+        } else {
+          // The measurement a jump defers moves the row again, so it is recentred
+          // against the band, the same correction the focused context makes.
+          centerTimelineRow(container, targetRow);
+        }
       });
-      inPlaceTargetAppliedRef.current = inPlaceTargetGeneration;
       captureStableAnchor(container);
       updateViewportMetrics();
       return;
     }
-    // A virtualized row outside the mounted range: place it from the height
-    // model, then center the mounted row on the next run.
+    // A virtualized row outside the mounted range: place it from the height model.
+    // A row missing from the display window placed nothing, so it spends no
+    // attempt: the retries must survive until it joins the mounted window (Core's
+    // window can run ahead of the diffs applied here).
     const targetIndex = visibleRows.findIndex(
       (row) => row.content_event_id === inPlaceTargetEventId
     );
     if (targetIndex < 0) {
       return;
     }
+    inPlaceTargetAttemptsRef.current.attempts += 1;
     const targetTop = timelineHeightModel.offsets[targetIndex] ?? 0;
     const targetHeight = timelineItemHeightAtIndex(timelineHeightModel, targetIndex);
     releaseViewportIntent();

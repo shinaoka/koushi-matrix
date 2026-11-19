@@ -5,6 +5,7 @@ import {
   captureFreeScrollAnchor,
   capturePrependAnchor,
   partitionHeightChangesByAnchor,
+  timelineRowFullyInsideViewport,
   wholePixelScrollTop
 } from "./TimelineViewportAnchors";
 import { linearVisibleNodeSpan, visibleNodeSpan } from "./TimelineViewportRows";
@@ -145,5 +146,46 @@ describe("height-change partition at the anchor (#1890 §2.2)", () => {
       above: [],
       below: ["$gone"]
     });
+  });
+});
+
+describe("whole-row containment (#1987)", () => {
+  // The container's band is 0..200 here, so a 72 px row is contained only between
+  // row top 0 and row bottom 200.
+  function band(rowTop: number, rowHeight = 72, clientHeight = 200) {
+    const container = document.createElement("div");
+    container.getBoundingClientRect = () => ({ top: 0, bottom: clientHeight } as DOMRect);
+    Object.defineProperty(container, "clientHeight", { value: clientHeight });
+    const row = document.createElement("div");
+    row.getBoundingClientRect = () =>
+      ({ top: rowTop, bottom: rowTop + rowHeight, height: rowHeight } as DOMRect);
+    container.appendChild(row);
+    return { container, row };
+  }
+
+  it("accepts a row wholly inside the band", () => {
+    const { container, row } = band(64);
+    expect(timelineRowFullyInsideViewport(container, row)).toBe(true);
+  });
+
+  it("rejects a row whose bottom is clipped above the band", () => {
+    // The #1987 symptom: the row intersects the band, but the reader cannot see it.
+    const { container, row } = band(-62);
+    expect(timelineRowFullyInsideViewport(container, row)).toBe(false);
+  });
+
+  it("rejects a row whose bottom hangs below the band", () => {
+    const { container, row } = band(160);
+    expect(timelineRowFullyInsideViewport(container, row)).toBe(false);
+  });
+
+  it("falls back to intersection for a row taller than the band", () => {
+    const { container, row } = band(-100, 400);
+    expect(timelineRowFullyInsideViewport(container, row)).toBe(true);
+  });
+
+  it("falls back to intersection for a row without a layout box", () => {
+    const { container, row } = band(0, 0);
+    expect(timelineRowFullyInsideViewport(container, row)).toBe(true);
   });
 });
