@@ -1444,3 +1444,29 @@ fn scheduled_sends_panel_logout_closure_reaches_the_delta() {
         Some(ScheduledSendsListState::Closed)
     );
 }
+
+// #1979: the metadata DTO printed the read marker and every typing sender.
+#[test]
+fn room_live_signal_metadata_debug_redacts_read_marker_and_typing_senders() {
+    let metadata = koushi_protocol::RoomLiveSignalMetadata {
+        fully_read_event_id: Some("$private-read:example.invalid".into()),
+        typing_user_ids: vec!["@private-typing:example.invalid".into()],
+        typing_users: vec![koushi_state::LiveTypingUser {
+            user_id: "@private-typing:example.invalid".into(),
+            display_label: Some("Private Typist".into()),
+        }],
+    };
+
+    let debug = format!("{metadata:?}");
+    assert!(debug.contains("typing_user_count: 1"), "{debug}");
+    assert!(
+        debug.contains(r#"fully_read_event_id: Some("EventId(..)")"#),
+        "{debug}"
+    );
+    assert!(!debug.contains("$private-read:example.invalid"), "{debug}");
+    assert!(
+        !debug.contains("@private-typing:example.invalid"),
+        "{debug}"
+    );
+    assert!(!debug.contains("Private Typist"), "{debug}");
+}

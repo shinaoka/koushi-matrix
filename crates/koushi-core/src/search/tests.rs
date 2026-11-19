@@ -896,6 +896,57 @@ fn search_index_message_upsert_redacts_body_in_debug() {
     );
 }
 
+// #1979: the actor message printed room, event, edit, and target ids raw.
+#[test]
+fn search_index_message_debug_redacts_every_matrix_id() {
+    let upsert = super::SearchIndexMessage::Upsert {
+        room_id: "!private-room:test".to_owned(),
+        event_id: "$private-event:test".to_owned(),
+        sender: "@private-sender:test".to_owned(),
+        timestamp_ms: 1000,
+        body: None,
+        attachment_filename: None,
+        attachment: None,
+        canonical: true,
+        edit: None,
+    };
+    let edit = super::SearchIndexMessage::Edit {
+        room_id: "!private-room:test".to_owned(),
+        edit_event_id: "$private-edit:test".to_owned(),
+        target_event_id: "$private-target:test".to_owned(),
+        sender: "@private-sender:test".to_owned(),
+        timestamp_ms: 2000,
+        body: None,
+        attachment_filename: None,
+        attachment: None,
+        canonical: true,
+    };
+    let redact = super::SearchIndexMessage::Redact {
+        event_id: "$private-redacted:test".to_owned(),
+    };
+    for msg in [&upsert, &edit] {
+        let debug = format!("{msg:?}");
+        assert!(debug.contains("RoomId(..)"), "{debug}");
+        assert!(debug.contains("UserId(..)"), "{debug}");
+    }
+
+    for msg in [upsert, edit, redact] {
+        let debug = format!("{msg:?}");
+        assert!(debug.contains("SearchIndexMessage"), "{debug}");
+        assert!(debug.contains("EventId(..)"), "{debug}");
+        for secret in [
+            "!private-room:test",
+            "$private-event:test",
+            "$private-edit:test",
+            "$private-target:test",
+            "$private-redacted:test",
+            "@private-sender:test",
+        ] {
+            assert!(!debug.contains(secret), "{debug}");
+        }
+    }
+}
+
 #[test]
 fn search_index_message_edit_redacts_body_in_debug() {
     let msg = super::SearchIndexMessage::Edit {
@@ -1546,4 +1597,83 @@ async fn a_direct_search_with_a_blank_query_answers_empty() {
     .await
     .expect("a blank query is not a failure");
     assert!(results.is_empty());
+}
+
+// #1979: the search and threads-list commands named a room or space through
+// their scope, and `ThreadsListCommand::Open` listed every room id.
+#[test]
+fn search_scope_debug_redacts_the_room_and_space_ids() {
+    use koushi_protocol::command::{SearchCommand, SearchScope};
+
+    let scopes = [
+        (
+            SearchScope::CurrentRoom {
+                room_id: "!private-room:test".to_owned(),
+            },
+            "RoomId(..)",
+        ),
+        (
+            SearchScope::CurrentSpace {
+                space_id: "!private-space:test".to_owned(),
+            },
+            "SpaceId(..)",
+        ),
+    ];
+
+    for (scope, placeholder) in scopes {
+        let command = SearchCommand::Query {
+            request_id: RequestId {
+                connection_id: RuntimeConnectionId(3),
+                sequence: 30,
+            },
+            query: "private query".to_owned(),
+            scope,
+            room_filter: SearchRoomFilter::AllRooms,
+        };
+        let debug = format!("{command:?}");
+        assert!(debug.contains(placeholder), "{debug}");
+        assert!(debug.contains("SearchQuery(..)"), "{debug}");
+        assert!(!debug.contains("private query"), "{debug}");
+        assert!(!debug.contains("!private-room:test"), "{debug}");
+        assert!(!debug.contains("!private-space:test"), "{debug}");
+    }
+}
+
+#[test]
+fn threads_list_command_debug_counts_room_ids_and_redacts_its_scope() {
+    use koushi_protocol::command::ThreadsListCommand;
+
+    let open = ThreadsListCommand::Open {
+        request_id: RequestId {
+            connection_id: RuntimeConnectionId(4),
+            sequence: 40,
+        },
+        scope: koushi_state::ThreadsListScope::Space {
+            space_id: "!private-space:test".to_owned(),
+        },
+        room_ids: vec![
+            "!private-room-a:test".to_owned(),
+            "!private-room-b:test".to_owned(),
+        ],
+    };
+    let paginate = ThreadsListCommand::Paginate {
+        request_id: RequestId {
+            connection_id: RuntimeConnectionId(4),
+            sequence: 41,
+        },
+        scope: koushi_state::ThreadsListScope::Room {
+            room_id: "!private-room-a:test".to_owned(),
+        },
+    };
+
+    let debug = format!("{open:?}");
+    assert!(debug.contains("room_ids_len: 2"), "{debug}");
+    assert!(debug.contains("SpaceId(..)"), "{debug}");
+    assert!(!debug.contains("!private-room-a:test"), "{debug}");
+    assert!(!debug.contains("!private-room-b:test"), "{debug}");
+    assert!(!debug.contains("!private-space:test"), "{debug}");
+
+    let debug = format!("{paginate:?}");
+    assert!(debug.contains("RoomId(..)"), "{debug}");
+    assert!(!debug.contains("!private-room-a:test"), "{debug}");
 }

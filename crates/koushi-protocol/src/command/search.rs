@@ -28,7 +28,7 @@ pub enum SearchCommand {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum ThreadsListCommand {
     Open {
         request_id: RequestId,
@@ -44,11 +44,49 @@ pub enum ThreadsListCommand {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum SearchScope {
     AllRooms,
     CurrentRoom { room_id: String },
     CurrentSpace { space_id: String },
+}
+
+// #1979: the scope names one room or space, so its Debug is a placeholder.
+impl fmt::Debug for SearchScope {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::AllRooms => "AllRooms",
+            Self::CurrentRoom { .. } => "CurrentRoom { room_id: RoomId(..) }",
+            Self::CurrentSpace { .. } => "CurrentSpace { space_id: SpaceId(..) }",
+        })
+    }
+}
+
+// #1979: `room_ids` and the scope name real rooms; count them instead.
+impl fmt::Debug for ThreadsListCommand {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Open {
+                request_id,
+                scope,
+                room_ids,
+            } => formatter
+                .debug_struct("Open")
+                .field("request_id", request_id)
+                .field("scope", scope)
+                .field("room_ids_len", &room_ids.len())
+                .finish(),
+            Self::Close { request_id } => formatter
+                .debug_struct("Close")
+                .field("request_id", request_id)
+                .finish(),
+            Self::Paginate { request_id, scope } => formatter
+                .debug_struct("Paginate")
+                .field("request_id", request_id)
+                .field("scope", scope)
+                .finish(),
+        }
+    }
 }
 
 fn search_room_filter_debug(filter: &SearchRoomFilter) -> (&'static str, usize) {

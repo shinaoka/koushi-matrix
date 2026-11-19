@@ -122,3 +122,157 @@ fn timeline_event_debug_redacts_the_nested_item() {
     assert!(!debug.contains(PRIVATE_ACCOUNT_ID), "{debug}");
     assert!(debug.contains("TimelineKey(..)"), "{debug}");
 }
+
+// #1979: the threads-list event printed its room id and every item's room id,
+// root event id, senders, and body previews.
+fn private_thread_item() -> ThreadsListItem {
+    ThreadsListItem {
+        room_id: PRIVATE_ROOM_ID.to_owned(),
+        root_event_id: PRIVATE_THREAD_ROOT.to_owned(),
+        root_sender: PRIVATE_SENDER.to_owned(),
+        root_sender_label: Some(PRIVATE_SENDER_LABEL.to_owned()),
+        root_body_preview: Some("private thread body".to_owned()),
+        root_timestamp_ms: Some(1_700_000_000_000),
+        latest_event_id: Some(PRIVATE_EVENT_ID.to_owned()),
+        latest_sender: Some(PRIVATE_REACTOR.to_owned()),
+        latest_sender_label: Some(PRIVATE_REACTOR_LABEL.to_owned()),
+        latest_body_preview: Some("private latest body".to_owned()),
+        latest_timestamp_ms: Some(1_700_000_001_000),
+        reply_count: 3,
+        unread_count: 0,
+    }
+}
+
+#[test]
+fn threads_list_event_debug_counts_items_instead_of_printing_them() {
+    let items = vec![private_thread_item(), private_thread_item()];
+    let events = vec![
+        ThreadsListEvent::Opened {
+            request_id: crate::ids::RequestId {
+                connection_id: crate::ids::RuntimeConnectionId(1),
+                sequence: 2,
+            },
+            room_id: PRIVATE_ROOM_ID.to_owned(),
+            items: items.clone(),
+            end_reached: false,
+        },
+        ThreadsListEvent::Updated {
+            request_id: crate::ids::RequestId {
+                connection_id: crate::ids::RuntimeConnectionId(1),
+                sequence: 3,
+            },
+            room_id: PRIVATE_ROOM_ID.to_owned(),
+            items,
+            is_paginating: true,
+            end_reached: false,
+        },
+    ];
+
+    for event in events {
+        let debug = format!("{event:?}");
+        assert!(debug.contains("items_len: 2"), "{debug}");
+        assert!(debug.contains("RoomId(..)"), "{debug}");
+        for raw in [
+            PRIVATE_ROOM_ID,
+            PRIVATE_THREAD_ROOT,
+            PRIVATE_EVENT_ID,
+            PRIVATE_SENDER,
+            PRIVATE_REACTOR,
+            "private thread body",
+            "private latest body",
+        ] {
+            assert!(!debug.contains(raw), "raw {raw} leaked: {debug}");
+        }
+    }
+}
+
+// #1979: the thread summary DTO printed the latest event id, sender and body
+// preview, which `TimelineItem`'s own Debug already redacts.
+#[test]
+fn thread_summary_dto_debug_redacts_latest_event_sender_and_preview() {
+    let summary = ThreadSummaryDto {
+        reply_count: 4,
+        latest_event_id: Some(PRIVATE_EVENT_ID.to_owned()),
+        latest_sender: Some(PRIVATE_SENDER.to_owned()),
+        latest_sender_label: Some(PRIVATE_SENDER_LABEL.to_owned()),
+        latest_body_preview: Some("private summary preview".to_owned()),
+        latest_timestamp_ms: Some(1_700_000_000_000),
+        unread_count: 1,
+    };
+
+    let debug = format!("{summary:?}");
+    assert!(debug.contains("reply_count: 4"), "{debug}");
+    assert!(
+        debug.contains(r#"latest_event_id: Some("EventId(..)")"#),
+        "{debug}"
+    );
+    assert!(
+        debug.contains(r#"latest_sender: Some("UserId(..)")"#),
+        "{debug}"
+    );
+    assert!(
+        debug.contains(r#"latest_sender_label: Some("SenderLabel(..)")"#),
+        "{debug}"
+    );
+    assert!(
+        debug.contains(r#"latest_body_preview: Some("MessageBody(..)")"#),
+        "{debug}"
+    );
+    for raw in [
+        PRIVATE_EVENT_ID,
+        PRIVATE_SENDER,
+        PRIVATE_SENDER_LABEL,
+        "private summary preview",
+    ] {
+        assert!(!debug.contains(raw), "raw {raw} leaked: {debug}");
+    }
+}
+
+// #1979: the viewport observation printed the first and last visible event id.
+#[test]
+fn timeline_viewport_observation_debug_redacts_visible_event_ids() {
+    let observation = TimelineViewportObservation {
+        display_window_revision: Some(7),
+        first_visible_event_id: Some(PRIVATE_EVENT_ID.to_owned()),
+        last_visible_event_id: Some(PRIVATE_REACTION_EVENT_ID.to_owned()),
+        visible_gap_ids: Vec::new(),
+        at_bottom: true,
+        bottom_arrival: TimelineBottomArrival::User,
+    };
+
+    let debug = format!("{observation:?}");
+    assert!(debug.contains("at_bottom: true"), "{debug}");
+    assert!(debug.contains("visible_gap_count: 0"), "{debug}");
+    assert!(
+        debug.contains(r#"first_visible_event_id: Some("EventId(..)")"#),
+        "{debug}"
+    );
+    assert!(
+        debug.contains(r#"last_visible_event_id: Some("EventId(..)")"#),
+        "{debug}"
+    );
+    assert!(!debug.contains(PRIVATE_EVENT_ID), "{debug}");
+    assert!(!debug.contains(PRIVATE_REACTION_EVENT_ID), "{debug}");
+
+    let empty = TimelineViewportObservation::default();
+    let debug = format!("{empty:?}");
+    assert!(debug.contains("first_visible_event_id: None"), "{debug}");
+}
+
+// #1979: the undecryptable-event payload printed its megolm session id, the same
+// class the message source already redacts.
+#[test]
+fn unable_to_decrypt_debug_redacts_the_session_id() {
+    let undecryptable = TimelineUnableToDecrypt {
+        session_id: Some("PRIVATE-MEGOLM-SESSION".to_owned()),
+        reason: TimelineUnableToDecryptReason::MissingRoomKey,
+        can_request_keys: true,
+        recovery_stage: None,
+        recovery_guidance: None,
+    };
+
+    let debug = format!("{undecryptable:?}");
+    assert!(debug.contains("SessionId(..)"), "{debug}");
+    assert!(debug.contains("can_request_keys: true"), "{debug}");
+    assert!(!debug.contains("PRIVATE-MEGOLM-SESSION"), "{debug}");
+}

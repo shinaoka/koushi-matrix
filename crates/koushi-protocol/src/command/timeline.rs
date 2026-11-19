@@ -618,13 +618,13 @@ impl fmt::Debug for TimelineCommand {
             Self::EditText {
                 request_id,
                 key,
-                event_id,
+                event_id: _,
                 ..
             } => formatter
                 .debug_struct("EditText")
                 .field("request_id", request_id)
                 .field("key", key)
-                .field("event_id", event_id)
+                .field("event_id", &"EventId(..)")
                 .field("document", &"ComposerDocument(..)")
                 .finish(),
             Self::Redact {

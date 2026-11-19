@@ -356,12 +356,12 @@ impl fmt::Debug for AppCommand {
                 .finish(),
             Self::SetComposerReplyTarget {
                 request_id,
-                room_id,
+                room_id: _,
                 ..
             } => formatter
                 .debug_struct("SetComposerReplyTarget")
                 .field("request_id", request_id)
-                .field("room_id", room_id)
+                .field("room_id", &"RoomId(..)")
                 .field("event_id", &"EventId(..)")
                 .finish(),
             Self::CancelComposerReply { request_id } => formatter
@@ -370,43 +370,43 @@ impl fmt::Debug for AppCommand {
                 .finish(),
             Self::SetThreadComposerReplyTarget {
                 request_id,
-                room_id,
+                room_id: _,
                 ..
             } => formatter
                 .debug_struct("SetThreadComposerReplyTarget")
                 .field("request_id", request_id)
-                .field("room_id", room_id)
+                .field("room_id", &"RoomId(..)")
                 .field("root_event_id", &"EventId(..)")
                 .field("event_id", &"EventId(..)")
                 .finish(),
             Self::CancelThreadComposerReply {
                 request_id,
-                room_id,
+                room_id: _,
                 ..
             } => formatter
                 .debug_struct("CancelThreadComposerReply")
                 .field("request_id", request_id)
-                .field("room_id", room_id)
+                .field("room_id", &"RoomId(..)")
                 .field("root_event_id", &"EventId(..)")
                 .finish(),
             Self::SetComposerDraft {
                 request_id,
-                room_id,
+                room_id: _,
                 ..
             } => formatter
                 .debug_struct("SetComposerDraft")
                 .field("request_id", request_id)
-                .field("room_id", room_id)
+                .field("room_id", &"RoomId(..)")
                 .field("draft", &"MessageBody(..)")
                 .finish(),
             Self::SeedComposerDraft {
                 request_id,
-                room_id,
+                room_id: _,
                 ..
             } => formatter
                 .debug_struct("SeedComposerDraft")
                 .field("request_id", request_id)
-                .field("room_id", room_id)
+                .field("room_id", &"RoomId(..)")
                 .field("draft", &"MessageBody(..)")
                 .finish(),
             Self::DismissAssistantDraftMarker { request_id, .. } => formatter
@@ -416,12 +416,12 @@ impl fmt::Debug for AppCommand {
                 .finish(),
             Self::SetThreadComposerDraft {
                 request_id,
-                room_id,
+                room_id: _,
                 ..
             } => formatter
                 .debug_struct("SetThreadComposerDraft")
                 .field("request_id", request_id)
-                .field("room_id", room_id)
+                .field("room_id", &"RoomId(..)")
                 .field("root_event_id", &"EventId(..)")
                 .field("draft", &"MessageBody(..)")
                 .finish(),
@@ -521,12 +521,12 @@ impl fmt::Debug for AppCommand {
                 .finish(),
             Self::OpenFocusedContext {
                 request_id,
-                room_id,
+                room_id: _,
                 ..
             } => formatter
                 .debug_struct("OpenFocusedContext")
                 .field("request_id", request_id)
-                .field("room_id", room_id)
+                .field("room_id", &"RoomId(..)")
                 .field("event_id", &"EventId(..)")
                 .finish(),
             Self::NavigateToEvent {
@@ -550,12 +550,12 @@ impl fmt::Debug for AppCommand {
                 .finish(),
             Self::EnterAnchoredTimeline {
                 request_id,
-                room_id,
+                room_id: _,
                 ..
             } => formatter
                 .debug_struct("EnterAnchoredTimeline")
                 .field("request_id", request_id)
-                .field("room_id", room_id)
+                .field("room_id", &"RoomId(..)")
                 .field("event_id", &"EventId(..)")
                 .finish(),
             Self::OpenTimelineAtTimestamp { request_id, .. } => formatter

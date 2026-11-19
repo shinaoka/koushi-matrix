@@ -429,12 +429,12 @@ impl fmt::Debug for RoomEvent {
                 .finish(),
             Self::MarkedAsUnread {
                 request_id,
-                room_id,
+                room_id: _,
                 unread,
             } => formatter
                 .debug_struct("MarkedAsUnread")
                 .field("request_id", request_id)
-                .field("room_id", room_id)
+                .field("room_id", &"RoomId(..)")
                 .field("unread", unread)
                 .finish(),
             Self::OutboundSessionRotationForced { request_id, .. } => formatter
@@ -456,12 +456,24 @@ impl fmt::Debug for RoomEvent {
 ///
 /// The page is read straight from the account's session, so it works for a room
 /// that is not open and never becomes an app state update.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RoomMessagesPage {
     pub messages: Vec<RoomMessageItem>,
     /// Opaque token for the next older page. Absent at the start of history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
+}
+
+// #1979: `next` is a live server page token and the messages are items, so the
+// Debug counts both rather than printing either.
+impl fmt::Debug for RoomMessagesPage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RoomMessagesPage")
+            .field("messages_len", &self.messages.len())
+            .field("next", &self.next.as_ref().map(|_| "PageToken(..)"))
+            .finish()
+    }
 }
 
 /// One message-like event from a room's timeline.
@@ -530,5 +542,25 @@ mod tests {
         let debug = format!("{event:?}");
         assert!(debug.contains("RoomId(..)"), "{debug}");
         assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
+    }
+
+    // #1979: a room-messages page printed the live server page token.
+    #[test]
+    fn room_messages_page_debug_redacts_the_page_token() {
+        let page = RoomMessagesPage {
+            messages: Vec::new(),
+            next: Some("private-page-token".to_owned()),
+        };
+
+        let debug = format!("{page:?}");
+        assert!(debug.contains("PageToken(..)"), "{debug}");
+        assert!(debug.contains("messages_len: 0"), "{debug}");
+        assert!(!debug.contains("private-page-token"), "{debug}");
+
+        let end = RoomMessagesPage {
+            messages: Vec::new(),
+            next: None,
+        };
+        assert!(format!("{end:?}").contains("next: None"), "{end:?}");
     }
 }

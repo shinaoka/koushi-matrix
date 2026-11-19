@@ -327,3 +327,108 @@ fn observe_native_window_focus_command_is_correlated_and_private_safe() {
     assert!(!debug.contains("event_id"), "{debug}");
     assert!(!debug.contains("user_id"), "{debug}");
 }
+
+/// The account a composer draft command is scoped to; its `Debug` is redacted by
+/// `SessionKeyId` itself, which `session_key_debug_redacts_all_identity_fields`
+/// pins.
+fn private_session_key() -> crate::SessionKeyId {
+    crate::SessionKeyId {
+        homeserver: "https://private-homeserver.invalid".to_owned(),
+        user_id: "@private-user:example.invalid".to_owned(),
+        device_id: "PRIVATE-DEVICE".to_owned(),
+    }
+}
+
+// #1979: the composer and focused-context arms printed their room id raw while
+// their neighbours already printed `RoomId(..)`.
+#[test]
+fn every_app_command_room_id_is_redacted_in_debug() {
+    let room = "!private-room:example.invalid".to_owned();
+    let draft = || koushi_state::ComposerDocument::from_plain_text("private draft".to_owned());
+    let commands = vec![
+        (
+            AppCommand::SetComposerReplyTarget {
+                request_id: fake_rid(90),
+                room_id: room.clone(),
+                event_id: "$private-event:example.invalid".to_owned(),
+            },
+            vec!["$private-event:example.invalid"],
+        ),
+        (
+            AppCommand::OpenFocusedContext {
+                request_id: fake_rid(96),
+                room_id: room.clone(),
+                event_id: "$private-event:example.invalid".to_owned(),
+            },
+            vec!["$private-event:example.invalid"],
+        ),
+        (
+            AppCommand::EnterAnchoredTimeline {
+                request_id: fake_rid(97),
+                room_id: room.clone(),
+                event_id: "$private-event:example.invalid".to_owned(),
+            },
+            vec!["$private-event:example.invalid"],
+        ),
+        (
+            AppCommand::SetComposerDraft {
+                request_id: fake_rid(93),
+                expected_account: private_session_key(),
+                room_id: room.clone(),
+                document: draft(),
+                revision: koushi_state::ComposerDraftRevision::default(),
+            },
+            vec!["private draft"],
+        ),
+        (
+            AppCommand::SeedComposerDraft {
+                request_id: fake_rid(94),
+                expected_account: private_session_key(),
+                room_id: room.clone(),
+                document: draft(),
+            },
+            vec!["private draft"],
+        ),
+        (
+            AppCommand::SetThreadComposerReplyTarget {
+                request_id: fake_rid(91),
+                room_id: room.clone(),
+                root_event_id: "$private-root:example.invalid".to_owned(),
+                event_id: "$private-event:example.invalid".to_owned(),
+            },
+            vec![
+                "$private-root:example.invalid",
+                "$private-event:example.invalid",
+            ],
+        ),
+        (
+            AppCommand::CancelThreadComposerReply {
+                request_id: fake_rid(92),
+                room_id: room.clone(),
+                root_event_id: "$private-root:example.invalid".to_owned(),
+            },
+            vec!["$private-root:example.invalid"],
+        ),
+        (
+            AppCommand::SetThreadComposerDraft {
+                request_id: fake_rid(95),
+                expected_account: private_session_key(),
+                room_id: room.clone(),
+                root_event_id: "$private-root:example.invalid".to_owned(),
+                document: draft(),
+                revision: koushi_state::ComposerDraftRevision::default(),
+            },
+            vec!["$private-root:example.invalid", "private draft"],
+        ),
+    ];
+
+    assert_eq!(commands.len(), 8);
+    for (command, secrets) in commands {
+        let debug = format!("{command:?}");
+        assert!(debug.contains("RoomId(..)"), "{debug}");
+        assert!(!debug.contains(&room), "{debug}");
+        for secret in secrets {
+            assert!(!debug.contains(secret), "{debug}");
+        }
+    }
+}

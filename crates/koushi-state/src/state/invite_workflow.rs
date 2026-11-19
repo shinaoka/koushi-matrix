@@ -151,11 +151,21 @@ pub enum InviteDestinationKind {
     Space,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum InviteScopeSelection {
     RoomOnly,
     ParentSpaceAndRoom { space_id: String },
+}
+
+// #1979: the option names one space, and `InviteTargets` prints this value.
+impl std::fmt::Debug for InviteScopeSelection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::RoomOnly => "RoomOnly",
+            Self::ParentSpaceAndRoom { .. } => "ParentSpaceAndRoom { space_id: SpaceId(..) }",
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
