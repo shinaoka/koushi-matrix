@@ -122,8 +122,12 @@ async function placeAnchorInViewport(
   // Move through the virtualized range in bounded, frame-separated steps. A
   // single estimated-height jump can mount the overscanned row while its
   // measured range still places it far outside the viewport; stepping lets the
-  // production range model settle before the anchor oracle begins.
-  for (let step = 0; step < 100; step += 1) {
+  // production range model settle before the anchor oracle begins. Each step
+  // is shorter than the viewport (the harness viewport is ~420 px): a step of a
+  // whole screen or more can carry a row from just below the viewport to just
+  // above it between two checks, depending on when measured heights replace
+  // estimates, and the walk then runs on to the live edge (seen on CI runners).
+  for (let step = 0; step < 300; step += 1) {
     const inViewport = await page.evaluate((eventId) => {
       const row = document.querySelector<HTMLElement>(
         `[data-event-id="${CSS.escape(eventId)}"]`
@@ -138,8 +142,9 @@ async function placeAnchorInViewport(
     await page.evaluate(() => {
       const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]");
       if (!container) return;
-      container.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 500 }));
-      container.scrollTop += 500;
+      const delta = Math.max(100, Math.floor(container.clientHeight * 0.75));
+      container.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: delta }));
+      container.scrollTop += delta;
       container.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
     await waitAnimationFrames(page, 2);
