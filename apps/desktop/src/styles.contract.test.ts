@@ -739,6 +739,17 @@ describe("styles.css token system", () => {
     expect(image).toContain("object-position: center");
   });
 
+  test("the Send icon carries a sub-pixel optical correction (#2014)", () => {
+    // #2014: the Lucide paper plane's mass sits ~1.3px right and up of its box
+    // centre, so a box the grid centres still reads as an up-right icon. The
+    // correction moves the icon only, so the button's own centring must stay:
+    // nudging the frame instead is the regression this pins.
+    expect(selectorBlock(".send-button")).toContain("place-items: center;");
+    expect(selectorBlock(".send-button")).not.toContain("transform:");
+
+    expect(selectorBlock(".send-button svg")).toContain("transform: translate(-1px, 1px);");
+  });
+
   test("fixed Lucide icon sizes stay centralized in ICON_SIZE", () => {
     expect(uiSharedSource).toContain("const ICON_SIZE");
     // No icon-rendering module may hard-code a numeric `size={N}`; all fixed sizes
