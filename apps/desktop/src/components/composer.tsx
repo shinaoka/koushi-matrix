@@ -25,6 +25,7 @@ import {
   Send,
   Sigma,
   Smile,
+  TextQuote,
   X
 } from "lucide-react";
 import { useActiveLocaleKey } from "../i18n/activeLocaleContext";
@@ -486,18 +487,45 @@ export const Composer = memo(function Composer({
     replaceTextRange(start, end, replacement, replacement.length - 1);
   }
 
-  function applyListMarkdown() {
+  /**
+   * #2005: the block marks. Each selected line gets `prefix` once, and a bare
+   * caret gets it alone. `isMarked` mirrors what the Rust formatter accepts for
+   * that mark, so a line it already reads as marked never gains a second marker.
+   * Additive like the toolbar rather than a toggle: pressing again at a caret
+   * inside a marked line adds one.
+   */
+  function applyBlockPrefix(prefix: string, isMarked: (line: string) => boolean) {
     const { start, end } = selectionRange();
     const selected = copyDocumentRange(localDocument, start, end);
     if (!selected) {
-      replaceTextRange(start, end, "- ", 2);
+      replaceTextRange(start, end, prefix, prefix.length);
       return;
     }
     const replacement = selected
       .split("\n")
-      .map((line) => (line.startsWith("- ") ? line : `- ${line}`))
+      .map((line) => (isMarked(line) ? line : `${prefix}${line}`))
       .join("\n");
     replaceTextRange(start, end, replacement);
+  }
+
+  /**
+   * The Rust recognisers strip ASCII spaces only (`trim_start_matches(' ')`), so
+   * these do too: a line indented with a tab or an ideographic space is not
+   * marked to the formatter, and must still gain the marker here.
+   */
+  function afterLeadingSpaces(line: string): string {
+    return line.replace(/^ +/, "");
+  }
+
+  /** `- ` and `* ` are both list markers to `unordered_list_item_body`. */
+  function isListLine(line: string): boolean {
+    const trimmed = afterLeadingSpaces(line);
+    return trimmed.startsWith("- ") || trimmed.startsWith("* ");
+  }
+
+  /** A bare `>` marks a quote to `blockquote_line_body`, with or without the space. */
+  function isQuoteLine(line: string): boolean {
+    return afterLeadingSpaces(line).startsWith(">");
   }
 
   function insertMentionTrigger() {
@@ -723,10 +751,15 @@ export const Composer = memo(function Composer({
       canEdit &&
       !event.nativeEvent.isComposing &&
       !event.altKey &&
-      !event.shiftKey &&
       (IS_MAC_PLATFORM ? event.metaKey && !event.ctrlKey : event.ctrlKey)
     ) {
-      const format = inlineFormatFromKey(event.key);
+      // #2005: Element binds Quote to Cmd/Ctrl+Shift+>.
+      if (event.shiftKey && event.key === ">") {
+        event.preventDefault();
+        applyBlockPrefix("> ", isQuoteLine);
+        return;
+      }
+      const format = event.shiftKey ? null : inlineFormatFromKey(event.key);
       if (format) {
         event.preventDefault();
         applyInlineFormat(format);
@@ -1130,10 +1163,25 @@ export const Composer = memo(function Composer({
               aria-label={t("composer.list")}
               disabled={!canEdit}
               onMouseDown={keepComposerFocus}
-              onClick={applyListMarkdown}
+              onClick={() => applyBlockPrefix("- ", isListLine)}
               {...tooltipProps}
             >
               <List size={ICON_SIZE.input} />
+            </button>
+          )}
+        </Tooltip>
+        <Tooltip label={t("composer.quote")} placement="below">
+          {(tooltipProps) => (
+            <button
+              className="icon-button"
+              type="button"
+              aria-label={t("composer.quote")}
+              disabled={!canEdit}
+              onMouseDown={keepComposerFocus}
+              onClick={() => applyBlockPrefix("> ", isQuoteLine)}
+              {...tooltipProps}
+            >
+              <TextQuote size={ICON_SIZE.input} />
             </button>
           )}
         </Tooltip>

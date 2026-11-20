@@ -19,7 +19,7 @@ action for native-menu dispatch" (`apps/desktop/src/domain/shortcuts.ts:21-27`),
 Keyboard** renders — the page shows parity, not `implemented`, so a row the registry
 marks `implemented: false` still shows as *same* there.
 
-Last checked against `apps/desktop` at `99093529` (2026-11-20).
+Last checked against `apps/desktop` during #2005 (2026-11-20).
 
 ## Implemented
 
@@ -29,7 +29,8 @@ Last checked against `apps/desktop` at `99093529` (2026-11-20).
 | New line | `Shift+Enter` | Inserts a newline in the composer. |
 | Bold | `Ctrl/Cmd+B` | Wraps the selection, or inserts the placeholder pair, exactly as the toolbar button does. |
 | Italic | `Ctrl/Cmd+I` | Same contract as Bold, for the toolbar's Italic button. |
-| Cancel reply or edit | `Esc` | Closes the local composer affordance; while the mention list is open it dismisses that first (`apps/desktop/src/components/composer.tsx:838-841`). |
+| Quote | `Ctrl/Cmd+Shift+>` | Prefixes every selected line with `> ` (or inserts `> ` at a bare caret), exactly as the toolbar's Quote button does, and sends as a `<blockquote>` in `formatted_body`. |
+| Cancel reply or edit | `Esc` | Closes the local composer affordance; while the mention list is open it dismisses that first (`apps/desktop/src/components/composer.tsx:873-878`). |
 | Search in room | `Ctrl/Cmd+F` | Moves focus to the search box and narrows scope to the active room. |
 | Find rooms | `Ctrl/Cmd+K` | Moves focus to the search box and restores all-room scope. |
 | Toggle right panel | `Ctrl/Cmd+.` | Opens or closes the contextual right panel. |
@@ -57,4 +58,5 @@ Last checked against `apps/desktop` at `99093529` (2026-11-20).
 - Native menu accelerators are checked by the same registry audit.
 - Keyboard reachability of the shell is covered by `apps/desktop/e2e/desktop-shell-a11y.spec.ts`.
 - The composer's Bold and Italic shortcuts are pinned twice: `apps/desktop/src/components/composer.test.tsx:2205-2247` asserts they produce the toolbar's result, insert the placeholder pair at a bare caret, and stand aside for an IME composition; `apps/desktop/e2e/composer-format-shortcuts.spec.ts:20-38` drives Cmd/Ctrl+B and Cmd/Ctrl+I in the shell and compares them against the toolbar button (both from #1949, PR #1955).
-- The user-facing promise is `docs/help/messaging.md:18-25`.
+- Quote's button-and-shortcut parity, the `> ` prefix on each selected line, the bare-caret insert, and the IME / read-only refusals are pinned by `apps/desktop/src/components/composer.test.tsx` (#2005), and the Rust side by `crates/koushi-state/tests/state/composer_semantics_state.rs`.
+- The user-facing promise is `docs/help/messaging.md:18-29`.

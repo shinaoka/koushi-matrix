@@ -210,6 +210,52 @@ fn plain_multiline_text_still_uses_only_the_plain_body() {
 }
 
 #[test]
+fn composer_markdown_block_quotes_are_rust_owned_formatted_body() {
+    // #2005: a `> ` line used to fall through as literal text, so the draft kept
+    // `formatted_body: None` and recipients saw the markers.
+    let draft = build_formatted_message_draft("> quoted line\nreply", MentionIntent::default());
+
+    assert_eq!(draft.plain_body, "> quoted line\nreply");
+    assert_eq!(
+        draft.formatted_body.as_deref(),
+        Some("<blockquote>quoted line</blockquote>\nreply")
+    );
+
+    // The one shape the boundary table cannot express: consecutive lines of one
+    // quote are a `<br>`-joined single block.
+    let consecutive = build_formatted_message_draft("> a\n> b", MentionIntent::default());
+    assert_eq!(consecutive.plain_body, "> a\n> b");
+    assert_eq!(
+        consecutive.formatted_body.as_deref(),
+        Some("<blockquote>a<br>b</blockquote>")
+    );
+}
+
+#[test]
+fn composer_block_quotes_keep_inline_formatting_and_empty_lines() {
+    let draft =
+        build_formatted_message_draft("> **bold** and `code`\n>\n> tail", MentionIntent::default());
+
+    assert_eq!(
+        draft.formatted_body.as_deref(),
+        Some("<blockquote><strong>bold</strong> and <code>code</code><br><br>tail</blockquote>")
+    );
+}
+
+#[test]
+fn composer_nested_block_quote_stays_one_quote_with_literal_inner_marker() {
+    // One `>` level is stripped; the inner marker stays literal text rather than
+    // producing broken HTML (see `blockquote_line_body`'s upgrade note).
+    let draft = build_formatted_message_draft("> outer\n> > inner", MentionIntent::default());
+
+    assert_eq!(draft.plain_body, "> outer\n> > inner");
+    assert_eq!(
+        draft.formatted_body.as_deref(),
+        Some("<blockquote>outer<br>&gt; inner</blockquote>")
+    );
+}
+
+#[test]
 fn composer_block_boundaries_preserve_only_authored_blank_lines() {
     let cases = [
         (
@@ -238,6 +284,21 @@ fn composer_block_boundaries_preserve_only_authored_blank_lines() {
             "$$\nx\ny\n$$\n\nafter",
             "<div data-mx-maths=\"x\ny\">x\ny</div>\n<br>after",
         ),
+        (
+            "- one\n> quoted",
+            "<ul><li>one</li></ul>\n<blockquote>quoted</blockquote>",
+        ),
+        ("> one\nafter", "<blockquote>one</blockquote>\nafter"),
+        ("> one\n\nafter", "<blockquote>one</blockquote>\n<br>after"),
+        (
+            "before\n\n> one",
+            "before<br>\n<blockquote>one</blockquote>",
+        ),
+        (
+            "> a\n\n> b",
+            "<blockquote>a</blockquote>\n<br><blockquote>b</blockquote>",
+        ),
+        ("  > indented", "<blockquote>indented</blockquote>"),
     ];
 
     for (body, expected) in cases {
