@@ -17,11 +17,16 @@ from sending the composed message.
 
 ## Format a message
 
-Select text in a composer and use the **Bold** or **Italic** button under it, or
-press **Cmd + B** / **Cmd + I** (**Ctrl** on Windows and Linux). With nothing
-selected the shortcut inserts the markup pair with placeholder text, exactly as
-the button does. Formatting shortcuts do nothing while an IME composition is in
-progress or while the composer is read-only. The full shortcut list is under
+Select text in a composer and use one of the formatting buttons under it —
+**Bold**, **Italic**, **Link**, **List**, **Quote** and **Code** — or press
+**Cmd + B** / **Cmd + I** or
+**Cmd + Shift + >** (**Ctrl** on Windows and Linux). With nothing selected the
+Bold and Italic shortcuts insert the markup pair with placeholder text, exactly as
+the button does; **Quote** starts a quoted line, and on a selection it prefixes
+every selected line with `> ` the way **List** prefixes `- `. Quoted lines are
+sent as a block quote that other Matrix clients render as a quote. Formatting
+shortcuts do nothing while an IME composition is in progress or while the
+composer is read-only. The full shortcut list is under
 **App Settings → Keyboard**.
 
 ## Read older messages

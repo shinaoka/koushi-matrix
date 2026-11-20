@@ -188,6 +188,7 @@ export type MessageId =
   | "composer.italic"
   | "composer.link"
   | "composer.list"
+  | "composer.quote"
   | "composer.mathMode"
   | "composer.mathModeOff"
   | "composer.mathModeOn"
@@ -1719,6 +1720,7 @@ export type MessageId =
   | "shortcut.formatCode"
   | "shortcut.formatItalics"
   | "shortcut.formatLink"
+  | "shortcut.formatQuote"
   | "shortcut.goHome"
   | "shortcut.jumpToFirstMessage"
   | "shortcut.jumpToLatestMessage"
@@ -2514,6 +2516,7 @@ const en: Catalog = {
   "composer.italic": "Italic",
   "composer.link": "Link",
   "composer.list": "List",
+  "composer.quote": "Quote",
   "composer.mathMode": "Math",
   "composer.mathModeOff": "Math formatting off",
   "composer.mathModeOn": "Math formatting on",
@@ -4204,6 +4207,7 @@ const en: Catalog = {
   "shortcut.formatCode": "Code",
   "shortcut.formatItalics": "Italics",
   "shortcut.formatLink": "Insert link",
+  "shortcut.formatQuote": "Quote",
   "shortcut.goHome": "Go home",
   "shortcut.jumpToFirstMessage": "Jump to first message",
   "shortcut.jumpToLatestMessage": "Jump to latest message",
@@ -4894,6 +4898,7 @@ const ja: Catalog = {
   "composer.italic": "斜体",
   "composer.link": "リンク",
   "composer.list": "リスト",
+  "composer.quote": "引用",
   "composer.mathMode": "数式",
   "composer.mathModeOff": "数式モード: OFF",
   "composer.mathModeOn": "数式モード: ON",
@@ -6573,6 +6578,7 @@ const ja: Catalog = {
   "shortcut.formatCode": "コード",
   "shortcut.formatItalics": "斜体",
   "shortcut.formatLink": "リンクを挿入",
+  "shortcut.formatQuote": "引用",
   "shortcut.goHome": "ホームへ移動",
   "shortcut.jumpToFirstMessage": "最初のメッセージへ移動",
   "shortcut.jumpToLatestMessage": "最新メッセージへ移動",

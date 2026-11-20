@@ -356,6 +356,27 @@ pub(crate) fn format_markdown_subset_html(
             continue;
         }
 
+        if blockquote_line_body(lines[line_index]).is_some() {
+            push_chunk_boundary(&mut html, previous_chunk, line_index, true);
+            html.push_str("<blockquote>");
+            let mut first_line = true;
+            while line_index < lines.len() {
+                let Some(quote_body) = blockquote_line_body(lines[line_index]) else {
+                    break;
+                };
+                if !first_line {
+                    html.push_str("<br>");
+                }
+                let _ = push_inline_markdown_subset(&mut html, quote_body, options);
+                first_line = false;
+                line_index += 1;
+            }
+            html.push_str("</blockquote>");
+            changed = true;
+            previous_chunk = Some((line_index - 1, true));
+            continue;
+        }
+
         push_chunk_boundary(&mut html, previous_chunk, line_index, false);
         changed = push_inline_markdown_subset(&mut html, lines[line_index], options) || changed;
         previous_chunk = Some((line_index, false));
@@ -393,6 +414,19 @@ fn push_chunk_boundary(
     if current_is_block && !previous_is_block {
         html.push('\n');
     }
+}
+
+/// One `>` level of a block quote. Leading spaces are tolerated, as in
+/// `unordered_list_item_body`, so a pasted indented quote still becomes a quote;
+/// `>` alone is an empty quoted line.
+///
+/// shortcut: one level only and inline marks only inside it, so `> > …` keeps its
+/// inner marker as literal `&gt;` text and `> - item` keeps its list marker as
+/// text. Upgrade to recursive blocks when a client is seen sending quotes whose
+/// nested structure must round-trip.
+fn blockquote_line_body(line: &str) -> Option<&str> {
+    let rest = line.trim_start_matches(' ').strip_prefix('>')?;
+    Some(rest.strip_prefix(' ').unwrap_or(rest))
 }
 
 fn unordered_list_item_body(line: &str) -> Option<(usize, &str)> {

@@ -116,6 +116,14 @@ const shortcuts: KeyboardShortcut[] = [
     implemented: false
   },
   {
+    id: "formatQuote",
+    category: "composer",
+    labelMessageId: "shortcut.formatQuote",
+    keys: ["Ctrl/Cmd", "Shift", ">"],
+    parity: "same",
+    implemented: false
+  },
+  {
     id: "cancelReplyOrEdit",
     category: "composer",
     labelMessageId: "shortcut.cancelReplyOrEdit",

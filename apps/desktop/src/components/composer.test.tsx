@@ -2255,16 +2255,89 @@ describe("composer format shortcuts (#1949)", () => {
 
     expect(onDocumentChange).not.toHaveBeenCalled();
   });
+
+  // #2005: Quote is the block mark Element binds to Cmd/Ctrl+Shift+>.
+  it("prefixes every selected line with a quote marker from the keyboard", () => {
+    const { editor, typed, onDocumentChange } = renderEditableComposer(true, "one\ntwo");
+    typed();
+    setInlineMentionEditorSelection(editor, 0, "one\ntwo".length);
+
+    const event = pressFormatKey(editor, ">", { shiftKey: true });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(editor.textContent).toBe("> one\n> two");
+    expect(onDocumentChange).toHaveBeenLastCalledWith("> one\n> two");
+  });
+
+  it("inserts the quote marker at a bare caret", () => {
+    const { editor } = renderEditableComposer(true, "");
+    setInlineMentionEditorSelection(editor, 0, 0);
+
+    pressFormatKey(editor, ">", { shiftKey: true });
+
+    expect(editor.textContent).toBe("> ");
+  });
+
+  it("leaves the quote chord to an IME composition and to the lock", () => {
+    const composing = renderEditableComposer();
+    composing.typed();
+    composing.onDocumentChange.mockClear();
+    expect(
+      pressFormatKey(composing.editor, ">", { shiftKey: true, isComposing: true }).defaultPrevented
+    ).toBe(false);
+    expect(composing.onDocumentChange).not.toHaveBeenCalled();
+    cleanup();
+
+    const locked = renderEditableComposer(false);
+    locked.typed();
+    locked.onDocumentChange.mockClear();
+    pressFormatKey(locked.editor, ">", { shiftKey: true });
+    expect(locked.onDocumentChange).not.toHaveBeenCalled();
+  });
+
+  // #2005: the toolbar's Quote must apply the same block quote as the chord, and
+  // must not stack a marker onto a line the formatter already reads as a quote.
+  it("quotes the selection from the toolbar, skipping lines that already have one", () => {
+    const creation = renderEditableComposer(true, "> one\ntwo");
+    creation.typed();
+    setInlineMentionEditorSelection(creation.editor, 0, "> one\ntwo".length);
+    creation.onDocumentChange.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "Quote" }));
+
+    expect(creation.editor.textContent).toBe("> one\n> two");
+    expect(creation.onDocumentChange).toHaveBeenLastCalledWith("> one\n> two");
+  });
+
+  // #2005: one `applyBlockPrefix` serves both marks, so List keeps its own
+  // "already marked" rule rather than the quote one.
+  it("keeps the list button's own already-marked rule", () => {
+    for (const [draft, expected] of [
+      ["- one\ntwo", "- one\n- two"],
+      ["* one\ntwo", "* one\n- two"],
+      // the marker goes in front of the existing indentation, as before
+      ["  indented", "-   indented"],
+    ]) {
+      const creation = renderEditableComposer(true, draft);
+      creation.typed();
+      setInlineMentionEditorSelection(creation.editor, 0, draft.length);
+
+      fireEvent.click(screen.getByRole("button", { name: "List" }));
+
+      expect(creation.editor.textContent).toBe(expected);
+      creation.unmount();
+    }
+  });
 });
 
 // #1941: while sending is locked (Secure Backup is not ready) the body refuses
 // the keyboard, so no other control may write into it either.
 describe("read-only composer lock (#1941)", () => {
-  const writingControls = ["Bold", "Italic", "Link", "List", "Code", "Mention", "Emoji"];
+  const writingControls = ["Bold", "Italic", "Link", "List", "Quote", "Code", "Mention", "Emoji"];
   // The controls whose handler writes through the editor's commit path; the
   // emoji button is excluded because an attribute-less click there opens the
   // picker instead of inserting.
-  const templateControls = ["Bold", "Italic", "Link", "List", "Code", "Mention"];
+  const templateControls = ["Bold", "Italic", "Link", "List", "Quote", "Code", "Mention"];
 
   function renderComposer(canEdit: boolean, document = documentFromText("")) {
     const onDocumentChange = vi.fn();
