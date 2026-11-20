@@ -25,7 +25,7 @@ your preferred language.
 - [Search](search.md): Find past messages and manage local history indexing.
 - [Security and recovery](security-and-recovery.md): Verify a session, recover encrypted history, move keys from another app, and distinguish key backups from chat exports.
 - [Connect an AI assistant (MCP)](ai-assistants.md): Register Claude Code, Codex, pi, DeepSeek Harness, or another MCP client, approve it in Koushi, and use the message tools.
-- [Command-line access](command-line.md): Read and search through the running Koushi app from a terminal or script.
+- [Command-line access](command-line.md): Call every MCP tool from a terminal or script with the bundled `koushi` command, and approve it in Koushi like any other assistant.
 - [User trust model](user-trust-model.md): Understand unverified users, verified identities, identity resets, and device trust.
 - [Troubleshooting](troubleshooting.md): Resolve sign-in, missing-history, search, notification, and sending problems, or report a bug.
 

@@ -38,9 +38,10 @@
   rooms.
 - **Notifications even when your server sends none.** Koushi can email you
   (Resend or SMTP) or notify WeChat (ServerChan) from your own computer.
-- **Works with your AI assistant.** Koushi can act as a local MCP server, so
-  Claude Code, Codex, and other MCP clients can search, summarize, and reply to
-  your chats through the running app, only for the accounts you allow.
+- **Works with your AI assistant.** Koushi can act as a local MCP server, or run
+  the same tools from a shell with its bundled `koushi` command, so an assistant
+  can search, summarize, and reply to your chats through the running app, only
+  for the accounts you allow.
 - **Desktop first.** Three-pane layout, threads, Markdown, code, math, keyboard
   shortcuts, system tray, and native notifications.
 
@@ -52,7 +53,8 @@ calls, screen sharing, bots, and widgets are not included yet.
 ## Use Koushi from your AI assistant
 
 Koushi can act as a local [Model Context Protocol](https://modelcontextprotocol.io)
-server. Your assistant talks to the Koushi app already open on your computer,
+server, or run the same tools from a shell with the bundled `koushi` command.
+Either way your assistant talks to the Koushi app already open on your computer,
 so it never holds your encryption keys. Then just ask:
 
 > Which rooms have unread messages? Summarize the Design room.
@@ -69,6 +71,8 @@ so it never holds your encryption keys. Then just ask:
   Reading, sending, attachments, changing messages, and writing drafts are
   separate permissions, granted per assistant and per account.
 
+### With MCP
+
 ```bash
 claude mcp add --scope user koushi -- /path/to/koushi-mcp --client-name claude-code
 ```
@@ -78,6 +82,29 @@ assistants** shows its path ready to copy. The first time an assistant asks for
 something, Koushi shows an approval dialog; you can change or remove access
 later on the same settings page. See [Connect an AI assistant](docs/help/ai-assistants.md) for Claude
 Code, Codex, other MCP clients, and URL-only connectors.
+
+### Without MCP: the bundled `koushi` command
+
+Every MCP tool is also a command of the same name. Enable the local bridge in
+**App Settings → AI assistants** first, and make sure `koushi` is on your PATH:
+
+```bash
+koushi list_accounts --json
+koushi list_rooms --account-id '<account_id from result.accounts above>'
+```
+
+`koushi --help` lists the commands and their exit codes, and `koushi <tool>
+--help` is generated from the MCP tool definitions and prints without connecting
+to Koushi, so an agent can learn the whole surface from the help alone. A failure
+exits non-zero and stderr carries only a `koushi: <code>` line, never an argument
+or a result; exit 4 (deadline) and 130 (Ctrl-C) do not prove a write did not
+happen.
+
+It is not a standalone client: it uses the same local bridge and the same
+approval dialog as an MCP client, but it is approved under its own name,
+`koushi-cli`, so a grant you gave Claude Code does not cover it. See
+[Command-line access](docs/help/command-line.md) for the executable's path on
+each platform, `--args-stdin`, the full exit table, and retries.
 
 ## Downloads
 
@@ -128,5 +155,3 @@ MIT OR Apache-2.0, at your option ([LICENSE-MIT](LICENSE-MIT),
 contribution intentionally submitted for inclusion, as defined in the
 Apache-2.0 license, is dual licensed as above without additional terms.
 Third-party attributions are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-Scripts and agents can call every MCP tool through the bundled `koushi` CLI; see [Command-line access](docs/help/command-line.md).

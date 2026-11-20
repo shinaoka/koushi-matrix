@@ -168,8 +168,8 @@
     "source_hash": "00c2e2c1519e"
   },
   "ai.lede": {
-    "text": "Koushi は Claude Code や Codex などの MCP クライアント向けに、ローカルの MCP サーバーとして動作できます。アシスタントはパソコンですでに開いている Koushi アプリとやり取りするので、暗号鍵を一切持たずに検索・要約・返信ができます。",
-    "source_hash": "4b5604d69b9b"
+    "text": "Koushi は Claude Code や Codex などの MCP クライアント向けに、ローカルの MCP サーバーとして動作できます。同梱の koushi コマンドを使えば、同じツールをシェルからも実行できます。どちらの場合もアシスタントはパソコンですでに開いている Koushi アプリとやり取りするので、暗号鍵を一切持たずに検索・要約・返信ができます。",
+    "source_hash": "921a54249b32"
   },
   "ai.can.heading": {
     "text": "できること",
