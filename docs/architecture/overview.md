@@ -2294,6 +2294,20 @@ UI responsibilities:
   inside an editor in the timeline never count as timeline scroll input.
   Lifecycle diagnostics expose closed phase/cancellation/rebase reasons and
   renderer-local counters only, never timeline key hashes or Matrix identities.
+- On Linux WebKitGTK only (Rust-reported platform `linux` and a WebKitGTK
+  engine), the timeline resamples touchpad wheel input as Chromium does:
+  WebKitGTK delivers touchpad deltas at the touchpad's own rate with no frame
+  alignment, scaling or fling, so frames move unevenly and a swipe travels less
+  than in Chromium. A gesture is a stream of fractional pixel-mode deltas at
+  touchpad cadence; whole-pixel wheels, Ctrl+wheel, horizontal input and a
+  gesture that starts over a nested scroller that can still move stay native.
+  Each resampled step and each fling step is genuine wheel intent, marked
+  through the same input path as a wheel event before the page moves. A
+  non-transaction viewport write (jump, live edge, room restore, edit reveal),
+  pointer down or navigation key stops a fling; transaction compensation for a
+  prepend does not. The constants and their measurement live in
+  `apps/desktop/src/components/timeline/touchpadScrollResampler.ts`; the
+  upstream WebKitGTK report is https://bugs.webkit.org/show_bug.cgi?id=332612.
 - Older history always loads automatically for eligible room and existing-thread
   timelines; there is no opt-out setting (#1573). Legacy persisted opt-outs are
   ignored and removed on the next settings write.
