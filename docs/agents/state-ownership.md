@@ -1357,7 +1357,10 @@ normal QA-title mode and cannot change product title semantics.
   exception that carries future message bodies for non-visible rooms: it is
   admitted only in a `Ready` session, closed by Rust when the session leaves
   `Ready` or the captured Space is gone/inactive, and React must keep no copy of
-  its contents beyond rendering the slice. MSC4140 delayed-event capability
+  its contents beyond rendering the slice. A reservation's delivery path is
+  `ScheduledSendItem.handle`: the capability follows the latest schedule
+  operation, so both projections mirror it but no renderer may label a single
+  entry from it (#1993). MSC4140 delayed-event capability
   detection and
   create/cancel/reschedule requests live in `AccountActor` through SDK/Ruma APIs.
   The local fallback timer must consider only `ScheduledSendHandle::Local` items;

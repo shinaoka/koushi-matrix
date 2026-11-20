@@ -72,18 +72,21 @@ Scheduled messages appear in the room where you created them and behind the
 **Scheduled messages** clock button in the header. That panel shows the
 reservations for **Home** (the whole account) or for the Space that was selected
 when you opened it. Each entry shows its time, message text, destination room,
-and a **Thread reply** marker when it sends into a thread. **Edit** changes the
-time or text; **Cancel scheduled send** removes the reservation.
+its own delivery label, and a **Thread reply** marker when it sends into a
+thread. **Edit** changes the time or text; **Cancel scheduled send** removes the
+reservation.
 
 Two limits matter:
 
 - Koushi lists only the scheduled messages this device created. Reservations
   made in another Matrix client, or before you reinstalled the app, do not
   appear, so the panel is not a server-wide view of your scheduled sends.
-- Delivery depends on your server and the panel labels it: with **Server
-  scheduled** the server holds the reservation and still sends it while Koushi
-  is closed; with **Local fallback** Koushi holds it and it sends only while the
-  app is running.
+- Delivery depends on your server, and each entry carries its own label: with
+  **Server scheduled** the server holds the reservation and still sends it while
+  Koushi is closed; with **Local fallback** Koushi holds it and it sends only
+  while the app is running. The server decides this per room, so one list can
+  mix both paths — the heading then reads **Mixed delivery** and the entries keep
+  their own labels.
 
 ## Reply or open a thread
 

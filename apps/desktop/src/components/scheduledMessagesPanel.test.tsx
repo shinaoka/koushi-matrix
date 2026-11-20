@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DesktopSnapshot, ScheduledSendItem } from "../domain/types";
 import { readyDesktopSnapshotFixture } from "../test/desktopApiFixture";
-import { formatScheduledSendTime, scheduledSendCapabilityLabel } from "../app/uiShared";
+import { formatScheduledSendTime } from "../app/uiShared";
 import { t } from "../i18n/messages";
 import { ContextualRightPanel } from "./rightPanel";
 
@@ -32,6 +32,12 @@ function openSnapshot(items: ScheduledSendItem[]): DesktopSnapshot {
     items
   };
   return snapshot;
+}
+
+function headingLabel(): string {
+  const heading = document.querySelector(".scheduled-messages-delivery-summary");
+  expect(heading).not.toBeNull();
+  return heading!.textContent ?? "";
 }
 
 function panelProps(overrides: Partial<PanelProps> = {}): PanelProps {
@@ -170,19 +176,82 @@ describe("scheduled messages right panel", () => {
     expect(separator!.compareDocumentPosition(thread!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
-  it("shows the panel's own projected capability, not a selected room's", () => {
-    const snapshot = openSnapshot([scheduledItem({})]);
-    snapshot.state.ui.timeline.scheduled_send_capability = "unknown";
+  // #1993: the account capability follows the latest schedule operation, so it
+  // cannot say how a single reservation will be delivered. Each entry carries its
+  // own handle, and a list that mixes paths says so instead of presenting one
+  // path as the guarantee for all of them.
+  it("labels each entry with its own delivery path and marks a mixed list", () => {
+    const local = scheduledItem({ scheduled_id: "local-1", handle: { kind: "local" } });
+    const server = scheduledItem({
+      scheduled_id: "server-1",
+      handle: { kind: "server", delay_id: "synthetic-delay" }
+    });
+    const snapshot = openSnapshot([local, server]);
+    // The latest operation was a server schedule, which is exactly the state the
+    // issue describes: a local reservation under a server capability.
     snapshot.state.ui.scheduled_sends_list = {
       kind: "open",
       scope: { kind: "home" },
-      capability: "localFallback",
-      items: [scheduledItem({})]
+      capability: "serverDelayedEvents",
+      items: [local, server]
     };
     render(<ContextualRightPanel {...panelProps({ snapshot })} />);
 
-    expect(screen.getByText(scheduledSendCapabilityLabel("localFallback"))).toBeTruthy();
+    const items = screen.getAllByRole("listitem");
+    expect(within(items[0]!).getByText(t("scheduled.localFallback"))).toBeTruthy();
+    expect(within(items[1]!).getByText(t("scheduled.serverDelayedEvents"))).toBeTruthy();
+    expect(within(items[0]!).queryByText(t("scheduled.serverDelayedEvents"))).toBeNull();
+    expect(within(items[1]!).queryByText(t("scheduled.localFallback"))).toBeNull();
+    // The heading names the mix, and the local guarantee stays visible because a
+    // reservation in this list depends on the running app.
+    expect(screen.getByText(t("scheduled.mixedDelivery"))).toBeTruthy();
     expect(screen.getByText(t("scheduled.localFallbackNotice"))).toBeTruthy();
+  });
+
+  it("keeps one heading label when every entry uses the same delivery path", () => {
+    const server = scheduledItem({
+      scheduled_id: "server-1",
+      handle: { kind: "server", delay_id: "synthetic-delay" }
+    });
+    const snapshot = openSnapshot([server, { ...server, scheduled_id: "server-2" }]);
+    render(<ContextualRightPanel {...panelProps({ snapshot })} />);
+
+    // Scoped to the heading, not counted across the document: the rows carry the
+    // same words, and the heading must still be there for a single-path list.
+    expect(screen.queryByText(t("scheduled.mixedDelivery"))).toBeNull();
+    expect(headingLabel()).toBe(t("scheduled.serverDelayedEvents"));
+    for (const item of screen.getAllByRole("listitem")) {
+      expect(within(item).getByText(t("scheduled.serverDelayedEvents"))).toBeTruthy();
+    }
+    expect(screen.queryByText(t("scheduled.localFallbackNotice"))).toBeNull();
+
+    // A purely local list keeps the label and the running-app guarantee.
+    const local = scheduledItem({ scheduled_id: "local-1", handle: { kind: "local" } });
+    cleanup();
+    render(
+      <ContextualRightPanel
+        {...panelProps({ snapshot: openSnapshot([local, { ...local, scheduled_id: "local-2" }]) })}
+      />
+    );
+    expect(screen.queryByText(t("scheduled.mixedDelivery"))).toBeNull();
+    expect(headingLabel()).toBe(t("scheduled.localFallback"));
+    for (const item of screen.getAllByRole("listitem")) {
+      expect(within(item).getByText(t("scheduled.localFallback"))).toBeTruthy();
+    }
+    expect(screen.getByText(t("scheduled.localFallbackNotice"))).toBeTruthy();
+  });
+
+  it("reads the panel's own projected items, not a selected room's handles", () => {
+    const snapshot = openSnapshot([scheduledItem({ handle: { kind: "server", delay_id: "d" } })]);
+    snapshot.state.ui.timeline.scheduled_send_capability = "serverDelayedEvents";
+    snapshot.state.ui.timeline.scheduled_sends = [
+      scheduledItem({ handle: { kind: "local" } })
+    ];
+    render(<ContextualRightPanel {...panelProps({ snapshot })} />);
+
+    const items = screen.getAllByRole("listitem");
+    expect(within(items[0]!).getByText(t("scheduled.serverDelayedEvents"))).toBeTruthy();
+    expect(screen.queryByText(t("scheduled.localFallback"))).toBeNull();
   });
 
   it("shows the app math-formatting setting in the panel editor's switch", () => {

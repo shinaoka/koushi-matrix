@@ -12,7 +12,6 @@ import {
 import { t } from "../i18n/messages";
 import type {
   DesktopSnapshot,
-  ScheduledSendCapability,
   ScheduledSendItem,
   SearchResult,
   TimelineMediaDownloadState,
@@ -41,7 +40,7 @@ import {
   mediaGalleryItemLabel,
   formatTime,
   formatScheduledSendTime,
-  scheduledSendCapabilityLabel,
+  scheduledSendDeliveryLabel,
   datetimeLocalValueFromTimestamp,
   scheduledSendTimestampFromInput,
   avatarInitial,
@@ -185,7 +184,6 @@ function RoomMediaGallery({
 }
 
 function ScheduledMessagesList({
-  capability,
   items,
   onCancel,
   onReschedule,
@@ -194,7 +192,6 @@ function ScheduledMessagesList({
   onMathModeChange,
   renderItemMeta
 }: {
-  capability: ScheduledSendCapability;
   items: ScheduledSendItem[];
   onCancel: (scheduledId: string) => void;
   onReschedule: (scheduledId: string, body: string, sendAtMs: number) => void;
@@ -225,6 +222,16 @@ function ScheduledMessagesList({
   if (items.length === 0) {
     return null;
   }
+
+  // #1993: mixed lists are possible on an MSC4140 server (an encrypted-room
+  // schedule falls back to this device), so one account label would present a
+  // local reservation as server-held, or the reverse.
+  const hasLocalDelivery = items.some((item) => item.handle.kind === "local");
+  const hasServerDelivery = items.some((item) => item.handle.kind === "server");
+  const deliveryHeading =
+    hasLocalDelivery && hasServerDelivery
+      ? t("scheduled.mixedDelivery")
+      : scheduledSendDeliveryLabel(items[0]!.handle);
 
   function openEdit(item: ScheduledSendItem) {
     setEditingId(item.scheduled_id);
@@ -258,11 +265,12 @@ function ScheduledMessagesList({
           <Clock3 size={ICON_SIZE.compact} aria-hidden="true" />
           <strong>{t("scheduled.title")}</strong>
         </span>
-        <span className="scheduled-messages-capability">
-          {scheduledSendCapabilityLabel(capability)}
-        </span>
+        <span className="scheduled-messages-delivery-summary">{deliveryHeading}</span>
       </div>
-      {capability === "localFallback" ? (
+      {/* The account capability says what the server supports, not how these
+          reservations will be delivered, so both the heading and this notice read
+          the entries themselves (#1993). */}
+      {hasLocalDelivery ? (
         <p className="scheduled-messages-note">{t("scheduled.localFallbackNotice")}</p>
       ) : null}
       <ul className="scheduled-message-list">
@@ -272,7 +280,10 @@ function ScheduledMessagesList({
             <li className="scheduled-message-item" key={item.scheduled_id}>
               <div className="scheduled-message-main">
                 <span className="scheduled-message-time">
-                  {formatScheduledSendTime(item.send_at_ms)}
+                  <span>{formatScheduledSendTime(item.send_at_ms)}</span>
+                  <span className="scheduled-message-delivery">
+                    {scheduledSendDeliveryLabel(item.handle)}
+                  </span>
                 </span>
                 <span className="scheduled-message-body" dir="auto">
                   {item.body}

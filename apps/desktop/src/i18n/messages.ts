@@ -1434,7 +1434,7 @@ export type MessageId =
   | "scheduled.timeLaterTenMinutes"
   | "scheduled.timeLaterHour"
   | "scheduled.title"
-  | "scheduled.unknownCapability"
+  | "scheduled.mixedDelivery"
   | "trust.acceptVerification"
   | "trust.closeVerification"
   | "trust.confirmSas"
@@ -3897,7 +3897,7 @@ const en: Catalog = {
   "scheduled.localFallback": "Local fallback",
   "scheduled.persistenceFailed":
     "Local scheduled-send changes could not be saved; they may not survive restarting the app.",
-  "scheduled.localFallbackNotice": "Will send only while this app is running.",
+  "scheduled.localFallbackNotice": "Local fallback: sends only while this app is running.",
   "scheduled.panelEmpty": "No scheduled messages",
   "scheduled.save": "Save scheduled send",
   "scheduled.schedule": "Schedule send",
@@ -3912,7 +3912,7 @@ const en: Catalog = {
   "scheduled.timeLaterTenMinutes": "10 minutes later",
   "scheduled.timeLaterHour": "1 hour later",
   "scheduled.title": "Scheduled messages",
-  "scheduled.unknownCapability": "Checking support",
+  "scheduled.mixedDelivery": "Mixed delivery",
   "trust.acceptVerification": "Accept",
   "trust.closeVerification": "Close",
   "trust.confirmSas": "Confirm",
@@ -6263,7 +6263,7 @@ const ja: Catalog = {
   "scheduled.bodyInput": "予約メッセージ",
   "scheduled.edit": "予約送信を編集",
   "scheduled.localFallback": "ローカルフォールバック",
-  "scheduled.localFallbackNotice": "このアプリが起動中のときだけ送信されます。",
+  "scheduled.localFallbackNotice": "ローカルフォールバック：このアプリが起動中のときだけ送信されます。",
   "scheduled.panelEmpty": "予約メッセージはありません",
   "scheduled.persistenceFailed":
     "予約送信の変更をこの端末に保存できませんでした。アプリを再起動すると失われる可能性があります。",
@@ -6279,7 +6279,7 @@ const ja: Catalog = {
   "scheduled.timeLaterTenMinutes": "10 分後",
   "scheduled.timeLaterHour": "1 時間後",
   "scheduled.title": "予約メッセージ",
-  "scheduled.unknownCapability": "対応状況を確認中",
+  "scheduled.mixedDelivery": "配送方法が混在",
   "trust.acceptVerification": "承認",
   "trust.closeVerification": "閉じる",
   "trust.confirmSas": "確認",
