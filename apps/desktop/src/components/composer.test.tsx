@@ -8,10 +8,12 @@ import type { MentionCandidate } from "../domain/projectionTypes";
 import { documentFromText, plainBodyFromDocument } from "../domain/composerDocument";
 import type {
   ComposerDocument,
+  ComposerDraftRevision,
   ComposerResolvedAction,
   ComposerResolverOptions,
   ResolveComposerKeyAction
 } from "../domain/types";
+import type { ComposerModeProp } from "../app/uiShared";
 import { readClipboardImageFile } from "../backend/clipboardImageRuntime";
 import { setActiveLocaleProfile, t } from "../i18n/messages";
 import {
@@ -776,6 +778,217 @@ describe("Composer", () => {
     expect(
       screen.getByRole("switch", { name: /math formatting off/i }).getAttribute("aria-checked")
     ).toBe("false");
+  });
+
+  // #2007: setting a reply target is the moment the user wants to type, so the
+  // editor of that surface takes focus with the caret after the existing draft.
+  describe("reply focus (#2007)", () => {
+    const REPLY_TARGET = "$reply-target";
+
+    function renderReplyComposer(draftKey = "!room-a", draft = "draft text") {
+      const props = {
+        isSending: false,
+        roomName: "Direct room",
+        draftKey,
+        onCancelReply: () => undefined,
+        onSend: textSend(() => undefined),
+        onDocumentChange: textChange(() => undefined)
+      };
+      const rendered = render(
+        <Composer {...props} composerMode={{ kind: "plain" }} document={documentFromText(draft)} />
+      );
+      return {
+        ...rendered,
+        editor: rendered.container.querySelector<HTMLDivElement>(".composer-inline-editor")!,
+        rerenderWith(
+          overrides: Partial<Parameters<typeof Composer>[0]> & { composerMode: ComposerModeProp }
+        ) {
+          rendered.rerender(<Composer {...props} document={documentFromText(draft)} {...overrides} />);
+        }
+      };
+    }
+
+    /** Let the focus frame run, so a stolen focus cannot hide behind timing. */
+    async function settleFocusFrame() {
+      await act(async () => {
+        await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+      });
+    }
+
+    /** Focus something no composer owns, so the guards are what keeps focus. */
+    function focusOutsideComposer() {
+      const outside = document.createElement("button");
+      document.body.append(outside);
+      outside.focus();
+      return outside;
+    }
+
+    it("focuses the room composer when a reply target is set", async () => {
+      const rendered = renderReplyComposer();
+      expect(document.activeElement).not.toBe(rendered.editor);
+
+      rendered.rerenderWith({ composerMode: { kind: "reply", in_reply_to_event_id: REPLY_TARGET } });
+
+      await waitFor(() => expect(document.activeElement).toBe(rendered.editor));
+    });
+
+    it("refocuses for a different message, and stays put for the same one", async () => {
+      const rendered = renderReplyComposer();
+      rendered.rerenderWith({ composerMode: { kind: "reply", in_reply_to_event_id: REPLY_TARGET } });
+      await waitFor(() => expect(document.activeElement).toBe(rendered.editor));
+
+      const outside = focusOutsideComposer();
+      rendered.rerenderWith({
+        composerMode: { kind: "reply", in_reply_to_event_id: "$another-target" }
+      });
+      await waitFor(() => expect(document.activeElement).toBe(rendered.editor));
+
+      // A parent snapshot that names the target already shown is not another
+      // Reply, even when it also changes the draft.
+      outside.focus();
+      rendered.rerenderWith({
+        composerMode: { kind: "reply", in_reply_to_event_id: "$another-target" },
+        document: documentFromText("draft text plus a snapshot")
+      });
+      await settleFocusFrame();
+      expect(document.activeElement).toBe(outside);
+    });
+
+    it("focuses the thread composer when a reply target is set", async () => {
+      const props = {
+        canEdit: true,
+        composerMode: { kind: "plain" } as ComposerModeProp,
+        document: documentFromText("thread draft"),
+        draftKey: "!room-a:$root-a",
+        isSending: false,
+        resolveComposerKeyAction: vi.fn(async () => "noop" as const),
+        onDocumentChange: textChange(vi.fn()),
+        onSend: textSend(vi.fn())
+      };
+      const { container, rerender } = render(<ThreadComposer {...props} />);
+      const editor = container.querySelector<HTMLDivElement>(".composer-inline-editor")!;
+      expect(document.activeElement).not.toBe(editor);
+
+      rerender(
+        <ThreadComposer
+          {...props}
+          composerMode={{ kind: "reply", in_reply_to_event_id: REPLY_TARGET }}
+        />
+      );
+
+      await waitFor(() => expect(document.activeElement).toBe(editor));
+    });
+
+    it("moves the mention query to the caret it writes", async () => {
+      const onMentionQueryChange = vi.fn();
+      const rendered = renderReplyComposer("!room-a", "@al hello");
+      rendered.rerenderWith({ composerMode: { kind: "plain" }, onMentionQueryChange });
+      setInlineMentionEditorSelection(rendered.editor, 3, 3);
+      fireEvent.keyUp(rendered.editor);
+      await waitFor(() => expect(onMentionQueryChange).toHaveBeenLastCalledWith("al"));
+
+      rendered.rerenderWith({
+        composerMode: { kind: "reply", in_reply_to_event_id: REPLY_TARGET },
+        onMentionQueryChange
+      });
+      await settleFocusFrame();
+
+      // The DOM caret is at the end, so the composer's own selection has to be
+      // too, or `acceptActiveMention` would edit the abandoned `@al`.
+      expect(inlineMentionEditorSelection(rendered.editor)).toEqual({
+        start: "@al hello".length,
+        end: "@al hello".length
+      });
+      await waitFor(() => expect(onMentionQueryChange).toHaveBeenLastCalledWith(null));
+    });
+
+    it("leaves the caret alone when the editor already has focus", async () => {
+      const rendered = renderReplyComposer();
+      rendered.editor.focus();
+      setInlineMentionEditorSelection(rendered.editor, 3, 3);
+
+      rendered.rerenderWith({ composerMode: { kind: "reply", in_reply_to_event_id: REPLY_TARGET } });
+      await settleFocusFrame();
+
+      // Refocusing would move the caret to the end of the draft the user is in.
+      expect(document.activeElement).toBe(rendered.editor);
+      expect(inlineMentionEditorSelection(rendered.editor)).toEqual({ start: 3, end: 3 });
+    });
+
+    it("does not interrupt an editor that is mid-composition", async () => {
+      const rendered = renderReplyComposer();
+      const outside = focusOutsideComposer();
+      // A real browser ends the composition on blur; keep it live to pin the
+      // guard itself, so an interrupted conversion can never be observed.
+      fireEvent.compositionStart(rendered.editor);
+
+      rendered.rerenderWith({ composerMode: { kind: "reply", in_reply_to_event_id: REPLY_TARGET } });
+      await settleFocusFrame();
+
+      expect(document.activeElement).toBe(outside);
+    });
+
+    it("leaves focus where it is when the reply is cancelled", async () => {
+      const rendered = renderReplyComposer();
+      rendered.rerenderWith({ composerMode: { kind: "reply", in_reply_to_event_id: REPLY_TARGET } });
+      await waitFor(() => expect(document.activeElement).toBe(rendered.editor));
+
+      const outside = focusOutsideComposer();
+      rendered.rerenderWith({ composerMode: { kind: "plain" } });
+      await settleFocusFrame();
+
+      expect(document.activeElement).toBe(outside);
+    });
+
+    it("does not take focus for an assistant draft staged through MCP", async () => {
+      const rendered = renderReplyComposer();
+      const outside = focusOutsideComposer();
+
+      // `draft_message` writes the marker and the reply target in one commit.
+      rendered.rerenderWith({
+        composerMode: { kind: "reply", in_reply_to_event_id: REPLY_TARGET },
+        document: documentFromText("assistant draft"),
+        assistantDraft: { client_name: "claude", revision: "1" as ComposerDraftRevision }
+      });
+      await settleFocusFrame();
+
+      expect(document.activeElement).toBe(outside);
+    });
+
+    it("still focuses a Reply the user makes while a staged draft is showing", async () => {
+      const rendered = renderReplyComposer();
+      rendered.rerenderWith({
+        composerMode: { kind: "plain" },
+        assistantDraft: { client_name: "claude", revision: "1" as ComposerDraftRevision }
+      });
+      focusOutsideComposer();
+
+      // The marker stays for the rest of the draft's life, so it cannot veto a
+      // later reply the user picks.
+      rendered.rerenderWith({
+        composerMode: { kind: "reply", in_reply_to_event_id: REPLY_TARGET },
+        assistantDraft: { client_name: "claude", revision: "1" as ComposerDraftRevision }
+      });
+
+      await waitFor(() => expect(document.activeElement).toBe(rendered.editor));
+    });
+
+    it("keeps focus off a draft that changes room with its own reply target", async () => {
+      const rendered = renderReplyComposer();
+      const outside = focusOutsideComposer();
+
+      // A room switch arrives as one snapshot: the new draft and the reply
+      // target that room already had. Neither is a reply the user just clicked.
+      rendered.rerenderWith({
+        composerMode: { kind: "reply", in_reply_to_event_id: REPLY_TARGET },
+        draftKey: "!other-room",
+        roomName: "Other room",
+        document: documentFromText("other draft")
+      });
+      await settleFocusFrame();
+
+      expect(document.activeElement).toBe(outside);
+    });
   });
 
   it("gives the thread textarea the same live conversion ownership", () => {
