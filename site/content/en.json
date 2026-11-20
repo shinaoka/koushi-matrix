@@ -41,7 +41,7 @@
   "pain.help.problem": "You get lost in settings and help pages.",
   "pain.help.answer": "Ask ChatGPT or another AI assistant in your own language. Koushi's user guide is written so assistants can read it, and Help & About in the app shows you how to ask.",
   "ai.heading": "Bring your AI assistant into your chats",
-  "ai.lede": "Koushi can act as a local MCP server for Claude Code, Codex, and other MCP clients. The assistant talks to the Koushi app already open on your computer, so it can search, summarize, and reply without ever holding your encryption keys.",
+  "ai.lede": "Koushi can act as a local MCP server for Claude Code, Codex, and other MCP clients, or run the same tools from a shell with the koushi command that ships with it. Either way the assistant talks to the Koushi app already open on your computer, so it can search, summarize, and reply without ever holding your encryption keys.",
   "ai.can.heading": "What it can do",
   "ai.can.search": "Search your history, including encrypted rooms, with the time and room of every hit",
   "ai.can.unread": "List rooms with unread messages and mentions, and read a room's recent messages to summarize them",

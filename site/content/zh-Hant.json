@@ -168,8 +168,8 @@
     "source_hash": "00c2e2c1519e"
   },
   "ai.lede": {
-    "text": "Koushi 可以作為本機 MCP 伺服器，供 Claude Code、Codex 和其他 MCP 用戶端使用。助理與電腦上已經開啟的 Koushi 應用程式溝通，因此不必持有你的加密金鑰，就能搜尋、摘要和回覆。",
-    "source_hash": "4b5604d69b9b"
+    "text": "Koushi 可以作為本機 MCP 伺服器，供 Claude Code、Codex 和其他 MCP 用戶端使用；也可以用隨附的 koushi 指令，在終端機裡執行同一套工具。無論哪一種方式，助理都與電腦上已經開啟的 Koushi 應用程式溝通，因此不必持有你的加密金鑰，就能搜尋、摘要和回覆。",
+    "source_hash": "921a54249b32"
   },
   "ai.can.heading": {
     "text": "它能做什麼",
