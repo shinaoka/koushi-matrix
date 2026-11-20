@@ -63,6 +63,26 @@ Do not give recovery keys, backup passphrases, or exported keys to an AI
 assistant or include them in an issue. These are credentials for encrypted
 history, not diagnostic information.
 
+## Show or replace your recovery key from Settings
+
+Once your backup is active, **Settings → Encryption** has a **Recovery key**
+section. Koushi never stores your recovery key and cannot read one back later,
+so the account's current key cannot be shown again from Settings; the section
+says so rather than offering a key it cannot read. A key that is still on screen
+from another step, such as a passphrase change, does appear here until you
+choose **I saved the recovery key**.
+
+**Create new…** replaces a lost key after an explicit confirmation: your
+previous recovery key and security phrase stop working, including in other
+Matrix clients. The Secure Backup prompt then shows the new key and stays in the
+way, with sending closed, until you choose **I saved the recovery key**; use
+**Copy** or **Save to file…** first. Cancelling the confirmation changes
+nothing. If the app closes before you confirm, the new key cannot be shown again
+either; create another one from the same section.
+
+While the Secure Backup prompt reports a problem, the section offers no action:
+finish the prompt first, then come back.
+
 ## Read while secure backup is still being checked
 
 Once your session is verified, Koushi opens your saved conversations even while

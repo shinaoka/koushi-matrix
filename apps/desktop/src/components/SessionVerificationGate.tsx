@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ImeSafeForm, SecureImeTextField } from "./ImeTextControl";
 import { ResetLocalDataConfirmationDialog } from "./dialogs";
 import { RecoveryKeyReveal, copyRecoveryKeyToClipboard } from "./RecoveryKeyReveal";
+import { RecoveryKeyResetConfirmation } from "./RecoveryKeyResetConfirmation";
 import { t } from "../i18n/messages";
 import { api as defaultApi, startSessionVerificationWindowDrag } from "../backend/appRuntime";
 import type { DesktopApi } from "../backend/desktopApi";
@@ -584,33 +585,11 @@ export function SessionVerificationGate({
             {t("gate.secureBackupResetRecoveryKey")}
           </button>
           {confirmRecoveryKeyReset && (
-            <div
-              className="trust-verification-dialog"
-              role="region"
-              aria-labelledby="secure-backup-reset-title"
-            >
-              <h2 id="secure-backup-reset-title">
-                {t("gate.secureBackupResetRecoveryKeyTitle")}
-              </h2>
-              <p>{t("gate.secureBackupResetRecoveryKeyWarning")}</p>
-              <div className="dialog-actions">
-                <button
-                  className="dialog-button danger"
-                  disabled={secureBackupOperation !== null}
-                  type="button"
-                  onClick={resetSecureBackupRecoveryKey}
-                >
-                  {t("gate.secureBackupResetRecoveryKeyConfirm")}
-                </button>
-                <button
-                  className="dialog-button"
-                  type="button"
-                  onClick={() => setConfirmRecoveryKeyReset(false)}
-                >
-                  {t("action.cancel")}
-                </button>
-              </div>
-            </div>
+            <RecoveryKeyResetConfirmation
+              disabled={secureBackupOperation !== null}
+              onConfirm={resetSecureBackupRecoveryKey}
+              onCancel={() => setConfirmRecoveryKeyReset(false)}
+            />
           )}
         </>
       )}

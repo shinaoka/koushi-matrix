@@ -1389,6 +1389,10 @@ export type MessageId =
   | "settings.secureBackupFailed"
   | "settings.recoveryKeyReady"
   | "settings.recoveryKeySaved"
+  | "settings.createNewRecoveryKey"
+  | "settings.recoveryKey"
+  | "settings.recoveryKeyShowHint"
+  | "settings.recoveryKeyGateBlocks"
   | "settings.changeSecureBackupPassphrase"
   | "settings.oldSecureBackupSecret"
   | "settings.newSecureBackupPassphrase"
@@ -3867,6 +3871,10 @@ const en: Catalog = {
   "settings.secureBackupFailed": "Setup failed: {reason}",
   "settings.recoveryKeyReady": "Recovery key ready",
   "settings.recoveryKeySaved": "Recovery key saved",
+  "settings.createNewRecoveryKey": "Create new…",
+  "settings.recoveryKey": "Recovery key",
+  "settings.recoveryKeyShowHint": "Koushi does not keep your recovery key, so an existing one cannot be shown again here. If you have lost it, create a new one: the new key is shown by the Secure Backup prompt, which stays in the way until you confirm you saved it.",
+  "settings.recoveryKeyGateBlocks": "Secure backup needs to be ready before you can create a new recovery key.",
   "settings.changeSecureBackupPassphrase": "Change secure backup passphrase",
   "settings.oldSecureBackupSecret": "Current recovery secret",
   "settings.newSecureBackupPassphrase": "New secure backup passphrase",
@@ -6234,6 +6242,10 @@ const ja: Catalog = {
   "settings.secureBackupFailed": "セットアップ失敗: {reason}",
   "settings.recoveryKeyReady": "リカバリーキー準備済み",
   "settings.recoveryKeySaved": "リカバリーキー保存済み",
+  "settings.createNewRecoveryKey": "新規作成…",
+  "settings.recoveryKey": "リカバリーキー",
+  "settings.recoveryKeyShowHint": "Koushi はリカバリーキーを保存しないため、すでにあるキーをここで再表示することはできません。紛失した場合は新しいキーを作成してください。新しいキーはセキュアバックアップの画面に表示され、保存したことを確認するまでその画面が表示されたままになります。",
+  "settings.recoveryKeyGateBlocks": "セキュアバックアップが有効になるまで、新しいリカバリーキーは作成できません。",
   "settings.changeSecureBackupPassphrase": "セキュアバックアップのパスフレーズを変更",
   "settings.oldSecureBackupSecret": "現在のリカバリーシークレット",
   "settings.newSecureBackupPassphrase": "新しいセキュアバックアップのパスフレーズ",

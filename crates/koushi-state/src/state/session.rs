@@ -341,13 +341,18 @@ impl SecureBackupSetupIntent {
             (Self::InitialSetup, SecureBackupGateState::SetupRequired) => {
                 SecureBackupSetupAdmission::Allowed
             }
+            // #1997: Settings offers the same reset for a healthy backup, so a
+            // `Ready` gate admits it as well; the interrupted-reveal path keeps
+            // its own admission. Every other gate refuses the intent, which is
+            // what leaves the recovery prompt the only path in a restricted
+            // state.
             (
                 Self::ResetRecoveryKey { confirmed: true },
-                SecureBackupGateState::RecoveryKeyDeliveryRequired,
+                SecureBackupGateState::RecoveryKeyDeliveryRequired | SecureBackupGateState::Ready,
             ) => SecureBackupSetupAdmission::Allowed,
             (
                 Self::ResetRecoveryKey { confirmed: false },
-                SecureBackupGateState::RecoveryKeyDeliveryRequired,
+                SecureBackupGateState::RecoveryKeyDeliveryRequired | SecureBackupGateState::Ready,
             ) => SecureBackupSetupAdmission::ConfirmationRequired,
             (
                 Self::Reenable { confirmed: true },

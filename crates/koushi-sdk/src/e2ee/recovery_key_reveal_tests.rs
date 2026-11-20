@@ -16,7 +16,12 @@ use super::{MatrixClientSession, SessionInfo, reset_recovery_key};
 /// Minimal in-memory global account-data store so secret storage written by
 /// one call can be read back by `recover()`.
 #[derive(Clone, Default)]
-struct AccountDataStore(Arc<Mutex<HashMap<String, serde_json::Value>>>);
+struct AccountDataStore {
+    data: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    /// Injects the "new recovery key could not be created" failure a reset hits
+    /// when its secret-storage key upload fails (#1997).
+    fail_secret_storage_key_writes: Arc<std::sync::atomic::AtomicBool>,
+}
 
 impl AccountDataStore {
     fn event_type(request: &Request) -> String {
@@ -33,7 +38,18 @@ impl AccountDataStore {
 impl Respond for AccountDataStore {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         let event_type = Self::event_type(request);
-        let mut store = self.0.lock().expect("account data store lock");
+        if request.method.as_str() == "PUT"
+            && event_type.starts_with("m.secret_storage.key.")
+            && self
+                .fail_secret_storage_key_writes
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "errcode": "M_UNKNOWN",
+                "error": "synthetic secret storage write failure"
+            }));
+        }
+        let mut store = self.data.lock().expect("account data store lock");
         if request.method.as_str() == "PUT" {
             let body = serde_json::from_slice(&request.body).expect("account data body is JSON");
             store.insert(event_type, body);
@@ -50,11 +66,18 @@ impl Respond for AccountDataStore {
 }
 
 async fn session_with_account_data() -> (MatrixMockServer, MatrixClientSession) {
+    let (server, session, _store) = session_with_account_data_store().await;
+    (server, session)
+}
+
+async fn session_with_account_data_store()
+-> (MatrixMockServer, MatrixClientSession, AccountDataStore) {
     let server = MatrixMockServer::new().await;
+    let store = AccountDataStore::default();
     Mock::given(path_regex(
         r"^/_matrix/client/(r0|v3)/user/[^/]+/account_data/[^/]+$",
     ))
-    .respond_with(AccountDataStore::default())
+    .respond_with(store.clone())
     .mount(server.server())
     .await;
     server.mock_query_keys().ok().mount().await;
@@ -68,6 +91,7 @@ async fn session_with_account_data() -> (MatrixMockServer, MatrixClientSession) 
     (
         server,
         MatrixClientSession::from_client_for_testing(client, info),
+        store,
     )
 }
 
@@ -230,6 +254,108 @@ async fn reset_completes_secret_storage_after_an_interrupted_enable() {
         .recover(summary.recovery_key.as_str())
         .await
         .expect("the reset key unlocks the new secret storage");
+}
+
+/// #1997: a reset can start from a healthy backup, so a failure inside
+/// `reset_key()` reveals nothing and the previous key still works. Leaving the
+/// marker set would present that key as lost, close reading, and offer only a
+/// destructive reset as the way out.
+#[tokio::test]
+async fn a_failed_reset_from_a_healthy_backup_keeps_the_current_key() {
+    let (server, session, store) = session_with_account_data_store().await;
+    mount_backup_and_cross_signing(&server, &session).await;
+    assert!(
+        session
+            .inspect_secure_backup()
+            .await
+            .expect("inspection succeeds")
+            .recovery_key_reset_is_possible(),
+        "a healthy backup admits the reset"
+    );
+    assert!(
+        !session
+            .recovery_key_delivery_pending()
+            .await
+            .expect("marker read"),
+        "no reveal is awaited yet"
+    );
+
+    store
+        .fail_secret_storage_key_writes
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        session
+            .reset_secure_backup_recovery_key(None)
+            .await
+            .is_err(),
+        "the injected secret-storage failure must fail the reset"
+    );
+    assert!(
+        !session
+            .recovery_key_delivery_pending()
+            .await
+            .expect("marker read"),
+        "a failed reset reveals no key, so the delivery marker must not claim one"
+    );
+}
+
+/// The lost-key origin keeps its marker: that reveal really is unknown to the
+/// user, so a second failed reset must not make the account look healthy.
+#[tokio::test]
+async fn a_failed_reset_of_an_awaited_reveal_keeps_the_marker() {
+    let (server, session, store) = session_with_account_data_store().await;
+    mount_backup_and_cross_signing(&server, &session).await;
+    session
+        .set_recovery_key_delivery_pending(true)
+        .await
+        .expect("marker write");
+
+    store
+        .fail_secret_storage_key_writes
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        session
+            .reset_secure_backup_recovery_key(None)
+            .await
+            .is_err(),
+        "the injected secret-storage failure must fail the reset"
+    );
+    assert!(
+        session
+            .recovery_key_delivery_pending()
+            .await
+            .expect("marker read"),
+        "an interrupted reveal stays pending"
+    );
+}
+
+async fn mount_backup_and_cross_signing(server: &MatrixMockServer, session: &MatrixClientSession) {
+    Mock::given(path_regex(
+        r"^/_matrix/client/(r0|v3|unstable)/room_keys/version$",
+    ))
+    .respond_with(BackupVersionStore::default())
+    .mount(server.server())
+    .await;
+    server.mock_upload_keys().ok().mount().await;
+    server.mock_upload_cross_signing_keys().ok().mount().await;
+    server
+        .mock_upload_cross_signing_signatures()
+        .ok()
+        .mount()
+        .await;
+    session
+        .client()
+        .encryption()
+        .bootstrap_cross_signing(None)
+        .await
+        .expect("cross-signing bootstrap");
+    session
+        .client()
+        .encryption()
+        .backups()
+        .create()
+        .await
+        .expect("backup created");
 }
 
 /// #1049: the identity bootstrap sets the delivery-pending marker before
