@@ -273,13 +273,20 @@ type ScrollResult = {
   spacerFrames: number;
 };
 
-/** Scroll up until Core's window has slid `slides` times, then a little more. */
-async function scrollUpAcrossSlides(page: Page, slides: number): Promise<ScrollResult> {
+/**
+ * Scroll up until Core's window has slid `slides` times, then a little more, or
+ * for `maxSteps` steps when that comes first.
+ */
+async function scrollUp(
+  page: Page,
+  { slides = Infinity, maxSteps = 4000 }: { slides?: number; maxSteps?: number }
+): Promise<ScrollResult> {
   return page.evaluate(
-    ({ slides, stepPx, intervalMs, tolerancePx }) =>
+    ({ slides, maxSteps, stepPx, intervalMs, tolerancePx }) =>
       new Promise<ScrollResult>((resolve) => {
         const probe = (window as unknown as { __paintProbe: PaintedFrameProbe }).__paintProbe;
-        const slideState = (window as unknown as { __slideState: { slides: number } }).__slideState;
+        const slideState =
+          (window as unknown as { __slideState?: { slides: number } }).__slideState ?? { slides: 0 };
         const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]")!;
         probe.active = true;
         let steps = 0;
@@ -314,7 +321,7 @@ async function scrollUpAcrossSlides(page: Page, slides: number): Promise<ScrollR
           if (slideState.slides >= slides && settleSteps < 0) settleSteps = 120;
           if (settleSteps >= 0) settleSteps -= 1;
           stepsAtTop = container.scrollTop > 0 ? 0 : stepsAtTop + 1;
-          if (settleSteps === 0 || stepsAtTop > 120 || steps > 4000) {
+          if (settleSteps === 0 || stepsAtTop > 120 || steps >= maxSteps) {
             finish();
             return;
           }
@@ -328,7 +335,9 @@ async function scrollUpAcrossSlides(page: Page, slides: number): Promise<ScrollR
         setTimeout(step, intervalMs);
       }),
     {
-      slides,
+      // Infinity does not survive serialization into the page.
+      slides: Number.isFinite(slides) ? slides : Number.MAX_SAFE_INTEGER,
+      maxSteps,
       stepPx: STEP_PX,
       intervalMs: STEP_INTERVAL_MS,
       tolerancePx: ANCHOR_TOLERANCE_PX
@@ -346,7 +355,7 @@ test("upward reading across bounded-window slides keeps the reader's row in ever
   await installWindowSlidingCore(page);
   await page.locator("[data-testid=timeline-view]").hover();
 
-  const result = await scrollUpAcrossSlides(page, REQUIRED_SLIDES);
+  const result = await scrollUp(page, { slides: REQUIRED_SLIDES });
   await test.info().attach("window-slide-scroll", {
     contentType: "application/json",
     body: JSON.stringify({ ...result, jumps: result.jumps.slice(0, 40) }, null, 2)
@@ -359,4 +368,38 @@ test("upward reading across bounded-window slides keeps the reader's row in ever
   // Every correction reached the frame that needed it.
   expect(result.jumps).toEqual([]);
   expect(result.spacerFrames).toBe(0);
+});
+
+/**
+ * Viewport heights 15 px apart across two of the spec's tallest rows. Where the
+ * first row mounted above the live edge lands depends on the fonts that lay out
+ * every row below it, so no single height reaches the case on every machine;
+ * this span always includes heights where it does.
+ */
+const LIVE_EDGE_VIEWPORT_HEIGHTS = Array.from({ length: 12 }, (_, index) => 625 + index * 15);
+const LIVE_EDGE_STEPS = 24;
+
+test("leaving the live edge keeps the reader's row when the first mounted row shortens the list", async ({
+  page
+}) => {
+  // A row mounted above a reader 30 px from the bottom can be shorter than its
+  // estimate by more than that, so the browser clamps scrollTop to the new
+  // bottom before the commit's anchor compensation runs. The reader has left the
+  // live edge; the clamp must not put them back on it.
+  test.setTimeout(120_000);
+  await installPaintedFrameProbe(page);
+  const failures: Array<{ height: number; jumps: ScrollResult["jumps"] }> = [];
+  let appCorrections = 0;
+  for (const height of LIVE_EDGE_VIEWPORT_HEIGHTS) {
+    await page.setViewportSize({ width: 1280, height });
+    await openAtLiveEdge(page);
+    await page.locator("[data-testid=timeline-view]").hover();
+    const result = await scrollUp(page, { maxSteps: LIVE_EDGE_STEPS });
+    appCorrections += result.appCorrections;
+    if (result.jumps.length > 0) failures.push({ height, jumps: result.jumps.slice(0, 4) });
+  }
+
+  // The premise: rows mounted above the reader at a height other than the estimate.
+  expect(appCorrections).toBeGreaterThan(0);
+  expect(failures).toEqual([]);
 });

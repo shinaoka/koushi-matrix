@@ -50,6 +50,13 @@ the lane that shows the symptom. Lane commands are in
   (`setTimeout`), like native wheel input; a `wheel` dispatched from a rAF lands
   ahead of the app's range-commit frame and cancels it every time, which blanks
   the viewport in a way native input does not.
+- **A geometry-sensitive timeline spec fails only on CI and survives CPU load,
+  slow frames and other step intervals locally.** Suspect fonts: CI's fonts lay
+  rows out at other heights, so where a mount boundary falls relative to the
+  live edge differs. Vary the viewport height (`page.setViewportSize`) in steps
+  smaller than a row; that reproduced the CI-only first-step jump of
+  `e2e/timeline-window-slide-anchor.spec.ts` in half the heights. A spec that
+  depends on such a boundary should sweep heights rather than trust one.
 - **Prepend anchor restoration never engages.** A bare `node.scrollTop = X` is a
   PROGRAMMATIC scroll: the component keeps `live-edge` viewport intent and snaps
   back to the bottom. To simulate a real user scroll-up, dispatch a `WheelEvent`

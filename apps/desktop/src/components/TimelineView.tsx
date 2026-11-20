@@ -1448,6 +1448,27 @@ export const TimelineView = memo(function TimelineView({
     return true;
   }, []);
 
+  // Whether a height commit finds the reader at the live end, judged where the
+  // anchor compensation of the same commit will leave them. Rows mounted or
+  // measured above a free-scroll reader can shrink the list, and the browser
+  // then clamps scrollTop to the new bottom before that compensation runs: a
+  // reader just above the edge reads as "at bottom" in the clamped layout. Taking
+  // that for live-edge intent would drop the anchor, skip the compensation and
+  // pin the reader to the bottom, undoing their scroll.
+  const readerAtLiveEnd = useCallback((container: HTMLElement): boolean => {
+    const anchor =
+      viewportIntentRef.current.kind === "free-scroll" &&
+      !jumpViewportControlRef.current &&
+      !roomScrollAnchorRestorePendingRef.current
+        ? viewportTransactionRef.current.active()?.anchor ?? stableAnchor()
+        : null;
+    const compensation = anchor ? measureAnchorDelta(container, anchor) ?? 0 : 0;
+    return (
+      container.scrollHeight - container.clientHeight - (container.scrollTop + compensation) <=
+      SCROLL_EDGE_TOLERANCE_PX
+    );
+  }, [stableAnchor]);
+
   const flushPendingMeasurements = useCallback(
     (reason: "idle" | "maxDefer" | "layout") => {
       // Timers from a previous render must not apply old-generation geometry or
@@ -1517,7 +1538,7 @@ export const TimelineView = memo(function TimelineView({
       }
 
       const container = containerRef.current;
-      const measuredAtBottom = Boolean(windowReachesLiveEndRef.current && container && isScrolledToBottom(container));
+      const measuredAtBottom = Boolean(windowReachesLiveEndRef.current && container && readerAtLiveEnd(container));
       stickToBottomAfterMeasurementRef.current = measuredAtBottom;
       if (measuredAtBottom) {
         setViewportIntentToLiveEdge();
@@ -1572,6 +1593,7 @@ export const TimelineView = memo(function TimelineView({
       generation,
       emitDiagnosticLog,
       markScrollActivityIdle,
+      readerAtLiveEnd,
       releaseDeferredPrepend,
       setViewportIntentToLiveEdge,
       stableAnchor,
@@ -3824,7 +3846,7 @@ export const TimelineView = memo(function TimelineView({
       }
     }
     const container = containerRef.current;
-    const measuredAtBottom = Boolean(windowReachesLiveEndRef.current && container && isScrolledToBottom(container));
+    const measuredAtBottom = Boolean(windowReachesLiveEndRef.current && container && readerAtLiveEnd(container));
     stickToBottomAfterMeasurementRef.current = measuredAtBottom;
     if (measuredAtBottom) {
       setViewportIntentToLiveEdge();
@@ -3868,6 +3890,7 @@ export const TimelineView = memo(function TimelineView({
   }, [
     captureStableAnchor,
     generation,
+    readerAtLiveEnd,
     setViewportIntentToLiveEdge,
     stableAnchor,
     updateScrollDiagnostics,

@@ -108,6 +108,38 @@ browser never does, and so depended on settlement waiting for a frame:
 - `vitest run`: 209 files, 2,616 tests passed. `tsc --noEmit` and `npm run lint`
   passed.
 
+## CI: the first step off the live edge (follow-up)
+
+The required WebKit run of the new spec failed once on CI with a single
+−60 px jump in painted frame 2, right after scrolling began, and never
+reproduced locally under CPU load, slow frames or other step intervals. It
+reproduced at once by varying the viewport height: in 6 of 12 heights the first
+upward step left the reader's row behind by the estimate error of the first
+mounted row, in both engines. Row heights depend on the fonts, so CI's fonts put
+that geometry at the default viewport and the local ones did not.
+
+Cause: the reader is 30 px above the bottom when the scroll frame mounts an
+overscan row above them that is shorter than its estimate by more than 30 px.
+The list shrinks and the browser clamps `scrollTop` to the new bottom. The
+measurement pass then read `isScrolledToBottom` from that clamped layout,
+before its own anchor compensation, concluded the reader was at the live edge,
+switched the intent back to live-edge (dropping the anchor, so nothing
+compensated the mount) and pinned the bottom. The reader's scroll was undone and
+the row jumped. The check came from "live-edge anchoring after send", whose
+intent is to keep a reader who *was* at the bottom pinned while heights change;
+it never meant a bottom produced by the layout being corrected.
+
+Change: both measurement commits (the layout pass and the idle/max-defer flush)
+judge "at the live end" at the position the same commit's compensation restores,
+`scrollTop + anchorDelta` for a free-scroll reader with a held anchor.
+Live-edge readers and readers without an anchor are judged as before.
+
+Test: `leaving the live edge keeps the reader's row when the first mounted row
+shortens the list` (same spec) leaves the live edge from twelve viewport heights
+15 px apart, so some height reaches the case whatever the fonts. RED on the
+previous commit in Chromium (6 heights) and WebKit (7 heights); GREEN in both,
+three runs each, together with the slide test.
+
 ## Not covered
 
 - The installed-app measurement on the reporter's real room was not re-run here
