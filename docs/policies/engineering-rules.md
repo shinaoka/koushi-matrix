@@ -305,7 +305,15 @@ are specified in overview [SDK Event Cache Lifecycle](../architecture/overview.m
    predicate before blocking and perform one final authoritative observation
    after timeout, closure, or lag, under the same deadline, before reporting
    failure. Timeout diagnostics identify the typed phase and private-data-free
-   observed state needed to locate the missing transition.
+   observed state needed to locate the missing transition. Integration-test
+   convergence waits use the shared fence instead of a per-test deadline:
+   `koushi_core_testkit::StateWaitWatchdog` plus `tests/support/mod.rs`
+   `wait_for_state_event`, or `wait_for_state_event_at` for a labelled stage: a
+   silence window re-armed by observed progress whose
+   monotonic backstop is what keeps the no-postponing rule above intact. A loaded
+   runner then does not fail on elapsed time while a wedged Core still fails, and
+   a contract that converges in several stages labels each wait with its stage,
+   because the fence's diagnostic says what happened, not where.
 2. Every spawned background task and live stream/subscription handle has one
    retained owner responsible for cancelling it (replacement, unsubscribe,
    account shutdown, app shutdown) and awaiting settlement. Tokio
