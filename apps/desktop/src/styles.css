@@ -6490,6 +6490,13 @@ mark {
   background: var(--brand);
 }
 
+/* #2014: the paper plane's mass sits ~1.3px right and up of its box centre, so
+   a centred box still read as an up-right icon. Move the icon, never the frame;
+   physical because the glyph is never mirrored for RTL. */
+.send-button svg {
+  transform: translate(-1px, 1px);
+}
+
 .composer-reply-banner {
   display: flex;
   justify-content: space-between;
