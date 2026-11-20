@@ -74,6 +74,8 @@ export default defineConfig({
         /timeline-scroll-anchor-drift\.spec\.ts$/,
         /timeline-viewport-transaction\.spec\.ts$/,
         /timeline-window-slide-anchor\.spec\.ts$/,
+        // Linux WebKitGTK touchpad resampling is WebKit-only by design.
+        /timeline-touchpad-resampling\.spec\.ts$/,
         // #1603: hover chrome is suppressed for content scrolling under a
         // stationary pointer; the report came from macOS WebKit.
         /timeline-hover-intent\.spec\.ts$/,

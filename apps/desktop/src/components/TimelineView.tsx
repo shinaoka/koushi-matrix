@@ -4385,7 +4385,12 @@ export const TimelineView = memo(function TimelineView({
       // A gesture the timeline already owns stays with it; a new one that
       // starts over a nested scroller that can still move belongs to it.
       if (!resampler.active && nestedScrollerTakesWheel(event.target, container, event.deltaY)) return;
-      if (resampler.wheel(event.deltaY, performance.now()) !== "resample") return;
+      // The event's own time (WebKitGTK takes it from the compositor event), so
+      // input delivered late by a busy main thread still lands where it
+      // belongs on the curve. Fall back to now if the clocks disagree.
+      const now = performance.now();
+      const inputTime = Math.abs(now - event.timeStamp) < 1000 ? event.timeStamp : now;
+      if (resampler.wheel(event.deltaY, inputTime) !== "resample") return;
       event.preventDefault();
       if (frame === null) frame = window.requestAnimationFrame(runFrame);
     };
