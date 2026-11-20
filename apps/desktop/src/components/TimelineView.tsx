@@ -4382,6 +4382,13 @@ export const TimelineView = memo(function TimelineView({
     navigationSnapshot?.read_marker_event_id ??
     ("Thread" in timelineKey.kind ? null : roomSignals?.fully_read_event_id) ??
     null;
+  // #2012: the divider's row, advanced past the current user's in-flight
+  // messages that the anchor cannot name yet.
+  const readMarkerAnchorRowId = effectiveReadMarkerRowId(
+    visibleRows,
+    unreadMarkerEventId ? null : readMarkerDisplayEventId,
+    currentUserId
+  );
 
   return (
     <ProjectionSnapshotBoundary
@@ -4520,17 +4527,10 @@ export const TimelineView = memo(function TimelineView({
             unreadMarkerEventId &&
               (unreadMarkerEventId === contentEventId || unreadMarkerEventId === activityEventId)
           );
-          const isReadMarker = Boolean(
-            readMarkerDisplayEventId &&
-              (readMarkerDisplayEventId === contentEventId || readMarkerDisplayEventId === activityEventId) &&
-              !unreadMarkerEventId
-          );
+          const isReadMarker = Boolean(readMarkerAnchorRowId && readMarkerAnchorRowId === row.row_id);
           const previousRow = visibleRows[visibleIndex - 1];
           const previousIsReadMarker = Boolean(
-            previousRow && readMarkerDisplayEventId &&
-              (readMarkerDisplayEventId === previousRow.content_event_id ||
-                readMarkerDisplayEventId === previousRow.activity_event_id) &&
-              !unreadMarkerEventId
+            readMarkerAnchorRowId && readMarkerAnchorRowId === previousRow?.row_id
           );
           const isContinuation = Boolean(
             (row.kind === "event" || row.kind === "threadRoot") &&
@@ -4767,6 +4767,50 @@ export const TimelineView = memo(function TimelineView({
     </ProjectionSnapshotBoundary>
   );
 });
+
+/**
+ * The row the "Read up to here" divider follows (#2012).
+ *
+ * Rust advances `read_marker_display_event_id` to the current user's latest
+ * visible own message, but a local echo has no event id, so it cannot take the
+ * anchor until the server names it. The divider therefore sat above the user's
+ * own in-flight message and moved below it a moment later, laying the row out
+ * twice (in compact density the row also gained and then lost its avatar and
+ * name). Placing the divider where the confirmed anchor will land keeps the
+ * send to a single layout. A failed message is left out on purpose: it never
+ * takes the anchor.
+ */
+function effectiveReadMarkerRowId(
+  rows: readonly TimelineDisplayRow[],
+  readMarkerDisplayEventId: string | null,
+  currentUserId: string | undefined
+): string | null {
+  if (!readMarkerDisplayEventId) return null;
+  let index = rows.findIndex(
+    (row) =>
+      readMarkerDisplayEventId === row.content_event_id ||
+      readMarkerDisplayEventId === row.activity_event_id
+  );
+  if (index < 0) return null;
+  while (
+    currentUserId &&
+    index + 1 < rows.length &&
+    isInFlightOwnRow(rows[index + 1], currentUserId)
+  ) {
+    index += 1;
+  }
+  return rows[index].row_id;
+}
+
+/** An own message whose send is still in flight, so no event id names it yet. */
+function isInFlightOwnRow(row: TimelineDisplayRow, currentUserId: string): boolean {
+  return (
+    (row.kind === "event" || row.kind === "threadRoot") &&
+    row.item.sender === currentUserId &&
+    "Transaction" in row.item.id &&
+    row.item.send_state?.kind === "sending"
+  );
+}
 
 function readStateSyncToken(sync: TimelineReadStateSync): string {
   if (typeof sync === "string") {
