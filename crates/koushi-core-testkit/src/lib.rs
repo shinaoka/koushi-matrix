@@ -6,7 +6,10 @@ use std::time::{Duration, Instant};
 ///
 /// A contract wait is causal: only an observed state transition can satisfy it.
 /// A loaded machine that keeps publishing states keeps the wait alive, so the
-/// failure condition is silence rather than elapsed time.
+/// failure condition is silence rather than elapsed time. A caller that narrows
+/// what counts as progress to its own lane — see
+/// `contracts/event_cache_lifecycle.rs` (#1721) — gives up after this window of
+/// that lane's silence, so its tolerance is this bound, not `HANG_BACKSTOP`.
 pub const PROGRESS_WINDOW: Duration = Duration::from_secs(30);
 
 /// Absolute cap for a Core that keeps publishing unrelated progress without

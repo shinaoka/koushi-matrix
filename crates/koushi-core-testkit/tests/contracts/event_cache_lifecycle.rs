@@ -16,7 +16,11 @@ use std::time::Duration;
 use koushi_core::runtime::{CoreConnection, CoreRuntime};
 use koushi_core_testkit::{HANG_BACKSTOP, PROGRESS_WINDOW, StateWaitWatchdog};
 use koushi_protocol::command::{AccountCommand, CoreCommand, RoomCommand};
-use koushi_protocol::event::{CoreEvent, TimelineDiff, TimelineEvent, TimelineItemId};
+use koushi_protocol::event::{
+    CoreEvent, SyncEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
+    TimelineMessageActions,
+};
+use koushi_protocol::ids::{AccountKey, TimelineBatchId, TimelineGeneration, TimelineKey};
 use koushi_state::{AppState, AuthSecret, LoginRequest, SessionState, SyncState};
 use matrix_sdk::test_utils::mocks::MatrixMockServer;
 use serde_json::{Value, json};
@@ -31,12 +35,26 @@ const FIRST_EVENT: &str = "$cache-first:localhost";
 const RESTORED_EVENT: &str = "$cache-restored:localhost";
 const SYNC_PATH: &str = "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync";
 
+/// What the persisted cache store holds for this contract's event (#1721).
+///
+/// `Linked` is what a restore reads. `Unlinked` is the state a restore cannot
+/// use: the store keeps the event row for deduplication, but no chunk links it,
+/// so the room's restored timeline is empty. Reporting the row alone made this
+/// contract's failure read as "the cache was there", which is why the loss
+/// looked like the product ignoring a persisted event.
+#[derive(Debug, Eq, PartialEq)]
+enum PersistedCacheEvent {
+    Linked,
+    Unlinked,
+    Missing,
+}
+
 // This reads after the timeout, so the store may have changed since the failure.
 // The SDK's store opener checkpoints and migrates; use SQLite read-only instead.
 fn persisted_event_after_timeout(
     data: &std::path::Path,
     credentials: &std::path::Path,
-) -> Result<bool, &'static str> {
+) -> Result<PersistedCacheEvent, &'static str> {
     let backend = koushi_store::CredentialStoreBackend::FileDir(
         koushi_store::FileCredentialStore::new(credentials),
     );
@@ -58,7 +76,10 @@ fn persisted_event_after_timeout(
     read_cached_event(&path, key.as_bytes())
 }
 
-fn read_cached_event(path: &std::path::Path, key: &[u8]) -> Result<bool, &'static str> {
+fn read_cached_event(
+    path: &std::path::Path,
+    key: &[u8],
+) -> Result<PersistedCacheEvent, &'static str> {
     let db =
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|_| "read-only open failed")?;
@@ -67,6 +88,8 @@ fn read_cached_event(path: &std::path::Path, key: &[u8]) -> Result<bool, &'stati
             row.get(0)
         })
         .map_err(|_| "schema version unavailable")?;
+    // Diagnostic only: an SDK schema bump degrades this payload to
+    // `Err("unsupported cache schema")` rather than failing the contract.
     if version != [18] {
         return Err("unsupported cache schema");
     }
@@ -79,12 +102,30 @@ fn read_cached_event(path: &std::path::Path, key: &[u8]) -> Result<bool, &'stati
         .map_err(|_| "cache cipher import failed")?;
     let room = cipher.hash_key("events", ROOM.as_bytes());
     let event = cipher.hash_key("events", FIRST_EVENT.as_bytes());
-    db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM events WHERE event_id = ?1 AND room_id = ?2)",
-        rusqlite::params![event.as_slice(), room.as_slice()],
-        |row| row.get(0),
-    )
-    .map_err(|_| "cache lookup failed")
+    let row: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE event_id = ?1 AND room_id = ?2)",
+            rusqlite::params![event.as_slice(), room.as_slice()],
+            |row| row.get(0),
+        )
+        .map_err(|_| "cache lookup failed")?;
+    if !row {
+        return Ok(PersistedCacheEvent::Missing);
+    }
+    // This contract has one room, one event, and no thread or pinned-event
+    // cache, so any link for this event is the room chunk's link.
+    let linked: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM event_chunks WHERE event_id = ?1)",
+            rusqlite::params![event.as_slice()],
+            |row| row.get(0),
+        )
+        .map_err(|_| "cache link lookup failed")?;
+    Ok(if linked {
+        PersistedCacheEvent::Linked
+    } else {
+        PersistedCacheEvent::Unlinked
+    })
 }
 
 #[test]
@@ -94,7 +135,7 @@ fn cache_failure_diagnostic_reads_hashed_event_without_writing() {
     let key = [7_u8; 32];
     let cipher = matrix_sdk_store_encryption::StoreCipher::new().expect("cipher");
     let db = rusqlite::Connection::open(&path).expect("database");
-    db.execute_batch("CREATE TABLE kv (key TEXT PRIMARY KEY, value BLOB); CREATE TABLE events (room_id BLOB, event_id BLOB);").expect("schema");
+    db.execute_batch("CREATE TABLE kv (key TEXT PRIMARY KEY, value BLOB); CREATE TABLE events (room_id BLOB, event_id BLOB); CREATE TABLE event_chunks (event_id BLOB);").expect("schema");
     db.execute("INSERT INTO kv VALUES ('version', ?1)", [&[18_u8][..]])
         .expect("version");
     db.execute(
@@ -102,7 +143,10 @@ fn cache_failure_diagnostic_reads_hashed_event_without_writing() {
         [cipher.export_with_key(&key).expect("export")],
     )
     .expect("cipher");
-    assert_eq!(read_cached_event(&path, &key), Ok(false));
+    assert_eq!(
+        read_cached_event(&path, &key),
+        Ok(PersistedCacheEvent::Missing)
+    );
     db.execute(
         "INSERT INTO events VALUES (?1, ?2)",
         rusqlite::params![
@@ -111,7 +155,20 @@ fn cache_failure_diagnostic_reads_hashed_event_without_writing() {
         ],
     )
     .expect("event");
-    assert_eq!(read_cached_event(&path, &key), Ok(true));
+    // The row alone is not restorable: a restore reads the chunk's links.
+    assert_eq!(
+        read_cached_event(&path, &key),
+        Ok(PersistedCacheEvent::Unlinked)
+    );
+    db.execute(
+        "INSERT INTO event_chunks VALUES (?1)",
+        rusqlite::params![cipher.hash_key("events", FIRST_EVENT.as_bytes()).as_slice()],
+    )
+    .expect("chunk link");
+    assert_eq!(
+        read_cached_event(&path, &key),
+        Ok(PersistedCacheEvent::Linked)
+    );
     db.execute(
         "UPDATE kv SET value = ?1 WHERE key = 'version'",
         [&[19_u8][..]],
@@ -252,6 +309,195 @@ async fn lane_probe(connection: &mut CoreConnection) -> String {
         Ok(Err(error)) => format!("lane_rejected({error})"),
         Err(_) => format!("lane_wedged no admission within {window:?}"),
     }
+}
+
+/// Progress for the `cached_delivery` stage: the selected room's own timeline
+/// published a row.
+///
+/// The wait shares the runtime's event stream with the sync loop, so counting
+/// every published event as progress hid a stalled delivery behind sync
+/// chatter. The #1721 CI failure ended on the fence's backstop, not its silence
+/// window — `backstop for 991.621µs after 39247 published events in
+/// 180.003167393s` — while the stage's own condition had not moved once. Only
+/// that condition re-arms the window.
+///
+/// This narrows the budget this one stage tolerates: it gives up after the
+/// shared window of silence **on its own lane**, not after the fence's backstop
+/// of the whole runtime. The accepted delivery is still the initial window
+/// carrying the row; a row that only arrives in a later batch re-arms the
+/// window and the payload's `delivered_in_updates` says so.
+fn cached_delivery_progress(event: &CoreEvent, room_id: &str) -> bool {
+    match event {
+        CoreEvent::Timeline(TimelineEvent::InitialItems { key, items, .. }) => {
+            key.room_id() == room_id && !items.is_empty()
+        }
+        CoreEvent::Timeline(TimelineEvent::ItemsUpdated { key, diffs, .. }) => {
+            key.room_id() == room_id && diffs.iter().any(|diff| !published_rows(diff).is_empty())
+        }
+        _ => false,
+    }
+}
+
+/// The rows one diff publishes: the single row a push, insert, or replacement
+/// places, or a reset's whole projection. Empty when the diff publishes no row,
+/// which is what tells a revision apart from delivery.
+fn published_rows(diff: &TimelineDiff) -> &[TimelineItem] {
+    match diff {
+        TimelineDiff::PushFront { item }
+        | TimelineDiff::PushBack { item }
+        | TimelineDiff::Insert { item, .. }
+        | TimelineDiff::Set { item, .. } => std::slice::from_ref(item),
+        TimelineDiff::Reset { items } => items,
+        _ => &[],
+    }
+}
+
+/// Whether one timeline row is the persisted event this contract restores.
+fn is_first_event(item: &TimelineItem) -> bool {
+    matches!(&item.id, TimelineItemId::Event { event_id } if event_id == FIRST_EVENT)
+}
+
+fn room_timeline_key(room_id: &str) -> TimelineKey {
+    TimelineKey::room(AccountKey(USER.to_owned()), room_id)
+}
+
+fn initial_items(room_id: &str, items: Vec<TimelineItem>) -> CoreEvent {
+    CoreEvent::Timeline(TimelineEvent::InitialItems {
+        request_id: None,
+        cause_request_id: None,
+        key: room_timeline_key(room_id),
+        actor_generation: 1,
+        generation: TimelineGeneration(1),
+        items,
+    })
+}
+
+fn items_updated(room_id: &str, diffs: Vec<TimelineDiff>) -> CoreEvent {
+    CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+        key: room_timeline_key(room_id),
+        generation: TimelineGeneration(1),
+        batch_id: TimelineBatchId(1),
+        diffs,
+    })
+}
+
+fn restored_row() -> TimelineItem {
+    TimelineItem {
+        id: TimelineItemId::Event {
+            event_id: FIRST_EVENT.to_owned(),
+        },
+        sender: Some(USER.to_owned()),
+        sender_label: None,
+        sender_avatar: None,
+        body: Some("synthetic cache message".to_owned()),
+        notice_i18n: None,
+        message_kind: Default::default(),
+        spoiler_spans: Vec::new(),
+        timestamp_ms: Some(1_700_000_000_000),
+        in_reply_to_event_id: None,
+        formatted: None,
+        reply_quote: None,
+        thread_root: None,
+        thread_summary: None,
+        media: None,
+        link_previews: None,
+        link_ranges: Vec::new(),
+        mentioned_user_ids: Vec::new(),
+        mentions_room: false,
+        reactions: Vec::new(),
+        can_react: false,
+        is_redacted: false,
+        is_hidden: false,
+        can_redact: false,
+        is_edited: false,
+        can_edit: false,
+        unable_to_decrypt: None,
+        request_state: None,
+        actions: TimelineMessageActions::default(),
+        send_state: None,
+        display_metadata: None,
+    }
+}
+
+#[test]
+fn cached_delivery_progress_counts_only_the_room_timeline_gaining_rows() {
+    assert!(cached_delivery_progress(
+        &initial_items(ROOM, vec![restored_row()]),
+        ROOM
+    ));
+    assert!(cached_delivery_progress(
+        &items_updated(
+            ROOM,
+            vec![TimelineDiff::Reset {
+                items: vec![restored_row()]
+            }]
+        ),
+        ROOM
+    ));
+
+    // An empty projection is not delivery progress, and neither is another
+    // room's timeline.
+    assert!(!cached_delivery_progress(
+        &initial_items(ROOM, Vec::new()),
+        ROOM
+    ));
+    assert!(!cached_delivery_progress(
+        &items_updated(ROOM, vec![TimelineDiff::Reset { items: Vec::new() }]),
+        ROOM
+    ));
+    assert!(!cached_delivery_progress(
+        &initial_items("!other:localhost", vec![restored_row()]),
+        ROOM
+    ));
+
+    // The sync loop republished this room's list hundreds of times per second
+    // in the failing run; none of that is this stage's condition.
+    assert!(!cached_delivery_progress(
+        &CoreEvent::Sync(SyncEvent::Running),
+        ROOM
+    ));
+}
+
+#[test]
+fn sync_chatter_cannot_mask_a_stalled_cached_delivery() {
+    // Aged past both budgets without sleeping, so the fence's report names the
+    // deadline that ended the wait. This mirrors the #1721 CI failure, where the
+    // stage reported the backstop after 39 247 unrelated events while its own
+    // condition had not moved once.
+    let mut masked = StateWaitWatchdog::start_at(
+        std::time::Instant::now() - HANG_BACKSTOP - Duration::from_secs(1),
+        PROGRESS_WINDOW,
+        HANG_BACKSTOP,
+    );
+    // The failing run published 39 247 such events; none of them is this
+    // stage's condition, so the count does not matter — one is enough to show
+    // that chatter cannot re-arm the window.
+    let chatter = CoreEvent::Sync(SyncEvent::Running);
+    for _ in 0..39_247 {
+        if cached_delivery_progress(&chatter, ROOM) {
+            masked.progress();
+        }
+    }
+    let report = masked.report("room timeline rows");
+    assert!(
+        report.starts_with("silence for"),
+        "unrelated runtime events must not relabel this stage's stall as the backstop: {report}"
+    );
+    assert!(report.contains("after 0 room timeline rows"), "{report}");
+
+    // The stage's own condition still re-arms the window (aged past the window
+    // but not the backstop, which no later progress can restore).
+    let mut delivered = StateWaitWatchdog::start_at(
+        std::time::Instant::now() - PROGRESS_WINDOW - Duration::from_secs(1),
+        PROGRESS_WINDOW,
+        HANG_BACKSTOP,
+    );
+    delivered.progress();
+    assert!(
+        delivered.remaining().is_some(),
+        "a delivered room row re-arms the window: {}",
+        delivered.report("room timeline rows")
+    );
 }
 
 fn has_latest(state: &AppState, event_id: &str) -> bool {
@@ -407,11 +653,14 @@ async fn automatic_cache_delivers_first_sync_persisted_restore_and_new_updates()
     phases.push(("cached_delivery_wait_start", tokio::time::Instant::now()));
     let mut initial_counts = Vec::new();
     let mut delivered_in_updates = false;
+    let mut events_without_progress = 0_u64;
+    let mut room_timeline_events = 0_u64;
+    let mut room_update_batches = 0_u64;
     let mut watchdog = StateWaitWatchdog::start();
-    let stalled = |watchdog: &StateWaitWatchdog| {
+    let stalled = |watchdog: &StateWaitWatchdog, events_without_progress: u64| {
         format!(
-            "cached_delivery stalled: {}",
-            watchdog.report("published events")
+            "cached_delivery stalled: {}; events_without_progress={events_without_progress}",
+            watchdog.report("room timeline rows")
         )
     };
     let failure = loop {
@@ -426,16 +675,31 @@ async fn automatic_cache_delivers_first_sync_persisted_restore_and_new_updates()
                     lag.skipped
                 ));
             }
-            Err(_) => break Some(stalled(&watchdog)),
+            Err(_) => break Some(stalled(&watchdog, events_without_progress)),
         };
-        // Any published event proves the Core is still working; only silence is
-        // evidence that the cached timeline is stuck.
-        watchdog.progress();
+        // Only this stage's own condition counts as progress: sync chatter
+        // re-armed the window in the failing run and hid the stall behind the
+        // backstop.
+        if matches!(&event, CoreEvent::Timeline(TimelineEvent::InitialItems { key, .. } | TimelineEvent::ItemsUpdated { key, .. }) if key.room_id() == ROOM)
+        {
+            room_timeline_events += 1;
+            if matches!(
+                &event,
+                CoreEvent::Timeline(TimelineEvent::ItemsUpdated { .. })
+            ) {
+                room_update_batches += 1;
+            }
+        }
+        if cached_delivery_progress(&event, ROOM) {
+            watchdog.progress();
+        } else {
+            events_without_progress += 1;
+        }
         match event {
             CoreEvent::Timeline(TimelineEvent::InitialItems { key, items, .. })
                 if key.room_id() == ROOM =>
             {
-                let found = items.iter().any(|item| matches!(&item.id, TimelineItemId::Event { event_id } if event_id == FIRST_EVENT));
+                let found = items.iter().any(is_first_event);
                 initial_counts.push((items.len(), found));
                 if found {
                     break None;
@@ -444,11 +708,7 @@ async fn automatic_cache_delivers_first_sync_persisted_restore_and_new_updates()
             CoreEvent::Timeline(TimelineEvent::ItemsUpdated { key, diffs, .. })
                 if key.room_id() == ROOM =>
             {
-                delivered_in_updates |= diffs.iter().any(|diff| match diff {
-                    TimelineDiff::PushFront { item } | TimelineDiff::PushBack { item } | TimelineDiff::Insert { item, .. } | TimelineDiff::Set { item, .. } => matches!(&item.id, TimelineItemId::Event { event_id } if event_id == FIRST_EVENT),
-                    TimelineDiff::Reset { items } => items.iter().any(|item| matches!(&item.id, TimelineItemId::Event { event_id } if event_id == FIRST_EVENT)),
-                    _ => false,
-                });
+                delivered_in_updates |= diffs.iter().flat_map(published_rows).any(is_first_event);
             }
             _ => {}
         }
@@ -467,7 +727,7 @@ async fn automatic_cache_delivers_first_sync_persisted_restore_and_new_updates()
         let lane = lane_probe(&mut connection).await;
         let observation = observation_started.elapsed();
         panic!(
-            "restored timeline reads persisted cache without server replay: {failure}; phases=(phase, elapsed) {timing:?}; logout=not reached; initial_items=(count, contains_event) {initial_counts:?}; delivered_in_updates={delivered_in_updates}; lane_probe={lane}; persisted_event_after_timeout={cache:?}; observation_duration={observation:?}; store may have changed since the failure",
+            "restored timeline reads persisted cache without server replay: {failure}; phases=(phase, elapsed) {timing:?}; logout=not reached; initial_items=(count, contains_event) {initial_counts:?}; delivered_in_updates={delivered_in_updates}; lane_probe={lane}; persisted_event_after_timeout={cache:?}; observation_duration={observation:?}; room_timeline_events={room_timeline_events}; room_update_batches={room_update_batches}; store may have changed since the failure",
         );
     }
     phase.store(2, Ordering::Release);

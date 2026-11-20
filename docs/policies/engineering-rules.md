@@ -313,7 +313,14 @@ are specified in overview [SDK Event Cache Lifecycle](../architecture/overview.m
    monotonic backstop is what keeps the no-postponing rule above intact. A loaded
    runner then does not fail on elapsed time while a wedged Core still fails, and
    a contract that converges in several stages labels each wait with its stage,
-   because the fence's diagnostic says what happened, not where.
+   because the fence's diagnostic says what happened, not where. When another
+   lane dominates a stage's window, that stage classifies its own progress
+   instead of taking the fence's default of any published event: in #1721
+   unrelated sync events re-armed the window of a stalled cached read at ~200
+   events/s, so the stage could only end on the backstop and its diagnostic
+   blamed a timeout instead of its own silence. A stage that narrows the signal
+   this way says in its own doc comment that its tolerance is now the window of
+   its lane, not the fence's backstop of the whole runtime.
 2. Every spawned background task and live stream/subscription handle has one
    retained owner responsible for cancelling it (replacement, unsubscribe,
    account shutdown, app shutdown) and awaiting settlement. Tokio
