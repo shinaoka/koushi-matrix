@@ -1452,7 +1452,6 @@ export function TimelinePane({
         </div>
       </section>
       <ScheduledMessagesList
-        capability={snapshot.state.ui.timeline.scheduled_send_capability}
         items={snapshot.state.ui.timeline.scheduled_sends}
         onCancel={onCancelScheduledSendStable}
         onReschedule={onRescheduleScheduledSendStable}

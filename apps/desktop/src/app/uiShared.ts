@@ -483,14 +483,19 @@ export function scheduledSendTimestampFromInput(value: string): number | null {
   return Number.isFinite(timestampMs) ? timestampMs : null;
 }
 
-export function scheduledSendCapabilityLabel(capability: import("../domain/types").ScheduledSendCapability): string {
-  switch (capability) {
-    case "serverDelayedEvents":
+/**
+ * How one reservation will be delivered (#1993). The account capability says what
+ * the server supports and follows the latest schedule operation, so it cannot
+ * stand in for a single entry's guarantee.
+ */
+export function scheduledSendDeliveryLabel(
+  handle: import("../domain/types").ScheduledSendHandle
+): string {
+  switch (handle.kind) {
+    case "server":
       return t("scheduled.serverDelayedEvents");
-    case "localFallback":
+    case "local":
       return t("scheduled.localFallback");
-    case "unknown":
-      return t("scheduled.unknownCapability");
   }
 }
 

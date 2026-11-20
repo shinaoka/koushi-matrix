@@ -188,6 +188,17 @@ describe("styles.css token system", () => {
     expect(selectorBlock(".scheduled-message-thread")).toContain("white-space: nowrap;");
   });
 
+  // #1993: the delivery path is per entry text beside the time, so it must stay a
+  // readable label rather than an icon and must not wrap the timestamp away.
+  test("scheduled-message delivery label reads as text beside the time", () => {
+    const time = selectorBlock(".scheduled-message-time");
+    expect(time).toContain("display: flex;");
+    expect(time).toContain("align-items: baseline;");
+    const delivery = selectorBlock(".scheduled-message-delivery");
+    expect(delivery).toContain("white-space: nowrap;");
+    expect(delivery).toMatch(/color:\s*var\(--text-muted\)/);
+  });
+
   test("selected room row uses a logical brand start bar", () => {
     expect(css).toMatch(/border-inline-start-color:\s*var\(--brand\)/);
     expect(css).not.toContain("box-shadow: inset 3px 0 0 0 var(--brand)");

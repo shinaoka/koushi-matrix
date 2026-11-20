@@ -125,7 +125,6 @@ describe("scheduled message editing", () => {
     const onReschedule = vi.fn();
     render(
       <ScheduledMessagesList
-        capability="localFallback"
         items={[
           {
             scheduled_id: "scheduled-1",
@@ -160,7 +159,6 @@ describe("scheduled message editing", () => {
     const onReschedule = vi.fn();
     render(
       <ScheduledMessagesList
-        capability="localFallback"
         items={[
           {
             scheduled_id: "scheduled-1",

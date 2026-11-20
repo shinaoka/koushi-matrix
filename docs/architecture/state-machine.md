@@ -2267,6 +2267,13 @@ tokens, paths, or raw errors.
   rooms. `TimelinePaneState.scheduled_sends` is the selected-room projection
   only, and `TimelinePaneState.scheduled_send_capability` advertises whether
   server delayed events or the local fallback is active.
+- The capability follows the latest schedule operation, not the whole queue: an
+  encrypted-room schedule falls back to a local item and lowers the capability
+  while an unencrypted-room schedule raises it again, so one list can hold both
+  paths. Delivery is therefore labelled per entry from `ScheduledSendItem.handle`
+  (#1993), never from the capability: a local reservation must not be presented
+  as server-held, or the reverse. The panel heading names a mixed list, and the
+  local-fallback notice follows the entries rather than the capability.
 - #1160 amends that boundary with exactly one explicit exception: the scheduled-
   sends panel projection `AppState.scheduled_sends_list` (transport slice
   `StateDeltaChangedSlices.scheduled_sends_list`, Tauri

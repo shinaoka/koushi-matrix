@@ -4039,7 +4039,7 @@ button:disabled {
   min-width: 0;
 }
 
-.scheduled-messages-capability {
+.scheduled-messages-delivery-summary {
   display: inline-flex;
   align-items: center;
   min-height: 20px;
@@ -4087,9 +4087,22 @@ button:disabled {
 }
 
 .scheduled-message-time {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--scheduled-action-gap);
+  align-items: baseline;
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 800;
+}
+
+/* #1993: each entry states its own delivery path, so the time line carries it as
+   text beside the timestamp; the account capability is not a per-row guarantee. */
+.scheduled-message-delivery {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .scheduled-message-body {

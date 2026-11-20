@@ -1116,7 +1116,6 @@ export function ContextualRightPanel({
           <p className="panel-empty-state">{t("scheduled.panelEmpty")}</p>
         ) : (
           <ScheduledMessagesList
-            capability={scheduledSends?.capability ?? "unknown"}
             items={scheduledItems}
             onCancel={onCancelScheduledSend}
             onReschedule={onRescheduleScheduledSend}
