@@ -276,6 +276,9 @@ export const Composer = memo(function Composer({
   const mountedRef = useRef(true);
   const sectionRef = useRef<HTMLElement>(null);
   const draftKeyRef = useRef(draftKey);
+  // Read by the reply-focus frame, which runs after the commit it was scheduled in.
+  const localDocumentRef = useRef(localDocument);
+  localDocumentRef.current = localDocument;
   const autocompleteListboxId = useId();
   if (localDraftKey !== draftKey) {
     const end = documentLength(document);
@@ -341,6 +344,36 @@ export const Composer = memo(function Composer({
     setDocumentSelection({ start: end, end });
     documentEpochRef.current += 1;
   }, [document]);
+
+  // #2007: a Reply names a target the user just picked, so that surface's editor
+  // takes focus with the caret after the draft. See
+  // `docs/worklogs/2026-11-20-issue2007-reply-focus.md` for the four cases that
+  // must not move focus.
+  const replyTargetId = composerMode.kind === "reply" ? composerMode.in_reply_to_event_id : null;
+  const assistantDraftRevision = assistantDraft?.revision ?? null;
+  const replyFocusRef = useRef({ draftKey, replyTargetId, assistantDraftRevision });
+  useEffect(() => {
+    const previous = replyFocusRef.current;
+    replyFocusRef.current = { draftKey, replyTargetId, assistantDraftRevision };
+    if (previous.draftKey !== draftKey) return;
+    // An unchanged target is a repeated snapshot, not another Reply.
+    if (replyTargetId === null || replyTargetId === previous.replyTargetId) return;
+    // A staged draft writes its marker and its reply target in one commit.
+    if (assistantDraftRevision !== previous.assistantDraftRevision) return;
+    if (editorRef.current?.isComposing()) return;
+    // `document` here is the draft prop, so the DOM document is explicit.
+    if (sectionRef.current?.contains(window.document.activeElement)) return;
+    requestAnimationFrame(() => {
+      const handle = editorRef.current;
+      if (!handle) return;
+      const end = documentLength(localDocumentRef.current);
+      handle.focus();
+      handle.setSelection({ start: end, end });
+      // The editor writes the DOM selection only; the composer's own copy drives
+      // the mention popup, so it has to move with it.
+      setDocumentSelection({ start: end, end });
+    });
+  }, [replyTargetId, draftKey, assistantDraftRevision, editorRef]);
 
   useEffect(() => {
     setActiveMentionIndex(0);
