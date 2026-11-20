@@ -117,6 +117,41 @@ fn recovery_key_reset_requires_explicit_confirmation_before_routing() {
     ));
 }
 
+#[test]
+fn a_healthy_backup_admits_the_confirmed_reset_that_settings_sends_1997() {
+    // #1997: Settings reuses the gate's `ResetRecoveryKey` intent for an account
+    // whose backup is ready. Only the explicit confirmation is admitted; the
+    // unconfirmed intent and every other intent stay no-ops on `Ready`.
+    let state = ready_state(SecureBackupGateState::Ready);
+    assert_eq!(
+        secure_backup_setup_projection_failure(
+            &state,
+            &request(SecureBackupSetupIntent::ResetRecoveryKey { confirmed: false }),
+        ),
+        Some(CoreFailure::SecureBackupSetupConfirmationRequired)
+    );
+    assert_eq!(
+        secure_backup_setup_projection_failure(
+            &state,
+            &request(SecureBackupSetupIntent::InitialSetup),
+        ),
+        Some(CoreFailure::SecureBackupSetupFailedNoOp)
+    );
+    let mut projected = state.clone();
+    let effects = koushi_state::reduce(
+        &mut projected,
+        account_command_projected_action(&request(SecureBackupSetupIntent::ResetRecoveryKey {
+            confirmed: true,
+        }))
+        .expect("projected action"),
+    );
+    assert!(!effects.is_empty());
+    assert!(matches!(
+        projected.e2ee_trust.key_management.secure_backup_setup,
+        SecureBackupSetupState::SettingUp { request_id: 7 }
+    ));
+}
+
 fn request_id(sequence: u64) -> RequestId {
     RequestId {
         connection_id: RuntimeConnectionId(1),

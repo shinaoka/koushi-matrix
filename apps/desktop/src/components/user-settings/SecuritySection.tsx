@@ -15,6 +15,7 @@ import {
 import { t } from "../../i18n/messages";
 import { ImeSafeForm, SecureImeTextField } from "../ImeTextControl";
 import { RecoveryKeyReveal } from "../RecoveryKeyReveal";
+import { RecoveryKeyResetConfirmation } from "../RecoveryKeyResetConfirmation";
 import {
   DetailRow,
   TrustActionButton,
@@ -78,6 +79,7 @@ export function SecuritySection({
   const newSecureBackupPassphraseRef = useRef<HTMLInputElement>(null);
   const [roomKeyPassphraseRequest, setRoomKeyPassphraseRequest] =
     useState<RoomKeyPassphraseRequest | null>(null);
+  const [confirmRecoveryKeyReset, setConfirmRecoveryKeyReset] = useState(false);
   async function chooseRoomKeyExport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const destinationPath = await onChooseRoomKeyExportDestination();
@@ -183,11 +185,25 @@ export function SecuritySection({
   );
   // #1201: Core admits the setup request only on a gate that asks for it, so the
   // form appears only where it would be accepted, plus while one is in flight.
+  // A revealed key replaces the setup form (#927); the reveal itself now lives in
+  // the "Recovery key" section below (#1997).
   const showSecureBackupSetup =
-    secureBackupGate === undefined ||
-    secureBackupGate.kind === "setupRequired" ||
-    secureBackupSetup.kind === "settingUp" ||
-    secureBackupSetup.kind === "failed";
+    secureBackupSetup.kind !== "recoveryKeyReady" &&
+    (secureBackupGate === undefined ||
+      secureBackupGate.kind === "setupRequired" ||
+      secureBackupSetup.kind === "settingUp" ||
+      secureBackupSetup.kind === "failed");
+  // #1997: the recovery-key property has one primary place. A key is only
+  // renderable while Rust holds it for a reveal (Core never stores it, and the
+  // SDK cannot read one back), and a pending Secure Backup delivery closes
+  // cached reading, so that reveal belongs to the full-window prompt. The
+  // passphrase-change reveal does not touch the gate, so it is the one that
+  // stays reachable here (#927).
+  const shownRecoveryKey = passphraseChange.kind === "changed" ? passphraseChange : null;
+  // #1201: while the gate is not `ready` the recovery prompt owns the key flow,
+  // and Core refuses a second key flow while one awaits confirmation.
+  const secureBackupReady = secureBackupGate?.kind === "ready";
+  const canCreateRecoveryKey = secureBackupReady && shownRecoveryKey === null;
 
   return (
     <>
@@ -289,12 +305,7 @@ export function SecuritySection({
             </div>
           </ImeSafeForm>
 
-          {secureBackupSetup.kind === "recoveryKeyReady" ? (
-            <div className="profile-settings-form">
-              {secureBackupStatus}
-              {recoveryKeyReveal(secureBackupSetup)}
-            </div>
-          ) : showSecureBackupSetup ? (
+          {showSecureBackupSetup ? (
           <ImeSafeForm
             aria-label={t("settings.secureBackup")}
             className="profile-settings-form"
@@ -326,7 +337,6 @@ export function SecuritySection({
                 value={secureBackupPassphraseChangeStatusLabel(passphraseChange)}
                 testId="secure-backup-passphrase-change-state"
               />
-              {recoveryKeyReveal(passphraseChange)}
             </div>
           ) : (
           <ImeSafeForm
@@ -363,6 +373,46 @@ export function SecuritySection({
           )}
         </div>
       </section>
+      {/* #1997: Settings starts the gate's own `resetRecoveryKey` intent, so no
+          new command exists. The new key is revealed by the Secure Backup prompt,
+          which takes over until it is confirmed saved. */}
+      <section className="settings-section" aria-label={t("settings.recoveryKey")}>
+        <h4 className="settings-subheading">{t("settings.recoveryKey")}</h4>
+        <div className="settings-control-stack">
+          {shownRecoveryKey ? (
+            <div className="profile-settings-form">{recoveryKeyReveal(shownRecoveryKey)}</div>
+          ) : (
+            <p className="profile-settings-hint">
+              {secureBackupReady
+                ? t("settings.recoveryKeyShowHint")
+                : t("settings.recoveryKeyGateBlocks")}
+            </p>
+          )}
+          {canCreateRecoveryKey ? (
+            <div className="profile-settings-actions">
+              <TrustActionButton
+                icon={<KeyRound size={14} />}
+                label={t("settings.createNewRecoveryKey")}
+                variant="secondary"
+                onClick={() => setConfirmRecoveryKeyReset(true)}
+              />
+            </div>
+          ) : null}
+        </div>
+      </section>
+      {confirmRecoveryKeyReset ? (
+        <NativeModal className="dialog-overlay" onDismiss={() => setConfirmRecoveryKeyReset(false)}>
+          <div className="dialog-box">
+            <RecoveryKeyResetConfirmation
+              onConfirm={() => {
+                setConfirmRecoveryKeyReset(false);
+                onBootstrapSecureBackup(null, { kind: "resetRecoveryKey", confirmed: true });
+              }}
+              onCancel={() => setConfirmRecoveryKeyReset(false)}
+            />
+          </div>
+        </NativeModal>
+      ) : null}
       {roomKeyPassphraseRequest ? (
         <NativeModal className="dialog-overlay" aria-labelledby="room-key-passphrase-title" onDismiss={closeRoomKeyPassphraseDialog}>
           <ImeSafeForm

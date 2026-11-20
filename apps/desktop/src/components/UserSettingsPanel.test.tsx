@@ -1363,7 +1363,10 @@ describe("UserSettingsPanel", () => {
     // #927: a revealed key replaces the setup / change forms until confirmed.
     expect(markup).not.toContain("Set up secure backup");
     expect(markup).toContain("Recovery key saved");
-    expect(markup).toContain("synthetic-settings-setup-key");
+    // #1997: a pending Secure Backup delivery closes cached reading, so that
+    // reveal belongs to the full-window prompt and never reaches this panel; the
+    // passphrase-change reveal is the one Settings owns.
+    expect(markup).not.toContain("synthetic-settings-setup-key");
     expect(markup).toContain("synthetic-settings-changed-key");
     expect(markup).toContain("I saved the recovery key");
     expect(markup).toContain("1 of 1 imported");
@@ -1448,6 +1451,191 @@ describe("UserSettingsPanel", () => {
 
     rerender(renderPanel(idleE2eeTrust.key_management));
     expect(screen.queryByText("synthetic-settings-changed-key")).toBeNull();
+  });
+
+  // #1997: Settings starts the gate's own `resetRecoveryKey` intent, so an
+  // account with a healthy backup can replace a lost key without walking into
+  // the verification gate first.
+  test("starts the gate's recovery-key reset from Settings after explicit confirmation", async () => {
+    const onBootstrapSecureBackup = vi.fn();
+    const { rerender } = render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        secureBackupGate={{ kind: "ready" }}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+        onBootstrapSecureBackup={onBootstrapSecureBackup}
+      />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Encryption" }));
+
+    // No key is revealable here: Koushi never stores one, so Settings explains
+    // that instead of pretending it can show the account's current key.
+    expect(screen.getByText(t("settings.recoveryKeyShowHint"))).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Your recovery key" })).toBeNull();
+
+    // Cancelling the explicit confirmation changes nothing.
+    fireEvent.click(screen.getByRole("button", { name: t("settings.createNewRecoveryKey") }));
+    const confirmation = screen.getByRole("region", {
+      name: t("gate.secureBackupResetRecoveryKeyTitle")
+    });
+    // The warning says the previous key AND passphrase stop working elsewhere.
+    expect(within(confirmation).getByText(t("gate.secureBackupResetRecoveryKeyWarning"))).toBeTruthy();
+    expect(t("gate.secureBackupResetRecoveryKeyWarning")).toContain("other Matrix clients");
+    fireEvent.click(within(confirmation).getByRole("button", { name: t("action.cancel") }));
+    expect(
+      screen.queryByRole("region", { name: t("gate.secureBackupResetRecoveryKeyTitle") })
+    ).toBeNull();
+    expect(onBootstrapSecureBackup).not.toHaveBeenCalled();
+
+    // Confirming sends exactly what the gate sends; no new command exists.
+    fireEvent.click(screen.getByRole("button", { name: t("settings.createNewRecoveryKey") }));
+    fireEvent.click(
+      within(screen.getByRole("region", { name: t("gate.secureBackupResetRecoveryKeyTitle") })).getByRole(
+        "button",
+        { name: t("gate.secureBackupResetRecoveryKeyConfirm") }
+      )
+    );
+    await vi.waitFor(() =>
+      expect(onBootstrapSecureBackup).toHaveBeenCalledWith(null, {
+        kind: "resetRecoveryKey",
+        confirmed: true
+      })
+    );
+    expect(onBootstrapSecureBackup).toHaveBeenCalledTimes(1);
+
+    // A pending delivery closes cached reading, so the Secure Backup prompt owns
+    // the new key; Settings keeps its explanation and offers no second reset.
+    rerender(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={{
+          ...idleE2eeTrust,
+          key_management: {
+            ...idleE2eeTrust.key_management,
+            secure_backup_setup: {
+              kind: "recoveryKeyReady",
+              request_id: 21,
+              recovery_key: "synthetic-new-recovery-key",
+              delivery: { kind: "notWritten" },
+              confirmation_failed: false
+            }
+          }
+        }}
+        secureBackupGate={{ kind: "recoveryKeyDeliveryRequired" }}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+        onBootstrapSecureBackup={onBootstrapSecureBackup}
+      />
+    );
+    expect(screen.getByText(t("settings.recoveryKeyGateBlocks"))).toBeTruthy();
+    expect(screen.queryByRole("button", { name: t("settings.createNewRecoveryKey") })).toBeNull();
+    expect(screen.queryByText(t("settings.recoveryKeyShowHint"))).toBeNull();
+    expect(screen.queryByText("synthetic-new-recovery-key")).toBeNull();
+  });
+
+  // The reachable reveal: a passphrase change creates a key without touching the
+  // gate, so Settings shows and confirms it in one place (#927/#1997).
+  test("shows and confirms the passphrase-change recovery key in the Recovery key section", async () => {
+    const onSaveSecureBackupRecoveryKey = vi.fn(async () => undefined);
+    const onConfirmSecureBackupRecoveryKeySaved = vi.fn();
+    render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={{
+          ...idleE2eeTrust,
+          key_management: {
+            ...idleE2eeTrust.key_management,
+            passphrase_change: {
+              kind: "changed",
+              request_id: 13,
+              recovery_key: "synthetic-settings-changed-key",
+              delivery: { kind: "notWritten" }
+            }
+          }
+        }}
+        secureBackupGate={{ kind: "ready" }}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+        onSaveSecureBackupRecoveryKey={onSaveSecureBackupRecoveryKey}
+        onConfirmSecureBackupRecoveryKeySaved={onConfirmSecureBackupRecoveryKeySaved}
+      />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Encryption" }));
+
+    // The key is rendered where the section owns it, not through the gate, and
+    // a second key flow is not offered while this one awaits confirmation.
+    const section = screen.getByRole("region", { name: t("settings.recoveryKey") });
+    const reveal = within(section).getByRole("region", { name: "Your recovery key" });
+    expect(within(reveal).getByText("synthetic-settings-changed-key").tagName).toBe("CODE");
+    expect(screen.queryByRole("button", { name: t("settings.createNewRecoveryKey") })).toBeNull();
+    expect(screen.queryByText(t("settings.recoveryKeyShowHint"))).toBeNull();
+
+    fireEvent.click(within(reveal).getByRole("button", { name: "Save to file…" }));
+    await vi.waitFor(() => expect(onSaveSecureBackupRecoveryKey).toHaveBeenCalledWith(13));
+    expect(onConfirmSecureBackupRecoveryKeySaved).not.toHaveBeenCalled();
+    fireEvent.click(within(reveal).getByRole("button", { name: "I saved the recovery key" }));
+    await vi.waitFor(() =>
+      expect(onConfirmSecureBackupRecoveryKeySaved).toHaveBeenCalledWith(13)
+    );
+  });
+
+  test("offers no recovery-key action while the gate needs attention (#1997)", () => {
+    render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        secureBackupGate={{ kind: "existingBackupNeedsRecovery", failure: null }}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+      />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Encryption" }));
+
+    expect(screen.getByText(t("settings.recoveryKeyGateBlocks"))).toBeTruthy();
+    expect(screen.queryByRole("button", { name: t("settings.createNewRecoveryKey") })).toBeNull();
+    expect(screen.queryByText(t("settings.recoveryKeyShowHint"))).toBeNull();
   });
 
   test("secure backup row follows the account gate, not this session's setup request (#1201)", () => {

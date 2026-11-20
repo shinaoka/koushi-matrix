@@ -571,7 +571,13 @@ stateDiagram-v2
   `SecureBackupSetupIntent`. `InitialSetup` is admitted only by `SetupRequired`;
   `Reenable { confirmed: true }` is admitted only by
   `ExplicitlyDisabledRequiresSetup`; `ResetRecoveryKey { confirmed: true }` is
-  admitted only by `RecoveryKeyDeliveryRequired` without a revealed key.
+  admitted by `RecoveryKeyDeliveryRequired` without a revealed key, and by
+  `Ready` (#1997: Settings offers the same reset for a healthy backup). Every
+  other gate refuses it, so a restricted account can only reset through the
+  recovery prompt. Both origins use the same intent, the same reveal, and the
+  same saved confirmation; a Settings reset lands the gate in
+  `RecoveryKeyDeliveryRequired` until that confirmation, which closes encrypted
+  sending and surfaces the degraded banner meanwhile.
   Inspection projects `RecoveryKeyDeliveryRequired` from the persisted marker
   only once `reset_key()` can succeed without losing a secret: server backup
   present, local backup `Enabled`, trust `Trusted`, and either secret storage
@@ -617,7 +623,11 @@ stateDiagram-v2
   `recovery().recover()` rejects). The user must explicitly confirm creating a
   NEW recovery key; `ResetRecoveryKey { confirmed: true }` calls upstream
   `recovery().reset_key()`, the previous key stops working, and the new key
-  enters the same reveal. Only one key flow runs at a time: setup (including
+  enters the same reveal. Settings sends that same intent (#1997) and offers it
+  only while the gate is `Ready`; the resulting
+  `RecoveryKeyDeliveryRequired` closes cached reading, so the prompt — not
+  Settings — owns that reveal. Settings never reads, stores, or re-derives an
+  older key: an account's current key is unrecoverable once its reveal is gone. Only one key flow runs at a time: setup (including
   re-enable and reset) and passphrase change are each rejected while either is
   in flight (`SettingUp`/`Changing`) or awaits confirmation
   (`RecoveryKeyReady`/`Changed`), because AccountActor holds a single copy.
@@ -640,6 +650,8 @@ stateDiagram-v2
     Checking --> RecoveryKeyDeliveryRequired: inspection with marker [reset_key() can succeed]
     RecoveryKeyDeliveryRequired --> RecoveryKeyDeliveryRequired: InitialSetup or ResetRecoveryKey(unconfirmed) / typed reject, no actor effect
     RecoveryKeyDeliveryRequired --> CreatingBackup: ResetRecoveryKey(confirmed) without a revealed key / reset_key, reveal NEW key
+    Ready --> CreatingBackup: ResetRecoveryKey(confirmed) from Settings (#1997) / reset_key, reveal NEW key, gate waits for the saved confirmation
+    Ready --> Ready: ResetRecoveryKey(unconfirmed) or any other intent / typed reject, no actor effect
 ```
 - A genuine missing cross-signing identity may enter mandatory bootstrap. An
   existing identity without a verified other device or usable recovery method

@@ -3047,6 +3047,13 @@ impl MatrixClientSession {
     /// backup with a NEW one via upstream `recovery().reset_key()` and returns
     /// it for on-screen reveal. The previous recovery key stops working. The
     /// delivery-pending marker stays set until the saved confirmation.
+    ///
+    /// A reset can start from a healthy backup (Settings offers it, #1997), so a
+    /// failed `reset_key()` must not leave the marker behind: no new key was
+    /// revealed, the previous key is still valid, and a pending marker would
+    /// present it as lost — the account would be blocked from reading with only
+    /// a destructive reset offered. An already-awaited reveal keeps its marker,
+    /// because that key really is unknown to the user.
     pub async fn reset_secure_backup_recovery_key(
         &self,
         passphrase: Option<&AuthSecret>,
@@ -3058,8 +3065,13 @@ impl MatrixClientSession {
         if !inspection.recovery_key_reset_is_possible() {
             return Err(E2eeTrustError::SecureBackupInspectionInconclusive);
         }
+        let awaited_reveal = self.recovery_key_delivery_pending().await?;
         self.set_recovery_key_delivery_pending(true).await?;
-        reset_recovery_key(self, passphrase).await
+        let result = reset_recovery_key(self, passphrase).await;
+        if result.is_err() && !awaited_reveal {
+            let _ = self.set_recovery_key_delivery_pending(false).await;
+        }
+        result
     }
     /// Creates the Secure Backup for the verification-gate identity bootstrap
     /// (#1049) and returns its recovery key for on-screen reveal. As in setup,

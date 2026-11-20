@@ -98,10 +98,16 @@ fn secure_backup_setup_admission_covers_each_gate_and_intent() {
             "confirmed re-enable admission for {gate:?}"
         );
 
-        let delivery_required = gate == SecureBackupGateState::RecoveryKeyDeliveryRequired;
+        // #1997: Settings offers the same reset for a healthy backup, so a
+        // `Ready` gate admits the confirmed intent too; the gate keeps its
+        // interrupted-reveal path. Every other gate still refuses it.
+        let reset_admitted = matches!(
+            gate,
+            SecureBackupGateState::Ready | SecureBackupGateState::RecoveryKeyDeliveryRequired
+        );
         assert_eq!(
             SecureBackupSetupIntent::ResetRecoveryKey { confirmed: false }.admission(&gate),
-            if delivery_required {
+            if reset_admitted {
                 SecureBackupSetupAdmission::ConfirmationRequired
             } else {
                 SecureBackupSetupAdmission::FailedNoOp
@@ -128,10 +134,10 @@ fn secure_backup_setup_admission_covers_each_gate_and_intent() {
         );
         assert_eq!(
             !effects.is_empty(),
-            delivery_required,
+            reset_admitted,
             "confirmed recovery-key reset admission for {gate:?}"
         );
-        if delivery_required {
+        if reset_admitted {
             assert!(matches!(
                 state.e2ee_trust.key_management.secure_backup_setup,
                 SecureBackupSetupState::SettingUp { request_id: 5 }
