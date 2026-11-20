@@ -3489,12 +3489,25 @@ button:disabled {
   background: var(--avatar-8);
 }
 
+/* #2006: an image avatar showed a slate ring that broke into near-white gaps at
+   the four points where the circle is tangent to the pixel grid. Two things
+   shared the edge: this fallback colour, painted under an image whose
+   antialiased rim does not cover its own box, and a second rounded clip on
+   `.avatar-content`, which squared the image's coverage under the first. The
+   circle is drawn once, by the clip above, and an image has no colour behind
+   it. Initials keep the colour, because `:has(img)` does not match them.
+   Rim sampled every 15 degrees on a 40px avatar at 2x over a #fafafa image,
+   darkest pixel: 201-238 (Chromium) and 200-246 (WebKit) before, uniform 250
+   in both after; a `box-shadow: inset` ring instead leaves 239-249. */
+.avatar:has(img) {
+  background: transparent;
+}
+
 .avatar-content {
   display: grid;
   place-items: center;
   inline-size: 100%;
   block-size: 100%;
-  overflow: hidden;
   border-radius: inherit;
 }
 
@@ -3567,10 +3580,6 @@ button:disabled {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
-}
-
-.avatar.bot {
-  background: var(--danger);
 }
 
 .message > .avatar {
