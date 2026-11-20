@@ -51,10 +51,11 @@ function setup(
   const view = screen.getByTestId("timeline-view");
   let scrollTop = count * 72 - 600;
   let scrollHeight = count * 72;
+  let scrollHeightOverride: (() => number) | null = null;
   const writes: number[] = [];
   Object.defineProperties(view, {
     scrollTop: { configurable: true, get: () => scrollTop, set: (value: number) => { writes.push(value); scrollTop = roundWrites ? Math.round(value) : value; } },
-    scrollHeight: { configurable: true, get: () => scrollHeight },
+    scrollHeight: { configurable: true, get: () => scrollHeightOverride?.() ?? scrollHeight },
     clientHeight: { configurable: true, value: 600 }
   });
   act(() => emit({ kind: "Timeline", event: { InitialItems: {
@@ -87,6 +88,28 @@ function setup(
     for (let i = 0; i < amount; i++) rects[`$old${i}`] = { top: (amount - i - 1) * 72, height: 72 };
     scrollHeight += amount * 72 + delayedHeight;
   }
+  /**
+   * The prepend's layout from the commit that renders it, as in a browser: DOM
+   * reads before that commit (a deferred release rebases on the old rows) still
+   * see the old layout, and the commit's own layout effects see the new one.
+   */
+  function applyPrependRectsOnCommit(amount: number, delayedHeight: number) {
+    const before = { ...rects };
+    const beforeHeight = scrollHeight;
+    applyPrependRects(amount, delayedHeight);
+    const after = { ...rects };
+    const afterHeight = scrollHeight;
+    scrollHeight = beforeHeight;
+    const committed = () => view.dataset.totalItems === String(count + amount);
+    for (const id of Object.keys(after)) {
+      Object.defineProperty(rects, id, {
+        configurable: true,
+        enumerable: true,
+        get: () => (committed() ? after[id] : before[id])
+      });
+    }
+    scrollHeightOverride = () => (committed() ? afterHeight : beforeHeight);
+  }
   return { view, emit, rects, writes, diagnostics, anchor, drain,
     userScroll(delta: number) {
       scrollTop += delta; // Browser-owned input: do not count it as a compensation write.
@@ -106,6 +129,7 @@ function setup(
       });
     },
     applyPrependRects,
+    applyPrependRectsOnCommit,
     scheduler
   };
 }
@@ -330,8 +354,8 @@ describe("TimelineView unified viewport transaction", () => {
     // The deferred projection keeps the old rows mounted; their geometry must
     // stay untouched until the release commits the prepend.
     fixture.prepend(80, 0, false, false);
+    fixture.applyPrependRectsOnCommit(80, 0);
     act(() => { vi.advanceTimersByTime(100); });
-    fixture.applyPrependRects(80, 0);
     act(() => { fixture.scheduler.flushAll(); });
     const row = [...fixture.view.querySelectorAll<HTMLElement>("[data-item-id]")].find(
       (node) => node.dataset.itemId === fixture.anchor.id

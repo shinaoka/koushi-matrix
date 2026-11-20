@@ -76,11 +76,37 @@ scheduled frame stays as the retry for a settlement that cannot complete yet
 (pending deferred measurements, an anchor not mounted). No new owner, timer or
 state is added; the transaction controller and its fences are unchanged.
 
+## Unit tests that encoded the late frame
+
+Two jsdom tests mocked a layout that changes after React's commit, which a
+browser never does, and so depended on settlement waiting for a frame:
+
+- `TimelineView.threads.test.tsx` flipped its rect mock to the relocated-root
+  layout after `act()` returned. It now flips inside the act, so the mocked
+  layout follows the commit, and it asserts the new contract: the compensation
+  is written in the commit, and the coalesced frame, run after the anchor row is
+  removed, does not write again. It fails on `main`. It no longer exercises the
+  estimate fallback for an unmounted anchor; that path stays reachable for a
+  frame retry (for example after deferred measurements), and no other test
+  covers it now.
+- `TimelineView.viewport-transaction.test.tsx` ("hidden-history prepend ...
+  latest-reply thread root") applied the prepend's rects after the idle release
+  had committed. The new fixture helper `applyPrependRectsOnCommit` switches the
+  rects exactly when the DOM shows the committed row count, so reads before the
+  commit (the release's rebase) see the old layout and the commit sees the new
+  one. The test passes on `main` and with the change.
+
 ## Verification
 
 - New spec RED on `main`: Chromium and WebKit, about 650 painted-frame jumps
   each. GREEN with the change: Chromium, WebKit ×4.
-- Full Playwright DOM tier, frontend typecheck, vitest and ESLint: see the PR.
+- Playwright subset (every `timeline-*` and `thread-*` spec plus reply-quote
+  jump, room-switch layout budget, activity shell, scrollable bounds, upload
+  staging, mention autocomplete, activity navigation, media attachments; both
+  projects where configured): 237 passed. The full 800-test tier was not run to
+  completion locally; CI runs it.
+- `vitest run`: 209 files, 2,616 tests passed. `tsc --noEmit` and `npm run lint`
+  passed.
 
 ## Not covered
 
