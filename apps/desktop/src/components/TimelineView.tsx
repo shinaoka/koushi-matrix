@@ -3882,8 +3882,17 @@ export const TimelineView = memo(function TimelineView({
 
   // Mounted-window measurement above must acknowledge its model commit before
   // the same transaction performs its final DOM correction, before paint.
+  // A settlement armed by this commit settles here too, after this commit's
+  // measurement pass (#278): its projection or measured rows are already laid
+  // out, so the reader has moved in this layout pass. The scheduled frame is a
+  // retry, not the settlement. Input cancels it before it runs, and a commit made
+  // inside a rendering update (the scroll frame's range commit) gets a frame that
+  // runs only after this one has been painted with the reader displaced.
   useLayoutEffect(() => {
-    if (viewportTransactionRef.current.active()?.rangePrepared) viewportSettlementAttemptRef.current?.();
+    const active = viewportTransactionRef.current.active();
+    if (active?.rangePrepared || (active?.projectionCommitted && viewportSettlementFrameRef.current !== null)) {
+      viewportSettlementAttemptRef.current?.();
+    }
   });
 
   const requestTimelineBackfill = useCallback(
