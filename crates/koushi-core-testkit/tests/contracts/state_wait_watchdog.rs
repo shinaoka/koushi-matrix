@@ -29,7 +29,8 @@ async fn a_state_predicate_that_never_holds_fails_the_wait_with_a_wedge_diagnost
         Duration::from_millis(200),
     );
 
-    let panic = AssertUnwindSafe(support::wait_for_state_event_within(
+    let panic = AssertUnwindSafe(support::wait_for_state_event_at(
+        None,
         &mut connection,
         watchdog,
         |_| false,
@@ -54,6 +55,43 @@ async fn a_state_predicate_that_never_holds_fails_the_wait_with_a_wedge_diagnost
     assert!(
         message.contains("generation") && message.contains("session"),
         "diagnostic must report the last observed state: {message}"
+    );
+
+    drop(connection);
+    runtime.shutdown().await;
+}
+
+/// A multi-stage contract names the convergence point that stalled, because the
+/// fence's own diagnostic says what happened, not where (#1721).
+#[tokio::test]
+async fn a_labelled_wait_names_the_stage_it_stalled_at() {
+    let (runtime, _stores) = koushi_core::CoreRuntime::start_isolated();
+    let mut connection = runtime.attach();
+    let watchdog = StateWaitWatchdog::start_at(
+        Instant::now(),
+        Duration::from_millis(50),
+        Duration::from_millis(200),
+    );
+
+    let panic = AssertUnwindSafe(support::wait_for_state_event_at(
+        Some("cached_delivery"),
+        &mut connection,
+        watchdog,
+        |_| false,
+    ))
+    .catch_unwind()
+    .await
+    .expect_err("an unreachable predicate must never satisfy the wait");
+    let message = panic_message(&panic);
+
+    assert!(
+        message
+            .contains("state predicate was not satisfied at stage `cached_delivery`: silence for"),
+        "the failure must name the stage and the fence's silence: {message}"
+    );
+    assert!(
+        message.contains("window 50ms, backstop 200ms") && message.contains("generation"),
+        "the labelled failure keeps the fence diagnostic: {message}"
     );
 
     drop(connection);
@@ -85,7 +123,7 @@ async fn arriving_state_events_keep_a_wait_alive_past_its_window() {
     );
 
     let (state, ()) = tokio::join!(
-        support::wait_for_state_event_within(&mut connection, watchdog, |state| {
+        support::wait_for_state_event_at(None, &mut connection, watchdog, |state| {
             state.rooms.len() == STEPS
         }),
         async {

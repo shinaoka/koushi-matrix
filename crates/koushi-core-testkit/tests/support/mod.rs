@@ -1,7 +1,9 @@
 //! Shared test support for `koushi-core` integration tests.
 //!
 //! This module contains synthetic fixtures and helpers used by multiple
-//! per-feature test files. It must not contain any `#[test]` functions.
+//! per-feature test files. It defines no `#[test]` function of its own; the only
+//! ones it reaches are the fixture submodules' self-checks, which every including
+//! test file registers (see `docs/architecture/test-suites.md`).
 
 #![allow(dead_code)]
 
@@ -212,12 +214,20 @@ pub async fn wait_for_state_event<F>(
 where
     F: Fn(&koushi_state::AppState) -> bool,
 {
-    wait_for_state_event_within(connection, StateWaitWatchdog::start(), predicate).await
+    wait_for_state_event_at(None, connection, StateWaitWatchdog::start(), predicate).await
 }
 
-/// The same fence with an injected budget, so a harness test can exercise the
-/// silent-Core failure path without waiting out the shipped window.
-pub async fn wait_for_state_event_within<F>(
+/// The one event-fence loop, with an optional stage label and injected budget
+/// (#1721).
+///
+/// A multi-stage contract converges several times, so "the state predicate never
+/// held" alone does not say which convergence point stalled. The stage names it
+/// next to the fence's own diagnostic, and everything else — the budget, the
+/// silence-versus-elapsed rule, the observed-state summary — is the same for
+/// every caller. A fence contract test passes its own aged watchdog instead of
+/// `StateWaitWatchdog::start()`, so it does not wait out the shipped window.
+pub async fn wait_for_state_event_at<F>(
+    stage: Option<&str>,
     connection: &mut CoreConnection,
     mut watchdog: StateWaitWatchdog,
     predicate: F,
@@ -225,6 +235,10 @@ pub async fn wait_for_state_event_within<F>(
 where
     F: Fn(&koushi_state::AppState) -> bool,
 {
+    let at_stage = match stage {
+        Some(stage) => format!(" at stage `{stage}`"),
+        None => String::new(),
+    };
     loop {
         let snapshot = connection.snapshot();
         if predicate(&snapshot) {
@@ -236,8 +250,8 @@ where
         match tokio::time::timeout(remaining, connection.next_versioned_snapshot()).await {
             Ok(Some(_)) => watchdog.progress(),
             Ok(None) => panic!(
-                "runtime snapshot stream closed after {} state events while the state predicate \
-                 never held; last observed {}",
+                "runtime snapshot stream closed{at_stage} after {} state events while the state \
+                 predicate never held; last observed {}",
                 watchdog.events(),
                 observed_state(connection),
             ),
@@ -247,7 +261,7 @@ where
         }
     }
     panic!(
-        "state predicate was not satisfied: {}; last observed {}",
+        "state predicate was not satisfied{at_stage}: {}; last observed {}",
         watchdog.report("state events"),
         observed_state(connection),
     )

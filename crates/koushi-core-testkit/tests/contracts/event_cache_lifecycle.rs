@@ -1,5 +1,12 @@
 //! Exercise automatic SDK cache startup through the real Core login/restore path.
 
+#[path = "../support/mod.rs"]
+#[expect(
+    clippy::duplicate_mod,
+    reason = "suite aggregation preserves feature-local fixture scopes and registered helper tests"
+)]
+mod support;
+
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -7,6 +14,7 @@ use std::sync::{
 use std::time::Duration;
 
 use koushi_core::runtime::{CoreConnection, CoreRuntime};
+use koushi_core_testkit::{HANG_BACKSTOP, PROGRESS_WINDOW, StateWaitWatchdog};
 use koushi_protocol::command::{AccountCommand, CoreCommand, RoomCommand};
 use koushi_protocol::event::{CoreEvent, TimelineDiff, TimelineEvent, TimelineItemId};
 use koushi_state::{AppState, AuthSecret, LoginRequest, SessionState, SyncState};
@@ -196,83 +204,24 @@ async fn verified_runtime(data: &std::path::Path, credentials: &std::path::Path)
     runtime
 }
 
-/// Progress-based watchdog: the contract is causal, so silence fails a phase and
-/// elapsed time alone never does. Any observed transition re-arms the window, so
-/// a slow machine keeps passing while a wedged Core goes silent and fails.
-const PROGRESS_WINDOW: Duration = Duration::from_secs(30);
-/// Backstop for a Core that keeps emitting unrelated progress without ever
-/// reaching the asserted state, and for a shutdown that hangs. It is not a speed
-/// budget; a healthy run never approaches it.
-const HANG_BACKSTOP: Duration = Duration::from_secs(180);
-
-struct Watchdog {
-    label: &'static str,
-    started: tokio::time::Instant,
-    silence_deadline: tokio::time::Instant,
-    backstop: tokio::time::Instant,
-}
-
-impl Watchdog {
-    fn start(label: &'static str) -> Self {
-        let now = tokio::time::Instant::now();
-        Self {
-            label,
-            started: now,
-            silence_deadline: now + PROGRESS_WINDOW,
-            backstop: now + HANG_BACKSTOP,
-        }
-    }
-
-    fn progress(&mut self) {
-        self.silence_deadline = tokio::time::Instant::now() + PROGRESS_WINDOW;
-    }
-
-    fn deadline(&self) -> tokio::time::Instant {
-        self.silence_deadline.min(self.backstop)
-    }
-
-    fn report(&self) -> String {
-        let now = tokio::time::Instant::now();
-        let cause = if now >= self.backstop {
-            "backstop"
-        } else {
-            "silence"
-        };
-        format!(
-            "{} {cause} after {:?} (window {PROGRESS_WINDOW:?}, backstop {HANG_BACKSTOP:?})",
-            self.label,
-            now.duration_since(self.started)
-        )
-    }
-}
-
-async fn wait_for_state(
+/// Convergence wait on the shared event fence (#1721, #1759).
+///
+/// Four of this contract's five convergence points wait here, so the shared
+/// fence's diagnostic — cause, silence, observed events, last observed state — is
+/// labelled with the stage it was waiting at. The budget is the shared silence window, not a per-stage
+/// number of this file's own.
+async fn wait_for_stage(
+    stage: &'static str,
     connection: &mut CoreConnection,
-    watchdog: &mut Watchdog,
     predicate: impl Fn(&AppState) -> bool,
 ) -> AppState {
-    loop {
-        let state = connection.snapshot();
-        if predicate(&state) {
-            return state;
-        }
-        match tokio::time::timeout_at(watchdog.deadline(), connection.next_versioned_snapshot())
-            .await
-        {
-            Ok(Some(_)) => watchdog.progress(),
-            Ok(None) => break,
-            Err(_) => panic!(
-                "cache lifecycle state predicate never held: {}",
-                watchdog.report()
-            ),
-        }
-    }
-    let final_state = connection.snapshot();
-    assert!(
-        predicate(&final_state),
-        "cache lifecycle state did not converge"
-    );
-    final_state
+    support::wait_for_state_event_at(
+        Some(stage),
+        connection,
+        StateWaitWatchdog::start(),
+        predicate,
+    )
+    .await
 }
 
 /// Explicit negative signal for a stalled cached delivery.
@@ -284,8 +233,11 @@ async fn wait_for_state(
 /// only; the missing `InitialItems` is measured by the delivery loop itself.
 async fn lane_probe(connection: &mut CoreConnection) -> String {
     let request_id = connection.next_request_id();
+    // Borrowed from the fence only on the failure path; lowering that window
+    // re-tightens this probe, which is why it is not a number of its own.
+    let window = PROGRESS_WINDOW;
     let admitted = tokio::time::timeout(
-        Duration::from_secs(10),
+        window,
         connection.command_with_admission(CoreCommand::Room(RoomCommand::SelectRoom {
             request_id,
             room_id: ROOM.to_owned(),
@@ -298,7 +250,7 @@ async fn lane_probe(connection: &mut CoreConnection) -> String {
             admission.admitted_generation
         ),
         Ok(Err(error)) => format!("lane_rejected({error})"),
-        Err(_) => "lane_wedged no admission within 10s".to_owned(),
+        Err(_) => format!("lane_wedged no admission within {window:?}"),
     }
 }
 
@@ -412,8 +364,7 @@ async fn automatic_cache_delivers_first_sync_persisted_restore_and_new_updates()
         .await
         .expect("submit login");
     phases.push(("first_sync_wait_start", tokio::time::Instant::now()));
-    let mut watchdog = Watchdog::start("first_sync");
-    let initial = wait_for_state(&mut connection, &mut watchdog, |state| {
+    let initial = wait_for_stage("first_sync", &mut connection, |state| {
         has_latest(state, FIRST_EVENT)
     })
     .await;
@@ -435,8 +386,7 @@ async fn automatic_cache_delivers_first_sync_persisted_restore_and_new_updates()
         }))
         .await
         .expect("submit restore");
-    let mut watchdog = Watchdog::start("restore");
-    let restored_state = wait_for_state(&mut connection, &mut watchdog, |state| {
+    let restored_state = wait_for_stage("restore", &mut connection, |state| {
         has_latest(state, FIRST_EVENT)
     })
     .await;
@@ -457,19 +407,27 @@ async fn automatic_cache_delivers_first_sync_persisted_restore_and_new_updates()
     phases.push(("cached_delivery_wait_start", tokio::time::Instant::now()));
     let mut initial_counts = Vec::new();
     let mut delivered_in_updates = false;
-    let mut watchdog = Watchdog::start("cached_delivery");
+    let mut watchdog = StateWaitWatchdog::start();
+    let stalled = |watchdog: &StateWaitWatchdog| {
+        format!(
+            "cached_delivery stalled: {}",
+            watchdog.report("published events")
+        )
+    };
     let failure = loop {
-        let event =
-            match tokio::time::timeout_at(watchdog.deadline(), connection.recv_event()).await {
-                Ok(Ok(event)) => event,
-                Ok(Err(lag)) => {
-                    break Some(format!(
-                        "event stream closed or lagged (skipped={})",
-                        lag.skipped
-                    ));
-                }
-                Err(_) => break Some(watchdog.report()),
-            };
+        // Poll the stream once even with an expired budget: a matching event that
+        // was already queued when the window closed is progress, not silence.
+        let remaining = watchdog.remaining().unwrap_or(Duration::ZERO);
+        let event = match tokio::time::timeout(remaining, connection.recv_event()).await {
+            Ok(Ok(event)) => event,
+            Ok(Err(lag)) => {
+                break Some(format!(
+                    "event stream closed or lagged (skipped={})",
+                    lag.skipped
+                ));
+            }
+            Err(_) => break Some(stalled(&watchdog)),
+        };
         // Any published event proves the Core is still working; only silence is
         // evidence that the cached timeline is stuck.
         watchdog.progress();
@@ -513,8 +471,7 @@ async fn automatic_cache_delivers_first_sync_persisted_restore_and_new_updates()
         );
     }
     phase.store(2, Ordering::Release);
-    let mut watchdog = Watchdog::start("new_update");
-    wait_for_state(&mut connection, &mut watchdog, |state| {
+    wait_for_stage("new_update", &mut connection, |state| {
         has_latest(state, RESTORED_EVENT)
     })
     .await;
@@ -524,8 +481,7 @@ async fn automatic_cache_delivers_first_sync_persisted_restore_and_new_updates()
         .command(CoreCommand::Account(AccountCommand::Logout { request_id }))
         .await
         .expect("submit logout");
-    let mut watchdog = Watchdog::start("logout");
-    wait_for_state(&mut connection, &mut watchdog, |state| {
+    wait_for_stage("logout", &mut connection, |state| {
         matches!(state.session, SessionState::SignedOut) && state.rooms.is_empty()
     })
     .await;
