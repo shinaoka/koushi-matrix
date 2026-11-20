@@ -131,6 +131,23 @@ describe("styles.css token system", () => {
     }
   });
 
+  test("draws the avatar circle once, with no colour behind an image (#2006)", () => {
+    const avatar = selectorBlock(".avatar");
+    // One mechanism: the circle is the clip, so the rim is uniform. A border or
+    // an inset shadow is a second edge to antialias, and a measured inset shadow
+    // still leaves the ring (239-249 against a uniform 250).
+    expect(avatar).toContain("overflow: hidden;");
+    expect(avatar).toContain("border-radius: 50%;");
+    expect(avatar).not.toMatch(/\bborder(?:-width|-style|-color)?\s*:/);
+    expect(avatar).not.toContain("box-shadow:");
+    // An image is clipped once: a nested rounded clip squares its coverage under
+    // the first, which is what opened the gaps at the cardinal points.
+    expect(selectorBlock(".avatar-content")).not.toContain("overflow: hidden;");
+    // Nothing opaque may outlive the image's antialiased rim. Initials keep the
+    // fallback colour because `:has(img)` does not match them.
+    expect(selectorBlock(".avatar:has(img)")).toContain("background: transparent;");
+  });
+
   test("contains no legacy purple or green literals", () => {
     for (const legacy of [
       "#34123d",
