@@ -56,8 +56,8 @@ See the PR body for the exact gate output. Coverage added:
 
 ## Left open
 
-- Phase B (React surface, message-catalog copy, browser tests) is not part of
-  this change.
+- Phase B (React surface, message-catalog copy, browser tests) was not part of
+  this change; it landed as #2031.
 - No automated test reads a real Element or Element X store; manual confirmation
   against a signed-in Element installation has not been done.
 - Reading an Element X passphrase from the app's keychain is out of scope, and
