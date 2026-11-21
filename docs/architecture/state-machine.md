@@ -3237,10 +3237,10 @@ settles.
   same actor keeps the settled entry. While an anchor restore is buffering its
   coalesced `restore_emit_buffer`, the republish is deferred and runs once at
   the end of the actor loop after that buffer has flushed, so a republished
-  `Set` diff can never overtake the restore's single settled update. A deferred republish also
-  retains the changed-original refresh set until it runs, so that set can hold
-  one entry per changed original for the duration of a restore; the ledger's
-  256-entry cap does not bound it.
+  `Set` diff can never overtake the restore's single settled update. A deferred
+  republish also retains the changed-original refresh set until it runs, so
+  that set can hold one entry per changed original for the duration of a
+  restore; the ledger's 256-entry cap does not bound it.
 - **Quoted media (#1769).** `ReplyQuote.media` is public metadata only: the
   media kind, an animated hint, width/height hints, and whether the event names
   an explicit thumbnail source. It carries no MXC URI, encryption key, or cache

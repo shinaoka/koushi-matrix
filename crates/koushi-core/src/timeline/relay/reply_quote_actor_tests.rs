@@ -332,12 +332,14 @@ async fn a_thread_root_replying_to_an_off_window_original_resolves_its_quote() {
         .wait_for(|_, items| thread_root_quote_state(items) == Some(ReplyQuoteState::Ready))
         .await
         .expect("the thread root row's quote must leave Loading once its original loads");
-    assert_eq!(
-        fixture
-            .items
-            .iter()
-            .find_map(|item| item.reply_quote.as_ref())
-            .map(|quote| quote.event_id.as_str()),
-        Some(ORIGINAL)
+    let quote = fixture
+        .items
+        .iter()
+        .find_map(|item| item.reply_quote.as_ref())
+        .expect("resolved quote");
+    assert_eq!(quote.event_id, ORIGINAL);
+    assert!(
+        quote.can_open && quote.permalink.is_some(),
+        "a resolved quote opens its original"
     );
 }
