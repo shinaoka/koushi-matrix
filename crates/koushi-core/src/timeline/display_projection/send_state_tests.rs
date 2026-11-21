@@ -5,7 +5,9 @@ use std::collections::{HashMap, HashSet};
 
 use koushi_protocol::event::{TimelineItemId, TimelineSendFailureReason};
 
-use super::super::item_projection::{SendStateAuthority, retry_admission};
+use super::super::item_projection::{
+    SendStateAuthority, carry_resolved_send_failures, retry_admission,
+};
 use super::super::test_support::{room_key, send_row};
 use super::*;
 
@@ -254,4 +256,101 @@ fn window_composition_never_changes_a_rendered_send_state() {
             "admission must agree with the rendered row (table={statuses:?})"
         );
     }
+}
+
+/// #1851: the queue-update stream can lag, and the actor rebuilds its send table
+/// from the SDK's local echoes. An echo cannot express a resolved recoverable
+/// failure, so the rebuild alone republishes a stopped queue as `Sending`: the
+/// failed row loses `Resend` and `RetrySend` then answers `InvalidSendState`.
+/// The carried record is what keeps the row (and the queue behind it) resendable.
+#[test]
+fn a_lagged_send_table_rebuild_keeps_the_stopped_room_resendable() {
+    // What `remember_local_echo` produces on a lag rebuild: both requests look
+    // like they are still on their way, because the transient failure lives in
+    // the SDK's queue, not on the echo.
+    let echoes_only = HashMap::from([
+        ("t1".to_owned(), TimelineSendState::Sending),
+        ("t2".to_owned(), TimelineSendState::Sending),
+    ]);
+    let canonical = canonical_queue();
+
+    let rendered_after = |statuses: &HashMap<String, TimelineSendState>| {
+        let mut projection =
+            DisplayProjectionState::from_canonical_window(&canonical, 0..canonical.len());
+        projection.reproject(&room_context(statuses));
+        (
+            rendered_send_state(projection.display_items(), "t1"),
+            rendered_send_state(projection.display_items(), "t2"),
+        )
+    };
+
+    assert_eq!(
+        rendered_after(&echoes_only),
+        (Some(recoverable()), Some(TimelineSendState::Sending)),
+        "the head keeps its own SDK report, but the queue behind it silently goes back to `Sending`"
+    );
+    assert!(
+        retry_admission(&SendStateAuthority::new(&echoes_only), &canonical[1]).is_err(),
+        "so the queued row loses the Resend the stopped room offered"
+    );
+
+    let mut rebuilt = echoes_only;
+    carry_resolved_send_failures(&mut rebuilt, stopped_room());
+
+    assert_eq!(
+        rendered_after(&rebuilt),
+        (Some(recoverable()), Some(recoverable())),
+        "the carried failure keeps the failed row and its successor not sent"
+    );
+    // The row renders `Resend`, so the command that names it must be accepted.
+    let authority = SendStateAuthority::new(&rebuilt);
+    for row in &canonical {
+        assert!(
+            retry_admission(&authority, row).is_ok(),
+            "a rendered Resend must survive the rebuild: {:?}",
+            row.id
+        );
+    }
+}
+
+/// #1851: the other echo-only seed is the actor's own startup. A replacement
+/// actor starts with an empty table and only replays the SDK's echoes, which
+/// cannot express a recoverable failure, so switching rooms and back would render
+/// a stopped queue as sending again. The manager's still-owned failed request is
+/// the evidence the seed carries.
+#[test]
+fn a_replacement_actor_keeps_the_stopped_room_resendable() {
+    let canonical = canonical_queue();
+    let echoes_only = HashMap::from([
+        ("t1".to_owned(), TimelineSendState::Sending),
+        ("t2".to_owned(), TimelineSendState::Sending),
+    ]);
+    let rendered = |statuses: &HashMap<String, TimelineSendState>| {
+        let mut projection =
+            DisplayProjectionState::from_canonical_window(&canonical, 0..canonical.len());
+        projection.reproject(&room_context(statuses));
+        (
+            rendered_send_state(projection.display_items(), "t1"),
+            rendered_send_state(projection.display_items(), "t2"),
+        )
+    };
+
+    assert_eq!(
+        rendered(&echoes_only),
+        (Some(recoverable()), Some(TimelineSendState::Sending)),
+        "the echoes alone cannot tell a stopped queue from a working one"
+    );
+
+    let mut seeded = echoes_only;
+    carry_resolved_send_failures(&mut seeded, stopped_room());
+
+    assert_eq!(
+        rendered(&seeded),
+        (Some(recoverable()), Some(recoverable())),
+        "the manager's own record keeps the queue not sent across the switch"
+    );
+    assert!(
+        retry_admission(&SendStateAuthority::new(&seeded), &canonical[1]).is_ok(),
+        "and the queued row still offers the Resend that resumes the room"
+    );
 }

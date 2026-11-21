@@ -3664,6 +3664,27 @@ pub(super) fn remember_local_echo(
     }
 }
 
+/// #1851: keep a resolved recoverable failure across a send-table rebuild.
+///
+/// The SDK's local echo records only an *unrecoverable* failure
+/// (`LocalEchoContent::Event::send_error`), so a queue that stopped on a
+/// transient error looks exactly like a queue that is still working. The actor's
+/// own record is the only evidence of that state, so it is carried over — but
+/// only where the echo is still there and reports nothing terminal.
+pub(super) fn carry_resolved_send_failures(
+    rebuilt: &mut HashMap<String, TimelineSendState>,
+    previous: HashMap<String, TimelineSendState>,
+) {
+    for (transaction_id, state) in previous {
+        if !is_recoverable_failure(&state) {
+            continue;
+        }
+        if rebuilt.get(&transaction_id) == Some(&TimelineSendState::Sending) {
+            rebuilt.insert(transaction_id, state);
+        }
+    }
+}
+
 pub(super) fn private_media_entry_from_msgtype(msgtype: &MessageType) -> Option<PrivateMediaEntry> {
     match msgtype {
         MessageType::Image(content) => {

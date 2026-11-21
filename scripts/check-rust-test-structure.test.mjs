@@ -216,6 +216,50 @@ test("the startup projection is pinned after the send queue replay", () => {
   );
 });
 
+test("the two echo-only send-table seeds must carry a resolved recoverable failure", () => {
+  // #1851: the echo rebuild and the actor's startup seed both record `Sending`
+  // for anything a recoverable failure stopped, so either one, left alone,
+  // republishes a stopped room as sending. These fixtures cut the carry out of
+  // the real functions by locating the statement, not by matching its formatting.
+  const carrierSource = (path) => fs.readFileSync(new URL(path, import.meta.url), "utf8");
+  const outbound = carrierSource("../crates/koushi-core/src/timeline/outbound_send.rs");
+  const actor = carrierSource("../crates/koushi-core/src/timeline/actor.rs");
+  const clean = (sources) =>
+    checkCoreTimelineSendStateDerivation(sources).filter(({ message }) =>
+      message.includes("local echoes")
+    );
+  assert.deepEqual(clean({ outboundSource: outbound, actorSource: actor }), []);
+
+  const dropStatement = (source, fromMarker, statement) => {
+    const from = source.indexOf(fromMarker);
+    assert.ok(from >= 0, `the fixture anchors must still match: ${fromMarker}`);
+    const call = source.indexOf(statement, from);
+    assert.ok(call >= 0, `the fixture must still find ${statement.trim()}`);
+    const end = source.indexOf(";", call) + 1;
+    const lineStart = source.lastIndexOf("\n", call) + 1;
+    return source.slice(0, lineStart) + source.slice(end);
+  };
+
+  assert.ok(
+    checkCoreTimelineSendStateDerivation({
+      outboundSource: dropStatement(
+        outbound,
+        "async fn resync_send_queue_statuses(",
+        "carry_resolved_send_failures("
+      ),
+      actorSource: actor,
+    }).some(({ message }) => message === "the send table is rebuilt from local echoes without carrying the resolved failure"),
+    "a lag rebuild without the carry must be refused"
+  );
+  assert.ok(
+    checkCoreTimelineSendStateDerivation({
+      outboundSource: outbound,
+      actorSource: dropStatement(actor, "pub(super) async fn spawn(", "carry_resolved_send_failures("),
+    }).some(({ message }) => message === "a replacement actor seeds its send table from local echoes alone"),
+    "a startup seed without the carry must be refused"
+  );
+});
+
 test("the send-state tripwire rejects a row write outside the derivation", () => {
   // #1846: a rendered send state is derived at projection time. The scan is token
   // based, so a multi-line write, a write buried in a long function, a copied
