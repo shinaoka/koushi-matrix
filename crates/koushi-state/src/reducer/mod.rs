@@ -2566,11 +2566,27 @@ pub(crate) fn refresh_native_attention_candidate_display_projection(state: &mut 
     let Some(candidate) = state.native_attention.summary.candidate.as_ref() else {
         return false;
     };
+    // #1818: the room comes from the serialized handle first, so a relabel of the
+    // published candidate also works after a restore, when the payload that names the
+    // room is gone. The payload is the fallback for a summary written before the handle.
     let Some(candidate_room_id) = state
         .native_attention
-        .notification
-        .as_ref()
-        .map(|notification| notification.target.room_id.as_str())
+        .summary
+        .alert_room
+        .and_then(|handle| {
+            state
+                .rooms
+                .iter()
+                .find(|room| crate::state::native_attention_room_handle(&room.room_id) == handle)
+        })
+        .map(|room| room.room_id.as_str())
+        .or_else(|| {
+            state
+                .native_attention
+                .notification
+                .as_ref()
+                .map(|notification| notification.target.room_id.as_str())
+        })
     else {
         return false;
     };

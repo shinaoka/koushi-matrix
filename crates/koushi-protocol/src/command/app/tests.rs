@@ -268,6 +268,7 @@ fn native_attention_command_debug_redacts_candidate_labels() {
                 highlight_count: 1,
                 badge_count: 4,
                 alert_id: Some(1),
+                alert_room: Some(7),
                 candidate: Some(NativeAttentionCandidate {
                     room_display_name: "Private Room Name".to_owned(),
                     kind: RoomAttentionKind::Mention,

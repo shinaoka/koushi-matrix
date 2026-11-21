@@ -69,22 +69,35 @@ pub(crate) fn handle_native_attention_updated(
     // #1806: the stateless projection stamps `alert_id: None`, so a caller that submits
     // its output over a published candidate would drop the identity the webview dedupes
     // on. Carry the published identity forward when the submission is the alert that is
-    // already out: the same room its payload targets (#1816). Reading a missing identity
-    // as "new alert" is the double banner #1802 removed, and minting here would add a
-    // second mint rule beside the room-identity one in
+    // already out: the room the published alert targets (#1816), compared through the
+    // handle that survives a restore (#1818). Reading a missing identity as "new alert"
+    // is the double banner #1802 removed, and minting here would add a second mint rule
+    // beside the room-identity one in
     // `recompute_native_attention_from_rooms_for_live_room`, so a submission for another
     // room carries none rather than borrowing a published one. An identity the caller
     // does submit wins, and a submitted clear keeps clearing: an identity without a
     // candidate would be a banner the webview can never show.
-    if attention.summary.candidate.is_some()
-        && attention.summary.alert_id.is_none()
-        && let Some((published_room_id, _)) = published_candidate(state)
-        && attention
+    if attention.summary.candidate.is_some() {
+        let submitted_alert_room = attention
             .notification
             .as_ref()
-            .is_some_and(|payload| payload.target.room_id == published_room_id)
-    {
-        attention.summary.alert_id = state.native_attention.summary.alert_id;
+            .map(|payload| crate::state::native_attention_room_handle(&payload.target.room_id));
+        if attention.summary.alert_id.is_none()
+            && submitted_alert_room.is_some()
+            && submitted_alert_room == state.native_attention.summary.alert_room
+        {
+            attention.summary.alert_id = state.native_attention.summary.alert_id;
+        }
+        // The handle follows the identity: an alert that has one names a room, either
+        // the one the caller supplied with it or the one this submission's payload
+        // targets, and an alert that has none names no room.
+        attention.summary.alert_room = match attention.summary.alert_id {
+            Some(_) => submitted_alert_room.or(attention.summary.alert_room),
+            None => None,
+        };
+    } else {
+        // A submitted clear clears the room with the identity.
+        attention.summary.alert_room = None;
     }
     if !state.settings.values.notifications.badges {
         attention.summary.badge_count = 0;
@@ -208,22 +221,30 @@ pub(crate) fn recompute_native_attention_from_rooms_for_live_room(
     }
     // #1802/#1816: the alert identity is minted here, where the candidate is raised, and
     // only here. It belongs to the room that holds the attention, not to the observation
-    // that recomputed it: a candidate for the room the published payload already targets
+    // that recomputed it: a candidate for the room the published alert already targets
     // relabels that alert even when this observation itself raises it (an unread increase
     // reports the room as live, `room.rs`), so the webview keeps seeing one alert for one
     // unread conversation until a canonical clear ends it. A candidate for another room
-    // is a new alert. A restored summary carries the identity but not the room its payload
-    // targeted (`notification` is never serialized), so a raise after a restore mints.
+    // is a new alert.
+    //
+    // #1818: the published room is compared through the serialized handle rather than
+    // through the payload's room id, so a summary that came back from a restore relabels
+    // the alert it published instead of minting a second one for the same conversation.
+    let published_alert_room = state.native_attention.summary.alert_room;
+    let raised_alert_room = projection
+        .state
+        .notification
+        .as_ref()
+        .map(|payload| crate::state::native_attention_room_handle(&payload.target.room_id));
     let previous_alert_id = state.native_attention.summary.alert_id;
-    let relabelled_alert_id = published_candidate(state)
-        .filter(|(room_id, _)| {
-            projection
-                .state
-                .notification
-                .as_ref()
-                .is_some_and(|payload| payload.target.room_id == *room_id)
-        })
+    let relabelled_alert_id = published_alert_room
+        .filter(|handle| Some(*handle) == raised_alert_room)
         .and(previous_alert_id);
+    projection.state.summary.alert_room = if projection.state.summary.candidate.is_none() {
+        None
+    } else {
+        raised_alert_room
+    };
     projection.state.summary.alert_id = if projection.state.summary.candidate.is_none() {
         None
     } else if let Some(alert_id) = relabelled_alert_id {
@@ -293,6 +314,7 @@ pub(crate) fn handle_native_window_focus_changed(
     );
     next.state.summary.candidate = None;
     next.state.summary.alert_id = None;
+    next.state.summary.alert_room = None;
     next.state.dispatch = crate::state::NativeAttentionDispatchState::Idle;
     if state.native_attention == next.state {
         return Vec::new();

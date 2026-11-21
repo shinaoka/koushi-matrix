@@ -6151,11 +6151,24 @@ stateDiagram-v2
   published payload already targets is a relabel that keeps the identity, and
   only a candidate for another room, or a raise after a canonical clear, mints a
   new one (#1816). Minting always resumes above every identity already published,
-  so a restored snapshot cannot re-issue one; a restored snapshot cannot relabel
-  either, because the payload that records the alert's room is never serialized.
-  It is an opaque private-data-free token, never time-derived and never a room,
-  event, or user identifier, and the webview scopes transient banner and sound
-  effects on it alone instead of on candidate contents.
+  so a restored snapshot cannot re-issue one. A restored snapshot relabels too: the
+  summary carries, next to the identity, the opaque handle of the room that alert
+  targets (`NativeAttentionSummary.alert_room`, #1818), so the room-identity rule
+  above is the same before and after a restore, and a second message in the same
+  conversation after a restart moves the label and the count without minting a
+  second identity. The same handle also feeds the display-label refresh, so a
+  profile or local-alias change after a restore still relabels the published
+  candidate rather than only the sidebar row. The handle is a fixed-constant FNV-1a digest of the room id —
+  stable across processes and builds, which `DefaultHasher` is not — and it is
+  compared only with another handle: never rendered, never logged, never placed in
+  a candidate or a diagnostic, and it cannot be turned back into a room id. The
+  identity itself stays an opaque private-data-free token, never time-derived and
+  never a room, event, or user identifier, and the webview scopes transient banner
+  and sound effects on it alone instead of on candidate contents. The limit that
+  remains is #1799's revival path, which reads the process-local payload: an
+  observation that raises nothing after a restore still ends the published alert,
+  so a restored alert is stable against the next message, not against an
+  observation that raises nothing.
 - Candidates carry only private-data-minimized fields allowed by the security
   rules: safe room display label, attention kind (`mention`, `dm`, `message`),
   aggregate unread/highlight counts, and coarse capability tokens. They must not

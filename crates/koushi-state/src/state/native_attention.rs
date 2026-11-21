@@ -88,7 +88,7 @@ impl NativeAttentionState {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NativeAttentionSummary {
     pub unread_count: u64,
     pub highlight_count: u64,
@@ -100,8 +100,63 @@ pub struct NativeAttentionSummary {
     /// token alone instead of on the candidate's contents.
     #[serde(default)]
     pub alert_id: Option<u64>,
+    /// Opaque handle of the room the published alert targets (#1818).
+    ///
+    /// The payload that names that room (`notification`) is never serialized, so a
+    /// restored summary could not tell which conversation its alert belonged to and
+    /// minted a second identity for the next message in the same one. This handle is
+    /// the serialized form of that fact: [`native_attention_room_handle`] over the room
+    /// id, so a relabel is recognized the same way before and after a restore.
+    ///
+    /// It is a pseudonym, not an identifier, and the honest limit matters: the digest
+    /// is unkeyed because it has to survive a restart, so someone who already holds the
+    /// room id can confirm the link, and it is stable across processes and accounts.
+    /// What it does not do is disclose anything new — the snapshot already carries the
+    /// room list — and it is compared only with itself: never rendered, never put in a
+    /// candidate, never part of a diagnostic, and never printed (see this type's `Debug`).
+    /// Absent while no candidate is published, and for a summary written before this
+    /// field existed.
+    #[serde(default)]
+    pub alert_room: Option<u64>,
     pub candidate: Option<NativeAttentionCandidate>,
     pub capabilities: NativeAttentionCapabilities,
+}
+
+/// The stable handle of one room for the attention summary (#1818).
+///
+/// FNV-1a, 64-bit, with fixed constants: the same room id yields the same handle in
+/// every process and every build, which is what a restore needs and what
+/// `std::collections::hash_map::DefaultHasher` explicitly does not promise. The
+/// constants are part of the stored format, so a change to them invalidates every
+/// handle already published — `a_room_handle_is_stable_across_builds` pins one value.
+///
+/// It is a comparison token and a pseudonym within this process's own state, not an
+/// identifier: unkeyed (it must survive a restart, so it cannot carry a per-process
+/// secret), therefore confirmable by anyone who already holds the room id, and
+/// therefore never rendered, logged, or sent to the OS.
+pub(crate) fn native_attention_room_handle(room_id: &str) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    room_id.as_bytes().iter().fold(OFFSET_BASIS, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
+    })
+}
+
+impl fmt::Debug for NativeAttentionSummary {
+    /// Redacts the room handle. The identity is a bare counter and stays readable; the
+    /// handle is room-derived, so it never reaches a log or a diagnostics dump.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeAttentionSummary")
+            .field("unread_count", &self.unread_count)
+            .field("highlight_count", &self.highlight_count)
+            .field("badge_count", &self.badge_count)
+            .field("alert_id", &self.alert_id)
+            .field("alert_room", &self.alert_room.map(|_| "RoomHandle(..)"))
+            .field("candidate", &self.candidate)
+            .field("capabilities", &self.capabilities)
+            .finish()
+    }
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -436,6 +491,7 @@ pub(crate) fn native_attention_projection_from_rooms_with_live_room(
                 // A stateless projection has no sequence to mint from; the reducer
                 // assigns the identity where it raises the candidate (#1802).
                 alert_id: None,
+                alert_room: None,
                 candidate,
                 capabilities: input.capabilities,
             },

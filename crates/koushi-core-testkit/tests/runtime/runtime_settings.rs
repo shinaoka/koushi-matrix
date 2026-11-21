@@ -319,6 +319,7 @@ async fn disabled_badges_remain_rust_projected_to_zero_after_runtime_restart() {
                     highlight_count: 1,
                     badge_count: 5,
                     alert_id: Some(1),
+                    alert_room: Some(7),
                     candidate: Some(NativeAttentionCandidate {
                         room_display_name: "Room".to_owned(),
                         kind: RoomAttentionKind::Mention,
