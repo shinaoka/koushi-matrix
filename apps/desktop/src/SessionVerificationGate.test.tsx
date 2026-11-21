@@ -456,6 +456,42 @@ describe("SessionVerificationGate interactions", () => {
     releaseSas(commandReceipt);
   });
 
+  test("a timed-out own-device verification error points at ways that still work", async () => {
+    const snapshot = sessionSnapshot("needsRecovery");
+    snapshot.state.domain.session = {
+      kind: "awaitingVerification",
+      user_id: "@u:example.invalid",
+      homeserver: "https://example.invalid",
+      device_id: "D",
+      gate: { methods: ["existingDeviceSas", "recoveryKey"], account_kind: "existingIdentity", failureKind: "timeout" }
+    };
+    const timedOut = render(<SessionVerificationGate snapshot={snapshot} onReceipt={async () => undefined} onSignOut={() => undefined} />);
+    expect(screen.getByRole("alert").textContent).toBe("Timeout");
+    const guidance = screen.getByText(/Open an already verified app or session/).textContent ?? "";
+    for (const alternative of ["recovery key", "Secure Backup", "room-key export"]) {
+      expect(guidance).toContain(alternative);
+    }
+
+    timedOut.unmount();
+    const session = snapshot.state.domain.session as { gate: { failureKind: string } };
+    session.gate.failureKind = "sdk";
+    render(<SessionVerificationGate snapshot={snapshot} onReceipt={async () => undefined} onSignOut={() => undefined} />);
+    expect(screen.getByRole("alert").textContent).toBe("Verification failed.");
+    expect(screen.queryByText(/Open an already verified app or session/)).toBeNull();
+  });
+
+  test("a device the server already keyed says so instead of only timing out later", async () => {
+    const snapshot = sessionSnapshot("needsRecovery");
+    expect(screen.queryByText("This session cannot upload new encryption keys")).toBeNull();
+
+    snapshot.state.domain.e2ee_trust.key_upload = "duplicateOneTimeKey";
+    render(<SessionVerificationGate snapshot={snapshot} onReceipt={async () => undefined} onSignOut={() => undefined} />);
+    expect(screen.getByRole("alert").textContent).toBe("This session cannot upload new encryption keys");
+    const guidance = screen.getByText(/The server already holds a one-time key/).textContent ?? "";
+    expect(guidance).toContain("Sign in again on this device");
+    expect(guidance).toContain("recovery key");
+  });
+
   test("holds the same-kind gate until its command receipt settles", async () => {
     const snapshot = sessionSnapshot("needsRecovery");
     snapshot.state.domain.session = { kind: "awaitingVerification", user_id: "@u:example.invalid", homeserver: "https://example.invalid", device_id: "D", gate: { methods: ["existingDeviceSas"], account_kind: "existingIdentity" } };

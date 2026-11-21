@@ -275,6 +275,11 @@ export function SessionVerificationGate({
   const deviceVerificationAvailable = methods.includes("existingDeviceSas");
   const sasVerifying =
     session.kind === "verifying" && session.method === "existingDeviceSas";
+  // #1780: a session whose one-time keys the server already holds cannot be
+  // reached by another session's verification request, so say so where the
+  // user is stuck rather than letting the wait time out unexplained.
+  const keyUploadDuplicate =
+    snapshot.state.domain.e2ee_trust.key_upload === "duplicateOneTimeKey";
   const phaseKind = session.kind === "provisional" ? provisionalPhaseKind(session.phase) : null;
   const checking = phaseKind === "checkingTrust";
   const discovering = phaseKind === "discoveringMethods";
@@ -665,6 +670,11 @@ export function SessionVerificationGate({
       <p>{t("gate.locked")}</p>
     ) : null}
     {session.gate?.failureKind && <p role="alert">{gateFailureLabel(session.gate.failureKind)}</p>}
+    {session.gate?.failureKind === "timeout" && <p>{t("gate.deviceVerificationTimeoutNextSteps")}</p>}
+    {keyUploadDuplicate && <>
+      <p role="alert">{t("gate.duplicateOneTimeKeyTitle")}</p>
+      <p>{t("gate.duplicateOneTimeKeyCopy")}</p>
+    </>}
     {preparationFailure && <p role="alert">{gateFailureLabel(preparationFailure)}</p>}
     {operationError && !session.gate?.failureKind && !preparationFailure && <p role="alert">{operationError}</p>}
     {session.kind === "rejecting" && session.reason && <p role="alert">{gateRejectLabel(session.reason)}</p>}

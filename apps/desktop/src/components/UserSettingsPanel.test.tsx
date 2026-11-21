@@ -115,7 +115,8 @@ describe("UserSettingsPanel", () => {
         is_current: false
       }
     ],
-    unverified_own_sessions_alert: null
+    unverified_own_sessions_alert: null,
+    key_upload: "idle"
   };
   const idleE2eeTrust: E2eeTrustState = {
     verification: { kind: "idle" },
@@ -124,7 +125,8 @@ describe("UserSettingsPanel", () => {
     identity_reset: { kind: "idle" },
     key_management: keyManagement,
     devices: [],
-    unverified_own_sessions_alert: null
+    unverified_own_sessions_alert: null,
+    key_upload: "idle"
   };
   const profile: ProfileState = {
     own: {

@@ -22,6 +22,29 @@ The available choices depend on your account. Koushi recommends the recovery
 key when available; another device can be offline or missing keys. Wait for
 verification to finish rather than repeatedly starting new requests.
 
+## When verification does not go through
+
+Device-to-device verification has a time limit. If the other session does not
+answer within about two minutes, Koushi stops waiting and shows an error
+instead of leaving the screen hanging. Try again with an already verified app
+or session open, or switch to a method that does not need one:
+
+- Your recovery key or security phrase, when the account offers it.
+- Restoring secure backup, which also brings back your encrypted history.
+- Importing a room key export file under **Account Settings → Security &
+  Privacy**, if you saved one from another client.
+
+If the screen says **This session cannot upload new encryption keys**, the
+server already holds an encryption key with the same identifier as one this
+session tried to publish. Other sessions may then never offer a verification
+request to this one. Sign in again on this device to create a new session, and
+restore secure backup afterwards to get your history back. Verifying with your
+recovery key keeps working in the meantime.
+
+Koushi verifies a session with the recovery key or with matching emoji on
+another device. It does not offer QR code verification, so there is no QR path
+whose success could still leave the session unverified.
+
 ## Unverified sessions on your account
 
 When you sign in, and afterwards at most once every 24 hours, Koushi checks

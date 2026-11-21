@@ -34,7 +34,8 @@ describe("e2eeSendDiagnosticMessage", () => {
                 last_seen_ts: null,
                 is_current: false
               }
-            ]
+            ],
+            key_upload: "idle"
           }
         }
       }

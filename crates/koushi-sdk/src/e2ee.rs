@@ -1059,6 +1059,44 @@ impl fmt::Debug for MatrixIncomingVerificationRequest {
     }
 }
 
+/// Payload-free stream of duplicate one-time-key upload rejections.
+pub struct MatrixDuplicateKeyUploadObserver {
+    receiver: Option<tokio::sync::mpsc::Receiver<()>>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl MatrixDuplicateKeyUploadObserver {
+    pub fn take_receiver(&mut self) -> Option<tokio::sync::mpsc::Receiver<()>> {
+        self.receiver.take()
+    }
+
+    /// Stop the forwarding task and retain its JoinHandle until abort settles.
+    pub async fn shutdown(&mut self) {
+        if let Some(task) = self.task.as_mut() {
+            task.abort();
+            let _ = task.await;
+        }
+        self.task = None;
+    }
+}
+
+impl fmt::Debug for MatrixDuplicateKeyUploadObserver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MatrixDuplicateKeyUploadObserver")
+            .field("pending", &"Receiver(..)")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for MatrixDuplicateKeyUploadObserver {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
 pub struct MatrixIncomingVerificationRequestObserver {
     receiver: Option<tokio::sync::mpsc::Receiver<MatrixIncomingVerificationRequest>>,
     incoming_request_task: Option<tokio::task::JoinHandle<()>>,
@@ -2534,6 +2572,50 @@ pub async fn cancel_own_user_sas_verification(
     cancel_verification_request(&handle.request).await
 }
 
+/// Observes the server rejecting a one-time-key upload because it already holds
+/// that key identifier with another value (`M_UNKNOWN: One time key … already
+/// exists`, element-web#29625).
+///
+/// The rejection means this device's crypto store and the server disagree about
+/// the keys peers claim from this device: a peer can pick a one-time key this
+/// store no longer has, so its encrypted to-device message (a verification
+/// request among them) never decrypts here. The SDK message carries public key
+/// material, and this signal deliberately carries none.
+pub fn observe_duplicate_key_upload_errors(
+    session: &MatrixClientSession,
+) -> MatrixDuplicateKeyUploadObserver {
+    let receiver = session.client().subscribe_to_duplicate_key_upload_errors();
+    let (sender, signal) = tokio::sync::mpsc::channel(1);
+    let task = tokio::spawn(forward_duplicate_key_upload_errors(receiver, sender));
+    MatrixDuplicateKeyUploadObserver {
+        receiver: Some(signal),
+        task: Some(task),
+    }
+}
+
+/// Forwards the SDK's duplicate-key-upload notifications as payload-free signals.
+///
+/// A `None` payload is the SDK failing to parse the server's message: the
+/// rejection still happened, so it is reported like a parsed one.
+async fn forward_duplicate_key_upload_errors(
+    mut receiver: tokio::sync::broadcast::Receiver<
+        Option<matrix_sdk::encryption::DuplicateOneTimeKeyErrorMessage>,
+    >,
+    sender: tokio::sync::mpsc::Sender<()>,
+) {
+    loop {
+        match receiver.recv().await {
+            Ok(_) => {
+                if sender.send(()).await.is_err() {
+                    return;
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        }
+    }
+}
+
 pub async fn observe_incoming_verification_requests(
     session: &MatrixClientSession,
 ) -> MatrixIncomingVerificationRequestObserver {
@@ -2699,6 +2781,9 @@ mod secure_backup_inspection_tests;
 
 #[cfg(test)]
 mod e2ee_trust_tests;
+
+#[cfg(test)]
+mod duplicate_key_upload_tests;
 
 #[cfg(test)]
 mod recovery_key_reveal_tests;

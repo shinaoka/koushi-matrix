@@ -25,6 +25,12 @@ use super::recovery_backup::{
 
 const IDENTITY_RESET_AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// #1780: how long an own-device SAS verification waits for the other session to
+/// accept before it settles as `Timeout`. Matrix has no delivery receipt for a
+/// to-device request, so this bound is what turns "no prompt ever appeared"
+/// into a stated failure instead of an indefinite wait.
+pub(super) const DEFAULT_SAS_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Diagnostic trigger for the activation summary recorded on session restore.
 pub(super) const VERIFICATION_PROTECTION_SUMMARY_TRIGGER_RESTORE: &str = "restore";
 
@@ -72,6 +78,13 @@ pub(super) fn record_incoming_verification_protection_summary(
 pub(super) struct VerificationObservation {
     pub(super) stop_tx: oneshot::Sender<()>,
     pub(super) task: crate::executor::JoinHandle<()>,
+}
+
+/// #1780: the SDK observer plus the product forwarding task it feeds. The SDK
+/// owner stays alive while the task runs so the signal source is not dropped.
+pub(super) struct DuplicateKeyUploadObservation {
+    observer: koushi_sdk::MatrixDuplicateKeyUploadObserver,
+    task: crate::executor::JoinHandle<()>,
 }
 
 pub(super) struct IncomingVerificationObservation {
@@ -579,6 +592,60 @@ impl AccountActor {
         });
     }
 
+    /// #1780: watch for the server rejecting this device's one-time-key upload.
+    ///
+    /// Installed with the session rather than on Ready, because the rejection
+    /// happens during the provisional `/keys/upload` that every unverified
+    /// session performs before the gate can be answered.
+    // shortcut: the SDK publishes the rejection once per crypto store, so a
+    // device already flagged in an earlier run shows nothing until it happens
+    // again; the wait timeout still covers that user. Upgrade by persisting the
+    // fact at detection time and re-reading it when a session is installed.
+    pub(super) async fn start_duplicate_key_upload_observer(
+        &mut self,
+        session: Arc<MatrixClientSession>,
+    ) {
+        self.stop_duplicate_key_upload_observer().await;
+        let mut observer = koushi_sdk::observe_duplicate_key_upload_errors(&session);
+        let Some(mut receiver) = observer.take_receiver() else {
+            return;
+        };
+        let tx = self.self_tx.clone();
+        let task = crate::executor::spawn(async move {
+            while receiver.recv().await.is_some() {
+                record(
+                    DiagnosticEvent::new(
+                        DiagnosticLevel::Warn,
+                        "core.e2ee_key_upload",
+                        "duplicate_one_time_key",
+                    )
+                    .field(DiagnosticField::token("outcome", "rejected")),
+                );
+                if tx
+                    .send(AccountMessage::DuplicateOneTimeKeyUpload)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        self.duplicate_key_upload_observer = Some(DuplicateKeyUploadObservation { observer, task });
+    }
+
+    pub(super) async fn stop_duplicate_key_upload_observer(&mut self) {
+        if let Some(mut observation) = self.duplicate_key_upload_observer.take() {
+            observation.task.abort();
+            let _ = observation.task.await;
+            observation.observer.shutdown().await;
+        }
+    }
+
+    pub(super) async fn handle_duplicate_one_time_key_upload(&mut self) {
+        self.send_actions(vec![AppAction::DuplicateOneTimeKeyUpload])
+            .await;
+    }
+
     pub(super) fn next_incoming_verification_request_id(&mut self) -> RequestId {
         let sequence = self.next_incoming_verification_sequence;
         self.next_incoming_verification_sequence = self
@@ -860,13 +927,14 @@ impl AccountActor {
         }
     }
 
-    fn start_sas_timeout(&mut self, flow_id: u64) {
+    pub(super) fn start_sas_timeout(&mut self, flow_id: u64) {
         if let Some(task) = self.sas_timeout_task.take() {
             task.abort();
         }
+        let timeout = self.sas_verification_timeout;
         let tx = self.self_tx.clone();
         self.sas_timeout_task = Some(executor::spawn(async move {
-            executor::sleep(Duration::from_secs(120)).await;
+            executor::sleep(timeout).await;
             let _ = tx
                 .send(AccountMessage::SasVerificationTimedOut { flow_id })
                 .await;
@@ -881,15 +949,9 @@ impl AccountActor {
     }
 
     pub(super) async fn handle_sas_verification_timeout(&mut self, flow_id: u64) {
-        let active = self
-            .sas_verification
-            .as_ref()
-            .is_some_and(|pending| pending.request_id.sequence == flow_id)
-            || self
-                .own_user_verification
-                .as_ref()
-                .is_some_and(|(active_flow_id, _)| *active_flow_id == flow_id);
-        if !active {
+        // An active flow is exactly one with a target: the SAS, the pending
+        // request, the own-device handle, or (in tests) the synthetic fixture.
+        if self.active_verification_target(flow_id).is_none() {
             return;
         }
         record_sas_verification_event(sas_timeout_fired_event(

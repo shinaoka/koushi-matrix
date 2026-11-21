@@ -1524,6 +1524,9 @@ export type MessageId =
   | "gate.useRecoveryKey"
   | "gate.tryDeviceVerificationAnyway"
   | "gate.deviceVerificationWaiting"
+  | "gate.deviceVerificationTimeoutNextSteps"
+  | "gate.duplicateOneTimeKeyTitle"
+  | "gate.duplicateOneTimeKeyCopy"
   | "gate.match"
   | "gate.mismatch"
   | "gate.recoverySecret"
@@ -4009,6 +4012,9 @@ const en: Catalog = {
   "gate.useRecoveryKey": "Use recovery key",
   "gate.tryDeviceVerificationAnyway": "Try device verification anyway",
   "gate.deviceVerificationWaiting": "Keep the already verified app or session open and accept the request there if you have not already.",
+  "gate.deviceVerificationTimeoutNextSteps": "No other session answered. Open an already verified app or session for this account, keep it open, and try again. If it still does not arrive, verify another way: with your recovery key or security phrase when offered, by restoring Secure Backup, or by importing a room-key export file in Account settings, Security & Privacy.",
+  "gate.duplicateOneTimeKeyTitle": "This session cannot upload new encryption keys",
+  "gate.duplicateOneTimeKeyCopy": "The server already holds a one-time key with the same identifier as one this session tried to upload, so other sessions may never receive a verification request from here. Sign in again on this device to start a new session, then restore Secure Backup to get your history back. Verifying with your recovery key still works.",
   "gate.match": "They match",
   "gate.mismatch": "They do not match",
   "gate.recoverySecret": "Recovery secret",
@@ -6382,6 +6388,9 @@ const ja: Catalog = {
   "gate.useRecoveryKey": "リカバリーキーを使う",
   "gate.tryDeviceVerificationAnyway": "それでもデバイス検証を試す",
   "gate.deviceVerificationWaiting": "既に検証済みのアプリまたはセッションを開いたまま、まだ承認していない場合はそちらで承認してください。",
+  "gate.deviceVerificationTimeoutNextSteps": "他のセッションが応答しませんでした。このアカウントで既に検証済みのアプリまたはセッションを開いたまま、もう一度お試しください。それでも届かない場合は別の方法で検証してください。表示されている場合はリカバリーキーまたはセキュリティフレーズ、Secure Backup の復元、またはアカウント設定の「セキュリティとプライバシー」でのルームキーのエクスポートファイルの取り込みです。",
+  "gate.duplicateOneTimeKeyTitle": "このセッションは新しい暗号化キーをアップロードできません",
+  "gate.duplicateOneTimeKeyCopy": "このセッションがアップロードしようとしたワンタイムキーと同じ識別子のキーをサーバーが既に保持しているため、他のセッションがここへ検証リクエストを届けられない可能性があります。この端末でサインインし直して新しいセッションを作成し、Secure Backup を復元して履歴を戻してください。リカバリーキーでの検証はそのまま使えます。",
   "gate.match": "一致しています",
   "gate.mismatch": "一致していません",
   "gate.recoverySecret": "リカバリーシークレット",

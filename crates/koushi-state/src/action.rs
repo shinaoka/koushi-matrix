@@ -579,6 +579,10 @@ pub enum AppAction {
         flow_id: u64,
         kind: crate::state::VerificationGateFailureKind,
     },
+    /// #1780: the server rejected this device's one-time-key upload because the
+    /// identifier already exists. Payload-free on purpose; the SDK message
+    /// carries public key material that must not enter product state.
+    DuplicateOneTimeKeyUpload,
     DeviceCleanupStartRequested {
         request_id: u64,
     },

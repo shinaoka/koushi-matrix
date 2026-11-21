@@ -173,6 +173,7 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::VerificationMethodDiscoveryFailed { kind, .. } => {
             session::handle_verification_method_discovery_failed(state, kind)
         }
+        AppAction::DuplicateOneTimeKeyUpload => e2ee::handle_duplicate_one_time_key_upload(state),
         AppAction::VerificationMethodDiscoveryRetryStarted { .. } => {
             session::handle_verification_method_discovery_retry_started(state)
         }

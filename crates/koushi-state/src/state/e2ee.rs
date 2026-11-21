@@ -24,6 +24,26 @@ pub struct E2eeTrustState {
     /// later check that finds none.
     #[serde(default)]
     pub unverified_own_sessions_alert: Option<UnverifiedOwnSessionsAlert>,
+    /// #1780: set once the server rejects this device's one-time-key upload and
+    /// stays set for the session; it is a statement about this device's crypto
+    /// store, not about one verification attempt.
+    #[serde(default)]
+    pub key_upload: KeyUploadHealth,
+}
+
+/// Health of this device's one-time-key uploads (#1780).
+///
+/// The server rejects an upload when it already holds a key under the same
+/// identifier with a different value. Peers then claim one-time keys this
+/// device's store cannot use, so the encrypted to-device messages they send —
+/// verification requests among them — never decrypt here, which looks like a
+/// request that never arrived. The state carries no key material.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KeyUploadHealth {
+    #[default]
+    Idle,
+    DuplicateOneTimeKey,
 }
 
 /// #1505: own-session checks run at login, then only once this much time has

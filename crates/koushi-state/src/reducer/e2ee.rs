@@ -2,12 +2,12 @@ use crate::{
     effect::{AppEffect, UiEvent},
     state::{
         AppState, AuthFailureKind, CrossSigningStatus, DeviceCleanupOfferReason,
-        DeviceCleanupState, IdentityResetState, KeyBackupStatus, ProvisionalPhase, QrLoginState,
-        RoomKeyExportState, RoomKeyImportState, SasEmoji, SecureBackupPassphraseChangeState,
-        SecureBackupSetupState, SessionState, SyncState, TrustOperationFailureKind,
-        VerificationAccountKind, VerificationCancelReason, VerificationFlowState,
-        VerificationGateFailureKind, VerificationGateState, VerificationMethod,
-        VerificationMethodCapability, VerificationTarget,
+        DeviceCleanupState, IdentityResetState, KeyBackupStatus, KeyUploadHealth, ProvisionalPhase,
+        QrLoginState, RoomKeyExportState, RoomKeyImportState, SasEmoji,
+        SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionState, SyncState,
+        TrustOperationFailureKind, VerificationAccountKind, VerificationCancelReason,
+        VerificationFlowState, VerificationGateFailureKind, VerificationGateState,
+        VerificationMethod, VerificationMethodCapability, VerificationTarget,
     },
 };
 
@@ -1296,5 +1296,16 @@ pub(crate) fn handle_unverified_own_sessions_alert_dismissed(
     {
         return Vec::new();
     }
+    vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+}
+
+/// #1780: record that the server already holds one of this device's one-time
+/// keys. One-shot and payload-free; a later successful upload does not clear it
+/// because the keys that prompted the rejection are still in the server's list.
+pub(crate) fn handle_duplicate_one_time_key_upload(state: &mut AppState) -> Vec<AppEffect> {
+    if state.e2ee_trust.key_upload == KeyUploadHealth::DuplicateOneTimeKey {
+        return Vec::new();
+    }
+    state.e2ee_trust.key_upload = KeyUploadHealth::DuplicateOneTimeKey;
     vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
 }

@@ -2329,6 +2329,7 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
             total_sessions: 2,
             unverified_sessions: 1,
         }),
+        key_upload: koushi_state::KeyUploadHealth::DuplicateOneTimeKey,
     };
 
     // local_encryption
@@ -2613,6 +2614,10 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
         thread: None,
     })
     .expect("maximally-populated state should serialize to JSON");
+    assert_eq!(
+        value["state"]["domain"]["e2ee_trust"]["key_upload"], "duplicateOneTimeKey",
+        "the device key-upload health must cross the Tauri DTO"
+    );
     assert_eq!(
         value["state"]["domain"]["current_session_status"]["status"], "ready",
         "the complete Rust-owned current-session status must cross the Tauri DTO"
