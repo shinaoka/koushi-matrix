@@ -4414,8 +4414,7 @@ export const TimelineView = memo(function TimelineView({
     navigationSnapshot?.read_marker_event_id ??
     ("Thread" in timelineKey.kind ? null : roomSignals?.fully_read_event_id) ??
     null;
-  // #2012: the divider's row, advanced past the current user's in-flight
-  // messages that the anchor cannot name yet.
+  // #2012: the divider's row, advanced to where the confirmation will put it.
   const readMarkerAnchorRowId = effectiveReadMarkerRowId(
     visibleRows,
     unreadMarkerEventId ? null : readMarkerDisplayEventId,
@@ -4801,16 +4800,27 @@ export const TimelineView = memo(function TimelineView({
 });
 
 /**
- * The row the "Read up to here" divider follows (#2012).
+ * The row the "Read up to here" divider follows (#2012, #2021).
  *
- * Rust advances `read_marker_display_event_id` to the current user's latest
- * visible own message, but a local echo has no event id, so it cannot take the
- * anchor until the server names it. The divider therefore sat above the user's
- * own in-flight message and moved below it a moment later, laying the row out
- * twice (in compact density the row also gained and then lost its avatar and
- * name). Placing the divider where the confirmed anchor will land keeps the
- * send to a single layout. A failed message is left out on purpose: it never
- * takes the anchor.
+ * A local echo cannot take Core's anchor until the server names it, so the
+ * divider sat above it and moved below it once the send was confirmed, laying
+ * the row out twice. Pre-place it on the row the confirmation will name: walk
+ * past presentation-only rows (a day heading, a gap placeholder — they never
+ * carry the anchor) and onto the current user's in-flight messages. A failed
+ * send stops the walk: it never takes the anchor.
+ *
+ * This stays inside the send on purpose. Core's wider rule — the user's latest
+ * own visible message at or after the marker
+ * (`crates/koushi-core/src/timeline/navigation.rs`) — only applies when the
+ * local read position is not among the loaded items; extrapolating it
+ * unconditionally would move the divider onto rows Core has not marked read,
+ * possibly outside the mounted window.
+ *
+ * Known gaps, both pre-existing and unchanged here: a message from someone else
+ * directly before the echo keeps the divider until confirmation reaches it, and
+ * the commit between the confirmation's item diff and the navigation snapshot
+ * that follows it falls back to the previous anchor. Core publishes the two
+ * events in one batch, so neither is normally painted.
  */
 function effectiveReadMarkerRowId(
   rows: readonly TimelineDisplayRow[],
@@ -4824,20 +4834,28 @@ function effectiveReadMarkerRowId(
       readMarkerDisplayEventId === row.activity_event_id
   );
   if (index < 0) return null;
-  while (
-    currentUserId &&
-    index + 1 < rows.length &&
-    isInFlightOwnRow(rows[index + 1], currentUserId)
-  ) {
-    index += 1;
+  while (currentUserId) {
+    let next = index + 1;
+    while (next < rows.length && isPresentationRow(rows[next])) next += 1;
+    if (next >= rows.length || !isInFlightOwnRow(rows[next], currentUserId)) break;
+    index = next;
   }
   return rows[index].row_id;
+}
+
+/** A layout heading with no message of its own: a day divider or a gap row. */
+function isPresentationRow(row: TimelineDisplayRow): boolean {
+  return (
+    (row.kind === "dateDivider" || row.kind === "timelineGap") &&
+    row.content_event_id === null &&
+    row.activity_event_id === null
+  );
 }
 
 /** An own message whose send is still in flight, so no event id names it yet. */
 function isInFlightOwnRow(row: TimelineDisplayRow, currentUserId: string): boolean {
   return (
-    (row.kind === "event" || row.kind === "threadRoot") &&
+    row.kind === "event" &&
     row.item.sender === currentUserId &&
     "Transaction" in row.item.id &&
     row.item.send_state?.kind === "sending"

@@ -87,6 +87,23 @@ const diffs = (batch: number, list: unknown[]): CoreEventPayload => ({
   }
 });
 
+/** A presentation-only row: the day heading Core inserts at a local-day boundary. */
+function dateDivider(timestampMs: number): TimelineItem {
+  return {
+    ...message(`$date-source:example.invalid`, ""),
+    id: { Synthetic: { synthetic_id: `date-divider-${timestampMs}` } },
+    sender: null,
+    body: null
+  };
+}
+
+function initial(items: TimelineItem[]): CoreEventPayload {
+  return {
+    kind: "Timeline",
+    event: { InitialItems: { request_id: null, key: KEY, generation: 1, items } } as never
+  };
+}
+
 afterEach(() => {
   cleanup();
   clearTimelineViewportSessionMemoryForTests();
@@ -96,17 +113,7 @@ afterEach(() => {
 it("keeps the read-marker divider on the user's in-flight message, so a send lays out once", async () => {
   const emit = renderTimeline();
   await screen.findByTestId("timeline-view");
-  emit({
-    kind: "Timeline",
-    event: {
-      InitialItems: {
-        request_id: null,
-        key: KEY,
-        generation: 1,
-        items: [ownRead()]
-      }
-    } as never
-  });
+  emit(initial([ownRead()]));
   emit(nav(READ));
   expect(markerRowId()).toBe(READ);
 
@@ -117,26 +124,37 @@ it("keeps the read-marker divider on the user's in-flight message, so a send lay
   expect(markerRowId()).toBe("txn:1");
   expect(screen.getByText("Just sent").closest(".message")?.className).toContain("is-continuation");
 
-  // Confirmation: the row gains an event id and Core moves the anchor onto it.
+  // Confirmation arrives as two Core events: the item diff, then the navigation
+  // snapshot that names the new event. Core publishes them in one batch, so the
+  // frames in between are not painted; the e2e spec samples those frames.
   emit(diffs(3, [{ Set: { index: 1, item: confirmed() } }]));
   emit(nav(SENT));
   expect(markerRowId()).toBe(SENT);
+  expect(screen.getByText("Just sent").closest(".message")?.className).toContain("is-continuation");
+});
+
+it("stops at another sender's message instead of jumping over it", async () => {
+  const emit = renderTimeline();
+  await screen.findByTestId("timeline-view");
+  emit(initial([ownRead(), message("$other:example.invalid", "Someone else")]));
+  emit(nav(READ));
+  expect(markerRowId()).toBe(READ);
+  // The walk stays inside the send: it advances onto own in-flight messages and
+  // past presentation rows, not across other people's messages. Core moves the
+  // divider onto the confirmed echo; the renderer leaves that commit to Core
+  // rather than guessing a position Core may not take.
+  emit(diffs(2, [{ PushBack: { item: echo("1") } }]));
+  expect(markerRowId()).toBe(READ);
+  // Once Core names that message as the anchor, the walk resumes and the echo
+  // takes the divider as usual.
+  emit(nav("$other:example.invalid"));
+  expect(markerRowId()).toBe("txn:1");
 });
 
 it("advances past a run of in-flight messages", async () => {
   const emit = renderTimeline();
   await screen.findByTestId("timeline-view");
-  emit({
-    kind: "Timeline",
-    event: {
-      InitialItems: {
-        request_id: null,
-        key: KEY,
-        generation: 1,
-        items: [ownRead()]
-      }
-    } as never
-  });
+  emit(initial([ownRead()]));
   emit(nav(READ));
   emit(diffs(2, [{ PushBack: { item: echo("1") } }, { PushBack: { item: echo("2") } }]));
   expect(markerRowId()).toBe("txn:2");
@@ -145,18 +163,47 @@ it("advances past a run of in-flight messages", async () => {
 it("leaves a failed send on the previous message, which never takes the anchor", async () => {
   const emit = renderTimeline();
   await screen.findByTestId("timeline-view");
-  emit({
-    kind: "Timeline",
-    event: {
-      InitialItems: {
-        request_id: null,
-        key: KEY,
-        generation: 1,
-        items: [ownRead()]
-      }
-    } as never
-  });
+  emit(initial([ownRead()]));
   emit(nav(READ));
   emit(diffs(2, [{ PushBack: { item: echo("1", "notSent") } }]));
   expect(markerRowId()).toBe(READ);
+});
+
+it("skips a date divider between the marker and the in-flight send (#2021)", async () => {
+  const emit = renderTimeline();
+  await screen.findByTestId("timeline-view");
+  // The first message of a new local day: the heading sits between the old
+  // anchor and the echo, and neither is a candidate for the confirmed anchor.
+  emit(initial([ownRead(), dateDivider(1_800_000_002_000)]));
+  emit(nav(READ));
+  expect(markerRowId()).toBe(READ);
+  expect(document.querySelectorAll(".timeline-date-divider").length).toBeGreaterThan(0);
+
+  emit(diffs(2, [{ PushBack: { item: echo("1") } }]));
+  // The day heading still breaks the continuation run (a separate rule); what
+  // matters here is that it does not capture the read-marker anchor.
+  expect(markerRowId()).toBe("txn:1");
+});
+
+it("skips a timeline gap between the marker and the in-flight send (#2021)", async () => {
+  const emit = renderTimeline();
+  await screen.findByTestId("timeline-view");
+  emit(initial([ownRead()]));
+  emit(nav(READ));
+  emit({
+    kind: "Timeline",
+    event: {
+      GapPositionsUpdated: {
+        key: KEY,
+        actor_generation: 1,
+        generation: 1,
+        positions: [{ id: { topology_revision: 1, ordinal: 0 }, before_item_index: 1 }]
+      }
+    } as never
+  });
+  expect(markerRowId()).toBe(READ);
+  expect(screen.getByTestId("timeline-gap-row")).toBeDefined();
+
+  emit(diffs(2, [{ PushBack: { item: echo("1") } }]));
+  expect(markerRowId()).toBe("txn:1");
 });
