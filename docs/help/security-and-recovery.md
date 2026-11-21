@@ -41,9 +41,10 @@ request to this one. Sign in again on this device to create a new session, and
 restore secure backup afterwards to get your history back. Verifying with your
 recovery key keeps working in the meantime.
 
-Koushi verifies a session with the recovery key or with matching emoji on
-another device. It does not offer QR code verification, so there is no QR path
-whose success could still leave the session unverified.
+Koushi itself verifies a session with the recovery key or with matching emoji
+on another device; it never starts a verification from a QR code, so no QR
+success here can leave the session unverified. A verification you completed in
+another client may have used one.
 
 ## Unverified sessions on your account
 

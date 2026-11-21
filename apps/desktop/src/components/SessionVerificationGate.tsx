@@ -669,12 +669,14 @@ export function SessionVerificationGate({
     ) : session.kind === "locked" ? (
       <p>{t("gate.locked")}</p>
     ) : null}
-    {session.gate?.failureKind && <p role="alert">{gateFailureLabel(session.gate.failureKind)}</p>}
-    {session.gate?.failureKind === "timeout" && <p>{t("gate.deviceVerificationTimeoutNextSteps")}</p>}
-    {keyUploadDuplicate && <>
-      <p role="alert">{t("gate.duplicateOneTimeKeyTitle")}</p>
+    {session.gate?.failureKind && <div role="alert">
+      <p>{gateFailureLabel(session.gate.failureKind)}</p>
+      {session.gate.failureKind === "timeout" && <p>{t("gate.deviceVerificationTimeoutNextSteps")}</p>}
+    </div>}
+    {keyUploadDuplicate && (awaiting || sasVerifying) && <div role="alert">
+      <p>{t("gate.duplicateOneTimeKeyTitle")}</p>
       <p>{t("gate.duplicateOneTimeKeyCopy")}</p>
-    </>}
+    </div>}
     {preparationFailure && <p role="alert">{gateFailureLabel(preparationFailure)}</p>}
     {operationError && !session.gate?.failureKind && !preparationFailure && <p role="alert">{operationError}</p>}
     {session.kind === "rejecting" && session.reason && <p role="alert">{gateRejectLabel(session.reason)}</p>}

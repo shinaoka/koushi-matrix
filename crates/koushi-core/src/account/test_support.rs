@@ -95,6 +95,16 @@ pub(super) async fn inspect_session_runtime(
     result.await.expect("runtime inspection")
 }
 
+pub(super) async fn inspect_key_upload_observer(handle: &AccountActorHandle) -> bool {
+    let (response, result) = oneshot::channel();
+    assert!(
+        handle
+            .send(AccountMessage::InspectKeyUploadObserver { response })
+            .await
+    );
+    result.await.expect("key upload observer inspection")
+}
+
 pub(super) async fn inspect_sync_owners(handle: &AccountActorHandle) -> (bool, bool, bool) {
     let (response, result) = oneshot::channel();
     assert!(

@@ -20,11 +20,11 @@ use super::{
 use crate::account::actor::{AccountActor, AccountActorHandle, AccountMessage};
 use crate::account::test_support::{
     acknowledge_next_verified_projection, assert_no_logout_finished, configure_verified_trust,
-    consume_initial_unknown_trust_projection, inspect_session_runtime, inspect_sync_owners,
-    recv_account_action_with_sliding_sync_effects, recv_probe_with_sliding_sync_effects,
-    shutdown_and_ack, spawn_actor_with_dirs, spawn_named_quarantine_password_server,
-    spawn_named_quarantine_password_server_with_controls, spawn_quarantine_password_server,
-    test_request_id,
+    consume_initial_unknown_trust_projection, inspect_key_upload_observer, inspect_session_runtime,
+    inspect_sync_owners, login_gated_actor, recv_account_action_with_sliding_sync_effects,
+    recv_probe_with_sliding_sync_effects, shutdown_and_ack, spawn_actor_with_dirs,
+    spawn_named_quarantine_password_server, spawn_named_quarantine_password_server_with_controls,
+    spawn_quarantine_password_server, test_request_id,
 };
 use crate::composer_draft_lifecycle::ComposerDraftLeaseRegistry;
 use crate::executor;
@@ -97,6 +97,37 @@ async fn restore_and_switch_of_unknown_account_emit_not_found() {
             other => panic!("expected OperationFailed, got {other:?}"),
         }
     }
+}
+
+/// #1780: the duplicate-one-time-key observer lives exactly as long as the
+/// session runtime. Deleting its install or teardown call would leave the
+/// product unable to explain a session peers cannot reach.
+#[tokio::test]
+async fn the_duplicate_key_upload_observer_follows_the_session_runtime() {
+    let (handle, mut action_rx) = login_gated_actor().await;
+    assert!(
+        inspect_key_upload_observer(&handle).await,
+        "a logged-in session watches its key uploads"
+    );
+
+    let request_id = RequestId {
+        connection_id: koushi_protocol::ids::RuntimeConnectionId(1),
+        sequence: 2,
+    };
+    handle
+        .send(AccountMessage::Command(AccountCommand::Logout {
+            request_id,
+        }))
+        .await;
+    while !matches!(
+        action_rx.recv().await.as_deref(),
+        Some([AppAction::LogoutFinished])
+    ) {}
+    assert!(
+        !inspect_key_upload_observer(&handle).await,
+        "teardown stops watching with the rest of the session runtime"
+    );
+    let _ = handle.send(AccountMessage::Shutdown).await;
 }
 
 #[tokio::test]

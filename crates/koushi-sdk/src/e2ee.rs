@@ -2593,6 +2593,25 @@ pub fn observe_duplicate_key_upload_errors(
     }
 }
 
+/// Whether the SDK already recorded the duplicate-one-time-key rejection for
+/// this session's crypto store.
+///
+/// The SDK publishes the rejection once per store and persists that fact, so a
+/// device that went out of sync in an earlier run would otherwise stay silent
+/// here: only the notification would be lost, not the condition.
+pub async fn reported_duplicate_one_time_key_upload(session: &MatrixClientSession) -> bool {
+    use matrix_sdk::store::{StateStoreDataKey, StateStoreDataValue};
+
+    matches!(
+        session
+            .client()
+            .state_store()
+            .get_kv_data(StateStoreDataKey::OneTimeKeyAlreadyUploaded)
+            .await,
+        Ok(Some(StateStoreDataValue::OneTimeKeyAlreadyUploaded))
+    )
+}
+
 /// Forwards the SDK's duplicate-key-upload notifications as payload-free signals.
 ///
 /// A `None` payload is the SDK failing to parse the server's message: the

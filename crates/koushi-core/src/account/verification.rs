@@ -597,10 +597,9 @@ impl AccountActor {
     /// Installed with the session rather than on Ready, because the rejection
     /// happens during the provisional `/keys/upload` that every unverified
     /// session performs before the gate can be answered.
-    // shortcut: the SDK publishes the rejection once per crypto store, so a
-    // device already flagged in an earlier run shows nothing until it happens
-    // again; the wait timeout still covers that user. Upgrade by persisting the
-    // fact at detection time and re-reading it when a session is installed.
+    /// Watches for a new duplicate-one-time-key rejection and, because the SDK
+    /// publishes it only once per crypto store, also picks up a rejection the
+    /// store already recorded before this run.
     pub(super) async fn start_duplicate_key_upload_observer(
         &mut self,
         session: Arc<MatrixClientSession>,
@@ -631,6 +630,9 @@ impl AccountActor {
             }
         });
         self.duplicate_key_upload_observer = Some(DuplicateKeyUploadObservation { observer, task });
+        if koushi_sdk::reported_duplicate_one_time_key_upload(&session).await {
+            self.handle_duplicate_one_time_key_upload().await;
+        }
     }
 
     pub(super) async fn stop_duplicate_key_upload_observer(&mut self) {

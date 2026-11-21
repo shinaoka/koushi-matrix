@@ -466,7 +466,7 @@ describe("SessionVerificationGate interactions", () => {
       gate: { methods: ["existingDeviceSas", "recoveryKey"], account_kind: "existingIdentity", failureKind: "timeout" }
     };
     const timedOut = render(<SessionVerificationGate snapshot={snapshot} onReceipt={async () => undefined} onSignOut={() => undefined} />);
-    expect(screen.getByRole("alert").textContent).toBe("Timeout");
+    expect(screen.getByRole("alert").textContent).toContain("Timeout");
     const guidance = screen.getByText(/Open an already verified app or session/).textContent ?? "";
     for (const alternative of ["recovery key", "Secure Backup", "room-key export"]) {
       expect(guidance).toContain(alternative);
@@ -486,10 +486,22 @@ describe("SessionVerificationGate interactions", () => {
 
     snapshot.state.domain.e2ee_trust.key_upload = "duplicateOneTimeKey";
     render(<SessionVerificationGate snapshot={snapshot} onReceipt={async () => undefined} onSignOut={() => undefined} />);
-    expect(screen.getByRole("alert").textContent).toBe("This session cannot upload new encryption keys");
-    const guidance = screen.getByText(/The server already holds a one-time key/).textContent ?? "";
+    const guidance = screen.getByRole("alert").textContent ?? "";
+    cleanup();
+    expect(guidance).toContain("This session cannot upload new encryption keys");
+    expect(guidance).toContain("a verification request another session sends to this one may never arrive");
     expect(guidance).toContain("Sign in again on this device");
     expect(guidance).toContain("recovery key");
+
+    // It is guidance for a stuck verification, not a banner on every screen.
+    snapshot.state.domain.session = {
+      kind: "ready",
+      homeserver: "https://example.invalid",
+      user_id: "@u:example.invalid",
+      device_id: "D"
+    };
+    render(<SessionVerificationGate snapshot={snapshot} onReceipt={async () => undefined} onSignOut={() => undefined} />);
+    expect(screen.queryByText("This session cannot upload new encryption keys")).toBeNull();
   });
 
   test("holds the same-kind gate until its command receipt settles", async () => {

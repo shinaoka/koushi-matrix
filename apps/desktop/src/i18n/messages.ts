@@ -4014,7 +4014,7 @@ const en: Catalog = {
   "gate.deviceVerificationWaiting": "Keep the already verified app or session open and accept the request there if you have not already.",
   "gate.deviceVerificationTimeoutNextSteps": "No other session answered. Open an already verified app or session for this account, keep it open, and try again. If it still does not arrive, verify another way: with your recovery key or security phrase when offered, by restoring Secure Backup, or by importing a room-key export file in Account settings, Security & Privacy.",
   "gate.duplicateOneTimeKeyTitle": "This session cannot upload new encryption keys",
-  "gate.duplicateOneTimeKeyCopy": "The server already holds a one-time key with the same identifier as one this session tried to upload, so other sessions may never receive a verification request from here. Sign in again on this device to start a new session, then restore Secure Backup to get your history back. Verifying with your recovery key still works.",
+  "gate.duplicateOneTimeKeyCopy": "The server already holds a one-time key with the same identifier as one this session tried to upload, so a verification request another session sends to this one may never arrive. Sign in again on this device to start a new session, then restore Secure Backup to get your history back. Verifying with your recovery key still works.",
   "gate.match": "They match",
   "gate.mismatch": "They do not match",
   "gate.recoverySecret": "Recovery secret",

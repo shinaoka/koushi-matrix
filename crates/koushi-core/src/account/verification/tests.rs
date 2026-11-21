@@ -489,7 +489,9 @@ async fn own_device_sas_timeout_is_shorten_for_tests_and_settles_as_timeout() {
     );
 
     let flow_id = 700;
-    handle.set_sas_verification_timeout(Duration::from_millis(40));
+    handle
+        .set_sas_verification_timeout(Duration::from_millis(40))
+        .await;
     assert!(
         handle
             .send(AccountMessage::ConfigureSyntheticVerification { flow_id })

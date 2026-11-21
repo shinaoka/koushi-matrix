@@ -10,7 +10,9 @@ use std::str::FromStr;
 use matrix_sdk::encryption::DuplicateOneTimeKeyErrorMessage;
 use tokio::sync::{broadcast, mpsc};
 
-use super::forward_duplicate_key_upload_errors;
+use super::{forward_duplicate_key_upload_errors, reported_duplicate_one_time_key_upload};
+use crate::MatrixClientSession;
+use koushi_state::SessionInfo;
 
 /// The shape the SDK parser accepts, with synthetic key material taken from the
 /// SDK's own parser test.
@@ -56,13 +58,59 @@ async fn a_rejection_is_forwarded_as_a_payload_free_signal() {
 
 #[tokio::test]
 async fn a_lagged_subscriber_still_reports_the_rejection() {
-    let (sender, mut signals) = mpsc::channel(2);
+    let (sender, mut signals) = mpsc::channel(4);
+    // Capacity one, two notifications before the forwarder reads: the next read
+    // reports `Lagged`, which is a skipped notification, not a lost rejection.
     let (notifications, receiver) = broadcast::channel(1);
     let task = tokio::spawn(forward_duplicate_key_upload_errors(receiver, sender));
 
     notifications.send(parsed_message()).expect("subscriber");
-    assert_eq!(signals.recv().await, Some(()));
+    notifications.send(parsed_message()).expect("subscriber");
     drop(notifications);
-    assert_eq!(signals.recv().await, None);
+
+    let mut reported = 0;
+    while signals.recv().await.is_some() {
+        reported += 1;
+    }
+    // One or two, depending on whether the forwarder read between the sends; the
+    // lag itself must not swallow both.
+    assert!(
+        (1..=2).contains(&reported),
+        "reported {reported} rejections"
+    );
     task.await.expect("forwarding task ends cleanly");
+}
+
+/// The SDK publishes the rejection once per crypto store and records that it
+/// did, so a device that went out of sync in an earlier run is only visible
+/// through the stored fact.
+#[tokio::test]
+async fn the_stored_rejection_is_visible_without_a_live_notification() {
+    let client = matrix_sdk::Client::builder()
+        .homeserver_url("https://example.invalid")
+        .build()
+        .await
+        .expect("client builds");
+    let session = MatrixClientSession::from_client_for_testing(
+        client.clone(),
+        SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: "@example:example.invalid".to_owned(),
+            device_id: "EXAMPLE".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        },
+    );
+
+    assert!(!reported_duplicate_one_time_key_upload(&session).await);
+
+    client
+        .state_store()
+        .set_kv_data(
+            matrix_sdk::store::StateStoreDataKey::OneTimeKeyAlreadyUploaded,
+            matrix_sdk::store::StateStoreDataValue::OneTimeKeyAlreadyUploaded,
+        )
+        .await
+        .expect("the state store accepts the SDK's own marker");
+
+    assert!(reported_duplicate_one_time_key_upload(&session).await);
 }

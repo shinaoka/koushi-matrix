@@ -697,6 +697,11 @@ pub(crate) enum AccountMessage {
         response: oneshot::Sender<(bool, bool, bool, bool, bool, bool, bool)>,
     },
     #[cfg(test)]
+    /// #1780: whether the duplicate-one-time-key observer is installed.
+    InspectKeyUploadObserver {
+        response: oneshot::Sender<bool>,
+    },
+    #[cfg(test)]
     ConfigureOidcCompletion {
         start_request_id: RequestId,
         homeserver: String,
@@ -775,8 +780,8 @@ pub(crate) enum AccountMessage {
     },
     /// #1780: the server rejected this device's one-time-key upload.
     DuplicateOneTimeKeyUpload,
-    /// #1780 (test/QA only): shorten the own-device SAS timeout.
-    #[cfg(any(test, feature = "test-hooks"))]
+    /// #1780 (test only): shorten the own-device SAS timeout.
+    #[cfg(test)]
     SetSasVerificationTimeout {
         timeout: std::time::Duration,
     },
@@ -912,13 +917,15 @@ impl AccountActorHandle {
         }));
     }
 
-    /// #1780: shorten the own-device SAS wait so a test or QA lane can observe
-    /// the timeout path without spending the production two minutes.
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn set_sas_verification_timeout(&self, timeout: std::time::Duration) {
-        let _ = self
-            .tx
-            .try_send(AccountMessage::SetSasVerificationTimeout { timeout });
+    /// #1780: shorten the own-device SAS wait so a test observes the timeout
+    /// path without spending the production two minutes.
+    #[cfg(test)]
+    pub(crate) async fn set_sas_verification_timeout(&self, timeout: std::time::Duration) {
+        assert!(
+            self.send(AccountMessage::SetSasVerificationTimeout { timeout })
+                .await,
+            "the actor accepts the timeout before it stops"
+        );
     }
 
     pub(crate) async fn send(&self, msg: AccountMessage) -> bool {
@@ -3139,6 +3146,10 @@ impl AccountActor {
                     ));
                 }
                 #[cfg(test)]
+                AccountMessage::InspectKeyUploadObserver { response } => {
+                    let _ = response.send(self.duplicate_key_upload_observer.is_some());
+                }
+                #[cfg(test)]
                 AccountMessage::ConfigureOidcCompletion {
                     start_request_id,
                     homeserver,
@@ -3255,7 +3266,7 @@ impl AccountActor {
                         .await;
                     }
                 }
-                #[cfg(any(test, feature = "test-hooks"))]
+                #[cfg(test)]
                 AccountMessage::SetSasVerificationTimeout { timeout } => {
                     self.sas_verification_timeout = timeout;
                 }
