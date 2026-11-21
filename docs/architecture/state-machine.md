@@ -3229,12 +3229,15 @@ settles.
   quote cannot be kept current from a source the actor never observes.
 - **Publication.** When a ledger entry settles, or a batch commits or changes
   an original that quotes already point at, the actor republishes the dependent
-  canonical items as non-SDK `Set` diffs and reprojects pending sends. A
-  resolved quote never regresses to `Loading` while the same actor keeps the
-  settled entry. While an anchor restore is buffering its coalesced
-  `restore_emit_buffer`, the republish is deferred and runs once at the end of
-  the actor loop after that buffer has flushed, so a republished `Set` diff can
-  never overtake the restore's single settled update. A deferred republish also
+  canonical items as non-SDK `Set` diffs and reprojects pending sends. A Room
+  actor applies the same overlay to the root items the shared thread-root
+  projection retains for its room, because the room draws a thread root from
+  that copy rather than from the canonical row, and reprojects the display
+  when one changed. A resolved quote never regresses to `Loading` while the
+  same actor keeps the settled entry. While an anchor restore is buffering its
+  coalesced `restore_emit_buffer`, the republish is deferred and runs once at
+  the end of the actor loop after that buffer has flushed, so a republished
+  `Set` diff can never overtake the restore's single settled update. A deferred republish also
   retains the changed-original refresh set until it runs, so that set can hold
   one entry per changed original for the duration of a restore; the ledger's
   256-entry cap does not bound it.

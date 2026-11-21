@@ -1,7 +1,8 @@
-//! Actor-level reply quote behaviour (#1120): restore-window ordering and
-//! refreshing a dependent whose quote already resolved.
+//! Actor-level reply quote behaviour (#1120): restore-window ordering,
+//! refreshing a dependent whose quote already resolved, and resolving the quote
+//! of a thread root the room draws from the shared thread-root projection.
 //!
-//! Both cases need a real `TimelineActor` over a real SDK timeline, so they
+//! Every case needs a real `TimelineActor` over a real SDK timeline, so they
 //! share the mock-server fixture below.
 
 use std::{sync::Arc, time::Duration};
@@ -31,6 +32,7 @@ use super::koushi_timeline_builder;
 use crate::{executor, link_preview::LinkPreviewContext};
 
 const ROOT: &str = "$root:example.invalid";
+const ORIGINAL: &str = "$original:example.invalid";
 const PENDING_TXN: &str = "pending-reply";
 /// Liveness bound for waits that must succeed: a regression hangs until it,
 /// while scheduler load alone must never reach it.
@@ -157,6 +159,22 @@ async fn wait_for(
     .await
 }
 
+/// The quote state on the rendered row whose content is the thread root.
+fn thread_root_quote_state(items: &[TimelineItem]) -> Option<ReplyQuoteState> {
+    items
+        .iter()
+        .filter(|item| !item.is_hidden)
+        .find(|item| {
+            item.thread_summary.is_some()
+                && item
+                    .display_metadata
+                    .as_ref()
+                    .is_some_and(|metadata| metadata.content_event_id.as_deref() == Some(ROOT))
+        })
+        .and_then(|item| item.reply_quote.as_ref())
+        .map(|quote| quote.state)
+}
+
 fn pending_quote_state(items: &[TimelineItem]) -> Option<ReplyQuoteState> {
     items.iter().find_map(|item| match &item.id {
         TimelineItemId::Transaction { transaction_id } if transaction_id == PENDING_TXN => {
@@ -249,4 +267,77 @@ async fn redacting_a_canonical_original_refreshes_a_pending_only_reply() {
         .wait_for(|_, items| pending_quote_state(items) == Some(ReplyQuoteState::Redacted))
         .await
         .expect("the pending quote must follow the redaction of its original");
+}
+
+/// A thread root that is itself a reply is drawn from the shared thread-root
+/// projection's copy of the item, not from the actor's canonical row. The
+/// lookup that settles its off-window original must reach that copy, or the
+/// row keeps the `Loading` placeholder for good.
+#[tokio::test]
+async fn a_thread_root_replying_to_an_off_window_original_resolves_its_quote() {
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = room_id!("!thread-root-quote:example.invalid");
+    let alice = user_id!("@alice:example.invalid");
+    let factory = EventFactory::new().room(room_id);
+    let original = event_id!("$original:example.invalid");
+    let root = event_id!("$root:example.invalid");
+    // The original is outside the synced window: only the exact-event lookup
+    // can resolve the root's quote. Server latency lets the root's row be
+    // projected (and re-seeded by the timeline's own start-up diffs) while the
+    // quote is still `Loading`, which is the order a real homeserver produces.
+    server
+        .mock_room_event()
+        .match_event_id()
+        .with_delay(Duration::from_secs(1))
+        .ok(factory
+            .text_msg("Synthetic original")
+            .sender(alice)
+            .event_id(original)
+            .into())
+        .mount()
+        .await;
+    let room = server.sync_joined_room(&client, room_id).await;
+    server
+        .sync_room(
+            &client,
+            JoinedRoomBuilder::new(room_id)
+                .add_timeline_event(
+                    factory
+                        .text_msg("Synthetic root")
+                        .sender(alice)
+                        .event_id(root)
+                        .server_ts(1_000_u64)
+                        .reply_to(original)
+                        .into_raw_sync(),
+                )
+                .add_timeline_event(
+                    factory
+                        .text_msg("Synthetic thread reply")
+                        .sender(alice)
+                        .event_id(event_id!("$thread-reply:example.invalid"))
+                        .server_ts(2_000_u64)
+                        .in_thread(root, root)
+                        .into_raw_sync(),
+                ),
+        )
+        .await;
+    let mut fixture = spawn_room_actor(&room, &client, room_id, alice).await;
+    fixture
+        .wait_for(|_, items| thread_root_quote_state(items).is_some())
+        .await
+        .expect("precondition: the thread root row carries a reply quote");
+
+    fixture
+        .wait_for(|_, items| thread_root_quote_state(items) == Some(ReplyQuoteState::Ready))
+        .await
+        .expect("the thread root row's quote must leave Loading once its original loads");
+    assert_eq!(
+        fixture
+            .items
+            .iter()
+            .find_map(|item| item.reply_quote.as_ref())
+            .map(|quote| quote.event_id.as_str()),
+        Some(ORIGINAL)
+    );
 }

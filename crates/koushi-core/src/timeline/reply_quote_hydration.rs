@@ -915,6 +915,43 @@ impl TimelineActor {
         );
     }
 
+    /// Resolve quotes on the thread-root items the shared projection retains
+    /// for this room. The room draws a thread root from that copy, which a
+    /// canonical `Set` never reaches, so a quote that settles after the root
+    /// was seeded would otherwise stay `Loading` on the root's row. Returns
+    /// true when a retained root changed and the display must be reprojected.
+    fn overlay_reply_quotes_on_thread_roots(&self, refresh: &HashSet<String>) -> bool {
+        if !matches!(self.key.kind, TimelineKind::Room { .. }) {
+            return false;
+        }
+        let room_id = self.key.room_id();
+        let mut service = self
+            .thread_root_projection_service
+            .lock()
+            .expect("thread-root projection service lock must not be poisoned");
+        let targets = quote_targets(service.root_items_mut(room_id).map(|item| &*item))
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if targets.is_empty() {
+            return false;
+        }
+        let originals = known_originals(
+            self.reply_quote_hydration.room_id(),
+            &targets,
+            &[],
+            &self.navigation_items,
+            &self.reply_quote_hydration,
+            &HashMap::new(),
+        );
+        overlay_reply_quotes(
+            service.root_items_mut(room_id),
+            |event_id| originals.get(event_id).cloned(),
+            &self.reply_quote_hydration,
+            refresh,
+        )
+    }
+
     /// Republish canonical items and pending sends whose quotes can now be
     /// resolved from a committed original or a settled ledger entry, including
     /// already-resolved quotes whose original changed in the retained refresh
@@ -922,6 +959,9 @@ impl TimelineActor {
     pub(super) fn republish_reply_quote_dependents(&mut self) {
         let refresh = std::mem::take(&mut self.reply_quote_refresh);
         let refresh = &refresh;
+        // Before the canonical `Set`s below reproject the display rows.
+        let thread_roots_changed = self.overlay_reply_quotes_on_thread_roots(refresh);
+        let mut reprojected = false;
         let targets = quote_targets(self.navigation_items.iter())
             .into_iter()
             .map(str::to_owned)
@@ -950,7 +990,14 @@ impl TimelineActor {
                 }
             }
             if !core_diffs.is_empty() {
+                reprojected = true;
                 let _ = self.emit_non_sdk_item_sets(core_diffs);
+            }
+        }
+        if thread_roots_changed && !reprojected {
+            let diffs = self.reproject_display_items();
+            if !diffs.is_empty() {
+                let _ = self.emit_items_updated(diffs);
             }
         }
 
