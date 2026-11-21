@@ -6,6 +6,7 @@
 //! cleared with the candidate.
 
 use super::*;
+use crate::state::native_attention_room_handle;
 use crate::state::{NativeAttentionDispatchState, RoomSummary};
 
 const ACTIVE_ROOM: &str = "!active:example.invalid";
@@ -249,6 +250,48 @@ fn a_relabel_of_the_published_alert_keeps_its_alert_id() {
     );
 }
 
+/// #1818: a restored alert can still be relabelled, not only re-raised.
+///
+/// The display-label refresh used to read the process-local payload to find the room
+/// the alert was published for, so after a restore a local-alias change updated the
+/// sidebar and left the published candidate's label behind.
+#[test]
+fn a_restored_alert_is_relabelled_by_a_display_change() {
+    let mut state = ready_state();
+    state.navigation.active_room_id = Some(ACTIVE_ROOM.to_owned());
+    room_list_update(&mut state, vec![active_room(), dm_room(0)]);
+    room_list_update(&mut state, vec![active_room(), dm_room(1)]);
+    let raised = alert_id(&state).expect("a live raise mints an alert identity");
+
+    let serialized = serde_json::to_string(&state).expect("the app state serializes");
+    let mut restored: AppState = serde_json::from_str(&serialized).expect("the app state restores");
+    assert!(
+        restored.native_attention.notification.is_none(),
+        "precondition: a restore drops the payload that named the alert's room"
+    );
+    assert_eq!(candidate_label(&restored), Some("Bob"));
+
+    reduce(
+        &mut restored,
+        AppAction::LocalUserAliasUpdateRequested {
+            request_id: 65,
+            user_id: DM_PARTNER.to_owned(),
+            alias: Some("Zelda".to_owned()),
+        },
+    );
+
+    assert_eq!(
+        candidate_label(&restored),
+        Some("Zelda"),
+        "the restored candidate follows the new label"
+    );
+    assert_eq!(
+        alert_id(&restored),
+        Some(raised),
+        "relabelling a restored alert still keeps its identity"
+    );
+}
+
 #[test]
 fn a_new_raise_after_a_clear_mints_a_new_alert_id() {
     let mut state = state_with_published_candidate();
@@ -473,14 +516,124 @@ fn a_submitted_state_for_another_room_does_not_inherit_the_published_identity() 
     );
 }
 
+/// #1818: the identity and the room it names travel together.
+///
+/// An identity the caller supplies keeps its own room, so the next message in that
+/// conversation is still a relabel of it rather than a mint.
 #[test]
-fn a_restored_state_cannot_reissue_a_published_alert_id() {
+fn a_submitted_identity_keeps_the_room_it_names() {
+    let mut state = state_with_published_candidate();
+    let published = alert_id(&state).expect("precondition: the raise minted an identity");
+    let explicit = published + 7;
+
+    let mut submitted = state.native_attention.clone();
+    submitted.summary.alert_id = Some(explicit);
+    reduce(
+        &mut state,
+        AppAction::NativeAttentionUpdated {
+            attention: submitted,
+        },
+    );
+    assert_eq!(alert_id(&state), Some(explicit));
+
+    room_list_update(
+        &mut state,
+        vec![
+            active_room(),
+            unread_room(NOTIFIED_ROOM, "$notified-third:example.invalid", 48, 2),
+            read_room(NEWEST_ROOM),
+        ],
+    );
+
+    assert_eq!(
+        alert_id(&state),
+        Some(explicit),
+        "the adopted identity owns the room it was published for"
+    );
+}
+
+/// #1818: a submission keeps the room handle it was given.
+///
+/// The payload is `#[serde(skip)]`, so a submission that carries an identity and no
+/// payload is a normal shape — the published handle must survive it, or that alert
+/// reverts to minting on its next message.
+#[test]
+fn a_submission_keeps_the_room_handle_it_was_given() {
+    let mut state = state_with_published_candidate();
+    let published = alert_id(&state).expect("precondition: the raise minted an identity");
+    let handle = native_attention_room_handle(NOTIFIED_ROOM);
+    assert_eq!(
+        state.native_attention.summary.alert_room,
+        Some(handle),
+        "precondition: publishing stamped the room's handle"
+    );
+
+    let mut submitted = state.native_attention.clone();
+    submitted.summary.alert_id = Some(published + 1);
+    submitted.notification = None;
+    reduce(
+        &mut state,
+        AppAction::NativeAttentionUpdated {
+            attention: submitted,
+        },
+    );
+
+    assert_eq!(alert_id(&state), Some(published + 1));
+    assert_eq!(
+        state.native_attention.summary.alert_room,
+        Some(handle),
+        "a submission without a payload keeps the handle it was given"
+    );
+
+    room_list_update(
+        &mut state,
+        vec![
+            active_room(),
+            unread_room(NOTIFIED_ROOM, "$notified-fourth:example.invalid", 50, 2),
+            read_room(NEWEST_ROOM),
+        ],
+    );
+    assert_eq!(
+        alert_id(&state),
+        Some(published + 1),
+        "the next message in that room relabels the submitted alert"
+    );
+}
+
+/// #1818: the handle is a stored format, so its value for one room is pinned.
+///
+/// Every comparison in the reducer hashes both sides with the same function, so
+/// changing the constants or swapping in `DefaultHasher` would keep the suite green
+/// while every handle already published became meaningless — the double banner would
+/// come back on the next restart, silently.
+#[test]
+fn a_room_handle_is_stable_across_builds() {
+    assert_eq!(
+        native_attention_room_handle(NOTIFIED_ROOM),
+        0x5ffb_253c_051f_3407,
+        "FNV-1a/64 is the stored format of the published room handle"
+    );
+    assert_ne!(
+        native_attention_room_handle(NOTIFIED_ROOM),
+        native_attention_room_handle(NEWEST_ROOM)
+    );
+}
+
+/// #1818: a restarted process relabels the alert it published instead of minting.
+///
+/// The identity belongs to the room that holds the attention, and that fact now
+/// survives a restore, so the second message in the same conversation after a
+/// restart is the same relabel it would have been without one: the label and the
+/// count move, the identity does not, and the webview cannot show a second banner
+/// for one unread conversation.
+#[test]
+fn a_restored_state_relabels_the_alert_it_published() {
     let state = state_with_published_candidate();
     let published = alert_id(&state).expect("precondition: the raise mints an identity");
+    let body_before = published_body(&state).map(str::to_owned);
 
     // The attention summary is serialized into the app state, while the sequence that
-    // mints identities is process-local: a restore keeps the published identity and
-    // drops the counter back to its default.
+    // mints identities and the payload that names the alert's room are process-local.
     let serialized = serde_json::to_string(&state).expect("the app state serializes");
     let mut restored: AppState = serde_json::from_str(&serialized).expect("the app state restores");
     assert_eq!(
@@ -493,10 +646,6 @@ fn a_restored_state_cannot_reissue_a_published_alert_id() {
         "the minting sequence is process-local and restarts at its default"
     );
 
-    // A newer message in the same room arrives as a live raise whose room cannot be
-    // matched against the published alert: `notification` (the only thing that records
-    // which room an alert was published for) is deliberately never serialized. The raise
-    // therefore mints, and the floor below keeps it from re-issuing a published value.
     room_list_update(
         &mut restored,
         vec![
@@ -506,9 +655,52 @@ fn a_restored_state_cannot_reissue_a_published_alert_id() {
         ],
     );
 
-    let reissued = alert_id(&restored).expect("the re-raise mints an identity");
+    assert_eq!(
+        published_room_id(&restored),
+        Some(NOTIFIED_ROOM),
+        "the re-raise publishes the room that holds the attention"
+    );
+    assert_eq!(
+        candidate_unread_count(&restored),
+        Some(2),
+        "the candidate follows the newer count"
+    );
+    assert_ne!(
+        published_body(&restored),
+        body_before.as_deref(),
+        "the label of the restored alert moves"
+    );
+    assert_eq!(
+        alert_id(&restored),
+        Some(published),
+        "a restored alert keeps its identity through a relabel: {} != {published}",
+        alert_id(&restored).map_or_else(|| "none".to_owned(), |id| id.to_string())
+    );
+}
+
+/// #1818: the restore keeps one identity per conversation, not one for everything.
+#[test]
+fn a_restored_state_mints_for_a_different_room() {
+    let state = state_with_published_candidate();
+    let published = alert_id(&state).expect("precondition: the raise mints an identity");
+    let serialized = serde_json::to_string(&state).expect("the app state serializes");
+    let mut restored: AppState = serde_json::from_str(&serialized).expect("the app state restores");
+
+    // The attention moved to another conversation, so this is a new alert, and a
+    // restored state must still mint above everything it already published.
+    room_list_update(
+        &mut restored,
+        vec![
+            active_room(),
+            read_room(NOTIFIED_ROOM),
+            unread_room(NEWEST_ROOM, "$newest-later:example.invalid", 46, 1),
+        ],
+    );
+
+    assert_eq!(published_room_id(&restored), Some(NEWEST_ROOM));
+    let minted = alert_id(&restored).expect("a raise in another room mints an identity");
     assert!(
-        reissued > published,
-        "a restored state must mint above every published identity: {reissued} <= {published}"
+        minted > published,
+        "a restored state must mint above every published identity: {minted} <= {published}"
     );
 }

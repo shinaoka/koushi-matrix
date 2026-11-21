@@ -280,6 +280,7 @@ fn logout_clears_native_attention_state_and_notifies_ui() {
                 highlight_count: 1,
                 badge_count: 4,
                 alert_id: Some(2),
+                alert_room: Some(7),
                 candidate: Some(NativeAttentionCandidate {
                     room_display_name: "Announcements".to_owned(),
                     kind: RoomAttentionKind::Mention,

@@ -143,6 +143,21 @@ test("one alert shows one banner across a relabel, and a new raise shows another
   expect(harness.show).toHaveBeenCalledTimes(3);
 });
 
+test("the alert a restore brought back shows one banner through its relabel (#1818)", () => {
+  // The Core half of this is `a_restored_state_relabels_the_alert_it_published`: a
+  // second message in the same conversation after a restart keeps the identity. This
+  // pins the webview half — the pair of snapshots a restore produces must still show a
+  // single banner, which is only true while the dedupe key is the identity.
+  const { rerender } = renderAttentionHook(
+    desktopSnapshot(attention(4, candidate("Announcements", 1)))
+  );
+  expect(harness.show).toHaveBeenCalledTimes(1);
+
+  // The restored alert, relabelled by the message that arrived after the restart.
+  rerender({ snapshot: desktopSnapshot(attention(4, candidate("Announcements", 2))) });
+  expect(harness.show).toHaveBeenCalledTimes(1);
+});
+
 test("a cleared alert does not leave the last alert id behind", () => {
   const { rerender } = renderAttentionHook(
     desktopSnapshot(attention(7, candidate("Announcements", 1)))

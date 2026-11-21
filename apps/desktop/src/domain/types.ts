@@ -3015,6 +3015,10 @@ export interface NativeAttentionSummary {
   // #1802: minted in Rust when a candidate is raised; the banner dedupes on this
   // identity instead of on the candidate's contents. Absent in older snapshots.
   alert_id?: number | null;
+  // #1818: Rust-owned opaque handle of the room the alert targets, so a restored
+  // summary can relabel instead of minting. Never read here: React must dedupe on
+  // alert_id alone, and this is not a room id.
+  alert_room?: number | null;
   candidate: NativeAttentionCandidate | null;
   capabilities: NativeAttentionCapabilities;
 }

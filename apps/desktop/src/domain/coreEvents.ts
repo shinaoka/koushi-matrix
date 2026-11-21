@@ -1247,6 +1247,8 @@ export interface NativeAttentionSummary {
   badge_count: number;
   // #1802: Rust-minted alert identity, absent in older snapshots.
   alert_id?: number | null;
+  // #1818: Rust-owned room handle; never read here (dedupe is on alert_id).
+  alert_room?: number | null;
   candidate: NativeAttentionCandidate | null;
   capabilities: NativeAttentionCapabilities;
 }

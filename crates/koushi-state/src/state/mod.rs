@@ -279,6 +279,9 @@ pub use native_attention::{
     native_attention_state_from_rooms,
 };
 
+// #1818: the attention handle stays inside the crate; only the reducer compares it.
+pub(crate) use native_attention::native_attention_room_handle;
+
 // ── Re-exports: cjk ─────────────────────────────────────────────────────────
 pub use cjk::{
     CjkCollationProfile, CjkNormalizationProfile, CjkTextPolicyState, JapaneseCatalogProfile,

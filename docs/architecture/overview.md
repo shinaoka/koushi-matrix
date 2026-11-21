@@ -1872,7 +1872,11 @@ A verified preview
 still does not identify an exact navigation target, so a click opens the room.
 The payload follows the same mute, session,
 initial-sync/backfill, self-event, focus, and dedup suppression as the candidate,
-and `NativeAttentionSummary` stays free of message bodies and identifiers.
+and `NativeAttentionSummary` stays free of message bodies, room ids, event ids,
+and user ids. The one derived token it carries is the alert's own room handle
+(`alert_room`, #1818): an unkeyed digest compared only with itself, so a restored
+summary can recognize a relabel of the alert it published. The webview dedupes on
+`alert_id` alone and never reads it.
 
 The desktop notification adapter is the only owner of the platform banner. It
 honors `SettingsValues.notifications.desktop_notifications` (app notifications
