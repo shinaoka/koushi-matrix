@@ -1037,11 +1037,9 @@ export function DiagnosticDialog({
           <span>{t("diagnostics.privacyNote")}</span>
         </p>
         <pre className="diagnostics-output">{diagnosticReportPreview(report)}</pre>
-        {statusMessageId ? (
-          <p className="diagnostics-status" role="status">
-            {t(statusMessageId)}
-          </p>
-        ) : null}
+        <p className="diagnostics-status" role="status">
+          {statusMessageId ? t(statusMessageId) : null}
+        </p>
         <div className="dialog-actions">
           {onSaveReport ? (
             <button

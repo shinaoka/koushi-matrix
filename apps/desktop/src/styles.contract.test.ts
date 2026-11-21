@@ -761,4 +761,21 @@ describe("styles.css token system", () => {
       );
     }
   });
+
+  test("the diagnostics status keeps a fixed slot and only the preview scrolls (#2038)", () => {
+    // #2038: the status row used to be inserted on copy/save, growing the modal
+    // past its height cap and adding an outer scrollbar that clipped the buttons.
+    const dialogSource = readFileSync(new URL("./components/dialogs.tsx", import.meta.url), "utf8");
+    expect(dialogSource).toMatch(/<p className="diagnostics-status" role="status">/);
+    expect(dialogSource).not.toMatch(/statusMessageId \? \(\s*<p className="diagnostics-status"/);
+
+    const dialog = selectorBlock(".diagnostics-dialog");
+    expect(dialog).toContain("overflow: hidden;");
+    expect(dialog).toContain("grid-template-rows: auto auto minmax(0, 1fr) auto auto;");
+
+    expect(selectorBlock(".diagnostics-status")).toMatch(/block-size: \d+px;/);
+    const output = selectorBlock(".diagnostics-output");
+    expect(output).toContain("min-block-size: 0;");
+    expect(output).toContain("overflow: auto;");
+  });
 });
