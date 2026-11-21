@@ -89,6 +89,7 @@ import { useStableEvent } from "./useStableEvent";
 import { useTimelineStoreContext } from "./timelineStoreContext";
 import { composerReplyQuote } from "../domain/composerReplyQuote";
 import { replyQuoteHasThumbnail } from "./timeline/ReplyQuoteThumbnail";
+import { touchpadScrollResamplingEnabled } from "./timeline/touchpadScrollResampler";
 import type { SettingsCategoryId } from "../domain/settingsNavigation";
 
 const noopSearchSpaceInviteTargets = async (): Promise<InviteTargetCandidate[]> => [];
@@ -1211,6 +1212,7 @@ export function ContextualRightPanel({
               </div>
             ) : null}
             <TimelineView
+              touchpadScrollResampling={touchpadScrollResamplingEnabled(snapshot.state.domain.locale_profile?.platform, navigator.userAgent)}
               canWrite={!composerReadOnly}
               roomId={focusedRoomId}
               onRequestHistoryKeys={onRequestHistoryKeys}
@@ -1346,6 +1348,7 @@ export function ContextualRightPanel({
         ) : null}
         {threadTimelineKeyValue && threadRoomId && timelineTransport ? (
           <TimelineView
+            touchpadScrollResampling={touchpadScrollResamplingEnabled(snapshot.state.domain.locale_profile?.platform, navigator.userAgent)}
             key={`${threadRoomId}:${rootEventId}`}
             canWrite={!composerReadOnly}
             accountTabId={selectedAccountTabId ?? undefined}

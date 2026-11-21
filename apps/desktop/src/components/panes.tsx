@@ -92,6 +92,7 @@ import { useStableEvent } from "./useStableEvent";
 import { useTimelineStoreContext } from "./timelineStoreContext";
 import { composerReplyQuote } from "../domain/composerReplyQuote";
 import { replyQuoteHasThumbnail } from "./timeline/ReplyQuoteThumbnail";
+import { touchpadScrollResamplingEnabled } from "./timeline/touchpadScrollResampler";
 import { uiDateTimeFormat, uiNumberFormat } from "../domain/intlFormatCache";
 
 const EMPTY_PINNED_EVENTS: DesktopSnapshot["state"]["domain"]["room_interactions"][string]["pinned_events"] = [];
@@ -1355,6 +1356,7 @@ export function TimelinePane({
             // Production path: render from the event-driven timeline store
             // (CoreEvent diffs), never from AppState timeline fields.
             <TimelineView
+              touchpadScrollResampling={touchpadScrollResamplingEnabled(snapshot.state.domain.locale_profile?.platform, navigator.userAgent)}
               key={
                 mainTimelineAnchorEventId
                   ? `anchored:${timelineRoomId}:${mainTimelineAnchorEventId}`

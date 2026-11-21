@@ -273,6 +273,7 @@ type OpenMatrixTargetHandler
 } from "./timeline/TimelineMessageBody";
 import { MessageSourceDialog } from "./timeline/MessageSourceDialog";
 import { useTimelineRowTransportActions } from "./timeline/useTimelineRowTransportActions";
+import { TouchpadScrollResampler, nestedScrollerTakesWheel } from "./timeline/touchpadScrollResampler";
 export { MessageSourceDialog };
 export { renderTimelineMessageText };
 export type { OpenMatrixTargetHandler };
@@ -481,6 +482,7 @@ export const TimelineView = memo(function TimelineView({
   onDiagnosticsChange,
   onScrollDiagnosticsChange,
   onDiagnosticLogEntry,
+  touchpadScrollResampling = false,
   timelineStore,
   setTimelineStore,
   viewportScheduler: injectedViewportScheduler,
@@ -570,6 +572,11 @@ export const TimelineView = memo(function TimelineView({
   onDiagnosticsChange?: (diagnostics: TimelineDiagnostics) => void;
   onScrollDiagnosticsChange?: (diagnostics: TimelineScrollDiagnostics) => void;
   onDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
+  /**
+   * Linux WebKitGTK only: resample touchpad wheel input onto frames, scaled
+   * and with a fling, as Chromium does (see `touchpadScrollResampler.ts`).
+   */
+  touchpadScrollResampling?: boolean;
   /**
    * Optional App-level timeline store. When supplied, the view renders from
    * this store and leaves reducer application to the owner. It still listens for
@@ -881,6 +888,7 @@ export const TimelineView = memo(function TimelineView({
   const mountedItemDomIdsRef = useRef<Set<string>>(new Set());
   /** Set by wheel/touch/keyboard/scrollbar intent; consumed by the next scroll event. */
   const userScrollInputPendingRef = useRef(false);
+  const touchpadResamplerRef = useRef<TouchpadScrollResampler | null>(null);
   /**
    * #872: how the viewport reached its current position. A pane the client
    * scrolled itself — the thread open-time snap and its measured follow-up — is
@@ -1383,6 +1391,9 @@ export const TimelineView = memo(function TimelineView({
       if (transactionId === null) {
         owner.invalidate(reason === "liveEdge" ? "live-edge" : "jump");
         userScrollInputPendingRef.current = false;
+        // A jump, restore or live-edge write takes the viewport: stop any
+        // touchpad glide. Transaction compensation (prepend anchoring) keeps it.
+        touchpadResamplerRef.current?.cancel();
       }
       const asyncGeneration = anchorAsyncGenerationRef.current;
       suppressScrollAnchorCaptureRef.current = true;
@@ -4328,8 +4339,72 @@ export const TimelineView = memo(function TimelineView({
     },
     [markUserScrollInput, requestOlderHistoryFromInputAtTop]
   );
+  // Linux WebKitGTK touchpad resampling. Each resampled step is the reader's
+  // own wheel input: it is marked exactly as a wheel event is before the page
+  // moves, so viewport ownership, live-edge release and top-of-history demand
+  // treat it like native scrolling.
+  const touchpadInputRef = useRef({ markUserScrollInput, requestOlderHistoryFromInputAtTop });
+  touchpadInputRef.current = { markUserScrollInput, requestOlderHistoryFromInputAtTop };
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!touchpadScrollResampling || !container) return;
+    const resampler = new TouchpadScrollResampler();
+    touchpadResamplerRef.current = resampler;
+    let frame: number | null = null;
+    let subPixelCarry = 0;
+    const applyStep = (step: number): boolean => {
+      const input = touchpadInputRef.current;
+      input.markUserScrollInput({ keepLiveEdgeAtBottom: step > 0 });
+      // WebKit keeps scrollTop in whole pixels: carry the remainder so slow
+      // movement is not rounded away, and treat a clamped write as an edge.
+      const desired = container.scrollTop + subPixelCarry + step;
+      container.scrollTop = desired;
+      subPixelCarry = desired - container.scrollTop;
+      if (step < 0) input.requestOlderHistoryFromInputAtTop();
+      if (Math.abs(subPixelCarry) >= 1) {
+        subPixelCarry = 0;
+        return false;
+      }
+      return true;
+    };
+    const runFrame = (now: number) => {
+      frame = null;
+      const { step } = resampler.frame(now);
+      if (step !== 0 && !applyStep(step)) resampler.stopFling();
+      if (resampler.active) frame = window.requestAnimationFrame(runFrame);
+      else subPixelCarry = 0;
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (
+        event.ctrlKey ||
+        event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL ||
+        Math.abs(event.deltaX) > Math.abs(event.deltaY)
+      ) {
+        return;
+      }
+      // A gesture the timeline already owns stays with it; a new one that
+      // starts over a nested scroller that can still move belongs to it.
+      if (!resampler.active && nestedScrollerTakesWheel(event.target, container, event.deltaY)) return;
+      // The event's own time (WebKitGTK takes it from the compositor event), so
+      // input delivered late by a busy main thread still lands where it
+      // belongs on the curve. Fall back to now if the clocks disagree.
+      const now = performance.now();
+      const inputTime = Math.abs(now - event.timeStamp) < 1000 ? event.timeStamp : now;
+      if (resampler.wheel(event.deltaY, inputTime) !== "resample") return;
+      event.preventDefault();
+      if (frame === null) frame = window.requestAnimationFrame(runFrame);
+    };
+    container.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      container.removeEventListener("wheel", onWheel);
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      resampler.cancel();
+      if (touchpadResamplerRef.current === resampler) touchpadResamplerRef.current = null;
+    };
+  }, [timelineKeyHash, touchpadScrollResampling]);
   const onTimelinePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
+      touchpadResamplerRef.current?.cancel();
       if (event.target === event.currentTarget) {
         markUserScrollInput();
       }
@@ -4339,6 +4414,7 @@ export const TimelineView = memo(function TimelineView({
   const onTimelineKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
       if (timelineKeyShouldReleaseViewportIntent(event)) {
+        touchpadResamplerRef.current?.cancel();
         markUserScrollInput();
         if (event.key === "PageUp" || event.key === "Home" || event.key === "ArrowUp") {
           requestOlderHistoryFromInputAtTop();
