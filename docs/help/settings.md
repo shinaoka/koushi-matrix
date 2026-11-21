@@ -365,16 +365,18 @@ device. Two options add text:
 Images, files, messages that could not be decrypted, and deleted messages are
 sent as names only whatever the mode.
 
-Choosing a text option shows a warning directly under that option. It states that the text
-leaves this device as plain text and passes through the service to the recipient
-without end-to-end encryption, and that whether and for how long the service
-keeps it depends on that service's own terms. Check **I understand that the text
-is sent unencrypted**, then **Save**; Save refuses a text mode while the box is
-unchecked. The agreement covers this service, its endpoint, and its recipient
-(the **Recipient email address**, or for WeChat the saved SendKey). Changing any of them,
-or saving a new SendKey, asks the question again, and a destination whose
-agreement no longer matches sends names only until you agree again. Switching between the two text modes keeps
-the consent; choosing names only clears it.
+Choosing a text option shows a warning directly under that option: the service
+receives the text as plain text, outside end-to-end encryption. A destination with no
+agreement for that also asks about the service's own terms — whether and for how long
+it keeps the text depends on them — and shows **I understand that the text is sent
+unencrypted**; Save refuses a text mode while that box is unchecked. The agreement
+covers this service, its endpoint, and its recipient (the **Recipient email address**,
+or for WeChat the saved SendKey). Changing any of them, or saving a new SendKey, asks
+the question again, and a destination whose agreement no longer matches sends names
+only until you agree again. The agreement belongs to the destination, not to the
+content mode, so switching between the text modes keeps it and so does saving names
+only: a later switch back to a text mode sends text without asking you to check the
+box again.
 
 This setting is separate from **Show message content in notifications** under
 **OS notifications**.
