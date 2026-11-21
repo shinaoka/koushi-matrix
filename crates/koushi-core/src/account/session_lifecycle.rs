@@ -1989,6 +1989,8 @@ impl AccountActor {
         self.pending_notification_email = None;
         self.pending_device_cleanup = None;
         self.session = Some(session.clone());
+        self.start_duplicate_key_upload_observer(session.clone())
+            .await;
         self.set_secure_backup_send_admitted(false).await;
         self.session_key_id = Some(key_id);
         self.sliding_sync_positive_evidence = persistable.sliding_sync_positive_evidence();

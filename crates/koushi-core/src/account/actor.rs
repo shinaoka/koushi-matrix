@@ -697,6 +697,11 @@ pub(crate) enum AccountMessage {
         response: oneshot::Sender<(bool, bool, bool, bool, bool, bool, bool)>,
     },
     #[cfg(test)]
+    /// #1780: whether the duplicate-one-time-key observer is installed.
+    InspectKeyUploadObserver {
+        response: oneshot::Sender<bool>,
+    },
+    #[cfg(test)]
     ConfigureOidcCompletion {
         start_request_id: RequestId,
         homeserver: String,
@@ -772,6 +777,13 @@ pub(crate) enum AccountMessage {
     },
     SasVerificationObserverEnded {
         flow_id: u64,
+    },
+    /// #1780: the server rejected this device's one-time-key upload.
+    DuplicateOneTimeKeyUpload,
+    /// #1780 (test only): shorten the own-device SAS timeout.
+    #[cfg(test)]
+    SetSasVerificationTimeout {
+        timeout: std::time::Duration,
     },
     IncomingVerificationRequest {
         /// The session this request was observed for. Admission is fenced by
@@ -903,6 +915,17 @@ impl AccountActorHandle {
                 .expect("small test demand fits budget"),
             )
         }));
+    }
+
+    /// #1780: shorten the own-device SAS wait so a test observes the timeout
+    /// path without spending the production two minutes.
+    #[cfg(test)]
+    pub(crate) async fn set_sas_verification_timeout(&self, timeout: std::time::Duration) {
+        assert!(
+            self.send(AccountMessage::SetSasVerificationTimeout { timeout })
+                .await,
+            "the actor accepts the timeout before it stops"
+        );
     }
 
     pub(crate) async fn send(&self, msg: AccountMessage) -> bool {
@@ -1420,6 +1443,11 @@ pub struct AccountActor {
     /// SDK SAS observer task for the active flow.
     pub(super) sas_verification_observer: Option<VerificationObservation>,
     pub(super) sas_timeout_task: Option<crate::executor::JoinHandle<()>>,
+    /// #1780: how long an own-device SAS waits for the other session.
+    pub(super) sas_verification_timeout: std::time::Duration,
+    /// #1780: duplicate one-time-key upload signal from the SDK.
+    pub(super) duplicate_key_upload_observer:
+        Option<super::verification::DuplicateKeyUploadObservation>,
     #[cfg(test)]
     pub(super) synthetic_verification: Option<(u64, VerificationTarget)>,
     /// SDK incoming verification request observer for the active session.
@@ -1719,6 +1747,8 @@ impl AccountActor {
             verification_request_observer: None,
             sas_verification_observer: None,
             sas_timeout_task: None,
+            sas_verification_timeout: super::verification::DEFAULT_SAS_VERIFICATION_TIMEOUT,
+            duplicate_key_upload_observer: None,
             #[cfg(test)]
             synthetic_verification: None,
             incoming_verification_observer: None,
@@ -3086,7 +3116,9 @@ impl AccountActor {
                             let _ = Box::pin(sas_stopped).await;
                         }),
                     });
-                    self.sas_timeout_task = Some(executor::spawn(std::future::pending()));
+                    // #1780: arm the real bound, so a test observes the same
+                    // timer the production flow uses.
+                    self.start_sas_timeout(flow_id);
                 }
                 #[cfg(test)]
                 AccountMessage::SettleSyntheticVerification { flow_id, terminal } => {
@@ -3112,6 +3144,10 @@ impl AccountActor {
                         self.sas_timeout_task.is_some(),
                         self.synthetic_verification.is_some(),
                     ));
+                }
+                #[cfg(test)]
+                AccountMessage::InspectKeyUploadObserver { response } => {
+                    let _ = response.send(self.duplicate_key_upload_observer.is_some());
                 }
                 #[cfg(test)]
                 AccountMessage::ConfigureOidcCompletion {
@@ -3229,6 +3265,13 @@ impl AccountActor {
                         ))
                         .await;
                     }
+                }
+                #[cfg(test)]
+                AccountMessage::SetSasVerificationTimeout { timeout } => {
+                    self.sas_verification_timeout = timeout;
+                }
+                AccountMessage::DuplicateOneTimeKeyUpload => {
+                    Box::pin(self.handle_duplicate_one_time_key_upload()).await;
                 }
                 AccountMessage::IncomingVerificationRequest {
                     session,

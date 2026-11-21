@@ -465,6 +465,88 @@ async fn actor_sas_settlement_emits_exactly_one_terminal_and_clears_runtime() {
     shutdown_and_ack(&handle).await;
 }
 
+/// #1780: the own-device SAS bound is the production timer, and a test or QA
+/// lane can shorten it. Without the bound a request whose peer never answers
+/// leaves the user waiting forever.
+#[tokio::test]
+async fn own_device_sas_timeout_is_shorten_for_tests_and_settles_as_timeout() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
+    let diagnostic_start = koushi_diagnostics::test_support::detail_cursor();
+    let cred_dir = tempdir().expect("credential tempdir");
+    let data_dir = tempdir().expect("data tempdir");
+    let store = StoreActor::with_backend(
+        CredentialStoreBackend::FileDir(koushi_store::FileCredentialStore::new(cred_dir.path())),
+        data_dir.path(),
+    );
+    let (action_tx, mut action_rx) = mpsc::channel(16);
+    let (event_tx, _) = broadcast::channel(16);
+    let handle = AccountActor::spawn(
+        store,
+        action_tx,
+        event_tx,
+        LinkPreviewContext::default(),
+        Arc::new(ComposerDraftLeaseRegistry::new()),
+    );
+
+    let flow_id = 700;
+    handle
+        .set_sas_verification_timeout(Duration::from_millis(40))
+        .await;
+    assert!(
+        handle
+            .send(AccountMessage::ConfigureSyntheticVerification { flow_id })
+            .await
+    );
+    let actions = tokio::time::timeout(Duration::from_secs(5), action_rx.recv())
+        .await
+        .expect("the shortened bound fires")
+        .expect("one terminal action");
+    assert_eq!(
+        actions,
+        vec![AppAction::VerificationFailed {
+            request_id: flow_id,
+            kind: TrustOperationFailureKind::Timeout,
+        }]
+    );
+    let timeout_fired = koushi_diagnostics::test_support::detail_records_since(diagnostic_start)
+        .iter()
+        .any(|record| {
+            record.event.source == "core.sas_verification" && record.event.stage == "timeout_fired"
+        });
+    assert!(
+        timeout_fired,
+        "the timeout must be observable in diagnostics"
+    );
+    shutdown_and_ack(&handle).await;
+}
+
+/// #1780: the observer's signal reaches the product as one action, with no key
+/// bytes attached, so the renderer can explain the stuck verification.
+#[tokio::test]
+async fn duplicate_key_upload_reaches_the_product_as_one_key_free_action() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock_async().await;
+    let cred_dir = tempdir().expect("credential tempdir");
+    let data_dir = tempdir().expect("data tempdir");
+    let store = StoreActor::with_backend(
+        CredentialStoreBackend::FileDir(koushi_store::FileCredentialStore::new(cred_dir.path())),
+        data_dir.path(),
+    );
+    let (action_tx, mut action_rx) = mpsc::channel(16);
+    let (event_tx, _) = broadcast::channel(16);
+    let handle = AccountActor::spawn(
+        store,
+        action_tx,
+        event_tx,
+        LinkPreviewContext::default(),
+        Arc::new(ComposerDraftLeaseRegistry::new()),
+    );
+
+    assert!(handle.send(AccountMessage::DuplicateOneTimeKeyUpload).await);
+    let actions = action_rx.recv().await.expect("one key-upload action");
+    assert_eq!(actions, vec![AppAction::DuplicateOneTimeKeyUpload]);
+    shutdown_and_ack(&handle).await;
+}
+
 #[test]
 fn sdk_cancellation_with_the_timeout_code_settles_as_timeout() {
     use koushi_sdk::MatrixVerificationCancelKind as CancelKind;

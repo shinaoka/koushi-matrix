@@ -597,6 +597,7 @@
             "kind": "idle"
           }
         },
+        "key_upload": "duplicateOneTimeKey",
         "unverified_own_sessions_alert": {
           "total_sessions": 2,
           "unverified_sessions": 1

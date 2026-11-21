@@ -2790,7 +2790,15 @@ export interface E2eeTrustState {
   devices: DeviceTrustSummary[];
   /** Pending popup naming unverified own sessions; null once dismissed. */
   unverified_own_sessions_alert: UnverifiedOwnSessionsAlert | null;
+  /**
+   * #1780: `duplicateOneTimeKey` means the server already holds one of this
+   * session's one-time keys, so peers cannot open an encrypted to-device
+   * session with it and their verification requests never arrive here.
+   */
+  key_upload: KeyUploadHealth;
 }
+
+export type KeyUploadHealth = "idle" | "duplicateOneTimeKey";
 
 export interface UnverifiedOwnSessionsAlert {
   total_sessions: number;

@@ -408,6 +408,8 @@ async fn reset_local_data_clears_current_account_persistence_and_signs_out_local
         sliding_sync_positive_evidence: None,
         sliding_sync_account_epoch: 0,
         sliding_sync_request_id: 0,
+        sas_verification_timeout: super::super::verification::DEFAULT_SAS_VERIFICATION_TIMEOUT,
+        duplicate_key_upload_observer: None,
         pending_sliding_sync_admission: None,
         pending_sliding_sync_retry: None,
         stored_sliding_sync_admission: None,

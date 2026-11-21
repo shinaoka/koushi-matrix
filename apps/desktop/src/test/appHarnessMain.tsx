@@ -445,7 +445,8 @@ function defaultE2eeTrustState(): DesktopSnapshot["state"]["domain"]["e2ee_trust
     identity_reset: { kind: "idle" },
     key_management: defaultE2eeKeyManagementState(),
     devices: [],
-    unverified_own_sessions_alert: null
+    unverified_own_sessions_alert: null,
+    key_upload: "idle"
   };
 }
 
@@ -783,7 +784,8 @@ function e2eeTrustFixture(): E2eeTrustState {
         is_current: false
       }
     ],
-    unverified_own_sessions_alert: null
+    unverified_own_sessions_alert: null,
+    key_upload: "idle"
   };
 }
 

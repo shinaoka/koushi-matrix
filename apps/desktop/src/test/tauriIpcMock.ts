@@ -529,7 +529,8 @@ export function defaultSnapshotResponse() {
           passphrase_change: { kind: "idle" }
         },
         devices: [],
-        unverified_own_sessions_alert: null
+        unverified_own_sessions_alert: null,
+        key_upload: "idle"
       },
       local_encryption: { kind: "unknown" },
       native_attention: {

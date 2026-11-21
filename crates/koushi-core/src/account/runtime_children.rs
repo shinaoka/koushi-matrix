@@ -202,6 +202,7 @@ impl AccountActor {
         self.stop_secure_backup_observer().await;
         self.stop_recovery_observer().await;
         self.stop_incoming_verification_observer().await;
+        self.stop_duplicate_key_upload_observer().await;
         self.stop_contact_security_observer().await;
         self.retire_own_session_check();
         self.stop_session_change_observer().await;

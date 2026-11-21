@@ -100,6 +100,39 @@ fn recovery_submission_clears_stale_device_verification_failure() {
     );
 }
 
+/// #1780: a duplicate one-time-key upload is a device-level fact: it is
+/// recorded once, survives later reports, and raises the trust-change event the
+/// renderer redraws from.
+#[test]
+fn duplicate_one_time_key_upload_is_recorded_once() {
+    let mut state = awaiting_verification_state(vec![
+        crate::state::VerificationMethodCapability::ExistingDeviceSas,
+    ]);
+    assert_eq!(
+        state.e2ee_trust.key_upload,
+        crate::state::KeyUploadHealth::Idle
+    );
+
+    let effects = reduce(&mut state, AppAction::DuplicateOneTimeKeyUpload);
+
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+    );
+    assert_eq!(
+        state.e2ee_trust.key_upload,
+        crate::state::KeyUploadHealth::DuplicateOneTimeKey
+    );
+
+    // The signal is a statement about this device's crypto store, not about an
+    // attempt, so a repeat report neither clears nor re-announces it.
+    assert!(reduce(&mut state, AppAction::DuplicateOneTimeKeyUpload).is_empty());
+    assert_eq!(
+        state.e2ee_trust.key_upload,
+        crate::state::KeyUploadHealth::DuplicateOneTimeKey
+    );
+}
+
 fn test_space(space_id: &str) -> crate::state::SpaceSummary {
     crate::state::SpaceSummary {
         space_id: space_id.to_owned(),
