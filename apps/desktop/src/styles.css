@@ -3453,6 +3453,82 @@ button:disabled {
   background: var(--surface-hover);
 }
 
+/* #2041: a notice is one muted information line, not a message. The avatar
+   column stays in the grid so the line starts where message text does; the
+   heading and the body flow on that one line, which is why both are inline.
+   The block padding follows the density scale (2 / 4 / 8 against a message
+   row's 6 / 10 / 14), and the 12px text is fixed at every density: an
+   information line keeps one reading size, as Element's does. */
+.message.message-notice-row {
+  padding-block: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.desktop[data-density="compact"] .message.message-notice-row {
+  padding-block: 2px;
+}
+
+.desktop[data-density="comfortable"] .message.message-notice-row {
+  padding-block: 8px;
+}
+
+.message-notice-row .message-heading {
+  display: inline-flex;
+  gap: 6px;
+  margin: 0;
+  vertical-align: baseline;
+}
+
+.message-notice-row .message-heading .sender {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* The body carries no box of its own: it is the same line as the sender. */
+.message-notice-row > .message-main > .message-body {
+  display: inline;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* Compact density hides a continuation row's sender, but on a notice line that
+   sender is the only place the name appears. The extra `.message` outranks
+   `.desktop[data-density="compact"] .message.is-continuation .sender`, whose
+   specificity would otherwise tie with this rule and win on file order. */
+.desktop[data-density="compact"] .message.message-notice-row .message-heading .sender {
+  position: static;
+  width: auto;
+  height: auto;
+  padding: 0;
+  overflow: visible;
+  clip: auto;
+  white-space: normal;
+}
+
+/* #2041: a notice line keeps react and pin, so they sit on the line itself
+   instead of in a hover bar: a state event has nothing to reply to or edit. */
+.message-notice-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-inline-start: 6px;
+  vertical-align: text-bottom;
+}
+
+.message-notice-controls .message-action {
+  width: 24px;
+  height: 24px;
+  opacity: 0.75;
+}
+
+.message-notice-controls .message-action:hover,
+.message-notice-controls .message-action:focus-visible {
+  opacity: 1;
+}
+
 /* #1603: a scroll can move a row under a stationary pointer, which would
    otherwise reveal that row's hover background and action bar. The timeline
    publishes data-hover-armed only after scrolling stops and the pointer has

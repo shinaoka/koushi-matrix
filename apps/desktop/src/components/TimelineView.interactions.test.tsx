@@ -888,8 +888,13 @@ describe("TimelineView", () => {
     const labels = (eventId: string) => {
       const row = rowFor(eventId);
       expect(row).toBeTruthy();
+      // #2041: a notice row has no hover action bar, so its react and pin
+      // controls render on the line instead. The #1704 rule is unchanged: a
+      // pinned notice still offers Unpin.
       return Array.from(
-        row!.querySelectorAll<HTMLButtonElement>(".message-actions .message-action")
+        row!.querySelectorAll<HTMLButtonElement>(
+          ".message-actions .message-action, .message-notice-controls .message-action"
+        )
       ).map((button) => button.getAttribute("aria-label"));
     };
     expect(labels("$pinnable")).toContain("Pin message");

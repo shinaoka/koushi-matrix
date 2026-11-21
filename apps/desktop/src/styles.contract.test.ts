@@ -589,6 +589,59 @@ describe("styles.css token system", () => {
     expect(selectorBlock(".message")).toContain("position: relative");
   });
 
+  test("a notice row is one muted inline line, not a message box (#2041)", () => {
+    const row = selectorBlock(".message.message-notice-row");
+    expect(row).toContain("font-size: 12px");
+    expect(row).toContain("line-height: 1.45");
+    // Tighter than a message row's 6 / 10 / 14, and ordered the same way, so a
+    // notice follows the density scale instead of adding a fourth one.
+    const padding = (density: string | null) => {
+      const block =
+        density === null
+          ? selectorBlock(".message.message-notice-row")
+          : selectorBlock(`.desktop[data-density="${density}"] .message.message-notice-row`);
+      const match = block.match(/padding-block:\s*(\d+)px/);
+      expect(match, `padding-block for ${density ?? "default"}`).not.toBeNull();
+      return Number(match![1]);
+    };
+    const [compactNotice, standardNotice, comfortableNotice] = [
+      padding("compact"),
+      padding(null),
+      padding("comfortable")
+    ];
+    expect(compactNotice).toBeLessThan(standardNotice);
+    expect(standardNotice).toBeLessThan(comfortableNotice);
+    expect(comfortableNotice).toBeLessThan(14);
+    // The heading and the body share one line, so neither may be a block box.
+    expect(selectorBlock(".message-notice-row .message-heading")).toContain("display: inline-flex");
+    const body = selectorBlock(".message-notice-row > .message-main > .message-body");
+    expect(body).toContain("display: inline");
+    expect(body).toContain("margin: 0");
+    expect(body).toContain("font-size: 12px");
+    for (const box of ["border", "background", "box-shadow"]) {
+      expect(body).not.toContain(`${box}:`);
+    }
+    // Compact density hides a continuation row's sender; a notice line keeps it.
+    const compact = selectorBlock(
+      '.desktop[data-density="compact"] .message.message-notice-row .message-heading .sender'
+    );
+    expect(compact).toContain("position: static");
+    expect(compact).toContain("clip: auto");
+    // The two controls a notice keeps sit on the line, not in a hover bar.
+    const controls = selectorBlock(".message-notice-controls");
+    expect(controls).toContain("display: inline-flex");
+    expect(controls).toContain("vertical-align: text-bottom");
+    const control = selectorBlock(".message-notice-controls .message-action");
+    // Visible without hover, so it has to clear the 3:1 non-text contrast floor
+    // and the 24px target size.
+    expect(control).toContain("opacity: 0.75");
+    expect(control).toContain("width: 24px");
+    expect(control).toContain("height: 24px");
+    expect(css).not.toContain(".message-actions-notice");
+    // No fourth density scale: the notice row only reads the shared attributes.
+    expect(css).not.toContain('data-density="notice"');
+  });
+
   test("message source dialog stays above other overlays and exposes labeled copy buttons", () => {
     const dialogBlock = selectorBlock(".message-source-dialog");
     expect(dialogBlock).toContain("position: fixed");

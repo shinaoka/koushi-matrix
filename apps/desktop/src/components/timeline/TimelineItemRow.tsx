@@ -34,6 +34,7 @@ import {
   type OpenContextMenu
 } from "../../app/uiShared";
 import type { MediaSaveNameFacts } from "../../backend/linkMediaPort";
+import type { TimelineNoticeI18nKey } from "../../domain/coreEvents";
 import { contextMenuItems } from "../../domain/contextMenus";
 import { MESSAGE_PLACEHOLDER_PATTERN, t, type MessageId } from "../../i18n/messages";
 import { onMenuKeyDown } from "../ContextMenuSurface";
@@ -509,6 +510,9 @@ function TimelineItemRowView({
   const sendState = item.send_state ?? null;
   const sendStateKind = sendState?.kind ?? null;
   const messageKind = item.message_kind ?? "text";
+  // #2041: a notice is an information line, not a message. It has no avatar
+  // slot and no separate sender column, and it offers no message actions.
+  const isNoticeRow = messageKind === "notice";
   const [isEditing, setEditing] = useState(false);
   const [editDocument, setEditDocument] = useState(() => documentFromText(item.body ?? ""));
   const [isReactionPickerOpen, setReactionPickerOpen] = useState(false);
@@ -766,7 +770,7 @@ function TimelineItemRowView({
   // #1643: a thread-pane row offers Reply (a reply within the open thread), but
   // threads are not nested, so Reply in thread stays a room-timeline action.
   const canShowReply =
-    canShowActionButtons && canWrite && item.actions?.can_reply === true;
+    !isNoticeRow && canShowActionButtons && canWrite && item.actions?.can_reply === true;
   const canShowReplyInThread = canShowReply && presentationContext === "room";
   // #1704: Rust decides which events may be pinned; an already pinned event
   // (even a room notice) still offers Unpin.
@@ -778,8 +782,11 @@ function TimelineItemRowView({
   );
   const canViewSource = Boolean(eventId && item.actions?.can_view_source);
   const canRequestRoomKey = Boolean(eventId && item.unable_to_decrypt?.can_request_keys);
-  const canForward = Boolean(eventId && item.actions?.can_forward);
-  const canSetSenderAlias = Boolean(eventId && item.sender && onOpenAliasDialog);
+  // #2041: editing, forwarding and rewriting a sender's alias are message
+  // actions, so a notice's read-only menu offers only Copy, permalink and source.
+  const canEditRow = !isNoticeRow && item.can_edit;
+  const canForward = Boolean(!isNoticeRow && eventId && item.actions?.can_forward);
+  const canSetSenderAlias = Boolean(!isNoticeRow && eventId && item.sender && onOpenAliasDialog);
   const canShowMessageActionMenu =
     canSetSenderAlias ||
     canCopyMessage ||
@@ -792,8 +799,10 @@ function TimelineItemRowView({
   const canShowReactions = !isRedacted && !isEditing && item.reactions.length > 0;
   const senderAvatar = resolvedAvatar(item.sender_avatar, profile?.avatar, ownAvatar);
   const senderDisplayLabel = peopleFacingLabel(item.sender_label);
+  // #2041: compact density drops the header's profile link on a continuation
+  // row, but on a notice the name is the only place the actor appears.
   const senderProfileUserId =
-    isContinuation && density === "compact" ? null : item.sender;
+    isNoticeRow || !(isContinuation && density === "compact") ? item.sender : null;
   const canStartDirectMessage = Boolean(
     !(isContinuation && density === "compact") &&
       item.sender &&
@@ -831,6 +840,21 @@ function TimelineItemRowView({
       : "";
   const spoilerState = { revealed: revealedSpoilers, reveal: revealSpoiler };
   const displayBody = localizedTimelineItemBody(item);
+  // #2041: the four profile notices build their sentence around `{sender}`, and
+  // the line already shows that name as the profile button, so the sentence is
+  // rendered without it. The check is driven by the notice's own key, not by
+  // sniffing the text: every other notice carries no sender at all, so the line
+  // separates the name from its sentence with a space instead. Those profile
+  // keys carry no link, spoiler or highlight ranges, so shifting the text cannot
+  // move a range; a formatted notice keeps its own body untouched.
+  const noticeNamesSender =
+    isNoticeRow &&
+    item.notice_i18n != null &&
+    NOTICE_KEYS_NAMING_THE_SENDER.has(item.notice_i18n.key);
+  const noticeBody =
+    noticeNamesSender && displayBody.startsWith(senderDisplayLabel)
+      ? displayBody.slice(senderDisplayLabel.length)
+      : displayBody;
   const replyLabel = t("timeline.replyToMessage");
   const replyInThreadLabel = t("timeline.replyInThread");
   const messageBodyClassName = [
@@ -859,7 +883,7 @@ function TimelineItemRowView({
         mentions
       )
     : renderPlainTextBody(
-        displayBody,
+        noticeBody,
         item.link_ranges ?? [],
         item.spoiler_spans,
         searchHighlights,
@@ -1087,7 +1111,7 @@ function TimelineItemRowView({
     const items = contextMenuItems({
       kind: "message",
       canManage: currentUserId === item.sender,
-      canEdit: canWrite && item.can_edit,
+      canEdit: canWrite && canEditRow,
       canReply: canShowReply,
       hasThread: item.thread_summary != null && presentationContext !== "thread",
       senderUserId: item.sender ?? "",
@@ -1152,11 +1176,213 @@ function TimelineItemRowView({
     </div>
   );
 
+  // #2041: a notice line has no hover action bar. It keeps only the two
+  // affordances that make sense for a room or membership change — react and
+  // pin — so they are defined once here and rendered either in the bar or on
+  // the notice line itself.
+  const reactionActionControl =
+    !isEditing && canShowActionButtons && canWrite && item.can_react ? (
+      <div className="reaction-control">
+        <Tooltip label={t("timeline.addReaction")} placement="below" align="end">
+          {(tooltipProps) => (
+            <button
+              ref={reactionTriggerRef}
+              className="message-action"
+              type="button"
+              aria-label={t("timeline.addReaction")}
+              aria-expanded={isReactionPickerOpen}
+              aria-haspopup="dialog"
+              onClick={toggleReactionPicker}
+              {...tooltipProps}
+            >
+              <SmilePlus size={14} />
+            </button>
+          )}
+        </Tooltip>
+        {isReactionPickerOpen ? (
+          <LazyEmojiPicker
+            anchorRef={reactionTriggerRef}
+            align="end"
+            placement="below"
+            className="timeline-reaction-emoji-picker"
+            recentEmojis={recentEmojis}
+            onRecentEmojisChange={onRecentEmojisChange}
+            onSelect={submitReaction}
+            onClose={closeReactionPicker}
+          />
+        ) : null}
+      </div>
+    ) : null;
+  const pinActionControl = !isEditing && canShowPinToggle ? (
+    <Tooltip
+      label={isPinned ? t("timeline.unpinMessage") : t("timeline.pinMessage")}
+      placement="below"
+      align="end"
+    >
+      {(tooltipProps) => (
+        <button
+          className="message-action"
+          type="button"
+          aria-label={isPinned ? t("timeline.unpinMessage") : t("timeline.pinMessage")}
+          aria-pressed={isPinned}
+          onClick={isPinned ? submitUnpin : submitPin}
+          {...tooltipProps}
+        >
+          {isPinned ? <PinOff size={14} /> : <Pin size={14} />}
+        </button>
+      )}
+    </Tooltip>
+  ) : null;
+
+  // #2041: a notice line keeps the read-only menu (copy, permalink, view
+  // source) but has no bar to put it in, so it renders on the line instead.
+  const messageActionMenuControl = !isEditing && canShowMessageActionMenu ? (
+    <div className="message-action-menu-control" ref={actionMenuControlRef}>
+      <Tooltip label={t("timeline.messageActions")} placement="below" align="end">
+        {(tooltipProps) => (
+          <button
+            ref={actionMenuTriggerRef}
+            className="message-action"
+            type="button"
+            aria-label={t("timeline.messageActions")}
+            aria-expanded={isActionMenuOpen}
+            aria-haspopup="menu"
+            onClick={openActionMenu}
+            {...tooltipProps}
+          >
+            <MoreHorizontal size={14} />
+          </button>
+        )}
+      </Tooltip>
+      {isActionMenuOpen ? (
+        <div
+          className={`message-action-menu is-${actionMenuPlacement}`}
+          role="menu"
+          aria-label={t("timeline.messageActions")}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              closeActionMenu();
+              return;
+            }
+            onMenuKeyDown(event, event.currentTarget);
+          }}
+        >
+          {senderAliasTarget ? (
+            <button
+              ref={firstActionMenuItemRef}
+              className="message-action-menu-item"
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onOpenAliasDialog?.(senderAliasTarget);
+                closeActionMenu();
+              }}
+            >
+              <Edit3 size={14} aria-hidden="true" />
+              <span>
+                {t(
+                  aliasTargetIsActive(senderAliasTarget)
+                    ? "room.editAliasForMember"
+                    : "room.setAliasForMember",
+                  { name: senderAliasTarget.displayLabel }
+                )}
+              </span>
+            </button>
+          ) : null}
+          {canCopyMessage ? (
+            <button
+              ref={!senderAliasTarget ? firstActionMenuItemRef : undefined}
+              className="message-action-menu-item"
+              type="button"
+              role="menuitem"
+              onClick={copyMessageBody}
+            >
+              <Copy size={14} aria-hidden="true" />
+              <span>{t("timeline.copyMessage")}</span>
+            </button>
+          ) : null}
+          {canCopyPermalink ? (
+            <button
+              ref={
+                !senderAliasTarget && !canCopyMessage
+                  ? firstActionMenuItemRef
+                  : undefined
+              }
+              className="message-action-menu-item"
+              type="button"
+              role="menuitem"
+              onClick={copyPermalink}
+            >
+              <span aria-hidden="true" />
+              <span>{t("timeline.copyPermalink")}</span>
+            </button>
+          ) : null}
+          {canViewSource ? (
+            <button
+              ref={
+                !senderAliasTarget && !canCopyMessage && !canCopyPermalink
+                  ? firstActionMenuItemRef
+                  : undefined
+              }
+              className="message-action-menu-item"
+              type="button"
+              role="menuitem"
+              onClick={loadMessageSource}
+            >
+              <FileCode2 size={14} aria-hidden="true" />
+              <span>{t("timeline.viewSource")}</span>
+            </button>
+          ) : null}
+          {canForward ? (
+            <div className="message-forward-menu-control">
+              <button
+                ref={
+                  !senderAliasTarget &&
+                  !canCopyMessage &&
+                  !canCopyPermalink &&
+                  !canViewSource
+                    ? firstActionMenuItemRef
+                    : undefined
+                }
+                className="message-action-menu-item"
+                type="button"
+                role="menuitem"
+                aria-haspopup="menu"
+                aria-expanded={isForwardMenuOpen}
+                onClick={() => setForwardMenuOpen((current) => !current)}
+              >
+                <Forward size={14} aria-hidden="true" />
+                <span>{t("timeline.forwardMessage")}</span>
+              </button>
+              {isForwardMenuOpen ? (
+                <div className="message-forward-menu" role="menu">
+                  {forwardDestinations.map((destination) => (
+                    <button
+                      className="message-action-menu-item"
+                      type="button"
+                      role="menuitem"
+                      key={destination.room_id}
+                      onClick={() => submitForward(destination.room_id)}
+                    >
+                      <MessageCircle size={14} aria-hidden="true" />
+                      <span dir="auto">{destination.display_name}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  ) : null;
+
   return (
     <article
       className={`message${isTarget ? " pinned-target" : ""}${
         isContinuation ? " is-continuation" : ""
-      }`}
+      }${isNoticeRow ? " message-notice-row" : ""}`}
       data-item-id={domId}
       data-row-id={domId}
       data-content-event-id={eventId ?? undefined}
@@ -1177,12 +1403,15 @@ function TimelineItemRowView({
         }
       }}
     >
-      {avatarElement}
+      {isNoticeRow ? null : avatarElement}
       <div className="message-main">
         <div className="message-heading">
           <MessageMeta
             senderDisplayLabel={senderDisplayLabel}
-            timestampMs={separatePostingTime ? null : postingTimestampMs}
+            // #2041: a notice line carries no timestamp — Element's information
+            // tiles show one line of text, and the time would sit between the
+            // sender and the sentence that continues it.
+            timestampMs={isNoticeRow ? null : separatePostingTime ? null : postingTimestampMs}
             isEdited={item.is_edited}
             isRedacted={isRedacted}
             sendStateKind={sendStateKind}
@@ -1204,6 +1433,7 @@ function TimelineItemRowView({
             }
           />
         </div>
+        {isNoticeRow && !noticeNamesSender ? " " : null}
         {separatePostingTime && postingTimestampMs !== null ? (
           <div className="message-posted-at">
             <span>{t("timeline.postedAt")}</span>
@@ -1219,6 +1449,13 @@ function TimelineItemRowView({
         ) : (
           bodyContent
         )}
+        {isNoticeRow && (reactionActionControl || pinActionControl || messageActionMenuControl) ? (
+          <span className="message-notice-controls">
+            {reactionActionControl}
+            {pinActionControl}
+            {messageActionMenuControl}
+          </span>
+        ) : null}
         {!isRedacted && eventId && visibleLinkPreviews.length > 0 ? (
           <div className="link-preview-cards">
             {visibleLinkPreviews.map((preview) => {
@@ -1466,39 +1703,9 @@ function TimelineItemRowView({
           </div>
         ) : null}
       </div>
-      <div className="message-actions message-actions-floating">
-        {!isEditing && canShowActionButtons && canWrite && item.can_react ? (
-          <div className="reaction-control">
-            <Tooltip label={t("timeline.addReaction")} placement="below" align="end">
-              {(tooltipProps) => (
-                <button
-                  ref={reactionTriggerRef}
-                  className="message-action"
-                  type="button"
-                  aria-label={t("timeline.addReaction")}
-                  aria-expanded={isReactionPickerOpen}
-                  aria-haspopup="dialog"
-                  onClick={toggleReactionPicker}
-                  {...tooltipProps}
-                >
-                  <SmilePlus size={14} />
-                </button>
-              )}
-            </Tooltip>
-            {isReactionPickerOpen ? (
-              <LazyEmojiPicker
-                  anchorRef={reactionTriggerRef}
-                  align="end"
-                  placement="below"
-                  className="timeline-reaction-emoji-picker"
-                  recentEmojis={recentEmojis}
-                  onRecentEmojisChange={onRecentEmojisChange}
-                  onSelect={submitReaction}
-                  onClose={closeReactionPicker}
-                />
-            ) : null}
-          </div>
-        ) : null}
+      {isNoticeRow ? null : (
+        <div className="message-actions message-actions-floating">
+        {reactionActionControl}
         {!isEditing && canShowReply ? (
           <Tooltip label={replyLabel} placement="below" align="end">
             {(tooltipProps) => (
@@ -1537,7 +1744,7 @@ function TimelineItemRowView({
             )}
           </Tooltip>
         ) : null}
-        {!isEditing && canShowActionButtons && canWrite && item.can_edit ? (
+        {!isEditing && canShowActionButtons && canWrite && canEditRow ? (
           <Tooltip label={t("timeline.editMessage")} placement="below" align="end">
             {(tooltipProps) => (
               <button
@@ -1552,167 +1759,8 @@ function TimelineItemRowView({
             )}
           </Tooltip>
         ) : null}
-        {!isEditing && canShowPinToggle ? (
-          <Tooltip
-            label={isPinned ? t("timeline.unpinMessage") : t("timeline.pinMessage")}
-            placement="below"
-            align="end"
-          >
-            {(tooltipProps) => (
-              <button
-                className="message-action"
-                type="button"
-                aria-label={isPinned ? t("timeline.unpinMessage") : t("timeline.pinMessage")}
-                aria-pressed={isPinned}
-                onClick={isPinned ? submitUnpin : submitPin}
-                {...tooltipProps}
-              >
-                {isPinned ? <PinOff size={14} /> : <Pin size={14} />}
-              </button>
-            )}
-          </Tooltip>
-        ) : null}
-        {!isEditing && canShowMessageActionMenu ? (
-          <div className="message-action-menu-control" ref={actionMenuControlRef}>
-            <Tooltip label={t("timeline.messageActions")} placement="below" align="end">
-              {(tooltipProps) => (
-                <button
-                  ref={actionMenuTriggerRef}
-                  className="message-action"
-                  type="button"
-                  aria-label={t("timeline.messageActions")}
-                  aria-expanded={isActionMenuOpen}
-                  aria-haspopup="menu"
-                  onClick={openActionMenu}
-                  {...tooltipProps}
-                >
-                  <MoreHorizontal size={14} />
-                </button>
-              )}
-            </Tooltip>
-            {isActionMenuOpen ? (
-              <div
-                className={`message-action-menu is-${actionMenuPlacement}`}
-                role="menu"
-                aria-label={t("timeline.messageActions")}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    closeActionMenu();
-                    return;
-                  }
-                  onMenuKeyDown(event, event.currentTarget);
-                }}
-              >
-                {senderAliasTarget ? (
-                  <button
-                    ref={firstActionMenuItemRef}
-                    className="message-action-menu-item"
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      onOpenAliasDialog?.(senderAliasTarget);
-                      closeActionMenu();
-                    }}
-                  >
-                    <Edit3 size={14} aria-hidden="true" />
-                    <span>
-                      {t(
-                        aliasTargetIsActive(senderAliasTarget)
-                          ? "room.editAliasForMember"
-                          : "room.setAliasForMember",
-                        { name: senderAliasTarget.displayLabel }
-                      )}
-                    </span>
-                  </button>
-                ) : null}
-                {canCopyMessage ? (
-                  <button
-                    ref={!senderAliasTarget ? firstActionMenuItemRef : undefined}
-                    className="message-action-menu-item"
-                    type="button"
-                    role="menuitem"
-                    onClick={copyMessageBody}
-                  >
-                    <Copy size={14} aria-hidden="true" />
-                    <span>{t("timeline.copyMessage")}</span>
-                  </button>
-                ) : null}
-                {canCopyPermalink ? (
-                  <button
-                    ref={
-                      !senderAliasTarget && !canCopyMessage
-                        ? firstActionMenuItemRef
-                        : undefined
-                    }
-                    className="message-action-menu-item"
-                    type="button"
-                    role="menuitem"
-                    onClick={copyPermalink}
-                  >
-                    <span aria-hidden="true" />
-                    <span>{t("timeline.copyPermalink")}</span>
-                  </button>
-                ) : null}
-                {canViewSource ? (
-                  <button
-                    ref={
-                      !senderAliasTarget && !canCopyMessage && !canCopyPermalink
-                        ? firstActionMenuItemRef
-                        : undefined
-                    }
-                    className="message-action-menu-item"
-                    type="button"
-                    role="menuitem"
-                    onClick={loadMessageSource}
-                  >
-                    <FileCode2 size={14} aria-hidden="true" />
-                    <span>{t("timeline.viewSource")}</span>
-                  </button>
-                ) : null}
-                {canForward ? (
-                  <div className="message-forward-menu-control">
-                    <button
-                      ref={
-                        !senderAliasTarget &&
-                        !canCopyMessage &&
-                        !canCopyPermalink &&
-                        !canViewSource
-                          ? firstActionMenuItemRef
-                          : undefined
-                      }
-                      className="message-action-menu-item"
-                      type="button"
-                      role="menuitem"
-                      aria-haspopup="menu"
-                      aria-expanded={isForwardMenuOpen}
-                      onClick={() => setForwardMenuOpen((current) => !current)}
-                    >
-                      <Forward size={14} aria-hidden="true" />
-                      <span>{t("timeline.forwardMessage")}</span>
-                    </button>
-                    {isForwardMenuOpen ? (
-                      <div className="message-forward-menu" role="menu">
-                        {forwardDestinations.map((destination) => (
-                          <button
-                            className="message-action-menu-item"
-                            type="button"
-                            role="menuitem"
-                            key={destination.room_id}
-                            onClick={() => submitForward(destination.room_id)}
-                          >
-                            <MessageCircle size={14} aria-hidden="true" />
-                            <span dir="auto">{destination.display_name}</span>
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
+        {pinActionControl}
+        {messageActionMenuControl}
         {!isEditing && canShowActionButtons && canWrite && item.can_redact ? (
           <Tooltip label={t("timeline.redactMessage")} placement="below" align="end">
             {(tooltipProps) => (
@@ -1729,6 +1777,7 @@ function TimelineItemRowView({
           </Tooltip>
         ) : null}
       </div>
+      )}
     </article>
   );
 }
@@ -1741,6 +1790,19 @@ export function aliasTargetIsActive(target: TimelineAliasTarget): boolean {
 
 /** U+FE0F (emoji presentation) and U+FE0E (text presentation) selectors. */
 const EMOJI_VARIATION_SELECTORS = /[\uFE0E\uFE0F]/g;
+
+/**
+ * The notice keys whose localized sentence begins with `{sender}` (#2041).
+ * Their row shows the name as the profile button instead of repeating it, and
+ * they need no separator because the sentence continues after the name itself
+ * (" changed their display name", "が表示名を変更しました", " 님이 …").
+ */
+const NOTICE_KEYS_NAMING_THE_SENDER: ReadonlySet<TimelineNoticeI18nKey> = new Set([
+  "timeline.notice.profileDisplayNameChanged",
+  "timeline.notice.profileAvatarChanged",
+  "timeline.notice.profileDisplayNameAndAvatarChanged",
+  "timeline.notice.profileUpdated"
+]);
 
 /**
  * Bases the bundled Twemoji COLR font (#1380) carries only in their `*_fe0f`
