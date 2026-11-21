@@ -1468,6 +1468,15 @@ fn thread_root_projection_item_from_raw_with_context(
         event_id: event_id.clone(),
     };
     let thread_summary = thread_summary_from_loaded_root_raw(&raw);
+    let in_reply_to_event_id = thread_in_reply_to_event_id(key, content);
+    // A raw event carries no SDK reply details, so its quote starts like a
+    // canonical row's unresolved one and the owning actor settles it (#1120).
+    let reply_quote = in_reply_to_event_id.as_deref().map(|event_id| {
+        super::reply_quote_hydration::placeholder_quote(
+            event_id,
+            koushi_state::ReplyQuoteState::Loading,
+        )
+    });
 
     Some(TimelineItem {
         id,
@@ -1479,9 +1488,9 @@ fn thread_root_projection_item_from_raw_with_context(
         message_kind,
         spoiler_spans,
         timestamp_ms,
-        in_reply_to_event_id: thread_in_reply_to_event_id(key, content),
+        in_reply_to_event_id,
         formatted: formatted.clone(),
-        reply_quote: None,
+        reply_quote,
         thread_root: None,
         thread_summary,
         media: media.clone(),

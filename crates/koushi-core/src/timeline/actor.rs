@@ -1401,6 +1401,9 @@ impl TimelineActor {
                 }
             }
 
+            // A fetched root arrives with an unresolved quote: settle it from
+            // what this actor already knows before the row is drawn.
+            self.overlay_reply_quotes_on_thread_roots(&HashSet::new());
             let display_diffs = if let Some((index, item)) = canonical_set {
                 let context = self.display_projection_context();
                 super::display_projection::apply_non_sdk_item_set_diffs_to_display_items(
@@ -1431,6 +1434,8 @@ impl TimelineActor {
                 self.emit_navigation_if_changed();
             }
         }
+        // A fetched root can display a quote whose original no batch brings.
+        self.maybe_hydrate_reply_quotes();
     }
 
     pub(super) async fn publish_thread_summary_window_observations(

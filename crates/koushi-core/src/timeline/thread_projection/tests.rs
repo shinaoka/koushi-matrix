@@ -1767,3 +1767,61 @@ fn raw_root_pin_eligibility_matches_message_like_content() {
         );
     }
 }
+
+/// A raw projection (a fetched thread root, a hydrated sent reply) carries no
+/// SDK reply details, so it must start the same `Loading` quote a canonical
+/// row starts with; without one the row shows no quote at all and no lookup
+/// is ever requested for its original.
+#[test]
+fn raw_projection_starts_a_loading_quote_for_its_reply_target() {
+    let reply = serde_json::json!({
+        "type": "m.room.message",
+        "event_id": "$root:test",
+        "sender": "@alice:test",
+        "origin_server_ts": 1_700_000_000_000_u64,
+        "content": {
+            "msgtype": "m.text",
+            "body": "Synthetic reply",
+            "m.relates_to": { "m.in_reply_to": { "event_id": "$original:test" } }
+        }
+    });
+    let activity = ThreadRootProjectionActivity {
+        room_id: "!r:test".to_owned(),
+        root_event_id: "$root:test".to_owned(),
+        activity_event_id: "$thread-reply:test".to_owned(),
+        activity_timestamp_ms: None,
+        activity_sender: None,
+        activity_sender_label: None,
+        activity_body_preview: None,
+    };
+    let item = thread_root_projection_item_from_raw(&room_key(), None, &activity, reply.clone())
+        .expect("the projected event must render");
+    let quote = item
+        .reply_quote
+        .expect("a reply target must project a reply quote");
+    assert_eq!(quote.event_id, "$original:test");
+    assert_eq!(quote.state, koushi_state::ReplyQuoteState::Loading);
+    assert_eq!(item.in_reply_to_event_id.as_deref(), Some("$original:test"));
+
+    // No reply target, no quote.
+    let mut plain = reply.clone();
+    plain["content"]
+        .as_object_mut()
+        .expect("content object")
+        .remove("m.relates_to");
+    let item = thread_root_projection_item_from_raw(&room_key(), None, &activity, plain)
+        .expect("the projected event must render");
+    assert_eq!(item.reply_quote, None);
+
+    // #1237: the thread pane's compatibility fallback is not a reply.
+    let mut falling_back = reply;
+    falling_back["content"]["m.relates_to"] = serde_json::json!({
+        "rel_type": "m.thread",
+        "event_id": "$thread:test",
+        "is_falling_back": true,
+        "m.in_reply_to": { "event_id": "$original:test" }
+    });
+    let item = thread_root_projection_item_from_raw(&thread_key(), None, &activity, falling_back)
+        .expect("the projected event must render");
+    assert_eq!(item.reply_quote, None);
+}

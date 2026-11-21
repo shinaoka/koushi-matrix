@@ -23,10 +23,13 @@ use matrix_sdk_ui::timeline::TimelineFocus;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use super::super::{
-    actor::{TimelineActor, TimelineActorHandle, TimelineActorMessage},
+    actor::{
+        ThreadSummaryProjectionWake, TimelineActor, TimelineActorHandle, TimelineActorMessage,
+    },
     display_projection::apply_timeline_diffs_to_items,
     outbound_send::{PendingSendPhase, PendingSendProjection, pending_send_item},
-    test_support::{fake_rid, live_tail_test_manager},
+    reply_quote_hydration::placeholder_quote,
+    test_support::{fake_rid, live_tail_test_manager, timeline_item},
 };
 use super::koushi_timeline_builder;
 use crate::{executor, link_preview::LinkPreviewContext};
@@ -48,16 +51,24 @@ struct RoomActor {
     actor_generation: u64,
     // Kept alive for the actor's lifetime: the manager owns the receivers the
     // actor's cloned senders target.
-    _manager: super::super::manager::TimelineManagerActor,
+    manager: super::super::manager::TimelineManagerActor,
     _action_drain: executor::JoinHandle<()>,
 }
 
 impl RoomActor {
     async fn wait_for(
         &mut self,
+        predicate: impl FnMut(&CoreEvent, &[TimelineItem]) -> bool,
+    ) -> Result<(), tokio::time::error::Elapsed> {
+        self.wait_for_within(EVENT_LIVENESS, predicate).await
+    }
+
+    async fn wait_for_within(
+        &mut self,
+        bound: Duration,
         mut predicate: impl FnMut(&CoreEvent, &[TimelineItem]) -> bool,
     ) -> Result<(), tokio::time::error::Elapsed> {
-        wait_for(&mut self.events, &mut self.items, &mut predicate).await
+        wait_for(bound, &mut self.events, &mut self.items, &mut predicate).await
     }
 }
 
@@ -129,17 +140,18 @@ async fn spawn_room_actor(
         items: Vec::new(),
         key,
         actor_generation,
-        _manager: manager,
+        manager,
         _action_drain: action_drain,
     }
 }
 
 async fn wait_for(
+    bound: Duration,
     events: &mut broadcast::Receiver<CoreEvent>,
     items: &mut Vec<TimelineItem>,
     mut predicate: impl FnMut(&CoreEvent, &[TimelineItem]) -> bool,
 ) -> Result<(), tokio::time::error::Elapsed> {
-    tokio::time::timeout(EVENT_LIVENESS, async {
+    tokio::time::timeout(bound, async {
         loop {
             let event = events.recv().await.expect("live actor event stream");
             match &event {
@@ -159,18 +171,20 @@ async fn wait_for(
     .await
 }
 
-/// The quote state on the rendered row whose content is the thread root.
+/// The rendered row whose content is the thread root.
+fn thread_root_row(items: &[TimelineItem]) -> Option<&TimelineItem> {
+    items.iter().filter(|item| !item.is_hidden).find(|item| {
+        item.thread_summary.is_some()
+            && item
+                .display_metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.content_event_id.as_deref() == Some(ROOT))
+    })
+}
+
+/// The quote state on the rendered thread root row.
 fn thread_root_quote_state(items: &[TimelineItem]) -> Option<ReplyQuoteState> {
-    items
-        .iter()
-        .filter(|item| !item.is_hidden)
-        .find(|item| {
-            item.thread_summary.is_some()
-                && item
-                    .display_metadata
-                    .as_ref()
-                    .is_some_and(|metadata| metadata.content_event_id.as_deref() == Some(ROOT))
-        })
+    thread_root_row(items)
         .and_then(|item| item.reply_quote.as_ref())
         .map(|quote| quote.state)
 }
@@ -338,6 +352,98 @@ async fn a_thread_root_replying_to_an_off_window_original_resolves_its_quote() {
         .find_map(|item| item.reply_quote.as_ref())
         .expect("resolved quote");
     assert_eq!(quote.event_id, ORIGINAL);
+    assert!(
+        quote.can_open && quote.permalink.is_some(),
+        "a resolved quote opens its original"
+    );
+}
+
+/// A thread root outside the window is fetched by the manager and reaches the
+/// room through the shared projection and a wake, not through a batch. The
+/// reply target of that fetched root is a displayed `Loading` quote like any
+/// other, so the actor must look its original up and resolve it.
+#[tokio::test]
+async fn a_fetched_thread_root_resolves_the_quote_of_its_reply_target() {
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = room_id!("!fetched-root-quote:example.invalid");
+    let alice = user_id!("@alice:example.invalid");
+    let factory = EventFactory::new().room(room_id);
+    let root = event_id!("$root:example.invalid");
+    server
+        .mock_room_event()
+        .match_event_id()
+        .ok(factory
+            .text_msg("Synthetic original")
+            .sender(alice)
+            .event_id(event_id!("$original:example.invalid"))
+            .into())
+        .mount()
+        .await;
+    // Only the thread reply is in the window; its root is not.
+    let room = server.sync_joined_room(&client, room_id).await;
+    server
+        .sync_room(
+            &client,
+            JoinedRoomBuilder::new(room_id).add_timeline_event(
+                factory
+                    .text_msg("Synthetic thread reply")
+                    .sender(alice)
+                    .event_id(event_id!("$thread-reply:example.invalid"))
+                    .server_ts(2_000_u64)
+                    .in_thread(root, root)
+                    .into_raw_sync(),
+            ),
+        )
+        .await;
+    let mut fixture = spawn_room_actor(&room, &client, room_id, alice).await;
+    // The actor has observed the missing root once its placeholder row is drawn.
+    fixture
+        .wait_for(|_, items| thread_root_row(items).is_some())
+        .await
+        .expect("precondition: the off-window root is drawn at its latest reply");
+    assert_eq!(thread_root_quote_state(&fixture.items), None);
+    // Let the actor's start-up batches finish first. Any later batch starts
+    // lookups for displayed quotes on its own, which would hide a wake path
+    // that forgets to.
+    while fixture
+        .wait_for_within(Duration::from_millis(300), |_, _| false)
+        .await
+        .is_ok()
+    {}
+
+    // The manager's fetch completes: the raw projection of a root that replies
+    // to the off-window original.
+    let mut fetched = timeline_item(ROOT, Some("Synthetic root"), alice.as_str(), false);
+    fetched.in_reply_to_event_id = Some(ORIGINAL.to_owned());
+    fetched.reply_quote = Some(placeholder_quote(ORIGINAL, ReplyQuoteState::Loading));
+    let wake = {
+        let mut service = fixture
+            .manager
+            .thread_root_projection_service
+            .lock()
+            .expect("thread-root projection service lock");
+        let activity = service
+            .activity_for_root(room_id.as_str(), ROOT)
+            .expect("the actor observed the root's activity");
+        let record = service
+            .mark_ready(&activity, fetched)
+            .expect("the fetched root is accepted");
+        ThreadSummaryProjectionWake::Updated {
+            root_event_id: ROOT.to_owned(),
+            activity_revision: record.activity_revision,
+            summary_revision: record.summary_revision,
+        }
+    };
+    fixture.actor.thread_summary_projection().publish(wake);
+
+    fixture
+        .wait_for(|_, items| thread_root_quote_state(items) == Some(ReplyQuoteState::Ready))
+        .await
+        .expect("the fetched root's quote must be looked up and resolved");
+    let quote = thread_root_row(&fixture.items)
+        .and_then(|item| item.reply_quote.as_ref())
+        .expect("resolved quote");
     assert!(
         quote.can_open && quote.permalink.is_some(),
         "a resolved quote opens its original"
