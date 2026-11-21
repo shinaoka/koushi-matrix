@@ -49,6 +49,14 @@ key is not shown again after that confirmation. If the app closes before you
 confirm, the unsaved key cannot be recovered; choose **Create new recovery
 key** to replace it (the previous key stops working).
 
+If another Matrix client turned secure backup off for the account, the gate says
+the backup was disabled. While the gate shows that, Secure Backup is required
+before this account can be used in Koushi: the only ways on are **Re-enable
+secure backup** or **Sign out**, and there is no read-only way past this gate.
+Re-enabling creates the account's backup and shows its recovery key; the other
+Matrix clients signed in to the account need that key before they can read
+encrypted history.
+
 If the gate says Koushi is waiting for its first sync response, no Secure
 Backup request has been attempted yet. Check your connection and choose
 **Retry secure backup** to restart the stalled initial sync attempt.

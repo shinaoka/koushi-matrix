@@ -1587,7 +1587,7 @@ export const zhHant: Catalog = {
   "gate.secureBackupResetRecoveryKeyConfirm": "是，建立新的復原金鑰",
   "gate.secureBackupSetup": "設定安全備份",
   "gate.secureBackupExplicitDisabledTitle": "安全備份已停用",
-  "gate.secureBackupExplicitDisabledCopy": "重新啟用安全備份會變更此帳號層級的設定，並影響登入此帳號的其他 Matrix 用戶端。請僅在您希望這些用戶端使用更新後的備份時確認。",
+  "gate.secureBackupExplicitDisabledCopy": "在此帳號上使用 Koushi 需要安全備份。重新啟用會建立此帳號的備份，登入此帳號的其他 Matrix 用戶端需要該復原金鑰才能讀取加密記錄。",
   "gate.secureBackupReenable": "重新啟用安全備份",
   "gate.secureBackupReenableConfirm": "確認重新啟用",
   "gate.secureBackupCreating": "正在建立安全備份…",
