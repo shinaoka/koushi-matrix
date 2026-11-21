@@ -1377,6 +1377,41 @@ export type MessageId =
   | "settings.roomKeyImportFailed"
   | "settings.importRoomKeys"
   | "settings.chooseRoomKeyImportFile"
+  | "settings.migrateToKoushi"
+  | "settings.migrateIntro"
+  | "settings.migrateRecommended"
+  | "settings.migrateKeyFileTitle"
+  | "settings.migrateKeyFileCopy"
+  | "settings.migrateRecoveryTitle"
+  | "settings.migrateRecoveryCopy"
+  | "settings.migrateRecoverySecret"
+  | "settings.migrateRecoveryAction"
+  | "settings.migrateRequestFailed"
+  | "settings.migrateElementTitle"
+  | "settings.migrateElementCopy"
+  | "settings.migrateElementCopyRunning"
+  | "settings.migrateElementAction"
+  | "settings.migrateElementConfirm"
+  | "settings.migrateElementConfirmBody"
+  | "settings.migrateElementStaged"
+  | "settings.migrateElementFailed"
+  | "settings.migrateVerifyTitle"
+  | "settings.migrateVerifyCopy"
+  | "settings.migrateVerifyAction"
+  | "settings.migrateVerifyFallback"
+  | "settings.migrateVerifyFallbackKeyFile"
+  | "settings.migrateVerifyFallbackRecovery"
+  | "settings.migrateNothingTitle"
+  | "settings.migrateNothingCopy"
+  | "settings.migrateNothingAction"
+  | "settings.migrateNothingElementWeb"
+  | "settings.migrateDetectInstalled"
+  | "settings.migrateDetectRunning"
+  | "settings.migrateDetectAbsent"
+  | "settings.migrateDetectImportDisabled"
+  | "settings.migrateDetectPlatformUnsupported"
+  | "settings.migrateDetectElementX"
+  | "settings.migrateDetectUnknown"
   | "settings.roomKeyPassphrasePromptExport"
   | "settings.roomKeyPassphrasePromptImport"
   | "settings.roomKeyPassphrase"
@@ -1578,6 +1613,8 @@ export type MessageId =
   | "gate.secureBackupSetup"
   | "gate.secureBackupExplicitDisabledTitle"
   | "gate.secureBackupExplicitDisabledCopy"
+  | "gate.migrateOffer"
+  | "gate.migrateOfferCopy"
   | "gate.secureBackupReenable"
   | "gate.secureBackupReenableConfirm"
   | "gate.secureBackupCreating"
@@ -3861,6 +3898,41 @@ const en: Catalog = {
   "settings.roomKeyImportFailed": "Import failed: {reason}",
   "settings.importRoomKeys": "Import room keys",
   "settings.chooseRoomKeyImportFile": "Choose import file",
+  "settings.migrateToKoushi": "Migrate to Koushi",
+  "settings.migrateIntro": "Bring your history over from Element or Element X. The first route needs no other device and no delivered request, so try it first.",
+  "settings.migrateRecommended": "most reliable",
+  "settings.migrateKeyFileTitle": "1. Import an exported key file",
+  "settings.migrateKeyFileCopy": "In Element, export your room keys to a file (Settings → Security → Export E2E room keys, or the same menu in Element Web), then import it here. It needs the passphrase you gave that file, and nothing from the other app.",
+  "settings.migrateRecoveryTitle": "2. Restore with your recovery key",
+  "settings.migrateRecoveryCopy": "If you recorded a recovery key or security phrase, enter it here. This restores the account's secure backup as it stands, with no other device involved. The result appears in the secure backup status below.",
+  "settings.migrateRecoverySecret": "Recovery key or security phrase",
+  "settings.migrateRecoveryAction": "Restore keys",
+  "settings.migrateRequestFailed": "Koushi could not start that request. Try again, or use the other routes.",
+  "settings.migrateElementTitle": "3. Import from Element Desktop on this computer",
+  "settings.migrateElementCopy": "Koushi asks Element for its own room-key export and imports it. For that it quits Element and reopens it on a debugging port on this computer only, reads the keys in memory, and deletes the temporary file that carries them whether the import works or not. If Element was closed, Koushi starts it only for the export and closes it again afterwards.",
+  "settings.migrateElementCopyRunning": "Koushi quits the running Element and reopens it afterwards. It reads its room-key export on a debugging port on this computer only, then deletes the temporary file that carries the keys whether the import works or not.",
+  "settings.migrateElementAction": "Import from Element Desktop",
+  "settings.migrateElementConfirm": "Import keys from Element Desktop?",
+  "settings.migrateElementConfirmBody": "Approve this only if Element is signed in with the same account as Koushi. Element will be quit and reopened; anything unsent in it is lost.",
+  "settings.migrateElementStaged": "Element Desktop handed over {keys} keys covering {rooms} rooms. The import itself runs in the background; the key management status shows the result.",
+  "settings.migrateElementFailed": "The import from Element Desktop did not finish. Element may still be open; quit it and try again.",
+  "settings.migrateVerifyTitle": "4. Verify with another device",
+  "settings.migrateVerifyCopy": "Last resort. The old device stays signed in and approves this session, which then receives its keys. This route is known to stall: the request sometimes never reaches the other app, and nothing can be delivered to it in that state.",
+  "settings.migrateVerifyAction": "Verify with another device",
+  "settings.migrateVerifyFallback": "If no request appears in the other app after a minute, use route 1 or 2 instead. Both need nothing to be delivered.",
+  "settings.migrateVerifyFallbackKeyFile": "Go to route 1",
+  "settings.migrateVerifyFallbackRecovery": "Go to route 2",
+    "settings.migrateNothingTitle": "If nothing can be recovered",
+  "settings.migrateNothingCopy": "Encrypted history you received before now stays unreadable when no route above finds its keys; nothing in Koushi can reconstruct them. A new secure backup protects future messages only. For an account you also use in a browser, Element Web shows the backup and can reset its key.",
+  "settings.migrateNothingAction": "Create a new secure backup",
+  "settings.migrateNothingElementWeb": "Open Element Web security settings",
+  "settings.migrateDetectInstalled": "Element Desktop is installed on this computer.",
+  "settings.migrateDetectRunning": "Element Desktop is running on this computer.",
+  "settings.migrateDetectAbsent": "No Element Desktop on this computer.",
+  "settings.migrateDetectImportDisabled": "Importing from it is turned off in this build.",
+  "settings.migrateDetectPlatformUnsupported": "Importing from it works on macOS only.",
+  "settings.migrateDetectElementX": "Element X data is here too, but its keys are encrypted with a key Koushi cannot read.",
+  "settings.migrateDetectUnknown": "Element sources on this computer could not be checked.",
   "settings.roomKeyPassphrasePromptExport": "Enter a passphrase for the room key export.",
   "settings.roomKeyPassphrasePromptImport": "Enter the passphrase for this room key file.",
   "settings.roomKeyPassphrase": "Room key passphrase",
@@ -4039,6 +4111,8 @@ const en: Catalog = {
   "gate.resetForNewDevice": "Reset local data and sign in as a new device",
   "gate.resetForNewDeviceConfirm": "Reset this session's local data and sign in again with a new device ID? This removes the local encrypted store, cached history, and saved credentials on this computer. It does not remove messages from the homeserver. This cannot be undone.",
   "gate.signOut": "Sign out",
+  "gate.migrateOffer": "Migrate from Element instead",
+  "gate.migrateOfferCopy": "Already have history in Element or Element X? Bring it over before you create a new backup.",
   "gate.secureBackupTitle": "Secure backup required",
   "gate.secureBackupChecking": "Checking the backup of your decryption keys on the homeserver…",
   "gate.secureBackupInactive": "Secure backup status is unavailable. Encrypted messaging stays locked until it can be checked.",
@@ -6232,6 +6306,41 @@ const ja: Catalog = {
   "settings.roomKeyImportFailed": "インポート失敗: {reason}",
   "settings.importRoomKeys": "ルーム鍵をインポート",
   "settings.chooseRoomKeyImportFile": "インポート元ファイルを選択",
+  "settings.migrateToKoushi": "Koushi へ移行",
+  "settings.migrateIntro": "Element または Element X から履歴を移します。最初の経路は他の端末も、届くはずのリクエストも必要としないので、まずこれを試してください。",
+  "settings.migrateRecommended": "最も確実",
+  "settings.migrateKeyFileTitle": "1. エクスポートした鍵ファイルを取り込む",
+  "settings.migrateKeyFileCopy": "Element でルーム鍵をファイルにエクスポートし（設定 → セキュリティ → E2E ルーム鍵をエクスポート、Element Web も同じメニューです）、ここで取り込みます。必要なのはそのファイルに付けたパスフレーズだけで、もう一方のアプリからは何も要りません。",
+  "settings.migrateRecoveryTitle": "2. リカバリーキーで復元する",
+  "settings.migrateRecoveryCopy": "リカバリーキーまたはセキュリティフレーズを控えてある場合は、ここに入力してください。他の端末を使わず、アカウントのセキュアバックアップをそのまま復元します。結果は下のセキュアバックアップの状態に表示されます。",
+  "settings.migrateRecoverySecret": "リカバリーキーまたはセキュリティフレーズ",
+  "settings.migrateRecoveryAction": "鍵を復元",
+  "settings.migrateRequestFailed": "リクエストを開始できませんでした。もう一度試すか、他の経路を使ってください。",
+  "settings.migrateElementTitle": "3. この PC の Element Desktop から取り込む",
+  "settings.migrateElementCopy": "Koushi は Element 自身にルーム鍵のエクスポートを要求して取り込みます。そのために Element を終了し、この PC の中だけで使うデバッグポート付きで起動し直し、鍵をメモリ上で受け取ります。鍵を運ぶ一時ファイルは、取り込みの成否にかかわらず削除します。Element が閉じていた場合は、取り込みのためだけに起動し、そのあと終了します。",
+  "settings.migrateElementCopyRunning": "Koushi は起動中の Element を終了し、後で起動し直します。この PC の中だけで使うデバッグポートからルーム鍵のエクスポートを受け取り、鍵を運ぶ一時ファイルは取り込みの成否にかかわらず削除します。",
+  "settings.migrateElementAction": "Element Desktop から取り込む",
+  "settings.migrateElementConfirm": "Element Desktop から鍵を取り込みますか？",
+  "settings.migrateElementConfirmBody": "Element が Koushi と同じアカウントでサインインしている場合のみ承認してください。Element は終了して起動し直すため、未送信の内容は失われます。",
+  "settings.migrateElementStaged": "Element Desktop から {keys} 個の鍵（{rooms} ルーム分）を受け取りました。取り込み自体はバックグラウンドで進み、結果は鍵管理の状態に表示されます。",
+  "settings.migrateElementFailed": "Element Desktop からの取り込みが完了しませんでした。Element が起動したままの可能性があります。終了してから再試行してください。",
+  "settings.migrateVerifyTitle": "4. 別のデバイスで検証する",
+  "settings.migrateVerifyCopy": "最終手段です。古い端末にサインインしたままにし、その端末からこのセッションを承認すると鍵が届きます。この経路は止まりやすいことが分かっています。リクエストが相手のアプリに届かないと、その状態では何も送れません。",
+  "settings.migrateVerifyAction": "別のデバイスで検証",
+  "settings.migrateVerifyFallback": "1 分待っても相手のアプリにリクエストが出ない場合は、経路 1 か 2 を使ってください。どちらも何かが届く必要はありません。",
+  "settings.migrateVerifyFallbackKeyFile": "経路 1 へ",
+  "settings.migrateVerifyFallbackRecovery": "経路 2 へ",
+  "settings.migrateNothingTitle": "何も復元できない場合",
+  "settings.migrateNothingCopy": "以前に受信した暗号化された履歴は、上のどの経路でも鍵が見つからなければ読めないままです。Koushi 側で復元することはできません。新しいセキュアバックアップは今後のメッセージだけを守ります。ブラウザでも使っているアカウントは、Element Web でバックアップを確認し、キーをリセットできます。",
+  "settings.migrateNothingAction": "新しいセキュアバックアップを作成",
+  "settings.migrateNothingElementWeb": "Element Web のセキュリティ設定を開く",
+  "settings.migrateDetectInstalled": "この PC に Element Desktop がインストールされています。",
+  "settings.migrateDetectRunning": "この PC で Element Desktop が起動しています。",
+  "settings.migrateDetectAbsent": "この PC に Element Desktop はありません。",
+  "settings.migrateDetectImportDisabled": "このビルドでは取り込みが無効です。",
+  "settings.migrateDetectPlatformUnsupported": "取り込みは macOS でのみ動作します。",
+  "settings.migrateDetectElementX": "Element X のデータもありますが、鍵は Koushi が読めないキーで暗号化されています。",
+  "settings.migrateDetectUnknown": "この PC の Element 関連のデータを確認できませんでした。",
   "settings.roomKeyPassphrasePromptExport":
     "ルーム鍵エクスポート用のパスフレーズを入力します。",
   "settings.roomKeyPassphrasePromptImport":
@@ -6410,6 +6519,8 @@ const ja: Catalog = {
   "gate.cleanupRetryLocal": "ローカルデータの消去を再試行",
   "gate.cleanupCommandFailed": "デバイスのクリーンアップに失敗しました。もう一度お試しください。",
   "gate.signOut": "サインアウト",
+  "gate.migrateOffer": "Element から移行する",
+  "gate.migrateOfferCopy": "Element や Element X に履歴がある場合は、新しいバックアップを作る前に取り込めます。",
   "gate.secureBackupTitle": "安全なバックアップが必要です",
   "gate.secureBackupChecking": "ホームサーバー上の復号鍵のバックアップを確認中…",
   "gate.secureBackupInactive": "安全なバックアップの状態を確認できません。確認が完了するまで暗号化メッセージはロックされます。",

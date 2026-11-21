@@ -1829,6 +1829,20 @@ describe("desktop integration source guards", () => {
     expect(source).not.toContain("recoveryRequired");
   });
 
+  test("the verification gate can reach the migration import, its only caller", () => {
+    // The gate renders the migration panel only when it is given the import
+    // callbacks, and this is the only place that renders the gate in the
+    // product (#1871): without them the panel is unreachable exactly when a new
+    // device needs it.
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const start = source.indexOf("<SessionVerificationGate");
+    const gateSource = source.slice(start, source.indexOf("operations={{", start));
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(gateSource).toContain("onChooseRoomKeyImportSource={chooseRoomKeyImportSource}");
+    expect(gateSource).toContain("onImportRoomKeys=");
+  });
+
   test("event navigation presentation is owned by the current Rust terminal", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const eventNavigationStart = source.indexOf("const eventNavigation =");
