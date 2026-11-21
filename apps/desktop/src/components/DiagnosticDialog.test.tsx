@@ -78,7 +78,8 @@ describe("DiagnosticDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: t("diagnostics.save") }));
 
     await waitFor(() => expect(onSaveReport).toHaveBeenCalledOnce());
-    expect(screen.queryByRole("status")).toBeNull();
+    // The live region stays mounted (#2038) but carries no message.
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe(""));
   });
 
   it("surfaces a failed save next to the button", async () => {

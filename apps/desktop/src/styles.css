@@ -7115,6 +7115,10 @@ dialog.media-viewer-backdrop::backdrop { background: transparent; }
 
 .diagnostics-dialog {
   width: min(680px, calc(100vw - 48px));
+  /* Title, note, preview, status slot, actions. Only the preview row flexes, so
+     the dialog never gains an outer scrollbar and the buttons stay in view. */
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  overflow: hidden;
 }
 
 /* The privacy statement is the reason this report is safe to share, so it sits
@@ -7142,13 +7146,22 @@ dialog.media-viewer-backdrop::backdrop { background: transparent; }
 }
 
 .diagnostics-status {
+  /* Fixed slot: the row exists in every state so the confirmation cannot
+     resize the dialog. */
+  box-sizing: border-box;
+  block-size: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   margin: 0;
   color: var(--text-muted);
   font-size: 12px;
 }
 
 .diagnostics-output {
+  min-block-size: 0;
   max-height: min(56vh, 520px);
+  margin: 0;
   overflow: auto;
   padding: 12px;
   border: 1px solid var(--line);
