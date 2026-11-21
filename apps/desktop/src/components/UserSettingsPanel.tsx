@@ -31,6 +31,7 @@ import {
   noopAccountNotificationActions
 } from "./user-settings/AccountNotificationsSections";
 import { SecuritySection } from "./user-settings/SecuritySection";
+import { MigrationSection } from "./user-settings/MigrationSection";
 import {
   type NotificationDeliveryActions,
   NotificationDeliverySection,
@@ -940,6 +941,21 @@ export function UserSettingsPanel({
             onCancelIdentityReset={onCancelIdentityReset}
             onSubmitIdentityResetOAuth={onSubmitIdentityResetOAuth}
             onSubmitIdentityResetPassword={onSubmitIdentityResetPassword}
+          />
+          <MigrationSection
+            roomKeyImport={e2eeTrust.key_management.room_key_import}
+            onChooseRoomKeyImportSource={onChooseRoomKeyImportSource}
+            onImportRoomKeys={onImportRoomKeys}
+            onCreateSecureBackup={
+              // Only when the Security section actually shows a setup form.
+              secureBackupGate?.kind === "ready"
+                ? undefined
+                : () => {
+                    document
+                      .getElementById("settings-security")
+                      ?.scrollIntoView?.({ block: "start" });
+                  }
+            }
           />
           <section id="settings-security" className="settings-section" aria-label={t("settings.security")}>
             <h3>{t("settings.security")}</h3>

@@ -1,7 +1,17 @@
 # Local key import from Element (and why Element X cannot be)
 
-Status: implemented engine and IPC for #1871 (Phase A). No React surface yet, so
-nothing here is a user-facing flow until Phase B wires the commands below.
+Status: implemented for #1871 — Phase A (engine and IPC) and Phase B (React
+surface, copy, browser tests). The surface is **Migrate to Koushi** in Account
+Settings → Encryption, mounted again next to **Set up secure backup** on a first
+sign-in.
+
+The route order is a product decision, not a capability order, and it changed
+after the engine landed: the key-file import is offered first and marked, the
+recovery key second, this Element Desktop import third, and verifying from another
+device last. Device verification is the route that keeps failing in the field
+(#1780, #1279, and the nightly-qa `user_verification` failures #1323/#1534/#1169/
+#1462/#1319/#1305), so the panel says it can stall and offers links back to the
+first two routes on the same screen.
 
 ## Purpose and boundary
 
@@ -32,6 +42,25 @@ The local sources are asymmetric, and the difference is deliberate:
 
 Accounts with Element X data migrate by verifying from the old device and sharing
 secrets in Koushi, not by parsing that app's files.
+
+## Detection, platforms, and the import flag
+
+Detection is read-only on every platform and reports counts and stable codes, so
+the panel can say what is here without importing anything:
+
+| Platform | Installed when | Running when |
+| --- | --- | --- |
+| macOS | `/Applications/Element.app` exists | `pgrep -f Element.app/Contents/MacOS/Element` matches |
+| Windows | `%LOCALAPPDATA%\Programs\element-desktop\Element.exe` exists | `tasklist` lists `Element.exe` |
+| Linux | one of `/usr/bin`, `/usr/local/bin`, `/opt/Element`, `/snap/bin` `element-desktop` exists | `pgrep -f element-desktop` matches |
+
+The DevTools-protocol export itself runs on macOS only, so `import_supported` is
+false elsewhere and the panel explains that instead of offering the route. The
+import is additionally behind `KOUSHI_ENABLE_ELEMENT_DESKTOP_IMPORT=1`: the flag
+is read at detection time and again before staging, so the route is hidden when it
+is off and a stale renderer's request fails closed with
+`migration_element_desktop_import_disabled`. Both flags travel as DTO fields; no
+key material, path, or port leaves the adapter.
 
 ## Element X (macOS): detected, never imported
 
@@ -133,17 +162,24 @@ Reported numbers, which Phase B must not conflate:
 - Key material stays inside the adapter's staging file and the SDK import; it
   never reaches the webview, the diagnostics event stream, logs, or an error
   string.
-- Detection returns counts and stable codes
-  (`migration_element_x_encrypted_store`, `migration_element_x_unreadable`, …) —
-  no filesystem paths, no user id, no key material.
+- Detection returns counts, booleans, and stable codes
+  (`migration_element_desktop_import_disabled`,
+  `migration_element_desktop_platform_unsupported`,
+  `migration_element_x_unreadable`, …) — no filesystem paths, no user id, no
+  port, no key material.
 - Tests build synthetic session directories and staging files in a temp
   directory, with synthetic Matrix ids under `example.invalid`. No automated test
   reads a real Element or Element X store.
 
 ## Limits
 
-- macOS only. Other platforms report
-  `unsupported_reason: migration_platform_unsupported`.
+- The DevTools-protocol export runs on macOS only; Windows and Linux report
+  `migration_element_desktop_platform_unsupported` on
+  `element_desktop.unavailable_reason` and their installs are still detected.
+- Windows checks `%LOCALAPPDATA%\Programs\element-desktop\Element.exe` and
+  `C:\Program Files\Element\Element.exe`; Linux checks `/usr/bin`,
+  `/usr/local/bin`, `/opt/Element`, and `/snap/bin`. Flatpak and AppImage
+  installs are not found, so "no Element Desktop" means "not in these places".
 - Element X stores are encrypted and stay unimportable; those accounts migrate by
   verifying from the old device, and the Element Web/Desktop export or the
   recovery key remains the fallback.

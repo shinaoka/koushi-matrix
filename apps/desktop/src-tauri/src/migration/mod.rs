@@ -14,6 +14,8 @@ mod element_desktop;
 mod element_x;
 
 #[cfg(test)]
+mod detection_tests;
+#[cfg(test)]
 mod element_desktop_tests;
 #[cfg(test)]
 mod element_x_tests;
@@ -46,17 +48,19 @@ pub(crate) struct MigrationElementX {
     /// Element X data on this machine, unless `unsupported_reason` says the
     /// container could not be listed.
     pub(crate) sessions: u64,
-    /// Stable code for the message catalog when `sessions > 0`.
-    pub(crate) unavailable_reason: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct MigrationElementDesktop {
     pub(crate) installed: bool,
     pub(crate) running: bool,
-    /// Application-support directory name, for example `Element`.
-    pub(crate) profile_hint: Option<String>,
-    pub(crate) importable: bool,
+    /// The DevTools-protocol export runs on this platform.
+    pub(crate) import_supported: bool,
+    /// The import flag is on. The UI hides the route when it is off, and the
+    /// import command refuses as well, so a stale renderer cannot start one.
+    pub(crate) import_enabled: bool,
+    /// Stable catalog code when Element Desktop is here but cannot be imported.
+    pub(crate) unavailable_reason: Option<&'static str>,
 }
 
 /// Room keys read out of a local source and written to a staging file.
@@ -76,6 +80,8 @@ pub(crate) enum MigrationError {
     Source(element_desktop::ElementDesktopError),
     /// The staging file could not be written.
     Staging,
+    /// The Element Desktop import flag is off.
+    ImportDisabled,
 }
 
 impl fmt::Display for MigrationError {
@@ -84,6 +90,7 @@ impl fmt::Display for MigrationError {
             Self::UnsupportedPlatform => "migration_source_unsupported_platform",
             Self::Source(error) => error.code(),
             Self::Staging => "migration_staging_failed",
+            Self::ImportDisabled => "migration_element_desktop_import_disabled",
         })
     }
 }
@@ -96,18 +103,12 @@ impl From<element_desktop::ElementDesktopError> for MigrationError {
 
 pub(crate) fn detect_sources() -> MigrationSources {
     sweep_stale_staging();
-    if !cfg!(target_os = "macos") {
-        return MigrationSources {
-            unsupported_reason: Some("migration_platform_unsupported"),
-            ..MigrationSources::default()
-        };
-    }
+    // Element Desktop is detected on every platform; Element X is a macOS
+    // container, so its detection answers "nothing here" elsewhere.
     let (element_x_sessions, element_x_unreadable) = element_x::detect_sessions();
     MigrationSources {
         element_x: MigrationElementX {
             sessions: element_x_sessions,
-            unavailable_reason: (element_x_sessions > 0)
-                .then_some("migration_element_x_encrypted_store"),
         },
         element_desktop: element_desktop::detect(),
         // A group container this process may not read looks exactly like "no
@@ -119,6 +120,13 @@ pub(crate) fn detect_sources() -> MigrationSources {
 pub(crate) async fn stage_element_desktop() -> Result<StagedRoomKeys, MigrationError> {
     if !cfg!(target_os = "macos") {
         return Err(MigrationError::UnsupportedPlatform);
+    }
+    if !element_desktop::import_flag_enabled(
+        std::env::var(element_desktop::IMPORT_FLAG_ENV)
+            .ok()
+            .as_deref(),
+    ) {
+        return Err(MigrationError::ImportDisabled);
     }
     let keys = element_desktop::export_room_keys().await?;
     stage(keys)

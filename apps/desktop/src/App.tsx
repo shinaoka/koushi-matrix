@@ -7352,6 +7352,10 @@ function AccountContent({
           snapshot={snapshot}
           onReceipt={applyCommandReceipt}
           onSignOut={() => runInBackground(requestLogout())}
+          onChooseRoomKeyImportSource={chooseRoomKeyImportSource}
+          onImportRoomKeys={(sourcePath, passphrase) =>
+            runInBackground(importRoomKeys(sourcePath, passphrase))
+          }
           operations={{
             startOwnUserSas: () => api.startOwnUserSas(),
             submitRecovery: (secret) => api.submitRecovery(secret),

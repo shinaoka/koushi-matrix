@@ -14,6 +14,8 @@ import type {
   AttachmentFilter,
   AttachmentSort,
   CommandAdmission,
+  MigrationImportAdmission,
+  MigrationSources,
   CommandSettlement,
   AdvisoryDirectMessageSettlement,
   DirectMessageSettlement,
@@ -268,6 +270,10 @@ export interface DesktopApi {
   importRoomKeys(sourcePath: string, passphrase: string): Promise<CommandAdmission>;
   chooseRoomKeyExportDestination(dialogTitle: string): Promise<string | null>;
   chooseRoomKeyImportSource(dialogTitle: string): Promise<string | null>;
+  /** #1871: read-only detection of local Element sources. Imports nothing. */
+  migrationDetectSources(): Promise<MigrationSources>;
+  /** #1871: quit and relaunch Element Desktop on a loopback port, then import. */
+  migrationImportElementDesktop(): Promise<MigrationImportAdmission>;
   historyExportTimeZone(): Promise<string>;
   exportHistory(
     scope: HistoryExportScopeInput,

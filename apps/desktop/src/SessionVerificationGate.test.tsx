@@ -867,6 +867,55 @@ describe("SessionVerificationGate interactions", () => {
     expect(screen.queryByRole("button", { name: "Set up secure backup" })).toBeNull();
   });
 
+  test("offers the migration panel where a first sign-in lands, and imports through the app's own path", async () => {
+    const snapshot = secureBackupSnapshot(
+      await createDesktopApiFixture().getSnapshot(),
+      { kind: "setupRequired" }
+    );
+    const onChooseRoomKeyImportSource = vi.fn(async () => "/synthetic/element-keys.txt");
+    const onImportRoomKeys = vi.fn();
+    const api = createDesktopApiFixture();
+    api.ipc.setCommandResponse("migration_detect_sources", {
+      element_x: { sessions: 0, unavailable_reason: null },
+      element_desktop: {
+        installed: false,
+        running: false,
+        profile_hint: null,
+        import_supported: false,
+        import_enabled: false,
+        unavailable_reason: null
+      },
+      unsupported_reason: null
+    });
+
+    const gate = (props: { offer: boolean }) => (
+      <SessionVerificationGate
+        desktopApi={api}
+        snapshot={snapshot}
+        onReceipt={async () => undefined}
+        onSignOut={() => undefined}
+        operations={secureBackupOperations(snapshot, {})}
+        {...(props.offer ? { onChooseRoomKeyImportSource, onImportRoomKeys } : {})}
+      />
+    );
+
+    // Without the callbacks nothing is offered, so a gate rendered by a caller
+    // that has no import path stays exactly as it was.
+    const { rerender } = render(gate({ offer: false }));
+    expect(screen.queryByRole("button", { name: "Migrate from Element instead" })).toBeNull();
+
+    rerender(gate({ offer: true }));
+    expect(screen.getByText(/before you create a new backup/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Migrate from Element instead" }));
+
+    const panel = await screen.findByRole("region", { name: "Migrate to Koushi" }).catch(
+      () => screen.getByLabelText("Migrate to Koushi")
+    );
+    expect(within(panel).getByText("most reliable")).toBeTruthy();
+    // The gate's own Secure Backup setup stays reachable behind the panel.
+    expect(screen.getByRole("button", { name: "Set up secure backup" })).toBeTruthy();
+  });
+
   test("creates the secure backup without choosing a file destination and clears the passphrase", async () => {
     const snapshot = secureBackupSnapshot(
       await createDesktopApiFixture().getSnapshot(),

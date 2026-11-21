@@ -8,8 +8,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   ShieldQuestion,
-  ShieldX,
-  Upload
+  ShieldX
 } from "lucide-react";
 
 import { t } from "../../i18n/messages";
@@ -23,13 +22,13 @@ import {
   failureKindLabel,
   type TrustTone
 } from "./SettingsStatusPrimitives";
+import { KeyManagementStatus, roomKeyExportStatusLabel } from "./KeyManagementStatus";
+import { RoomKeyImportForm } from "./RoomKeyImportForm";
 import type {
   DisplayPlatform,
   E2eeTrustState,
   LocalEncryptionState,
   RecoveryKeyDeliveryState,
-  RoomKeyExportState,
-  RoomKeyImportState,
   SecureBackupGateState,
   SecureBackupPassphraseChangeState,
   SecureBackupSetupIntent,
@@ -89,26 +88,13 @@ export function SecuritySection({
     setRoomKeyPassphraseRequest({ kind: "export", path: destinationPath });
   }
 
-  async function chooseRoomKeyImport(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const sourcePath = await onChooseRoomKeyImportSource();
-    if (!sourcePath) {
-      return;
-    }
-    setRoomKeyPassphraseRequest({ kind: "import", path: sourcePath });
-  }
-
   function submitRoomKeyPassphrase(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const passphrase = roomKeyPassphraseRef.current?.value ?? "";
     if (!roomKeyPassphraseRequest || !passphrase) {
       return;
     }
-    if (roomKeyPassphraseRequest.kind === "export") {
-      onExportRoomKeys(roomKeyPassphraseRequest.path, passphrase);
-    } else {
-      onImportRoomKeys(roomKeyPassphraseRequest.path, passphrase);
-    }
+    onExportRoomKeys(roomKeyPassphraseRequest.path, passphrase);
     if (roomKeyPassphraseRef.current) {
       roomKeyPassphraseRef.current.value = "";
     }
@@ -280,30 +266,11 @@ export function SecuritySection({
             </div>
           </ImeSafeForm>
 
-          <ImeSafeForm
-            aria-label={t("settings.roomKeyImport")}
-            className="profile-settings-form"
-            onSubmit={(event) => {
-              void chooseRoomKeyImport(event);
-            }}
-          >
-            <KeyManagementStatus
-              label={t("settings.roomKeyImport")}
-              value={roomKeyImportStatusLabel(keyManagement.room_key_import)}
-              testId="room-key-import-state"
-            />
-            <p className="profile-settings-hint">{t("settings.chooseRoomKeyImportFile")}</p>
-            <div className="profile-settings-actions">
-              <button
-                className="trust-action-button primary"
-                type="submit"
-                disabled={keyManagement.room_key_import.kind === "importing"}
-              >
-                <Upload size={14} />
-                <span>{t("settings.importRoomKeys")}</span>
-              </button>
-            </div>
-          </ImeSafeForm>
+          <RoomKeyImportForm
+            roomKeyImport={keyManagement.room_key_import}
+            onChooseRoomKeyImportSource={onChooseRoomKeyImportSource}
+            onImportRoomKeys={onImportRoomKeys}
+          />
 
           {showSecureBackupSetup ? (
           <ImeSafeForm
@@ -423,9 +390,7 @@ export function SecuritySection({
               {t("settings.roomKeyPassphrase")}
             </h3>
             <p className="profile-settings-hint">
-              {roomKeyPassphraseRequest.kind === "export"
-                ? t("settings.roomKeyPassphrasePromptExport")
-                : t("settings.roomKeyPassphrasePromptImport")}
+              {t("settings.roomKeyPassphrasePromptExport")}
             </p>
             <SecureImeTextField
               className="dialog-input"
@@ -438,9 +403,7 @@ export function SecuritySection({
                 {t("action.cancel")}
               </button>
               <button className="dialog-button is-primary" type="submit">
-                {roomKeyPassphraseRequest.kind === "export"
-                  ? t("settings.exportRoomKeys")
-                  : t("settings.importRoomKeys")}
+                {t("settings.exportRoomKeys")}
               </button>
             </div>
           </ImeSafeForm>
@@ -450,26 +413,8 @@ export function SecuritySection({
   );
 }
 
-type RoomKeyPassphraseRequest =
-  | { kind: "export"; path: string }
-  | { kind: "import"; path: string };
+type RoomKeyPassphraseRequest = { kind: "export"; path: string };
 
-function KeyManagementStatus({
-  label,
-  value,
-  testId
-}: {
-  label: string;
-  value: string;
-  testId: string;
-}) {
-  return (
-    <div className="settings-detail-row">
-      <span>{label}</span>
-      <small data-testid={testId}>{value}</small>
-    </div>
-  );
-}
 
 function credentialStoreLabel(platform: DisplayPlatform): string {
   switch (platform) {
@@ -539,40 +484,7 @@ function localEncryptionStatus(state: LocalEncryptionState): {
   }
 }
 
-function roomKeyExportStatusLabel(status: RoomKeyExportState): string {
-  switch (status.kind) {
-    case "idle":
-      return t("settings.roomKeyExportIdle");
-    case "exporting":
-      return t("settings.roomKeyExporting");
-    case "exported":
-      return status.exported_sessions === null
-        ? t("settings.roomKeyExportedUnknown")
-        : t("settings.roomKeyExportedCount", { count: status.exported_sessions });
-    case "failed":
-      return t("settings.roomKeyExportFailed", {
-        reason: failureKindLabel(status.failureKind)
-      });
-  }
-}
 
-function roomKeyImportStatusLabel(status: RoomKeyImportState): string {
-  switch (status.kind) {
-    case "idle":
-      return t("settings.roomKeyImportIdle");
-    case "importing":
-      return t("settings.roomKeyImporting");
-    case "imported":
-      return t("settings.roomKeyImportedCount", {
-        imported: status.imported_count,
-        total: status.total_count
-      });
-    case "failed":
-      return t("settings.roomKeyImportFailed", {
-        reason: failureKindLabel(status.failureKind)
-      });
-  }
-}
 
 function secureBackupStatusLabel(
   setup: SecureBackupSetupState,

@@ -3,6 +3,7 @@ import { ImeSafeForm, SecureImeTextField } from "./ImeTextControl";
 import { ResetLocalDataConfirmationDialog } from "./dialogs";
 import { RecoveryKeyReveal, copyRecoveryKeyToClipboard } from "./RecoveryKeyReveal";
 import { RecoveryKeyResetConfirmation } from "./RecoveryKeyResetConfirmation";
+import { MigrationSection } from "./user-settings/MigrationSection";
 import { t } from "../i18n/messages";
 import { api as defaultApi, startSessionVerificationWindowDrag } from "../backend/appRuntime";
 import type { DesktopApi } from "../backend/desktopApi";
@@ -241,7 +242,9 @@ export function SessionVerificationGate({
   onSignOut,
   onStartWindowDrag = startSessionVerificationWindowDrag,
   desktopApi: providedApi,
-  operations: providedOperations
+  operations: providedOperations,
+  onChooseRoomKeyImportSource,
+  onImportRoomKeys
 }: {
   snapshot: DesktopSnapshot;
   onReceipt: (receipt: CommandReceipt) => Promise<void>;
@@ -249,6 +252,9 @@ export function SessionVerificationGate({
   onStartWindowDrag?: () => void;
   desktopApi?: DesktopApi;
   operations?: SessionVerificationGateOperations;
+  /** #1871: the migration panel reuses the app's own key-file import path. */
+  onChooseRoomKeyImportSource?: () => Promise<string | null>;
+  onImportRoomKeys?: (sourcePath: string, passphrase: string) => void;
 }) {
   const api = providedApi ?? defaultApi;
   const session = snapshot.state.domain.session;
@@ -296,6 +302,9 @@ export function SessionVerificationGate({
   const [secureBackupOperationError, setSecureBackupOperationError] = useState(false);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [confirmDeviceVerification, setConfirmDeviceVerification] = useState(false);
+  // #1871: offered next to the Secure Backup setup, which is where a first
+  // sign-in without any keys lands, so old history can be brought over first.
+  const [showMigration, setShowMigration] = useState(false);
   const [confirmDeviceCleanup, setConfirmDeviceCleanup] = useState(false);
   const [confirmEraseLocalAnyway, setConfirmEraseLocalAnyway] = useState(false);
   const [confirmSecureBackupReenable, setConfirmSecureBackupReenable] = useState(false);
@@ -574,6 +583,28 @@ export function SessionVerificationGate({
       <>
         <p>{t("gate.secureBackupSetupCopy")}</p>
         {secureBackupSetupForm("setup")}
+        {onChooseRoomKeyImportSource && onImportRoomKeys ? (
+          showMigration ? (
+            <MigrationSection
+              desktopApi={api}
+              roomKeyImport={snapshot.state.domain.e2ee_trust.key_management.room_key_import}
+              onChooseRoomKeyImportSource={onChooseRoomKeyImportSource}
+              onImportRoomKeys={onImportRoomKeys}
+              onCreateSecureBackup={() => secureBackupPassphraseRef.current?.focus()}
+            />
+          ) : (
+            <>
+              <p>{t("gate.migrateOfferCopy")}</p>
+              <button
+                className="dialog-button"
+                type="button"
+                onClick={() => setShowMigration(true)}
+              >
+                {t("gate.migrateOffer")}
+              </button>
+            </>
+          )
+        ) : null}
       </>
     )}
     {secureBackupGateRequired &&

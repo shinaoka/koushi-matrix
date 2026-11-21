@@ -175,43 +175,52 @@ copy of a room's messages, use **Room info → Download history** instead; see
 folder holds encrypted messages and attachments unencrypted and contains no
 room keys.
 
-## Move keys from Element or Element X
+## Migrate from another app
 
 Encryption keys stay with the client that received them. Once the old app is
 signed out or uninstalled, whatever it did not share or back up is gone, so act
 while it is still in place. Every route below also needs the **same account** in
 both apps: keys from a different account open nothing here.
 
-There are three routes, in the order that usually works:
+**Migrate to Koushi** in **Account Settings → Encryption** offers the routes in
+the order that works, and the same panel appears next to **Set up secure backup**
+on a first sign-in. The first two are the reliable ones: neither needs anything
+to be delivered to the old app.
 
-1. **Verify from the old device.** This needs Element or Element X still
-   installed and signed in, with the history you want still readable in it. In
-   Koushi, open **Account Settings → Sessions**, choose **Verify this session**,
-   then **Verify with another device**, and confirm the request in the old app.
-   It needs no recovery key and no file, so it also works when the account has no
-   secure backup. Open an affected room in Koushi and confirm its history
-   decrypts before you sign out of the old app.
-2. **Enter your recovery key or security phrase.** This needs an existing secure
-   backup on the account, or a recovery key you recorded earlier. Open
-   **Account Settings → Encryption → Open recovery** and enter it in the
-   **Encryption Recovery** form. It works when the old device is already gone.
-3. **Import an exported key file.** This needs a file you exported from the old
-   client earlier, plus the passphrase that protected it. In Koushi, open
-   **Account Settings → Encryption → Key management**, select **Import room
-   keys**, choose the file, supply its passphrase, and confirm. It works only for
-   keys the file actually contains.
+1. **Import an exported key file.** In Element, export your room keys (Settings →
+   **Security** → **Export E2E room keys**, or the same menu in Element Web), then
+   choose **Import room keys** in Koushi and pick that file. It asks for the
+   passphrase you gave the file. This works with no old device, no recovery key,
+   and no verification, which is why it is offered first.
+2. **Restore with your recovery key.** If you recorded a recovery key or security
+   phrase, enter it under **Migrate to Koushi** or **Open recovery**. This
+   restores the account's secure backup as it stands, with no other device
+   involved.
+3. **Import from Element Desktop on this computer.** Koushi asks Element for its
+   own room-key export over the Chrome DevTools protocol: it quits Element,
+   reopens it on a debugging port bound to this computer, reads the keys in
+   memory, imports them, deletes the temporary file that carried them whether the
+   import worked or not, and reopens Element. It asks for consent first, it is
+   macOS-only, and it is switched off in builds where the flag
+   (`KOUSHI_ENABLE_ELEMENT_DESKTOP_IMPORT=1`) is unset.
+4. **Verify with another device.** Last resort. The old device stays signed in and
+   approves this session, which then receives its keys over an encrypted
+   to-device channel. This route is known to stall: the request can fail to reach
+   the old app, and while it is missing nothing can be delivered. If no request
+   appears after a minute, use route 1 or 2 instead.
 
 **Element X.** Its local data is encrypted with a key Element X keeps in its own
 Keychain, which Koushi cannot read, so a phone that still has your history has to
-give the keys up itself: use route 1. If that phone is no longer available, sign
-in to Element Web or Element Desktop with the same account, let the keys arrive
-there, and then use route 2 or route 3 from that client.
+give the keys up itself: use route 4, or export from Element on a desktop and use
+route 1. If that phone is no longer available, sign in to Element Web or Element
+Desktop with the same account, let the keys arrive there, and then use route 1 or
+2 from that client.
 
 **Before you create a new secure backup.** A new backup starts empty. Once it
 replaces the previous one, history that only the old backup held cannot be
 restored from the new one, and this is easy to do by accident while trying to fix
-a missing-history problem. If the old device or phone still exists, take route 1
-first; if a recovery key exists, record it before anything replaces the backup.
+a missing-history problem. If the old device or phone still exists, try route 1 or
+2 first; if a recovery key exists, record it before anything replaces the backup.
 
 **Accounts you only use on the web.** If there is no Element Desktop or Element X
 on this computer — a matrix.org account used through `app.element.io`, for
