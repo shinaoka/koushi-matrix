@@ -1915,7 +1915,7 @@ describe("TimelineView", () => {
   });
 
 
-  it("falls back to the virtual height model when a projection anchor unmounts", async () => {
+  it("settles a relocated-root projection in its commit, before a virtual-window turnover", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const onScrollDiagnosticsChange = vi.fn();
     const rowHeight = 72;
@@ -2104,13 +2104,16 @@ describe("TimelineView", () => {
           }
         }
       });
+      // The mocked layout follows the DOM this batch commits, as a browser's
+      // does: React renders it when this act() scope ends.
+      rootMovedToNewReply = true;
     });
-    rootMovedToNewReply = true;
     const transactionFrameScheduled = frames.size > 0;
+    const writeAfterCommit = timeline.scrollTop;
 
-    // Model a virtual-window turnover between commit and the coalesced frame:
-    // the stable anchor is no longer mounted, so DOM restoration must fail and
-    // the height-model offset is the only valid correction path.
+    // #278: the compensation lands in the commit that moved the reader, not in
+    // the coalesced frame. A virtual-window turnover before that frame then
+    // finds nothing left to correct; the frame must not write again.
     document
       .querySelector('[data-content-event-id="$normal300:example.invalid"]')
       ?.closest(".timeline-item-frame")
@@ -2125,6 +2128,7 @@ describe("TimelineView", () => {
     });
 
     expect({
+      writeAfterCommit,
       transactionFrameScheduled,
       executedFrameCount: executedFrameCount > 0,
       projectionWriteRecorded: onScrollDiagnosticsChange.mock.calls.some(
@@ -2132,6 +2136,7 @@ describe("TimelineView", () => {
       ),
       scrollTop: timeline.scrollTop
     }).toEqual({
+      writeAfterCommit: 301 * rowHeight - 10,
       transactionFrameScheduled: true,
       executedFrameCount: true,
       projectionWriteRecorded: true,

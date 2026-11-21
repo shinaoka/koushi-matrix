@@ -41,6 +41,22 @@ the lane that shows the symptom. Lane commands are in
   per-frame fact needs a test, add the matching cumulative counter in
   `apps/desktop/src/domain/timelineScrollDiagnostics.ts` and subtract it in
   `harnessMain.tsx` rather than reaching into `latestFrame`.
+- **A frame sampler reports jumps nobody sees, or the window never follows.**
+  A probe's own `requestAnimationFrame` runs in registration order with the
+  app's, so it can read the DOM before the app's same-frame compensation and
+  count frames that are never painted. Sample the painted frame instead: wrap
+  every rAF and ResizeObserver callback and re-sample after each one, as
+  `e2e/timeline-window-slide-anchor.spec.ts` does. Drive scroll input from tasks
+  (`setTimeout`), like native wheel input; a `wheel` dispatched from a rAF lands
+  ahead of the app's range-commit frame and cancels it every time, which blanks
+  the viewport in a way native input does not.
+- **A geometry-sensitive timeline spec fails only on CI and survives CPU load,
+  slow frames and other step intervals locally.** Suspect fonts: CI's fonts lay
+  rows out at other heights, so where a mount boundary falls relative to the
+  live edge differs. Vary the viewport height (`page.setViewportSize`) in steps
+  smaller than a row; that reproduced the CI-only first-step jump of
+  `e2e/timeline-window-slide-anchor.spec.ts` in half the heights. A spec that
+  depends on such a boundary should sweep heights rather than trust one.
 - **Prepend anchor restoration never engages.** A bare `node.scrollTop = X` is a
   PROGRAMMATIC scroll: the component keeps `live-edge` viewport intent and snaps
   back to the bottom. To simulate a real user scroll-up, dispatch a `WheelEvent`
