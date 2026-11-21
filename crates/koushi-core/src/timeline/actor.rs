@@ -55,7 +55,7 @@ use super::gap_repair::{
 };
 use super::item_projection::{
     ReceiptObservationTarget, apply_link_previews_to_item, apply_timeline_item_visibility,
-    cache_sdk_item_media_source, emit_receipt_observation_actions,
+    cache_sdk_item_media_source, carry_resolved_send_failures, emit_receipt_observation_actions,
     live_event_receipts_from_sdk_items, live_event_window_ids_from_sdk_items,
     receipt_scope_for_timeline_kind, receipts_by_row, remember_local_echo,
     sdk_item_to_timeline_item, thread_auto_requestable_event_id, timeline_room_id,
@@ -1694,6 +1694,10 @@ impl TimelineActor {
         // The echoes it replays are the only record the actor has of a request the
         // SDK snapshot no longer reports, so seeding the authority afterwards would
         // leave the initial rows rendered from whatever each row carries.
+        let startup_pending_projections = send_completion
+            .lock()
+            .expect("send completion coordinator lock must not be poisoned")
+            .projections_for_key(&key);
         let mut send_statuses = HashMap::new();
         let mut send_handles = HashMap::new();
         let mut send_queue_updates = None;
@@ -1705,6 +1709,15 @@ impl TimelineActor {
                 remember_local_echo(&mut send_statuses, &mut send_handles, echo);
             }
             send_queue_updates = Some(update_rx);
+        }
+        // #1851: the echoes cannot express a recoverable failure either, so a
+        // stopped queue would render as sending again in a replacement actor. The
+        // manager still owns the failed request; its phase is that evidence.
+        {
+            carry_resolved_send_failures(
+                &mut send_statuses,
+                super::outbound_send::resolved_send_failures(&startup_pending_projections),
+            );
         }
 
         let mut media_sources = HashMap::new();
@@ -1759,7 +1772,7 @@ impl TimelineActor {
                 .lock()
                 .expect("send completion coordinator lock must not be poisoned");
             (
-                coordinator.projections_for_key(&key),
+                startup_pending_projections,
                 coordinator.settled_transaction_ids(
                     key.room_id(),
                     &super::outbound_send::canonical_event_ids(&initial_items),

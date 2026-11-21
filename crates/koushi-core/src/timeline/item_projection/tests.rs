@@ -17,7 +17,7 @@ use matrix_sdk::ruma::events::{
 
 use matrix_sdk_ui::timeline::{EventSendState, MembershipChange, ReactionsByKeyBySender};
 
-use super::{SendStateAuthority, retry_admission};
+use super::{SendStateAuthority, carry_resolved_send_failures, retry_admission};
 use crate::event_projection::message_actions_for_timeline_item;
 use koushi_protocol::command::TimelineCommand;
 
@@ -2119,4 +2119,57 @@ fn an_unbound_pending_row_is_accepted_exactly_as_it_renders() {
     let mut rows = vec![row];
     authority.apply_all(&mut rows);
     assert_eq!(rows[0].send_state, Some(recoverable_send()));
+}
+
+/// #1851: the send table is rebuilt from the SDK's local echoes when the queue
+/// update stream lags. Those echoes cannot express a resolved *recoverable*
+/// failure (the SDK records only unrecoverable ones), so the rebuild must not be
+/// allowed to put `Sending` back on a row the user can still resend.
+#[test]
+fn a_table_rebuild_keeps_a_resolved_recoverable_failure() {
+    use koushi_protocol::event::{TimelineSendFailureReason, TimelineSendState};
+
+    let unrecoverable = TimelineSendState::NotSent {
+        reason: TimelineSendFailureReason::Unrecoverable,
+    };
+    let previous = HashMap::from([
+        // Stopped queue: the actor recorded the transient failure.
+        ("kept".to_owned(), recoverable_send()),
+        // A row the SDK reports as unrecoverable carries it on its own echo.
+        ("echo_wins".to_owned(), unrecoverable.clone()),
+        // The echo is gone: the request settled, so there is nothing to keep.
+        ("settled".to_owned(), recoverable_send()),
+        // The echo reports a newer terminal state.
+        ("reported".to_owned(), recoverable_send()),
+    ]);
+    // What `remember_local_echo` produces: `Sending` for everything a recoverable
+    // failure stopped, and only an unrecoverable error on the echo itself.
+    let mut rebuilt = HashMap::from([
+        ("kept".to_owned(), TimelineSendState::Sending),
+        ("echo_wins".to_owned(), TimelineSendState::Sending),
+        ("reported".to_owned(), TimelineSendState::Sent),
+    ]);
+
+    carry_resolved_send_failures(&mut rebuilt, previous);
+
+    assert_eq!(
+        rebuilt.get("kept"),
+        Some(&recoverable_send()),
+        "the resolved failure survives the rebuild"
+    );
+    assert_eq!(
+        rebuilt.get("echo_wins"),
+        Some(&TimelineSendState::Sending),
+        "an unrecoverable failure is reported by the echo itself, not carried"
+    );
+    assert_eq!(
+        rebuilt.get("settled"),
+        None,
+        "a vanished echo is not revived"
+    );
+    assert_eq!(
+        rebuilt.get("reported"),
+        Some(&TimelineSendState::Sent),
+        "the SDK's newer report wins"
+    );
 }

@@ -2969,6 +2969,25 @@ export function checkCoreTimelineSendStateDerivation(options = {}) {
   if (replayedEcho < 0 || startupProjection < 0 || replayedEcho > startupProjection) {
     failures.push(sourceContractFailure(rule, "the startup projection is built before the send queue replayed its local echoes"));
   }
+  // 9. #1851: a lagged queue-update stream rebuilds the send table from the SDK's
+  //    local echoes, which record only an *unrecoverable* failure. Rebuilding
+  //    without carrying the actor's resolved recoverable failure republishes a
+  //    stopped room as `Sending`, so the queued rows lose the `Resend` the
+  //    projection had derived and `RetrySend` then answers `InvalidSendState`.
+  //    The same echo-only seed is the actor's own startup, so both are guarded.
+  const rebuild = options.outboundSource
+    ? rustItemBody(options.outboundSource, "async fn resync_send_queue_statuses(")
+    : timelineItemBody("outbound_send.rs", "async fn resync_send_queue_statuses(");
+  const echoRebuild = rebuild?.indexOf("remember_local_echo(") ?? -1;
+  const carried = rebuild?.indexOf("carry_resolved_send_failures(") ?? -1;
+  if (echoRebuild < 0 || carried < 0 || carried < echoRebuild) {
+    failures.push(sourceContractFailure(rule, "the send table is rebuilt from local echoes without carrying the resolved failure"));
+  }
+  const seedEcho = spawn?.indexOf("remember_local_echo(") ?? -1;
+  const seedCarried = spawn?.indexOf("carry_resolved_send_failures(") ?? -1;
+  if (seedEcho < 0 || seedCarried < 0 || seedCarried < seedEcho) {
+    failures.push(sourceContractFailure(rule, "a replacement actor seeds its send table from local echoes alone"));
+  }
   return failures;
 }
 

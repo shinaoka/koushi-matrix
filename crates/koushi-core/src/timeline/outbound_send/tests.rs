@@ -64,7 +64,7 @@ use super::{
     apply_send_completion_observation_loss_and_handoff, await_submission_admission,
     classify_send_queue_error, make_offline_reply_content, make_offline_thread_content,
     media_upload_progress_identity, pending_send_item, reply_source_from_raw,
-    run_global_send_completion_observer, send_retry_delay,
+    resolved_send_failures, run_global_send_completion_observer, send_retry_delay,
 };
 
 #[test]
@@ -4311,5 +4311,58 @@ async fn retry_advances_a_stopped_room_in_enqueue_order() {
             .and_then(matrix_sdk_ui::timeline::EventTimelineItem::send_state)
             .is_none_or(|state| matches!(state, EventSendState::Sent { .. }))),
         "every queued row is delivered"
+    );
+}
+
+#[test]
+fn only_the_manager_owned_resolved_failures_seed_a_replacement_actor() {
+    // #1851: a replacement actor seeds its send table from the SDK's echoes, which
+    // cannot express a recoverable failure. The manager's still-owned failed
+    // requests are the only other evidence, so they are what the seed carries.
+    let key = room_key();
+    let projection = |client_txn_id: &str,
+                      sdk_transaction_id: Option<&str>,
+                      phase: PendingSendPhase| PendingSendProjection {
+        lifecycle_trace: None,
+        key: key.clone(),
+        sequence: 0,
+        client_txn_id: client_txn_id.to_owned(),
+        item: pending_send_item(client_txn_id, "body", None, None, None),
+        sdk_transaction_id: sdk_transaction_id.map(str::to_owned),
+        handle: None,
+        terminal_event_id: None,
+        phase,
+    };
+    let resolved = resolved_send_failures(&[
+        projection(
+            "client-bound",
+            Some("sdk-bound"),
+            PendingSendPhase::FailedRecoverable,
+        ),
+        projection("client-unbound", None, PendingSendPhase::FailedRecoverable),
+        projection(
+            "client-pending",
+            Some("sdk-pending"),
+            PendingSendPhase::Pending,
+        ),
+        projection(
+            "client-awaiting",
+            Some("sdk-awaiting"),
+            PendingSendPhase::SentAwaitingRemote,
+        ),
+    ]);
+
+    let recoverable = koushi_protocol::event::TimelineSendState::NotSent {
+        reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
+    };
+    assert_eq!(
+        resolved,
+        HashMap::from([
+            // The echo the SDK replays is keyed by the SDK transaction id, and an
+            // unbound request has not got one yet.
+            ("sdk-bound".to_owned(), recoverable.clone()),
+            ("client-unbound".to_owned(), recoverable),
+        ]),
+        "only the failures the manager still owns become blocking evidence"
     );
 }

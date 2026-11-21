@@ -34,7 +34,8 @@ use crate::composer_draft_lifecycle::ForwardedComposerDraftPermit;
 use crate::executor;
 use koushi_protocol::command::UploadMediaRequest;
 use koushi_protocol::event::{
-    CoreEvent, TimelineEvent, TimelineItem, TimelineItemId, TimelineSendState,
+    CoreEvent, TimelineEvent, TimelineItem, TimelineItemId, TimelineSendFailureReason,
+    TimelineSendState,
 };
 use koushi_protocol::failure::{CoreFailure, TimelineFailureKind};
 use koushi_protocol::ids::{RequestId, TimelineKey, TimelineKind};
@@ -52,10 +53,10 @@ use super::diagnostics::trace_timeline_items;
 use super::display_projection::{DisplayProjectionContext, DisplayProjectionState};
 use super::item_projection::{
     SendStateAuthority, apply_link_previews_to_item, apply_timeline_item_visibility,
-    attachment_info_for_upload, attachment_reply_for_key, is_attention_eligible_event,
-    remember_local_echo, retry_admission, sdk_item_to_timeline_item_with_send_states,
-    send_failure_reason, thumbnail_for_upload, timeline_media_source_from_sdk, timeline_room_id,
-    validate_cancel_send,
+    attachment_info_for_upload, attachment_reply_for_key, carry_resolved_send_failures,
+    is_attention_eligible_event, remember_local_echo, retry_admission,
+    sdk_item_to_timeline_item_with_send_states, send_failure_reason, thumbnail_for_upload,
+    timeline_media_source_from_sdk, timeline_room_id, validate_cancel_send,
 };
 use super::manager::TimelineManagerActor;
 use super::navigation::{
@@ -410,6 +411,33 @@ pub(super) struct PendingSendProjection {
     pub(super) handle: Option<matrix_sdk::send_queue::SendHandle>,
     pub(super) terminal_event_id: Option<String>,
     pub(super) phase: PendingSendPhase,
+}
+
+/// #1851: the resolved failures the manager still owns for one timeline.
+///
+/// A replacement actor starts with an empty send table, and the echoes it replays
+/// cannot express a recoverable failure either, so a stopped queue would render as
+/// sending again after a room switch. The coordinator kept the failed request; its
+/// phase is that evidence.
+pub(super) fn resolved_send_failures(
+    projections: &[PendingSendProjection],
+) -> HashMap<String, TimelineSendState> {
+    projections
+        .iter()
+        .filter(|projection| projection.phase == PendingSendPhase::FailedRecoverable)
+        .map(|projection| {
+            let transaction_id = projection
+                .sdk_transaction_id
+                .clone()
+                .unwrap_or_else(|| projection.client_txn_id.clone());
+            (
+                transaction_id,
+                TimelineSendState::NotSent {
+                    reason: TimelineSendFailureReason::Recoverable,
+                },
+            )
+        })
+        .collect()
 }
 
 /// Only row-bearing diffs count as publication, never coordinator insertion,
@@ -2383,11 +2411,14 @@ impl TimelineActor {
             return;
         };
 
-        self.send_statuses.clear();
+        let previous_statuses = std::mem::take(&mut self.send_statuses);
         self.send_handles.clear();
         for echo in &local_echoes {
             remember_local_echo(&mut self.send_statuses, &mut self.send_handles, echo);
         }
+        // #1851: the echoes cannot express a resolved recoverable failure, so
+        // the rebuild would otherwise republish a stopped queue as `Sending`.
+        carry_resolved_send_failures(&mut self.send_statuses, previous_statuses);
     }
 }
 
