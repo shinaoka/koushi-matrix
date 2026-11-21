@@ -312,6 +312,10 @@ test("a backfill prepend keeps the reading row mounted inside a bounded window",
     document.documentElement.dataset["anchorRemovedDuringPrepend"] = "false";
     let mountedRows = list.querySelectorAll(".timeline-item-frame").length;
     let peakMountedRows = mountedRows;
+    // Publish the starting count too: a prepend that the window absorbs without
+    // touching the DOM inserts no node, so the observer never reports and the
+    // assertion below would compare NaN instead of the mount count it is about.
+    document.documentElement.dataset["peakMountedRowsDuringPrepend"] = String(peakMountedRows);
     new MutationObserver((records) => {
       for (const record of records) {
         for (const node of record.removedNodes) {
