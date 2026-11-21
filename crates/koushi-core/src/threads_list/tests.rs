@@ -1453,3 +1453,97 @@ fn thread_unread_is_gated_on_the_room_side_summary_identity() {
         1
     );
 }
+
+fn reply_quote(event_id: &str, state: koushi_state::ReplyQuoteState) -> koushi_state::ReplyQuote {
+    koushi_state::ReplyQuote {
+        event_id: event_id.to_owned(),
+        sender: None,
+        sender_label: None,
+        body_preview: None,
+        formatted: None,
+        mentioned_user_ids: Vec::new(),
+        media: None,
+        permalink: None,
+        can_open: false,
+        state,
+    }
+}
+
+/// A refetched root is projected from the raw event again, so its quote
+/// restarts as `Loading`. The retained copy must keep the quote the room actor
+/// already resolved for the same original instead of regressing the row.
+#[test]
+fn a_refetched_root_keeps_the_reply_quote_already_resolved_for_it() {
+    use koushi_state::ReplyQuoteState;
+
+    let mut service = ThreadRootProjectionService::default();
+    let activity = ThreadRootProjectionActivity {
+        room_id: "!room:example.invalid".to_owned(),
+        root_event_id: "$root:example.invalid".to_owned(),
+        activity_event_id: "$reply:example.invalid".to_owned(),
+        activity_timestamp_ms: Some(100),
+        activity_sender: None,
+        activity_sender_label: None,
+        activity_body_preview: None,
+    };
+    assert!(matches!(
+        service.observe(activity.clone()),
+        ThreadRootProjectionDecision::StartFetch(_)
+    ));
+    let mut fetched = test_timeline_item(&activity.root_event_id);
+    fetched.reply_quote = Some(reply_quote(
+        "$original:example.invalid",
+        ReplyQuoteState::Loading,
+    ));
+    let retained_quote = |service: &ThreadRootProjectionService| {
+        service
+            .attempts
+            .get(&(activity.room_id.clone(), activity.root_event_id.clone()))
+            .and_then(|record| record.item())
+            .and_then(|item| item.reply_quote.clone())
+            .expect("the retained root carries a quote")
+    };
+
+    service
+        .mark_ready(&activity, fetched.clone())
+        .expect("first fetch");
+    assert_eq!(retained_quote(&service).state, ReplyQuoteState::Loading);
+    // The room actor resolves the retained copy.
+    for item in service.root_items_mut(&activity.room_id) {
+        item.reply_quote = Some(reply_quote(
+            "$original:example.invalid",
+            ReplyQuoteState::Ready,
+        ));
+    }
+
+    service
+        .mark_ready(&activity, fetched.clone())
+        .expect("refetch");
+    assert_eq!(retained_quote(&service).state, ReplyQuoteState::Ready);
+
+    let refresh = service
+        .schedule_aggregate_refresh(&activity, AggregateRefreshCause::Removal, false, false)
+        .expect("hydrating aggregate refresh");
+    service.complete_refresh(
+        &refresh,
+        Ok(ThreadRootProjectionRefreshResult::Hydrated {
+            item: fetched.clone(),
+            aggregate: AuthoritativeThreadAggregate {
+                reply_count: 1,
+                latest_event_id: Some(activity.activity_event_id.clone()),
+                ..AuthoritativeThreadAggregate::default()
+            },
+        }),
+    );
+    assert_eq!(retained_quote(&service).state, ReplyQuoteState::Ready);
+
+    // An edit that retargets the reply is a different quote: nothing to keep.
+    fetched.reply_quote = Some(reply_quote(
+        "$other:example.invalid",
+        ReplyQuoteState::Loading,
+    ));
+    service.mark_ready(&activity, fetched).expect("retargeted");
+    let quote = retained_quote(&service);
+    assert_eq!(quote.event_id, "$other:example.invalid");
+    assert_eq!(quote.state, ReplyQuoteState::Loading);
+}

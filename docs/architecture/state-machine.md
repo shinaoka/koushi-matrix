@@ -3183,7 +3183,9 @@ Each `TimelineActor` owns the lifecycle of the originals its reply quotes
 point at (#1120). SDK `InReplyToDetails` are an input, not the authority:
 `Ready` details project `Ready`/`Redacted`/`Unsupported`, while `Unavailable`,
 `Pending`, and `Error` all project `Loading` until the actor's own lookup
-settles.
+settles. A row projected from a raw event has no SDK details at all (a thread
+root fetched from outside the window, a hydrated sent reply), so it projects
+`Loading` for its `m.in_reply_to` target and is settled the same way.
 
 - **Known originals.** Before an item is committed or a pending send is
   projected, an unresolved quote (`Loading`/`Failed`) is resolved from the
@@ -3233,14 +3235,19 @@ settles.
   actor applies the same overlay to the root items the shared thread-root
   projection retains for its room, because the room draws a thread root from
   that copy rather than from the canonical row, and reprojects the display
-  when one changed. A resolved quote never regresses to `Loading` while the
-  same actor keeps the settled entry. While an anchor restore is buffering its
-  coalesced `restore_emit_buffer`, the republish is deferred and runs once at
-  the end of the actor loop after that buffer has flushed, so a republished
-  `Set` diff can never overtake the restore's single settled update. A deferred
-  republish also retains the changed-original refresh set until it runs, so
-  that set can hold one entry per changed original for the duration of a
-  restore; the ledger's 256-entry cap does not bound it.
+  when one changed. A fetched root reaches the room through a projection wake
+  rather than a batch, so the wake applies that overlay before the row is
+  drawn and then requests lookups for the displayed `Loading` quotes. A
+  resolved quote never regresses to `Loading` while the same actor keeps the
+  settled entry, and the shared projection keeps a retained root's resolved
+  quote when a refetch of the same root brings it back as `Loading` for the
+  same original. While an anchor restore is buffering its coalesced
+  `restore_emit_buffer`, the republish is deferred and runs once at the end of
+  the actor loop after that buffer has flushed, so a republished `Set` diff can
+  never overtake the restore's single settled update. A deferred republish also
+  retains the changed-original refresh set until it runs, so that set can hold
+  one entry per changed original for the duration of a restore; the ledger's
+  256-entry cap does not bound it.
 - **Quoted media (#1769).** `ReplyQuote.media` is public metadata only: the
   media kind, an animated hint, width/height hints, and whether the event names
   an explicit thumbnail source. It carries no MXC URI, encryption key, or cache

@@ -920,7 +920,7 @@ impl TimelineActor {
     /// canonical `Set` never reaches, so a quote that settles after the root
     /// was seeded would otherwise stay `Loading` on the root's row. Returns
     /// true when a retained root changed and the display must be reprojected.
-    fn overlay_reply_quotes_on_thread_roots(&self, refresh: &HashSet<String>) -> bool {
+    pub(super) fn overlay_reply_quotes_on_thread_roots(&self, refresh: &HashSet<String>) -> bool {
         if !matches!(self.key.kind, TimelineKind::Room { .. }) {
             return false;
         }

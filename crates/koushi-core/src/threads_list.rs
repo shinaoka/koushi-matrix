@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use futures_util::{StreamExt, future::join_all};
 use koushi_state::{
-    AppAction, OperationFailureKind, ThreadRootAttention, ThreadsListItem, ThreadsListScope,
+    AppAction, OperationFailureKind, ReplyQuoteState, ThreadRootAttention, ThreadsListItem,
+    ThreadsListScope,
 };
 use matrix_sdk::ruma::RoomId;
 use matrix_sdk_ui::timeline::thread_list_service::{
@@ -189,6 +190,26 @@ impl ThreadRootProjectionRecord {
 
     pub(crate) fn item(&self) -> Option<&TimelineItem> {
         self.root_item.as_ref()
+    }
+
+    /// Retain a root item fetched outside the window. It is projected from the
+    /// raw event, so its reply quote restarts as `Loading`; the quote the room
+    /// actor already resolved for the same original is kept, so a refetch
+    /// never regresses the row.
+    fn install_fetched_root_item(&mut self, mut item: TimelineItem) {
+        let resolved = self
+            .root_item
+            .as_ref()
+            .and_then(|previous| previous.reply_quote.as_ref())
+            .filter(|previous| previous.state != ReplyQuoteState::Loading);
+        if let Some(resolved) = resolved
+            && item.reply_quote.as_ref().is_some_and(|quote| {
+                quote.state == ReplyQuoteState::Loading && quote.event_id == resolved.event_id
+            })
+        {
+            item.reply_quote = Some(resolved.clone());
+        }
+        self.root_item = Some(item);
     }
 
     pub(crate) fn failure_kind(&self) -> Option<OperationFailureKind> {
@@ -718,7 +739,7 @@ impl ThreadRootProjectionService {
             match result {
                 Ok(ThreadRootProjectionRefreshResult::Hydrated { item, aggregate }) => {
                     candidate = Some(aggregate.clone());
-                    record.root_item = Some(item.clone());
+                    record.install_fetched_root_item(item.clone());
                     record.attempt = ThreadRootProjectionAttempt::Ready;
                     merge_reason = merge_aggregate(record, aggregate, false);
                     record.aggregate_failure = None;
@@ -1036,7 +1057,7 @@ impl ThreadRootProjectionService {
     ) -> Option<ThreadRootProjectionRecord> {
         let key = (activity.room_id.clone(), activity.root_event_id.clone());
         let record = self.attempts.get_mut(&key)?;
-        record.root_item = Some(item.clone());
+        record.install_fetched_root_item(item);
         record.attempt = ThreadRootProjectionAttempt::Ready;
         Some(record.clone())
     }
