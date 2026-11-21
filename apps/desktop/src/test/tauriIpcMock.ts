@@ -76,6 +76,26 @@ function isSnapshot(value: unknown): value is { state_generation?: number } {
 
 function normalizeCommandResponse(command: string, value: unknown, generation = 0): unknown {
   if (REQUEST_COMMANDS.has(command)) return typeof value === "string" ? value : "1";
+  // #1871: detection always answers with the full DTO; a spec that cares sets
+  // its own through `setCommandResponse`.
+  if (command === "migration_detect_sources") {
+    // A spec's own response wins; anything else gets the full DTO shape, so an
+    // unstubbed renderer never sees a source it cannot read.
+    if (value && typeof value === "object" && "element_desktop" in value) {
+      return value;
+    }
+    return {
+      element_x: { sessions: 0 },
+      element_desktop: {
+        installed: false,
+        running: false,
+        import_supported: false,
+        import_enabled: false,
+        unavailable_reason: "migration_element_desktop_platform_unsupported"
+      },
+      unsupported_reason: null
+    };
+  }
   if (SNAPSHOT_READ_COMMANDS.has(command) || RESOURCE_COMMANDS.has(command)) return value;
   if (VOID_COMMANDS.has(command)) return undefined;
   if (command === "start_oidc_login" && value && typeof value === "object") {
@@ -130,6 +150,16 @@ function normalizeCommandResponse(command: string, value: unknown, generation = 
       ...(command === "start_advisory_direct_message"
         ? { draft: status === "opened" ? (reported.draft ?? "seeded") : null }
         : {})
+    };
+  }
+  // The Element Desktop import answers with its staged counts, not a bare
+  // admission; a test that drives it must not read `undefined` (#1871).
+  if (command === "migration_import_element_desktop") {
+    return {
+      protocolVersion: 1,
+      admittedGeneration: snapshotGeneration,
+      staged_keys: 0,
+      staged_rooms: 0
     };
   }
   return ADMISSION_COMMANDS.has(command)

@@ -65,6 +65,8 @@ describe("DesktopApi command contract", () => {
         "historyExportTimeZone",
         "chooseRoomKeyExportDestination",
         "chooseRoomKeyImportSource",
+        "migrationDetectSources",
+        "migrationImportElementDesktop",
         "exportHistory",
         "stopHistoryExport",
         "retryHistoryExport",

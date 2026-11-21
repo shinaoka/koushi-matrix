@@ -23,7 +23,19 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
 const BUNDLE: &str = "/Applications/Element.app/Contents/MacOS/Element";
 /// Part of the bundle executable's argv, as `pgrep -f` sees it.
 const PROCESS_MATCH: &str = "Element.app/Contents/MacOS/Element";
-const INDEXED_DB: &str = "IndexedDB/vector_vector_0.indexeddb.leveldb";
+/// The Linux package's executable name, as `pgrep -f` sees it.
+const LINUX_PROCESS_MATCH: &str = "element-desktop";
+/// Where the Linux packages install the executable, in package order.
+const LINUX_BUNDLES: [&str; 4] = [
+    "/usr/bin/element-desktop",
+    "/usr/local/bin/element-desktop",
+    "/opt/Element/element-desktop",
+    "/snap/bin/element-desktop",
+];
+/// Opt-in for the Element Desktop import until it has run in the field. The
+/// detection answers with `import_enabled` so the UI hides the route, and
+/// `stage_element_desktop` refuses on its own.
+pub(crate) const IMPORT_FLAG_ENV: &str = "KOUSHI_ENABLE_ELEMENT_DESKTOP_IMPORT";
 /// Page URLs that mean "the Element webapp is loaded".
 const WEBAPP_URLS: [&str; 2] = ["vector://vector/webapp", "https://app.element.io/"];
 /// Element's export entry points, current SDK first.
@@ -64,40 +76,114 @@ impl ElementDesktopError {
     }
 }
 
-pub(super) fn detect() -> MigrationElementDesktop {
-    if !cfg!(target_os = "macos") {
-        return MigrationElementDesktop::default();
-    }
-    let installed = Path::new(BUNDLE).is_file();
+/// What detection found, before it is turned into the DTO. Split out so the
+/// installed/running/unavailable combinations are testable off the platform.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct DetectionFacts {
+    pub(super) installed: bool,
+    pub(super) running: bool,
+    pub(super) import_supported: bool,
+    pub(super) import_enabled: bool,
+}
+
+pub(super) fn describe(facts: DetectionFacts) -> MigrationElementDesktop {
+    let installed = facts.installed;
+    let importable = installed && facts.import_supported && facts.import_enabled;
     MigrationElementDesktop {
         installed,
-        running: is_running(),
-        profile_hint: profile_hint(),
-        importable: installed,
+        // A process without the application is not a source to offer.
+        running: installed && facts.running,
+        import_supported: facts.import_supported,
+        import_enabled: facts.import_enabled,
+        unavailable_reason: if importable || !installed {
+            None
+        } else if !facts.import_supported {
+            Some("migration_element_desktop_platform_unsupported")
+        } else {
+            Some("migration_element_desktop_import_disabled")
+        },
     }
+}
+
+pub(super) fn detect() -> MigrationElementDesktop {
+    let installed = install_path().is_some_and(|path| path.exists());
+    describe(DetectionFacts {
+        installed,
+        running: installed && is_running(),
+        import_supported: cfg!(target_os = "macos"),
+        import_enabled: import_flag_enabled(std::env::var(IMPORT_FLAG_ENV).ok().as_deref()),
+    })
+}
+
+pub(super) fn import_flag_enabled(value: Option<&str>) -> bool {
+    matches!(value, Some("1"))
+}
+
+/// The executable this platform would launch, whether or not it exists.
+fn install_path() -> Option<std::path::PathBuf> {
+    if cfg!(target_os = "macos") {
+        return Some(std::path::PathBuf::from(BUNDLE));
+    }
+    if cfg!(target_os = "windows") {
+        return windows_install_candidates(std::env::var("LOCALAPPDATA").ok().as_deref())
+            .into_iter()
+            .find(|path| path.exists());
+    }
+    linux_install_path(|path| path.exists())
+}
+
+/// `Element.exe` under the per-user install root. Split from `install_path` so
+/// the Windows layout is checked from any host.
+pub(super) fn windows_install_candidates(local_appdata: Option<&str>) -> Vec<std::path::PathBuf> {
+    let mut candidates = vec![std::path::PathBuf::from(
+        r"C:\Program Files\Element\Element.exe",
+    )];
+    if let Some(root) = local_appdata {
+        candidates.push(
+            std::path::Path::new(root)
+                .join("Programs")
+                .join("element-desktop")
+                .join("Element.exe"),
+        );
+    }
+    candidates
+}
+
+/// First Linux bundle that exists, in package-manager order.
+pub(super) fn linux_install_path(exists: impl Fn(&Path) -> bool) -> Option<std::path::PathBuf> {
+    LINUX_BUNDLES
+        .iter()
+        .map(Path::new)
+        .find(|path| exists(path))
+        .map(Path::to_path_buf)
+}
+
+/// `tasklist` prints one line per process; anything naming `Element.exe` is the
+/// desktop app. Matched case-insensitively because Windows report the name as
+/// the image was launched.
+pub(super) fn tasklist_lists_element(output: &str) -> bool {
+    output
+        .lines()
+        .any(|line| line.to_ascii_lowercase().contains("element.exe"))
 }
 
 /// `pgrep` answers in milliseconds, so this stays one synchronous path instead
 /// of a second async copy for the polling loops.
 fn is_running() -> bool {
+    if cfg!(target_os = "windows") {
+        return std::process::Command::new("tasklist")
+            .output()
+            .is_ok_and(|output| tasklist_lists_element(&String::from_utf8_lossy(&output.stdout)));
+    }
+    let pattern = if cfg!(target_os = "macos") {
+        PROCESS_MATCH
+    } else {
+        LINUX_PROCESS_MATCH
+    };
     std::process::Command::new("pgrep")
-        .args(["-f", PROCESS_MATCH])
+        .args(["-f", pattern])
         .output()
         .is_ok_and(|output| output.status.success())
-}
-
-/// Only the directory name leaves this function: no caller sees a path.
-fn profile_hint() -> Option<String> {
-    let support = dirs::home_dir()?.join("Library/Application Support");
-    let mut names = std::fs::read_dir(support)
-        .ok()?
-        .flatten()
-        .filter(|entry| entry.path().join(INDEXED_DB).is_dir())
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .collect::<Vec<_>>();
-    // Sorted so `Element` wins over `Element (Canary)`.
-    names.sort();
-    names.into_iter().next()
 }
 
 pub(super) async fn export_room_keys() -> Result<Vec<Value>, ElementDesktopError> {

@@ -791,6 +791,36 @@ export interface CommandAdmission {
   admittedGeneration: number;
 }
 
+/** #1871: detected local sources. Counts and stable codes only. */
+export interface MigrationElementDesktopSource {
+  installed: boolean;
+  running: boolean;
+  /** The DevTools-protocol export exists on this platform. */
+  import_supported: boolean;
+  /** The import flag is on; the route is hidden when it is off. */
+  import_enabled: boolean;
+  /** Catalog code when the source is here but cannot be imported. */
+  unavailable_reason: string | null;
+}
+
+export interface MigrationElementXSource {
+  /** Session directories holding an encrypted crypto store. */
+  sessions: number;
+}
+
+export interface MigrationSources {
+  element_x: MigrationElementXSource;
+  element_desktop: MigrationElementDesktopSource;
+  unsupported_reason: string | null;
+}
+
+/** What the adapter staged from Element Desktop and the admission it got. */
+export interface MigrationImportAdmission {
+  admission: CommandAdmission;
+  staged_keys: number;
+  staged_rooms: number;
+}
+
 export interface CommandSettlement {
   protocolVersion: 1;
   publishedGeneration: number;

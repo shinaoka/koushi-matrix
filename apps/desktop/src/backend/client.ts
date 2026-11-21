@@ -11,6 +11,8 @@ import { COMPOSER_DRAFT_REVISION_ZERO } from "../domain/composerDraftRevision";
 import type {
   ActivityMarkReadTarget,
   CommandAdmission,
+  MigrationImportAdmission,
+  MigrationSources,
   CommandSettlement,
   ActivityTab,
   AccountTabsSnapshot,
@@ -573,6 +575,12 @@ export class TauriDesktopApi implements DesktopApi {
   }
 
   /** Native open dialog owned by the adapter; `null` when dismissed. */
+  async migrationDetectSources(): Promise<MigrationSources> {
+    return this.invokeCommand<MigrationSources>("migration_detect_sources");
+  }
+  async migrationImportElementDesktop(): Promise<MigrationImportAdmission> {
+    return this.invokeCommand<MigrationImportAdmission>("migration_import_element_desktop");
+  }
   async chooseRoomKeyImportSource(dialogTitle: string): Promise<string | null> {
     return this.invokeCommand<string | null>("choose_room_key_import_source", { dialogTitle });
   }
