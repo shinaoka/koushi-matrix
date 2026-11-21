@@ -1587,7 +1587,7 @@ export const ko: Catalog = {
   "gate.secureBackupResetRecoveryKeyConfirm": "예, 새 복구 키 만들기",
   "gate.secureBackupSetup": "보안 백업 설정",
   "gate.secureBackupExplicitDisabledTitle": "보안 백업이 꺼져 있습니다",
-  "gate.secureBackupExplicitDisabledCopy": "보안 백업을 다시 켜면 계정 전체 설정이 변경되며, 이 계정에 로그인된 다른 Matrix 클라이언트에도 영향을 줍니다. 해당 클라이언트에서 업데이트된 백업을 사용하려는 경우에만 확인하세요.",
+  "gate.secureBackupExplicitDisabledCopy": "이 계정에서 Koushi를 사용하려면 보안 백업이 필요합니다. 다시 켜면 이 계정의 백업이 만들어지며, 이 계정에 로그인된 다른 Matrix 클라이언트는 암호화된 기록을 읽으려면 그 복구 키가 필요합니다.",
   "gate.secureBackupReenable": "보안 백업 다시 켜기",
   "gate.secureBackupReenableConfirm": "다시 켜기 확인",
   "gate.secureBackupCreating": "보안 백업을 만드는 중…",

@@ -151,6 +151,31 @@ describe("i18n message catalog", () => {
     expect(t("gate.secureBackupExplicitDisabledCopy", {}, "ja")).toMatch(/他の Matrix クライアント/);
   });
 
+  test("the disabled-backup gate says the requirement, not a choice (#1940)", () => {
+    // The gate offers only re-enable or sign out, so the copy must read as a
+    // requirement; "confirm only if you want" promised a choice the screen does
+    // not offer.
+    const requirement = {
+      en: /requires Secure Backup/,
+      ja: /安全なバックアップが必要です/,
+      ko: /보안 백업이 필요합니다/,
+      "zh-Hans": /需要安全备份/,
+      "zh-Hant": /需要安全備份/
+    } as const;
+    const offer = {
+      en: /only if/i,
+      ja: /場合のみ/,
+      ko: /경우에만/,
+      "zh-Hans": /仅当/,
+      "zh-Hant": /僅在/
+    } as const;
+    for (const locale of Object.keys(requirement) as (keyof typeof requirement)[]) {
+      const copy = catalogs[locale]["gate.secureBackupExplicitDisabledCopy"];
+      expect(copy).toMatch(requirement[locale]);
+      expect(copy).not.toMatch(offer[locale]);
+    }
+  });
+
   test("all locales expose the same message ids", () => {
     const locales = Object.keys(catalogs) as Locale[];
     const baseline = Object.keys(catalogs.en).sort();
