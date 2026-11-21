@@ -931,6 +931,19 @@ impl ThreadRootProjectionService {
             .map(effective_aggregate)
     }
 
+    /// The root items this service retains for `room_id`. A Room timeline
+    /// draws a thread root from this copy rather than from its canonical row,
+    /// so the owning actor resolves reply quotes here as well.
+    pub(crate) fn root_items_mut<'a>(
+        &'a mut self,
+        room_id: &'a str,
+    ) -> impl Iterator<Item = &'a mut TimelineItem> + 'a {
+        self.attempts
+            .iter_mut()
+            .filter(move |((entry_room_id, _), record)| entry_room_id == room_id && !record.retired)
+            .filter_map(|(_, record)| record.root_item.as_mut())
+    }
+
     pub(crate) fn display_data_for_room(&self, room_id: &str) -> Vec<ThreadRootDisplayData> {
         let mut roots = self
             .attempts
