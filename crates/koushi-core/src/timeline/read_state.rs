@@ -15,9 +15,10 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::executor;
 use crate::read_state::{
-    ReadAdmissionStatus, ReadCompletionDisposition, ReadNetworkFailure, ReadNetworkOutcome,
-    ReadOperation, ReadOperationFence, ReadPersistenceSnapshot, ReadStateEngine, ReadStateKey,
-    ReadTarget, ReadWaiterId, ReadWaiterTerminal, ReadWakeResult,
+    BoundaryWriter, ReadAdmissionStatus, ReadCompletionDisposition, ReadNetworkFailure,
+    ReadNetworkOutcome, ReadOperation, ReadOperationFence, ReadPersistenceSnapshot,
+    ReadStateEngine, ReadStateKey, ReadTarget, ReadWaiterId, ReadWaiterTerminal, ReadWakeResult,
+    confirmed_boundary_accepts,
 };
 use koushi_protocol::event::{
     CoreEvent, LiveSignalsEvent, TimelineBottomArrival, TimelineItem, TimelineReadStateSync,
@@ -1166,6 +1167,7 @@ impl TimelineManagerActor {
             &position_index,
         );
         self.update_local_server_confirmation(
+            BoundaryWriter::Observed,
             timeline_key,
             actor_generation,
             &read_key,
@@ -1434,6 +1436,7 @@ impl TimelineManagerActor {
                 .get(&timeline_key)
                 .map_or(0, |correlation| correlation.actor_generation);
             self.update_local_server_confirmation(
+                BoundaryWriter::Acknowledged,
                 &timeline_key,
                 actor_generation,
                 &read_key,
@@ -1708,26 +1711,47 @@ impl TimelineManagerActor {
 
     fn update_local_server_confirmation(
         &mut self,
+        writer: crate::read_state::BoundaryWriter,
         timeline_key: &TimelineKey,
         actor_generation: u64,
         read_key: &ReadStateKey,
         event_id: Option<&str>,
     ) {
+        let Some(event_id) = event_id else {
+            return;
+        };
         if !Self::local_server_confirmation_key(timeline_key, read_key) {
             return;
         }
-        let Some(correlation) = self
-            .read_workers
-            .local_read_correlations
-            .get_mut(timeline_key)
-        else {
+        let index = self
+            .timelines
+            .get(timeline_key)
+            .and_then(TimelineActorHandle::read_position_index);
+        let evidence = |event_id: &str| index.as_ref().and_then(|index| index.evidence(event_id));
+        let Some(correlation) = self.read_workers.local_read_correlations.get(timeline_key) else {
             return;
         };
-        if correlation.actor_generation == actor_generation
-            && correlation.required_keys.contains_key(read_key)
-            && event_id.is_some()
+        if correlation.actor_generation != actor_generation
+            || !correlation.required_keys.contains_key(read_key)
         {
-            correlation.server_confirmed_read_event_id = event_id.map(ToOwned::to_owned);
+            return;
+        }
+        // #2030: a delayed observation merges through the same ordering rule as a
+        // successful write, so it cannot lower a boundary this scope already
+        // confirmed.
+        let current = correlation.server_confirmed_read_event_id.as_deref();
+        let advance = confirmed_boundary_accepts(
+            writer,
+            current.map(|current| (current, evidence(current))),
+            (event_id, evidence(event_id)),
+        );
+        if advance
+            && let Some(correlation) = self
+                .read_workers
+                .local_read_correlations
+                .get_mut(timeline_key)
+        {
+            correlation.server_confirmed_read_event_id = Some(event_id.to_owned());
         }
     }
 
@@ -2089,11 +2113,35 @@ impl TimelineActor {
             self.local_viewed_boundary =
                 Some(crate::timeline::actor::LocalViewedBoundary { event_id, position });
         }
-        if server_confirmed_read_event_id.is_some() {
-            self.server_confirmed_read_event_id = server_confirmed_read_event_id;
+        if let Some(event_id) = server_confirmed_read_event_id {
+            self.confirm_read_boundary(BoundaryWriter::Observed, &event_id);
         }
         self.read_state_sync = sync;
         self.emit_navigation_if_changed();
+    }
+
+    /// Applies one confirmed read boundary through the shared ordering rule
+    /// (#2030). A projection can be queued behind a newer write, and an
+    /// authoritative observation can arrive after this scope already confirmed a
+    /// later position, so neither can move the boundary backwards.
+    ///
+    /// Both positions are re-derived from the live index rather than compared
+    /// against a stored rank: a rank is only meaningful inside its own index
+    /// generation, so a stored one could not be compared with a fresh one.
+    fn confirm_read_boundary(&mut self, writer: crate::read_state::BoundaryWriter, event_id: &str) {
+        let index = self.position_tx.borrow();
+        let evidence = |event_id: &str| index.evidence(event_id);
+        let advance = confirmed_boundary_accepts(
+            writer,
+            self.server_confirmed_read_event_id
+                .as_deref()
+                .map(|current| (current, evidence(current))),
+            (event_id, evidence(event_id)),
+        );
+        drop(index);
+        if advance {
+            self.server_confirmed_read_event_id = Some(event_id.to_owned());
+        }
     }
 
     pub(super) async fn handle_read_success(
@@ -2145,7 +2193,7 @@ impl TimelineActor {
                     &snapshot,
                     &self.thread_attention,
                 );
-                self.server_confirmed_read_event_id = Some(authoritative_event_id);
+                self.confirm_read_boundary(BoundaryWriter::Acknowledged, &authoritative_event_id);
                 self.emit_navigation_if_changed();
                 true
             }
@@ -2162,8 +2210,10 @@ impl TimelineActor {
                 {
                     return false;
                 }
+                // The fallback records the write itself; the merge below decides
+                // the confirmed boundary, which the snapshot prefers when set.
                 self.fully_read_event_id = Some(event_id.clone());
-                self.server_confirmed_read_event_id = Some(event_id);
+                self.confirm_read_boundary(BoundaryWriter::Acknowledged, &event_id);
                 self.emit_navigation_if_changed();
                 true
             }

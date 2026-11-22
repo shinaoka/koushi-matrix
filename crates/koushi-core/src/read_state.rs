@@ -1118,6 +1118,9 @@ fn waiter_count(state: &ReadKeyState) -> usize {
         .map_or(0, |desired| desired.waiters.len())
 }
 
+/// Ranks are only comparable inside one index generation, and this rule's
+/// callers pass targets of different provenance (a persisted intent against a
+/// fresh observation), so the generation guard is load-bearing here.
 fn dominates(left: &ReadTarget, right: &ReadTarget) -> bool {
     matches!(
         (left.position, right.position),
@@ -1128,6 +1131,61 @@ fn dominates(left: &ReadTarget, right: &ReadTarget) -> bool {
 
 fn same_target_or_dominated(confirmed: &ReadTarget, candidate: &ReadTarget) -> bool {
     confirmed.event_id == candidate.event_id || dominates(confirmed, candidate)
+}
+
+/// Which writer is proposing an incoming confirmed read boundary (#2030).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BoundaryWriter {
+    /// The read write the user's own action just completed and the server
+    /// acknowledged -- a real read of a real event, not a re-delivery.
+    Acknowledged,
+    /// An authoritative observation from sync, or a projection derived from one.
+    Observed,
+}
+
+/// Decides whether an incoming confirmed read boundary may replace the current
+/// one for the same account, session and read scope (#2030).
+///
+/// One boundary exists per timeline key -- a room's main scope or one thread --
+/// and both writers, an acknowledged write and an authoritative observation,
+/// merge through this rule. A re-delivery of an older position therefore cannot
+/// move the boundary backwards; only an acknowledged write can, and only in the
+/// incomparable case below.
+///
+/// Order is only ever taken from the timeline's canonical index: the incoming
+/// target replaces the current one when the index puts it at a strictly greater
+/// rank. Both positions must come from one index snapshot, which is what both
+/// callers do. A boundary the index cannot place is incomparable -- the resident
+/// window holds what it can place, so neither side can be ordered -- and the
+/// writers differ there:
+///
+/// - an observation keeps the current boundary and a later observation
+///   reconciles once the index can place it. A scope whose reads never produce a
+///   write (a thread with receipts disabled) only reconciles by being reopened;
+/// - an acknowledged write replaces it. The write just read a real event, and in
+///   the case this exists for -- a room opening with a marker older than its
+///   live-edge window -- the boundary does not become placeable again on its own,
+///   so keeping it would pin the scope for the actor's whole life.
+///
+/// Repeating the same target is idempotent. Event ids and arrival order are
+/// never evidence of order.
+pub(crate) fn confirmed_boundary_accepts(
+    writer: BoundaryWriter,
+    current: Option<(&str, Option<ReadPositionEvidence>)>,
+    incoming: (&str, Option<ReadPositionEvidence>),
+) -> bool {
+    let Some((current_event_id, current_position)) = current else {
+        // Nothing confirmed yet: the first target is the only boundary there is.
+        return true;
+    };
+    if current_event_id == incoming.0 {
+        return false;
+    }
+    match (current_position, incoming.1) {
+        (Some(current), Some(incoming)) => incoming.rank > current.rank,
+        (None, _) => writer == BoundaryWriter::Acknowledged,
+        (Some(_), None) => false,
+    }
 }
 
 fn evidence_is_older(candidate: ReadPositionEvidence, known: ReadPositionEvidence) -> bool {

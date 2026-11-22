@@ -60,6 +60,7 @@ use super::super::manager::{TimelineManagerControl, TimelineMessage};
 use super::super::outbound_send::{
     SharedSendCompletionCoordinator, TimelineSendEnqueueContext, TimelineSendTerminalIngress,
 };
+use super::super::read_state::ReadActorApplyKind;
 use super::super::relay::koushi_timeline_builder;
 use super::super::test_support::{
     fake_rid, focused_key, gap_demand_test_actor_handle, live_tail_test_manager, room_key,
@@ -2994,6 +2995,300 @@ async fn replay_initial_items_republishes_unchanged_read_navigation() {
         previous.revision = actual.revision;
     }
     assert_eq!(replayed, expected);
+}
+
+/// #2030: the actor opens with the SDK's stored marker, which is normally outside
+/// the resident window for a room that received more events than the window
+/// holds. The read the user's own action just completed must still replace it;
+/// only an observation is held back there.
+#[tokio::test]
+async fn an_acknowledged_read_advances_a_boundary_the_window_cannot_place() {
+    use matrix_sdk::ruma::{events::AnyRoomAccountDataEvent, serde::Raw};
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+    use matrix_sdk_test::{JoinedRoomBuilder, User, event_factory::EventFactory};
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = matrix_sdk::ruma::room_id!("!read-freeze:example.org");
+    let evicted = matrix_sdk::ruma::event_id!("$evicted:example.org");
+    let newer = matrix_sdk::ruma::event_id!("$newer:example.org");
+    let marker: Raw<AnyRoomAccountDataEvent> = serde_json::from_value(serde_json::json!({
+        "type": "m.fully_read",
+        "content": { "event_id": evicted },
+    }))
+    .expect("fully read account data");
+    let room = server.sync_joined_room(&client, room_id).await;
+    let factory = EventFactory::new().room(room_id).sender(User::Bob);
+    server
+        .sync_room(
+            &client,
+            JoinedRoomBuilder::new(room_id)
+                .add_account_data(marker)
+                .add_timeline_event(factory.text_msg("newer").event_id(newer).into_raw_sync()),
+        )
+        .await;
+    server.mock_get_members().ok(vec![]).mount().await;
+    let timeline = Arc::new(
+        koushi_timeline_builder(
+            &room,
+            TimelineFocus::Live {
+                hide_threaded_events: false,
+            },
+        )
+        .build()
+        .await
+        .unwrap(),
+    );
+    let session = Arc::new(MatrixClientSession::from_client_for_testing(
+        client,
+        SessionInfo {
+            homeserver: "http://example.invalid".into(),
+            user_id: User::Alice.to_string(),
+            device_id: "DEVICE".into(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        },
+    ));
+    let key = TimelineKey::room(AccountKey(User::Alice.to_string()), room_id.to_string());
+    let mut manager = live_tail_test_manager(HashMap::new());
+    let (action_tx, mut action_rx) = mpsc::channel(8);
+    manager.action_tx = action_tx;
+    let _drain = executor::spawn(async move { while action_rx.recv().await.is_some() {} });
+    let mut events = manager.event_tx.subscribe();
+    let generation = manager
+        .timeline_actor_generations
+        .activate_after_quiescence(&key)
+        .await
+        .generation;
+    let actor = TimelineActor::spawn(
+        key.clone(),
+        timeline,
+        session,
+        fake_rid(84),
+        true,
+        manager.action_tx.clone(),
+        manager.event_tx.clone(),
+        None,
+        Default::default(),
+        None,
+        LinkPreviewContext::default(),
+        manager.account_work.clone(),
+        Arc::clone(&manager.thread_root_projection_service),
+        manager.thread_root_order,
+        false,
+        true,
+        Arc::clone(&manager.timeline_actor_generations),
+        generation,
+        None,
+        Default::default(),
+        manager.terminal_ingress.clone(),
+        manager.msg_tx.clone(),
+    )
+    .await;
+
+    // The stored marker is not one of the resident rows, so the index cannot
+    // place it: an observation of $newer would be held back here.
+    assert!(
+        actor
+            .send_control(TimelineActorControl::ReadStateProjection {
+                local_viewed_event_id: None,
+                server_confirmed_read_event_id: Some(newer.to_string()),
+                sync: TimelineReadStateSync::Synced,
+            })
+            .await
+    );
+    let (acknowledged, ack_rx) = oneshot::channel();
+    assert!(
+        actor
+            .send_control(TimelineActorControl::ApplyReadSuccess {
+                kind: ReadActorApplyKind::FullyRead,
+                event_id: newer.to_string(),
+                acknowledged,
+            })
+            .await
+    );
+    assert!(
+        executor::timeout(Duration::from_secs(2), ack_rx)
+            .await
+            .expect("the actor acknowledges the read")
+            .expect("acknowledgement sender alive")
+    );
+    let confirmed = executor::timeout(Duration::from_secs(2), async {
+        loop {
+            if let CoreEvent::Timeline(TimelineEvent::NavigationUpdated { snapshot, .. }) =
+                events.recv().await.unwrap()
+                && snapshot.server_confirmed_read_event_id.as_deref() == Some(newer.as_str())
+            {
+                break snapshot;
+            }
+        }
+    })
+    .await
+    .expect("the acknowledged read advances the unobservable boundary");
+    assert_eq!(
+        confirmed.read_marker_event_id.as_deref(),
+        Some(newer.as_str())
+    );
+    assert_eq!(confirmed.unread_event_count, 0);
+}
+
+#[tokio::test]
+async fn a_queued_read_projection_cannot_roll_back_a_confirmed_boundary() {
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+    use matrix_sdk_test::{JoinedRoomBuilder, User, event_factory::EventFactory};
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = matrix_sdk::ruma::room_id!("!read-ordering:example.org");
+    let older = matrix_sdk::ruma::event_id!("$older:example.org");
+    let newer = matrix_sdk::ruma::event_id!("$newer:example.org");
+    let room = server.sync_joined_room(&client, room_id).await;
+    let factory = EventFactory::new().room(room_id).sender(User::Bob);
+    server
+        .sync_room(
+            &client,
+            JoinedRoomBuilder::new(room_id)
+                .add_timeline_event(factory.text_msg("older").event_id(older).into_raw_sync())
+                .add_timeline_event(factory.text_msg("newer").event_id(newer).into_raw_sync()),
+        )
+        .await;
+    server.mock_get_members().ok(vec![]).mount().await;
+    let timeline = Arc::new(
+        koushi_timeline_builder(
+            &room,
+            TimelineFocus::Live {
+                hide_threaded_events: false,
+            },
+        )
+        .build()
+        .await
+        .unwrap(),
+    );
+    let session = Arc::new(MatrixClientSession::from_client_for_testing(
+        client,
+        SessionInfo {
+            homeserver: "http://example.invalid".into(),
+            user_id: User::Alice.to_string(),
+            device_id: "DEVICE".into(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        },
+    ));
+    let key = TimelineKey::room(AccountKey(User::Alice.to_string()), room_id.to_string());
+    let mut manager = live_tail_test_manager(HashMap::new());
+    let (action_tx, mut action_rx) = mpsc::channel(8);
+    manager.action_tx = action_tx;
+    let _drain = executor::spawn(async move { while action_rx.recv().await.is_some() {} });
+    let mut events = manager.event_tx.subscribe();
+    let generation = manager
+        .timeline_actor_generations
+        .activate_after_quiescence(&key)
+        .await
+        .generation;
+    let actor = TimelineActor::spawn(
+        key.clone(),
+        timeline,
+        session,
+        fake_rid(82),
+        true,
+        manager.action_tx.clone(),
+        manager.event_tx.clone(),
+        None,
+        Default::default(),
+        None,
+        LinkPreviewContext::default(),
+        manager.account_work.clone(),
+        Arc::clone(&manager.thread_root_projection_service),
+        manager.thread_root_order,
+        false,
+        true,
+        Arc::clone(&manager.timeline_actor_generations),
+        generation,
+        None,
+        Default::default(),
+        manager.terminal_ingress.clone(),
+        manager.msg_tx.clone(),
+    )
+    .await;
+
+    // The automatic read of the live edge succeeded at $newer: the write path
+    // that acknowledges the read, not a projection of it.
+    let (acknowledged, ack_rx) = oneshot::channel();
+    assert!(
+        actor
+            .send_control(TimelineActorControl::ApplyReadSuccess {
+                kind: ReadActorApplyKind::FullyRead,
+                event_id: newer.to_string(),
+                acknowledged,
+            })
+            .await
+    );
+    assert!(
+        executor::timeout(Duration::from_secs(2), ack_rx)
+            .await
+            .expect("the actor acknowledges the read")
+            .expect("acknowledgement sender alive")
+    );
+    let confirmed = executor::timeout(Duration::from_secs(2), async {
+        loop {
+            if let CoreEvent::Timeline(TimelineEvent::NavigationUpdated { snapshot, .. }) =
+                events.recv().await.unwrap()
+                && snapshot.server_confirmed_read_event_id.as_deref() == Some(newer.as_str())
+            {
+                break snapshot;
+            }
+        }
+    })
+    .await
+    .expect("the confirmed read projects into navigation");
+    assert_eq!(confirmed.unread_event_count, 0);
+    assert_eq!(
+        confirmed.read_marker_event_id.as_deref(),
+        Some(newer.as_str())
+    );
+
+    // A delayed observation of the earlier position is queued behind it.
+    assert!(
+        actor
+            .send_control(TimelineActorControl::ReadStateProjection {
+                local_viewed_event_id: None,
+                server_confirmed_read_event_id: Some(older.to_string()),
+                sync: TimelineReadStateSync::Synced,
+            })
+            .await
+    );
+    let mut replayed_events = manager.event_tx.subscribe();
+    assert!(
+        actor
+            .send_control(TimelineActorControl::ReplayInitialItems {
+                cause_request_id: fake_rid(83),
+            })
+            .await
+    );
+    let replayed = executor::timeout(Duration::from_secs(2), async {
+        let mut initial_seen = false;
+        loop {
+            match replayed_events.recv().await.unwrap() {
+                CoreEvent::Timeline(TimelineEvent::InitialItems { .. }) => initial_seen = true,
+                CoreEvent::Timeline(TimelineEvent::NavigationUpdated { snapshot, .. })
+                    if initial_seen =>
+                {
+                    break snapshot;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the replay reports the state the actor kept");
+    // The confirmed position and the unread it covered never regress.
+    assert_eq!(
+        replayed.server_confirmed_read_event_id.as_deref(),
+        Some(newer.as_str()),
+        "an older queued projection must not roll the confirmed boundary back"
+    );
+    assert_eq!(
+        replayed.read_marker_event_id.as_deref(),
+        Some(newer.as_str())
+    );
+    assert_eq!(replayed.unread_event_count, 0);
+    assert_eq!(replayed.first_unread_event_id, None);
 }
 
 fn other_focused_key() -> TimelineKey {

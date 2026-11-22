@@ -306,6 +306,15 @@ automatic intent. Settings changes travel from the Rust settings projection
 through `AccountActor` to a session-generation-fenced manager control update;
 React cannot change this policy locally.
 
+There is one confirmed boundary per account session and read scope (a room's
+main scope, or one thread), written by an acknowledged read and by
+authoritative observations through one merge rule; the rule, its incomparable
+case, and which writer may replace a boundary the resident window cannot place
+are specified in
+[the state machine](../architecture/state-machine.md#confirmed-read-boundary).
+Every projection `TimelineActor` applies goes through the same rule, so a
+projection queued behind a newer write cannot roll the timeline back.
+
 `TimelineNavigationSnapshot.read_marker_event_id` and unread counts remain the
 server-confirmed boundary. `local_viewed_event_id` and
 `read_marker_display_event_id` may advance while the write is pending or failed.

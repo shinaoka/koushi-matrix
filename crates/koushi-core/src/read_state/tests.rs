@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
 use super::{
-    READ_STATE_OUTBOX_ENTRY_LIMIT, READ_STATE_WAITER_LIMIT, ReadAdmissionRejection,
+    BoundaryWriter, READ_STATE_OUTBOX_ENTRY_LIMIT, READ_STATE_WAITER_LIMIT, ReadAdmissionRejection,
     ReadAdmissionStatus, ReadCompletionDisposition, ReadNetworkFailure, ReadNetworkOutcome,
     ReadOperationFence, ReadPositionEvidence, ReadStateEngine, ReadStateFailureKind, ReadStateKey,
-    ReadTarget, ReadWaiterId, ReadWaiterTerminal, ReadWakeResult,
+    ReadTarget, ReadWaiterId, ReadWaiterTerminal, ReadWakeResult, confirmed_boundary_accepts,
 };
 
 const SESSION: u64 = 7;
@@ -707,4 +707,85 @@ fn failed_latest_target_is_retained_without_replaying_an_older_target() {
     assert_eq!(engine.candidate_count(&key), 1);
     assert!(engine.has_candidate(&key, "synthetic-event-b"));
     assert!(!engine.has_candidate(&key, "synthetic-event-a"));
+}
+
+#[test]
+fn a_confirmed_boundary_only_advances_on_provable_order() {
+    let at = |rank: u64| {
+        Some(ReadPositionEvidence {
+            generation: 7,
+            rank,
+        })
+    };
+    let observed = BoundaryWriter::Observed;
+    let acknowledged = BoundaryWriter::Acknowledged;
+    // Nothing confirmed yet: the first target is the only boundary there is.
+    assert!(confirmed_boundary_accepts(
+        observed,
+        None,
+        ("$first", at(5))
+    ));
+    // The same target again is idempotent, whatever the index says.
+    for incoming in [at(5), at(9), None] {
+        assert!(!confirmed_boundary_accepts(
+            observed,
+            Some(("$first", at(5))),
+            ("$first", incoming)
+        ));
+        assert!(!confirmed_boundary_accepts(
+            acknowledged,
+            Some(("$first", at(5))),
+            ("$first", incoming)
+        ));
+    }
+    // A strictly later rank is proof, for either writer.
+    assert!(confirmed_boundary_accepts(
+        observed,
+        Some(("$older", at(2))),
+        ("$newer", at(5))
+    ));
+    assert!(confirmed_boundary_accepts(
+        acknowledged,
+        Some(("$older", at(2))),
+        ("$newer", at(5))
+    ));
+    // An earlier rank and an equal rank are not.
+    assert!(!confirmed_boundary_accepts(
+        observed,
+        Some(("$newer", at(5))),
+        ("$older", at(2))
+    ));
+    assert!(!confirmed_boundary_accepts(
+        acknowledged,
+        Some(("$newer", at(5))),
+        ("$older", at(2))
+    ));
+    assert!(!confirmed_boundary_accepts(
+        observed,
+        Some(("$newer", at(5))),
+        ("$other", at(5))
+    ));
+    // A target the index cannot place is incomparable. An observation keeps the
+    // boundary; the write the user just completed replaces it, because a
+    // boundary the index cannot place can never be moved out of again.
+    assert!(!confirmed_boundary_accepts(
+        observed,
+        Some(("$older", at(2))),
+        ("$outside", None)
+    ));
+    assert!(!confirmed_boundary_accepts(
+        acknowledged,
+        Some(("$older", at(2))),
+        ("$outside", None)
+    ));
+    assert!(!confirmed_boundary_accepts(
+        observed,
+        Some(("$evicted", None)),
+        ("$newer", at(5))
+    ));
+    assert!(confirmed_boundary_accepts(
+        acknowledged,
+        Some(("$evicted", None)),
+        ("$newer", at(5))
+    ));
 }
