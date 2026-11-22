@@ -60,6 +60,7 @@ use super::super::manager::{TimelineManagerControl, TimelineMessage};
 use super::super::outbound_send::{
     SharedSendCompletionCoordinator, TimelineSendEnqueueContext, TimelineSendTerminalIngress,
 };
+use super::super::read_state::ReadActorApplyKind;
 use super::super::relay::koushi_timeline_builder;
 use super::super::test_support::{
     fake_rid, focused_key, gap_demand_test_actor_handle, live_tail_test_manager, room_key,
@@ -3073,15 +3074,23 @@ async fn a_queued_read_projection_cannot_roll_back_a_confirmed_boundary() {
     )
     .await;
 
-    // The automatic read of the live edge succeeded at $newer.
+    // The automatic read of the live edge succeeded at $newer: the write path
+    // that acknowledges the read, not a projection of it.
+    let (acknowledged, ack_rx) = oneshot::channel();
     assert!(
         actor
-            .send_control(TimelineActorControl::ReadStateProjection {
-                local_viewed_event_id: Some(newer.to_string()),
-                server_confirmed_read_event_id: Some(newer.to_string()),
-                sync: TimelineReadStateSync::Synced,
+            .send_control(TimelineActorControl::ApplyReadSuccess {
+                kind: ReadActorApplyKind::FullyRead,
+                event_id: newer.to_string(),
+                acknowledged,
             })
             .await
+    );
+    assert!(
+        executor::timeout(Duration::from_secs(2), ack_rx)
+            .await
+            .expect("the actor acknowledges the read")
+            .expect("acknowledgement sender alive")
     );
     let confirmed = executor::timeout(Duration::from_secs(2), async {
         loop {

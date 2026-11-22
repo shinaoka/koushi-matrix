@@ -307,18 +307,14 @@ through `AccountActor` to a session-generation-fenced manager control update;
 React cannot change this policy locally.
 
 There is one confirmed boundary per account session and read scope (a room's
-main scope, or one thread), and it is never written blindly. An acknowledged
-write and an authoritative sync observation merge through one rule in
-`crates/koushi-core/src/read_state.rs`: the incoming target replaces the current
-one only when the timeline's live position index proves it later -- a strictly
-greater rank inside the same index generation. Repeating the same target is
-idempotent. A target the index cannot place (outside the resident window, or a
-rebuilt generation) is incomparable, so the current boundary is kept and the
-next observation reconciles; event ids and arrival time are never used as
-evidence of order. A later read from another device is provable and does
-advance the boundary. `TimelineActor` merges the projected boundary through the
-same rule, so a projection queued behind a newer write cannot roll the timeline
-back.
+main scope, or one thread); the merge rule is specified in
+[the state machine](../architecture/state-machine.md#confirmed-read-boundary).
+An acknowledged write and an authoritative sync observation merge through that
+one rule, and a projection the actor applies goes through it too, so neither a
+late observation nor a queued projection can roll the timeline back. A boundary
+the resident window cannot place is never observable, which is why the write
+that just succeeded may replace it while an observation may not: keeping it
+would pin the scope for the actor's whole life.
 
 `TimelineNavigationSnapshot.read_marker_event_id` and unread counts remain the
 server-confirmed boundary. `local_viewed_event_id` and

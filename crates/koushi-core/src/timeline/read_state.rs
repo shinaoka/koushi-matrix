@@ -15,9 +15,10 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::executor;
 use crate::read_state::{
-    ReadAdmissionStatus, ReadCompletionDisposition, ReadNetworkFailure, ReadNetworkOutcome,
-    ReadOperation, ReadOperationFence, ReadPersistenceSnapshot, ReadStateEngine, ReadStateKey,
-    ReadTarget, ReadWaiterId, ReadWaiterTerminal, ReadWakeResult,
+    BoundaryWriter, ReadAdmissionStatus, ReadCompletionDisposition, ReadNetworkFailure,
+    ReadNetworkOutcome, ReadOperation, ReadOperationFence, ReadPersistenceSnapshot,
+    ReadStateEngine, ReadStateKey, ReadTarget, ReadWaiterId, ReadWaiterTerminal, ReadWakeResult,
+    confirmed_boundary_accepts,
 };
 use koushi_protocol::event::{
     CoreEvent, LiveSignalsEvent, TimelineBottomArrival, TimelineItem, TimelineReadStateSync,
@@ -1166,6 +1167,7 @@ impl TimelineManagerActor {
             &position_index,
         );
         self.update_local_server_confirmation(
+            BoundaryWriter::Observed,
             timeline_key,
             actor_generation,
             &read_key,
@@ -1434,6 +1436,7 @@ impl TimelineManagerActor {
                 .get(&timeline_key)
                 .map_or(0, |correlation| correlation.actor_generation);
             self.update_local_server_confirmation(
+                BoundaryWriter::Acknowledged,
                 &timeline_key,
                 actor_generation,
                 &read_key,
@@ -1708,6 +1711,7 @@ impl TimelineManagerActor {
 
     fn update_local_server_confirmation(
         &mut self,
+        writer: crate::read_state::BoundaryWriter,
         timeline_key: &TimelineKey,
         actor_generation: u64,
         read_key: &ReadStateKey,
@@ -1734,10 +1738,10 @@ impl TimelineManagerActor {
         }
         // #2030: a delayed observation merges through the same ordering rule as a
         // successful write, so it cannot lower a boundary this scope already
-        // confirmed. An unprovable order keeps the confirmed boundary and leaves
-        // the reconciliation pending for the next observation.
+        // confirmed.
         let current = correlation.server_confirmed_read_event_id.as_deref();
-        let advance = crate::read_state::confirmed_boundary_accepts(
+        let advance = confirmed_boundary_accepts(
+            writer,
             current.map(|current| (current, evidence(current))),
             (event_id, evidence(event_id)),
         );
@@ -2110,7 +2114,7 @@ impl TimelineActor {
                 Some(crate::timeline::actor::LocalViewedBoundary { event_id, position });
         }
         if let Some(event_id) = server_confirmed_read_event_id {
-            self.confirm_read_boundary(&event_id);
+            self.confirm_read_boundary(BoundaryWriter::Observed, &event_id);
         }
         self.read_state_sync = sync;
         self.emit_navigation_if_changed();
@@ -2120,10 +2124,15 @@ impl TimelineActor {
     /// (#2030). A projection can be queued behind a newer write, and an
     /// authoritative observation can arrive after this scope already confirmed a
     /// later position, so the boundary only ever moves forward.
-    fn confirm_read_boundary(&mut self, event_id: &str) {
+    ///
+    /// Both positions are re-derived from the live index rather than compared
+    /// against a stored rank: a rank is only meaningful inside its own index
+    /// generation, so a stored one could not be compared with a fresh one.
+    fn confirm_read_boundary(&mut self, writer: crate::read_state::BoundaryWriter, event_id: &str) {
         let index = self.position_tx.borrow();
         let evidence = |event_id: &str| index.evidence(event_id);
-        let advance = crate::read_state::confirmed_boundary_accepts(
+        let advance = confirmed_boundary_accepts(
+            writer,
             self.server_confirmed_read_event_id
                 .as_deref()
                 .map(|current| (current, evidence(current))),
@@ -2184,7 +2193,7 @@ impl TimelineActor {
                     &snapshot,
                     &self.thread_attention,
                 );
-                self.confirm_read_boundary(&authoritative_event_id);
+                self.confirm_read_boundary(BoundaryWriter::Acknowledged, &authoritative_event_id);
                 self.emit_navigation_if_changed();
                 true
             }
@@ -2201,8 +2210,10 @@ impl TimelineActor {
                 {
                     return false;
                 }
+                // The fallback records the write itself; the merge below decides
+                // the confirmed boundary, which the snapshot prefers when set.
                 self.fully_read_event_id = Some(event_id.clone());
-                self.confirm_read_boundary(&event_id);
+                self.confirm_read_boundary(BoundaryWriter::Acknowledged, &event_id);
                 self.emit_navigation_if_changed();
                 true
             }

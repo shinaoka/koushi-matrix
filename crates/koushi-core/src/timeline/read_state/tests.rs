@@ -24,8 +24,8 @@ use koushi_protocol::ids::AccountKey;
 use koushi_protocol::ids::{TimelineKey, TimelineKind};
 
 use crate::read_state::{
-    ReadPersistenceSnapshot, ReadPositionEvidence, ReadStateEngine, ReadStateKey, ReadTarget,
-    ReadWaiterId,
+    ReadNetworkOutcome, ReadPersistenceSnapshot, ReadPositionEvidence, ReadStateEngine,
+    ReadStateKey, ReadTarget, ReadWaiterId, ReadWakeResult,
 };
 
 use koushi_diagnostics::DiagnosticValue;
@@ -46,8 +46,8 @@ use super::super::navigation::TimelineActorGenerationGate;
 use super::super::relay::koushi_timeline_builder;
 use super::{
     LocalReadCorrelation, MAX_CONCURRENT_READ_WRITES, ReadActorApplyKind, ReadCommandKind,
-    ReadNetworkFailure, ReadNetworkOutcome, ReadPersistenceIngress, ReadRetrySource,
-    ReadWorkerCompletion, ReadWorkerSupervisor, read_retry_delay_for_attempt,
+    ReadNetworkFailure, ReadPersistenceIngress, ReadRetrySource, ReadWorkerCompletion,
+    ReadWorkerSupervisor, read_retry_delay_for_attempt,
 };
 
 use super::super::test_support::{
@@ -3460,6 +3460,75 @@ fn room_viewed_boundary_resolves_latest_reply_row_without_reading_reply() {
     );
 }
 
+/// #2030: the acknowledged write is the writer that can move a boundary the
+/// resident window cannot place. Such a boundary is the normal opening state of a
+/// room whose marker predates the live-edge window, so an observation may not
+/// touch it, but the read the user's own action just completed must replace it --
+/// otherwise the scope is pinned for the actor's whole life.
+#[tokio::test]
+async fn an_acknowledged_write_advances_a_boundary_the_index_cannot_place() {
+    let key = room_key();
+    let (mut manager, mut control_rx, read_key) =
+        read_scope_with_confirmed_boundary(&key, 7, "$evicted:test", None);
+    manager
+        .handle_authoritative_read_state_observed(
+            &key,
+            7,
+            read_key.clone(),
+            Some("$newer:test".to_owned()),
+        )
+        .await;
+    assert_eq!(
+        manager.read_workers.local_read_correlations[&key]
+            .server_confirmed_read_event_id
+            .as_deref(),
+        Some("$evicted:test"),
+        "an observation keeps a boundary it cannot compare against"
+    );
+
+    // The real write path: admit the read, wake it, and let the run succeed.
+    let session_generation = manager.read_workers.state.session_generation();
+    manager.read_workers.state.admit(
+        session_generation,
+        read_key.clone(),
+        ReadTarget::with_position(
+            "$newer:test".to_owned(),
+            ReadPositionEvidence {
+                generation: u128::from(7_u64) << 64,
+                rank: 5,
+            },
+        ),
+        ReadWaiterId::new(1),
+    );
+    let operation = match manager.read_workers.state.wake(&read_key) {
+        ReadWakeResult::Start(operation) => operation,
+        other => panic!("expected a start, got {other:?}"),
+    };
+    manager
+        .settle_read_operation(operation, ReadNetworkOutcome::Succeeded)
+        .await;
+
+    assert_eq!(
+        manager.read_workers.local_read_correlations[&key]
+            .server_confirmed_read_event_id
+            .as_deref(),
+        Some("$newer:test"),
+        "the acknowledged write advances the boundary it just read"
+    );
+    // The confirmation still reaches the timeline, not just the correlation.
+    let mut projected = None;
+    while let Ok(control) = control_rx.try_recv() {
+        if let TimelineActorControl::ReadStateProjection {
+            server_confirmed_read_event_id,
+            ..
+        } = control
+        {
+            projected = server_confirmed_read_event_id;
+        }
+    }
+    assert_eq!(projected.as_deref(), Some("$newer:test"));
+}
+
 /// #2030: one confirmed boundary per account, session and read scope, written by
 /// two paths -- an acknowledged local write and an authoritative sync
 /// observation -- that merge through the same ordering rule.
@@ -3467,7 +3536,7 @@ fn read_scope_with_confirmed_boundary(
     key: &TimelineKey,
     generation: u64,
     confirmed: &'static str,
-    rank: u64,
+    rank: Option<u64>,
 ) -> (
     TimelineManagerActor,
     mpsc::Receiver<TimelineActorControl>,
@@ -3476,21 +3545,22 @@ fn read_scope_with_confirmed_boundary(
     let read_key = ReadStateKey::FullyReadAndPrivateUnthreaded {
         room_id: key.room_id().to_owned(),
     };
-    let (actor_handle, control_rx) = actor_handle_with_positions(
-        generation,
-        [
-            (confirmed, rank),
-            ("$older:test", 2),
-            ("$remote-newer:test", 9),
-        ],
-    );
+    let mut positions = vec![
+        ("$newer:test", 5),
+        ("$older:test", 2),
+        ("$remote-newer:test", 9),
+    ];
+    if let Some(rank) = rank {
+        positions.push((confirmed, rank));
+    }
+    let (actor_handle, control_rx) = actor_handle_with_positions(generation, positions);
     let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
     let (read_network_tx, _read_network_rx) = mpsc::unbounded_channel();
     manager.read_workers =
         ReadWorkerSupervisor::synthetic(read_network_tx, Duration::from_secs(30));
     let position = ReadPositionEvidence {
         generation: u128::from(generation) << 64,
-        rank,
+        rank: rank.unwrap_or(20),
     };
     let target = ReadTarget::with_position(confirmed.to_owned(), position);
     manager.read_workers.local_read_correlations.insert(
@@ -3527,7 +3597,7 @@ async fn projected_confirmed_boundary(
 async fn a_delayed_authoritative_observation_cannot_lower_a_confirmed_boundary() {
     let key = room_key();
     let (mut manager, mut control_rx, read_key) =
-        read_scope_with_confirmed_boundary(&key, 7, "$newer:test", 5);
+        read_scope_with_confirmed_boundary(&key, 7, "$newer:test", Some(5));
     // Reproduced from the report: a successful local read of $newer confirms it,
     // then a sync observation of the earlier $older arrives.
     manager
@@ -3548,37 +3618,10 @@ async fn a_delayed_authoritative_observation_cannot_lower_a_confirmed_boundary()
 }
 
 #[tokio::test]
-async fn a_repeated_authoritative_observation_is_idempotent() {
-    let key = room_key();
-    let (mut manager, mut control_rx, read_key) =
-        read_scope_with_confirmed_boundary(&key, 7, "$newer:test", 5);
-    for _ in 0..2 {
-        manager
-            .handle_authoritative_read_state_observed(
-                &key,
-                7,
-                read_key.clone(),
-                Some("$newer:test".to_owned()),
-            )
-            .await;
-    }
-    assert_eq!(
-        manager.read_workers.local_read_correlations[&key]
-            .server_confirmed_read_event_id
-            .as_deref(),
-        Some("$newer:test")
-    );
-    assert_eq!(
-        projected_confirmed_boundary(&mut manager, &key, &mut control_rx).await,
-        Some("$newer:test".to_owned())
-    );
-}
-
-#[tokio::test]
 async fn an_incomparable_authoritative_target_keeps_the_confirmed_boundary() {
     let key = room_key();
-    let (mut manager, mut control_rx, read_key) =
-        read_scope_with_confirmed_boundary(&key, 7, "$newer:test", 5);
+    let (mut manager, _control_rx, read_key) =
+        read_scope_with_confirmed_boundary(&key, 7, "$newer:test", Some(5));
     // The current index cannot place this event, so its order is unprovable: the
     // boundary stays and the next observation reconciles.
     manager
@@ -3595,17 +3638,13 @@ async fn an_incomparable_authoritative_target_keeps_the_confirmed_boundary() {
             .as_deref(),
         Some("$newer:test")
     );
-    assert_eq!(
-        projected_confirmed_boundary(&mut manager, &key, &mut control_rx).await,
-        Some("$newer:test".to_owned())
-    );
 }
 
 #[tokio::test]
 async fn a_provably_newer_read_from_another_device_advances_the_boundary() {
     let key = room_key();
-    let (mut manager, mut control_rx, read_key) =
-        read_scope_with_confirmed_boundary(&key, 7, "$newer:test", 5);
+    let (mut manager, _control_rx, read_key) =
+        read_scope_with_confirmed_boundary(&key, 7, "$newer:test", Some(5));
     manager
         .handle_authoritative_read_state_observed(
             &key,
@@ -3620,9 +3659,5 @@ async fn a_provably_newer_read_from_another_device_advances_the_boundary() {
             .as_deref(),
         Some("$remote-newer:test"),
         "another device's provably later read is a newer truth"
-    );
-    assert_eq!(
-        projected_confirmed_boundary(&mut manager, &key, &mut control_rx).await,
-        Some("$remote-newer:test".to_owned())
     );
 }

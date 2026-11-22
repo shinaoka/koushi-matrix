@@ -1473,6 +1473,35 @@ stateDiagram-v2
     StaleReadDiscarded --> ReadDesired: current desired retained
 ```
 
+### Confirmed read boundary
+
+One confirmed boundary exists per account session and read scope: a room's main
+scope, or one thread. Two writers propose it -- the read write the user's action
+just had acknowledged, and an authoritative observation from sync -- and both
+merge through `confirmed_boundary_accepts` in
+`crates/koushi-core/src/read_state.rs`, as does every projection the
+`TimelineActor` applies. Order comes only from the timeline's live position
+index, never from event ids or arrival time:
+
+```mermaid
+stateDiagram-v2
+    [*] --> BoundaryUnset
+    BoundaryUnset --> BoundarySet: first target
+    BoundarySet --> BoundarySet: same target [idempotent]
+    BoundarySet --> BoundarySet: strictly greater rank
+    BoundarySet --> BoundarySet: observation, index cannot place either side
+    BoundarySet --> BoundarySet: acknowledged write, index cannot place current
+```
+
+- Both positions are read from one index snapshot; a rank is only comparable
+  inside its own generation, so the actor re-derives both instead of trusting a
+  stored one.
+- A boundary the resident window cannot place is incomparable. An observation
+  keeps it and a later observation reconciles. The acknowledged write replaces
+  it: that boundary can never become observable again, so keeping it would leave
+  the scope pinned forever. This is the case a room enters on open when its
+  marker predates the live-edge window.
+
 Rust keeps the local viewed boundary separate from server-confirmed read state.
 For the displayed read divider, comparable local and confirmed boundaries in the
 same canonical window use the newer position, mapped to a visible event at or
