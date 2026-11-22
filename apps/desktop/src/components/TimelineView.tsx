@@ -917,6 +917,12 @@ export const TimelineView = memo(function TimelineView({
   >(() => undefined);
   const lastBackfillEvaluationDiagnosticSignatureRef = useRef<string | null>(null);
   const lastViewportObservationRef = useRef<string | null>(null);
+  // #1892: one viewport observation per frame. Scroll events and layout effects
+  // can ask many times inside one frame; the visible range is read and sent once.
+  const pendingViewportObservationFrameRef = useRef<TimelineScheduledFrame | null>(null);
+  const runViewportObservationRef = useRef<(() => void) | null>(null);
+  const flushViewportObservationRef = useRef<(() => void) | null>(null);
+  const requestViewportObservationRef = useRef<(() => void) | null>(null);
   const autoReturnToLiveIdentityRef = useRef<string | null>(null);
   const autoReturnToLiveKeyRef = useRef<string | null>(null);
   const downloadedEventIdsRef = useRef<Set<string>>(new Set());
@@ -1239,6 +1245,9 @@ export const TimelineView = memo(function TimelineView({
     timelineViewportScheduler.cancelBefore(epoch);
     cancelPendingScrollFrame();
     cancelScrollFollowUpFrames();
+    // A coalesced observation belongs to the epoch it was asked in; the newest
+    // range is asked for again in this handler by its own callers.
+    pendingViewportObservationFrameRef.current = null;
     viewportIntentResizeFrameRef.current = null;
     viewportSettlementAttemptRef.current = null;
     if (viewportSettlementFrameRef.current !== null) {
@@ -1337,7 +1346,13 @@ export const TimelineView = memo(function TimelineView({
   }, []);
   // A room change or unmount sends what the reader last scrolled to, for the
   // room it was taken in; the stored anchor needs no DOM read at that point.
-  useEffect(() => flushPendingScrollAnchor, [flushPendingScrollAnchor, roomId]);
+  // The viewport observation cannot be flushed from here: this is a passive
+  // cleanup and React has already detached the container ref, so the last range
+  // of a room the reader leaves inside one frame of its last scroll is not sent.
+  useEffect(() => {
+    flushPendingScrollAnchor();
+    return flushPendingScrollAnchor;
+  }, [flushPendingScrollAnchor, roomId]);
 
   const persistViewportAnchor = useCallback((options?: {
     allowSuppressed?: boolean;
@@ -1423,6 +1438,11 @@ export const TimelineView = memo(function TimelineView({
           // the client chose (live edge, jump, restore) changes who arrived here.
           if (CLIENT_PLACEMENT_SCROLL_WRITES.has(reason)) {
             bottomArrivalRef.current = "programmatic";
+            // A placement the reader did not scroll to still has to be reported,
+            // and with the arrival source that placement set. A browser follows
+            // the write with a scroll event that does this; jsdom does not, and
+            // waiting for that event made the report depend on frame ordering.
+            requestViewportObservationRef.current?.();
           }
         }
         // A placement write moves the reader on purpose; the stable anchor must
@@ -1626,6 +1646,9 @@ export const TimelineView = memo(function TimelineView({
     const measurementEpoch = measurementEpochRef.current;
     const flush = (reason: "idle" | "maxDefer") => {
       if (measurementEpoch === measurementEpochRef.current) flushPendingMeasurements(reason);
+      // #1892: the range the reader stopped on is the one that matters, and it is
+      // only settled now; send it even when no further frame was requested.
+      if (reason === "idle") flushViewportObservationRef.current?.();
     };
     scrollActivityRef.current = "active";
     if (scrollIdleTimerRef.current !== null) {
@@ -2888,7 +2911,7 @@ export const TimelineView = memo(function TimelineView({
     },
     [canWrite, effectiveForwardDestinations, roomId, rowTransportActions, visibleRows]
   );
-  const reportViewportObservation = useCallback(() => {
+  const runViewportObservation = useCallback(() => {
     const observeViewport = transport.observeViewport;
     const canObserveTimelineViewport = Boolean(
       observeViewport && viewportTimelineRoomId === roomId
@@ -2976,6 +2999,37 @@ export const TimelineView = memo(function TimelineView({
     viewportThreadRootEventId,
     viewportTimelineRoomId
   ]);
+  runViewportObservationRef.current = runViewportObservation;
+
+  /**
+   * #1892: coalesce every ask in one frame into one observation. The requesters
+   * are scroll events (several per frame), layout effects and observers; each one
+   * reading the visible range was several rect loops per frame for a value that
+   * can only change once per painted frame. Read state may lag a scroll by a
+   * frame or two and no reader can see it.
+   */
+  const reportViewportObservation = useCallback(() => {
+    if (pendingViewportObservationFrameRef.current !== null) {
+      return;
+    }
+    pendingViewportObservationFrameRef.current = scheduleViewportFrame(() => {
+      pendingViewportObservationFrameRef.current = null;
+      runViewportObservationRef.current?.();
+    });
+  }, [scheduleViewportFrame]);
+
+  /**
+   * Send what the coalescer still holds, now: the scroll-idle flush and the
+   * leave paths use it, so the last range a reader stopped on is never dropped.
+   */
+  const flushViewportObservation = useCallback(() => {
+    const pending = pendingViewportObservationFrameRef.current;
+    pendingViewportObservationFrameRef.current = null;
+    pending?.cancel();
+    runViewportObservationRef.current?.();
+  }, []);
+  flushViewportObservationRef.current = flushViewportObservation;
+  requestViewportObservationRef.current = reportViewportObservation;
 
   useEffect(() => {
     const list = listRef.current;

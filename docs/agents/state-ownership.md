@@ -382,6 +382,13 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   projected item order and fully-read marker. Diff-driven navigation updates must
   be emitted after `ItemsUpdated` so GUI rows exist before a Phase B scroll action
   references them.
+- A scroll may ask for a viewport observation many times per frame; `TimelineView`
+  reads the visible range once per frame and sends it only when the range, the
+  arrival source's bottom state or the display-window revision changed. The range
+  the reader stopped on is flushed when the scroll idles, and the scroll anchor
+  is written at the same settle point rather than per scroll event. Leaving a
+  room inside one frame of the last scroll event drops that observation; the read
+  marker is corrected on re-entry (#1892).
 - Jump-to-date uses `open_timeline_at_timestamp`, which routes through
   `AppCommand::OpenTimelineAtTimestamp` and the Matrix `timestamp_to_event`
   endpoint in Rust before reusing focused context. React must not call raw Matrix

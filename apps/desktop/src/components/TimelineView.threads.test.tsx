@@ -730,19 +730,28 @@ describe("TimelineView", () => {
       timeline.scrollTop = 500;
       fireEvent.wheel(timeline, { deltaY: 1 });
       fireEvent.scroll(timeline);
-      await waitFor(() => {
-        expect(observeViewport).toHaveBeenCalledWith(
-          "!room:example.invalid",
-          "$persisted-live:example.invalid",
-          "$persisted-live:example.invalid",
-          [],
-          true,
-          // #872: the wheel was followed by the client's own live-edge placement,
-          // which is what moved the viewport to the bottom.
-          "programmatic",
-          null
+      const liveObservations = () =>
+        observeViewport.mock.calls.filter(
+          ([roomId, first, last, visibleGapIds, atBottom]) =>
+            roomId === "!room:example.invalid" &&
+            first === "$persisted-live:example.invalid" &&
+            last === "$persisted-live:example.invalid" &&
+            (visibleGapIds as TimelineGapId[]).length === 0 &&
+            atBottom === true
         );
-      });
+      await waitFor(() => expect(liveObservations()).not.toHaveLength(0));
+      // #1892: the visible range is read once per frame, not once per scroll
+      // event, so the arrival source is whatever the viewport had reached when
+      // that frame ran: the reader's own scroll here, and the client's placement
+      // in the frame after it. Both are true reports of the same range, and #872's
+      // contract for the placement's own source is pinned by its own test
+      // ("classifies programmatic scroll writes by reason and suppresses their
+      // scroll echo"), so this test does not pin the frame order.
+      expect(["user", "programmatic"]).toContain(liveObservations()[0]?.[5]);
+      expect(
+        new Set(liveObservations().map((call) => JSON.stringify(call))).size,
+        "the same viewport observation was sent twice"
+      ).toBe(liveObservations().length);
       rerender(view(KEY, "!room:example.invalid", repairingAfterBatch));
       fireEvent.scroll(timeline);
       await act(async () => Promise.resolve());
