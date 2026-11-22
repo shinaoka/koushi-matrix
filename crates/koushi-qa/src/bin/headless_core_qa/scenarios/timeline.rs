@@ -3618,6 +3618,7 @@ pub(super) async fn run_link_preview_stage(
                 display: Some(DisplaySettings {
                     code_block_wrap: true,
                     hide_redacted: false,
+                    show_room_and_member_changes: true,
                     url_previews_enabled: false,
                     encrypted_url_previews_enabled: false,
                 }),
@@ -3659,6 +3660,7 @@ pub(super) async fn run_link_preview_stage(
                 display: Some(DisplaySettings {
                     code_block_wrap: true,
                     hide_redacted: false,
+                    show_room_and_member_changes: true,
                     url_previews_enabled: true,
                     encrypted_url_previews_enabled: true,
                 }),
@@ -3721,6 +3723,7 @@ pub(super) async fn run_link_preview_stage(
                 display: Some(DisplaySettings {
                     code_block_wrap: true,
                     hide_redacted: false,
+                    show_room_and_member_changes: true,
                     url_previews_enabled: true,
                     encrypted_url_previews_enabled: true,
                 }),

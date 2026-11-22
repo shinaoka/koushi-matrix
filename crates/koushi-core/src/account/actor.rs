@@ -289,6 +289,8 @@ pub(crate) enum AccountMessage {
         /// #1110: applied inside Rust so the renderer never recomputes
         /// visibility from a display preference.
         hide_redacted: bool,
+        /// #2041: the same rule for profile and membership notices.
+        show_room_and_member_changes: bool,
     },
     TimelineCommandWithComposerFormatting {
         command: TimelineCommand,
@@ -2078,11 +2080,13 @@ impl AccountActor {
                 AccountMessage::DisplayPolicyChanged {
                     thread_root_order,
                     hide_redacted,
+                    show_room_and_member_changes,
                 } => {
-                    let _ = Box::pin(
-                        self.timeline_manager
-                            .set_display_policy(thread_root_order, hide_redacted),
-                    )
+                    let _ = Box::pin(self.timeline_manager.set_display_policy(
+                        thread_root_order,
+                        hide_redacted,
+                        show_room_and_member_changes,
+                    ))
                     .await;
                 }
                 AccountMessage::TimelineCommandWithComposerFormatting {

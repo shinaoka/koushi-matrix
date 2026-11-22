@@ -314,6 +314,7 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
         sender_avatar: None,
         body: Some("hello".to_owned()),
         notice_i18n: None,
+        notice_category: None,
         message_kind: TimelineMessageKind::Emote,
         spoiler_spans: vec![TimelineSpoilerSpan {
             start_utf16: 0,
@@ -408,6 +409,7 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
         sender_avatar: None,
         body: Some("caption".to_owned()),
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: Some(456),
@@ -475,6 +477,7 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
         sender_avatar: None,
         body: Some("queued".to_owned()),
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: Some(789),
@@ -512,6 +515,7 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
         sender_avatar: None,
         body: Some("reply body".to_owned()),
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: Some(987),
@@ -580,6 +584,7 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
         sender_avatar: None,
         body: Some("Check out https://example.invalid/page".to_owned()),
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: Some(1111),
@@ -1128,6 +1133,7 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
     let display_policy_updated =
         serialize_core_event(&CoreEvent::Timeline(TimelineEvent::DisplayPolicyUpdated {
             hide_redacted: true,
+            show_room_and_member_changes: true,
         }))
         .expect("serialize display policy update event");
     assert_eq!(

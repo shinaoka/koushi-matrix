@@ -120,6 +120,7 @@ async fn fresh_room_subscription_reaches_a_message_behind_hidden_state_events() 
         manager.thread_root_projection_service.clone(),
         manager.thread_root_order,
         false,
+        true,
         manager.timeline_actor_generations.clone(),
         actor_generation,
         None,

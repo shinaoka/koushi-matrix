@@ -126,6 +126,7 @@ async fn spawn_room_actor(
         manager.thread_root_projection_service.clone(),
         manager.thread_root_order,
         false,
+        true,
         manager.timeline_actor_generations.clone(),
         actor_generation,
         None,

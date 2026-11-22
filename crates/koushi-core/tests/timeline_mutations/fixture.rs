@@ -172,6 +172,7 @@ impl Fixture {
             manager.thread_root_projection_service.clone(),
             manager.thread_root_order,
             false,
+            true,
             manager.timeline_actor_generations.clone(),
             generation,
             None,

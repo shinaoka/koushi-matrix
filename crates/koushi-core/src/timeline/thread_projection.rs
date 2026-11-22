@@ -1485,6 +1485,9 @@ fn thread_root_projection_item_from_raw_with_context(
         sender_avatar: context.sender_avatar,
         body: body.clone(),
         notice_i18n,
+        // A thread root is a message, so the "show room and member changes"
+        // preference never governs it.
+        notice_category: None,
         message_kind,
         spoiler_spans,
         timestamp_ms,

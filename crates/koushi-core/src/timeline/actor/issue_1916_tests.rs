@@ -187,6 +187,7 @@ async fn a_backward_page_that_reveals_only_sdk_skipped_items_promises_no_prepend
         manager.thread_root_projection_service.clone(),
         koushi_state::TimelineThreadRootOrder::RootEvent,
         false,
+        true,
         manager.timeline_actor_generations.clone(),
         actor_generation,
         None,

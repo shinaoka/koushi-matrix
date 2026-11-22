@@ -6653,6 +6653,12 @@ impl AppActor {
     fn emit_timeline_display_policy_update(&self) {
         self.emit(CoreEvent::Timeline(TimelineEvent::DisplayPolicyUpdated {
             hide_redacted: self.state.settings.values.display.hide_redacted,
+            show_room_and_member_changes: self
+                .state
+                .settings
+                .values
+                .display
+                .show_room_and_member_changes,
         }));
     }
 

@@ -243,6 +243,9 @@ pub enum TimelineEvent {
     },
     DisplayPolicyUpdated {
         hide_redacted: bool,
+        /// #2041: the "show room and member changes" preference, carried on the
+        /// same update so one settings change re-derives every affected row.
+        show_room_and_member_changes: bool,
     },
     DisplayLabelsUpdated {
         labels: Vec<TimelineDisplayLabelUpdate>,
@@ -435,9 +438,13 @@ impl fmt::Debug for TimelineEvent {
                 .field("key", &"TimelineKey(..)")
                 .field("reason", reason)
                 .finish(),
-            Self::DisplayPolicyUpdated { hide_redacted } => formatter
+            Self::DisplayPolicyUpdated {
+                hide_redacted,
+                show_room_and_member_changes,
+            } => formatter
                 .debug_struct("DisplayPolicyUpdated")
                 .field("hide_redacted", hide_redacted)
+                .field("show_room_and_member_changes", show_room_and_member_changes)
                 .finish(),
             Self::DisplayLabelsUpdated { labels } => formatter
                 .debug_struct("DisplayLabelsUpdated")
@@ -949,6 +956,17 @@ pub enum TimelineNoticeI18nKey {
     #[serde(rename = "timeline.notice.call")]
     Call,
 }
+/// The classes of state-change notice the reader can hide (#2041).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum TimelineNoticeCategory {
+    /// A member changed their display name, avatar or room profile.
+    #[serde(rename = "profile")]
+    Profile,
+    /// A member joined, left, was invited, knocked or had a membership update.
+    /// A ban or a kick is deliberately not in this class.
+    #[serde(rename = "membership")]
+    Membership,
+}
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelineNoticeI18n {
     /// User-authored topic or invitation display name, never an invitation token.
@@ -988,6 +1006,16 @@ pub struct TimelineItem {
     pub body: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice_i18n: Option<TimelineNoticeI18n>,
+    /// #2041: the class of state change a notice row reports, when the
+    /// "show room and member changes" preference governs it. Set for a
+    /// member's own profile change and for a membership change other than a
+    /// ban or a kick; those leave it unset, so they stay visible however the
+    /// preference is set.
+    ///
+    /// It is pure Core bookkeeping — the renderer learns the outcome as
+    /// `is_hidden` — so it never crosses the wire.
+    #[serde(skip)]
+    pub notice_category: Option<TimelineNoticeCategory>,
     #[serde(default)]
     pub message_kind: TimelineMessageKind,
     #[serde(default)]

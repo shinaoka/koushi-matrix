@@ -23,6 +23,7 @@ fn private_item() -> TimelineItem {
         sender_avatar: None,
         body: Some("private body".to_owned()),
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: Some(1_700_000_000_000),

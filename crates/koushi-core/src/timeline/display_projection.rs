@@ -1829,6 +1829,7 @@ fn root_placeholder_item(root: &ThreadRootDisplayData) -> TimelineItem {
         sender_avatar: None,
         body: None,
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: None,

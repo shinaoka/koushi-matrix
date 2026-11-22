@@ -20,6 +20,11 @@ fn default_hide_redacted() -> bool {
     true
 }
 
+/// #2041: a room's state changes are shown until the reader turns them off.
+fn default_show_room_and_member_changes() -> bool {
+    true
+}
+
 fn default_url_previews_enabled() -> bool {
     true
 }
@@ -186,6 +191,9 @@ pub struct AppSettingsValues {
 pub struct AppDisplaySettings {
     pub code_block_wrap: bool,
     pub hide_redacted: bool,
+    /// #2041: hides profile and membership notices in Core. Encryption, room
+    /// upgrades, bans and kicks stay visible whatever this says.
+    pub show_room_and_member_changes: bool,
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -237,6 +245,7 @@ impl SettingsValues {
             display: AppDisplaySettings {
                 code_block_wrap: self.display.code_block_wrap,
                 hide_redacted: self.display.hide_redacted,
+                show_room_and_member_changes: self.display.show_room_and_member_changes,
             },
             media: self.media.clone(),
             timeline: self.timeline.clone(),
@@ -365,6 +374,7 @@ impl SettingsValues {
             if apply_app {
                 self.display.code_block_wrap = display.code_block_wrap;
                 self.display.hide_redacted = display.hide_redacted;
+                self.display.show_room_and_member_changes = display.show_room_and_member_changes;
             }
             if apply_account {
                 self.display.url_previews_enabled = display.url_previews_enabled;
@@ -422,6 +432,7 @@ impl AppSettingsValues {
             self.display = AppDisplaySettings {
                 code_block_wrap: value.code_block_wrap,
                 hide_redacted: value.hide_redacted,
+                show_room_and_member_changes: value.show_room_and_member_changes,
             };
         }
         if let Some(value) = &patch.media {
@@ -488,6 +499,7 @@ impl Default for AppDisplaySettings {
         Self {
             code_block_wrap: settings.code_block_wrap,
             hide_redacted: settings.hide_redacted,
+            show_room_and_member_changes: settings.show_room_and_member_changes,
         }
     }
 }
@@ -909,6 +921,8 @@ pub struct DisplaySettings {
     pub code_block_wrap: bool,
     #[serde(default = "default_hide_redacted")]
     pub hide_redacted: bool,
+    #[serde(default = "default_show_room_and_member_changes")]
+    pub show_room_and_member_changes: bool,
     #[serde(default = "default_url_previews_enabled")]
     pub url_previews_enabled: bool,
     #[serde(default = "default_encrypted_url_previews_enabled")]
@@ -920,6 +934,7 @@ impl Default for DisplaySettings {
         Self {
             code_block_wrap: true,
             hide_redacted: true,
+            show_room_and_member_changes: true,
             url_previews_enabled: true,
             encrypted_url_previews_enabled: default_encrypted_url_previews_enabled(),
         }

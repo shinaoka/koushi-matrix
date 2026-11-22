@@ -28,9 +28,9 @@ pub use timeline::{
     TimelineGapId, TimelineGapPosition, TimelineItem, TimelineItemId, TimelineLinkRange,
     TimelineMedia, TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
     TimelineMegolmSessionReason, TimelineMessageActions, TimelineMessageKind,
-    TimelineMessageSource, TimelineNavigationSnapshot, TimelineNoticeI18n, TimelineNoticeI18nKey,
-    TimelineReadStateSync, TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
-    TimelineSpoilerSpan, TimelineUnableToDecrypt, TimelineUnableToDecryptReason,
+    TimelineMessageSource, TimelineNavigationSnapshot, TimelineNoticeCategory, TimelineNoticeI18n,
+    TimelineNoticeI18nKey, TimelineReadStateSync, TimelineResyncReason, TimelineSendFailureReason,
+    TimelineSendState, TimelineSpoilerSpan, TimelineUnableToDecrypt, TimelineUnableToDecryptReason,
     TimelineUnreadPosition, TimelineViewportObservation,
 };
 

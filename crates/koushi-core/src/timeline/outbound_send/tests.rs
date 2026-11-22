@@ -703,6 +703,7 @@ async fn full_actor_mailbox_defers_pending_refresh_without_blocking_manager() {
     tx.try_send(TimelineActorMessage::DisplayPolicyChanged {
         thread_root_order: koushi_state::TimelineThreadRootOrder::RootEvent,
         hide_redacted: false,
+        show_room_and_member_changes: true,
     })
     .expect("fill actor mailbox");
     let mut handle = test_timeline_actor_handle();
@@ -915,6 +916,7 @@ async fn duplicate_submission_routes_one_manager_enqueue_worker() {
         thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
         thread_root_order: koushi_state::TimelineThreadRootOrder::LatestReply,
         hide_redacted: false,
+        show_room_and_member_changes: true,
         timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
         live_tail_refreshes: LiveTailRefreshCoordinator::new(),
         focused_builds: Default::default(),
@@ -1397,6 +1399,7 @@ async fn shutdown_cleans_captured_room_keys_before_acknowledging() {
         thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
         thread_root_order: koushi_state::TimelineThreadRootOrder::LatestReply,
         hide_redacted: false,
+        show_room_and_member_changes: true,
         timeline_actor_generations: generations.clone(),
         live_tail_refreshes: LiveTailRefreshCoordinator::new(),
         focused_builds: Default::default(),
@@ -1494,6 +1497,7 @@ async fn manager_enqueue_worker_waits_for_reducer_acceptance_delivery() {
         thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
         thread_root_order: koushi_state::TimelineThreadRootOrder::LatestReply,
         hide_redacted: false,
+        show_room_and_member_changes: true,
         timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
         live_tail_refreshes: LiveTailRefreshCoordinator::new(),
         focused_builds: Default::default(),

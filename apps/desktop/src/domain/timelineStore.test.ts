@@ -1721,11 +1721,12 @@ describe("DisplayLabelsUpdated", () => {
 });
 
 describe("DisplayPolicyUpdated", () => {
-  test("never recomputes row visibility in the renderer (#1110)", () => {
+  test("never recomputes row visibility in the renderer (#1110, #2041)", () => {
     // Rust owns the whole visibility policy (content suppression, ignored
-    // senders, and the redaction preference) and pushes the changed rows as
-    // `ItemsUpdated` diffs. Recomputing `is_hidden` here from `hide_redacted`
-    // alone is what used to resurrect bodyless technical events.
+    // senders, the redaction preference, and #2041's room-and-member-change
+    // preference) and pushes the changed rows as `ItemsUpdated` diffs.
+    // Recomputing `is_hidden` here from a setting alone is what used to
+    // resurrect bodyless technical events.
     let store = createTimelineStore();
     const suppressed: TimelineItem = {
       ...makeMsg("$acl", ""),
@@ -1734,25 +1735,41 @@ describe("DisplayPolicyUpdated", () => {
       is_hidden: true
     };
     const visible = makeMsg("$visible", "Visible message");
+    // #2041: a notice row Core has already hidden for the preference, next to a
+    // membership row Core kept. The renderer leaves both exactly as received.
+    const hiddenNotice: TimelineItem = {
+      ...makeMsg("$hidden-notice", "changed their display name"),
+      message_kind: "notice",
+      notice_i18n: { key: "timeline.notice.profileDisplayNameChanged" },
+      is_hidden: true
+    };
+    const keptNotice: TimelineItem = {
+      ...makeMsg("$kept-notice", "@bob:example.invalid was banned"),
+      message_kind: "notice",
+      is_hidden: false
+    };
 
     store = applyTimelineEvent(store, {
       InitialItems: {
         request_id: null,
         key: KEY,
         generation: 0,
-        items: [suppressed, visible],
+        items: [suppressed, visible, hiddenNotice, keptNotice],
       },
     });
 
     store = applyTimelineEvent(store, {
       DisplayPolicyUpdated: {
         hide_redacted: true,
+        show_room_and_member_changes: true,
       },
     });
 
     let items = getItems(store, KEY);
     expect(items[0]).toMatchObject({ is_redacted: false, is_hidden: true });
     expect(items[1]).toMatchObject({ is_redacted: false, is_hidden: false });
+    expect(items[2]).toMatchObject({ is_hidden: true });
+    expect(items[3]).toMatchObject({ is_hidden: false });
 
     // The same acknowledgement must not reveal a redacted row either: Rust
     // sends the corrected row.
@@ -1773,6 +1790,7 @@ describe("DisplayPolicyUpdated", () => {
     store = applyTimelineEvent(store, {
       DisplayPolicyUpdated: {
         hide_redacted: false,
+        show_room_and_member_changes: false,
       },
     });
 

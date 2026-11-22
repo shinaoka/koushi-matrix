@@ -50,6 +50,7 @@ fn app_state_carries_default_non_secret_settings() {
         DisplaySettings {
             code_block_wrap: true,
             hide_redacted: true,
+            show_room_and_member_changes: true,
             url_previews_enabled: true,
             encrypted_url_previews_enabled: false,
         }
@@ -100,6 +101,7 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
         display: DisplaySettings {
             code_block_wrap: false,
             hide_redacted: true,
+            show_room_and_member_changes: true,
             url_previews_enabled: true,
             encrypted_url_previews_enabled: true,
         },
@@ -155,6 +157,8 @@ fn settings_values_deserialize_empty_display_as_default() {
     assert_eq!(values.display, DisplaySettings::default());
 }
 
+/// A settings file written before #2041 has no key for the preference, and the
+/// reader keeps seeing state changes: the default is on.
 #[test]
 fn settings_values_deserialize_legacy_display_without_hide_redacted_as_default_on() {
     let values = serde_json::from_str::<SettingsValues>(
@@ -175,9 +179,64 @@ fn settings_values_deserialize_legacy_display_without_hide_redacted_as_default_o
         DisplaySettings {
             code_block_wrap: false,
             hide_redacted: true,
+            show_room_and_member_changes: true,
             url_previews_enabled: true,
             encrypted_url_previews_enabled: false,
         }
+    );
+    assert!(
+        values.display.show_room_and_member_changes,
+        "#2041: a file without the key keeps room and member changes visible"
+    );
+}
+
+/// #2041: the preference is an app-scoped display setting, so it reaches both
+/// the stored values and the projection the settings panel reads.
+#[test]
+fn show_room_and_member_changes_patch_is_rust_owned_and_persisted() {
+    let mut state = AppState::default();
+    let display_settings = DisplaySettings {
+        show_room_and_member_changes: false,
+        ..DisplaySettings::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 91,
+            patch: SettingsPatch {
+                display: Some(display_settings.clone()),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+
+    assert!(!state.settings.values.display.show_room_and_member_changes);
+    assert!(
+        !state
+            .settings
+            .values
+            .app_settings()
+            .display
+            .show_room_and_member_changes
+    );
+    assert_eq!(
+        state.settings.persistence,
+        SettingsPersistenceState::Saving { request_id: 91 }
+    );
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::PersistSettings {
+                request_id: 91,
+                values: state.settings.values.clone(),
+                patch: Box::new(SettingsPatch {
+                    display: Some(display_settings),
+                    ..SettingsPatch::default()
+                }),
+            },
+            AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
+        ]
     );
 }
 
@@ -399,6 +458,7 @@ fn code_block_wrap_patch_is_rust_owned_and_persisted() {
     let display_settings = DisplaySettings {
         code_block_wrap: false,
         hide_redacted: false,
+        show_room_and_member_changes: true,
         url_previews_enabled: true,
         encrypted_url_previews_enabled: false,
     };
@@ -441,6 +501,7 @@ fn hide_redacted_patch_is_rust_owned_and_persisted() {
     let display_settings = DisplaySettings {
         code_block_wrap: true,
         hide_redacted: true,
+        show_room_and_member_changes: true,
         url_previews_enabled: true,
         encrypted_url_previews_enabled: false,
     };

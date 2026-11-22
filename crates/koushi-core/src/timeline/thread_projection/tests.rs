@@ -476,6 +476,7 @@ fn timeline_message_item(event_id: &str, sender: &str) -> TimelineItem {
         sender_avatar: None,
         body: Some("body".to_owned()),
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: Some(1),

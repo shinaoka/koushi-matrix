@@ -181,6 +181,7 @@ async fn focused_build_in_flight_does_not_block_control_or_newer_navigation() {
         .send(TimelineManagerControl::DisplayPolicyChanged {
             thread_root_order: TimelineThreadRootOrder::LatestReply,
             hide_redacted: true,
+            show_room_and_member_changes: true,
             acknowledged,
         })
         .await
@@ -676,6 +677,7 @@ async fn sdk_focused_build_waiting_on_context_is_cancelled_and_retry_starts_fres
         .send(TimelineManagerControl::DisplayPolicyChanged {
             thread_root_order: TimelineThreadRootOrder::LatestReply,
             hide_redacted: false,
+            show_room_and_member_changes: true,
             acknowledged,
         })
         .await

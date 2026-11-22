@@ -386,6 +386,8 @@ export interface NotificationSettings {
 export interface DisplaySettings {
   code_block_wrap: boolean;
   hide_redacted: boolean;
+  /** #2041: hides profile and membership notices in Core; safety rows stay. */
+  show_room_and_member_changes: boolean;
   url_previews_enabled: boolean;
   encrypted_url_previews_enabled: boolean;
 }

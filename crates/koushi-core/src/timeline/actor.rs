@@ -389,6 +389,8 @@ pub(super) enum TimelineActorMessage {
         /// #1110: the redaction display preference, applied by Rust so the
         /// renderer never owns a second visibility policy.
         hide_redacted: bool,
+        /// #2041: whether profile and membership notices are shown at all.
+        show_room_and_member_changes: bool,
     },
     RefreshPendingSendProjection {
         actor_generation: u64,
@@ -478,6 +480,7 @@ pub(super) enum TimelineActorControl {
     DisplayPolicyChanged {
         thread_root_order: TimelineThreadRootOrder,
         hide_redacted: bool,
+        show_room_and_member_changes: bool,
     },
     BeginGapRepairDemand,
     EndGapRepairDemand,
@@ -579,9 +582,11 @@ impl From<TimelineActorControl> for TimelineActorMessage {
             TimelineActorControl::DisplayPolicyChanged {
                 thread_root_order,
                 hide_redacted,
+                show_room_and_member_changes,
             } => Self::DisplayPolicyChanged {
                 thread_root_order,
                 hide_redacted,
+                show_room_and_member_changes,
             },
             TimelineActorControl::BeginGapRepairDemand => Self::BeginGapRepairDemand,
             TimelineActorControl::EndGapRepairDemand => Self::EndGapRepairDemand,
@@ -601,12 +606,18 @@ fn project_initial_items<'a>(
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
     hide_redacted: bool,
     ignored_user_ids: &std::collections::BTreeSet<String>,
+    show_room_and_member_changes: bool,
 ) -> Vec<TimelineItem> {
     sdk_items
         .into_iter()
         .map(|item| sdk_item_to_timeline_item(key, item, own_user_id))
         .map(|mut item| {
-            apply_timeline_item_visibility(&mut item, hide_redacted, ignored_user_ids);
+            apply_timeline_item_visibility(
+                &mut item,
+                hide_redacted,
+                ignored_user_ids,
+                show_room_and_member_changes,
+            );
             item
         })
         .collect()
@@ -963,6 +974,9 @@ pub(super) struct TimelineActor {
     /// #1110: the redaction display preference. It participates in the one
     /// authoritative row-visibility policy, so a change re-emits item diffs.
     pub(super) hide_redacted: bool,
+    /// #2041: whether profile and membership notices are shown. It is part of
+    /// the same policy and re-emits item diffs the same way.
+    pub(super) show_room_and_member_changes: bool,
     /// Manager-owned serial fence for display events and their actor generation.
     pub(super) timeline_actor_generations: Arc<TimelineActorGenerationGate>,
     pub(super) actor_generation: u64,
@@ -1524,6 +1538,7 @@ impl TimelineActor {
         thread_root_projection_service: Arc<Mutex<ThreadRootProjectionService>>,
         thread_root_order: TimelineThreadRootOrder,
         hide_redacted: bool,
+        show_room_and_member_changes: bool,
         timeline_actor_generations: Arc<TimelineActorGenerationGate>,
         actor_generation: u64,
         subscription_generation: Option<u64>,
@@ -1595,6 +1610,7 @@ impl TimelineActor {
             own_user_id.as_deref(),
             hide_redacted,
             &ignored_user_ids,
+            show_room_and_member_changes,
         );
         if should_hydrate_empty_initial_room_timeline(&key.kind, &projected_initial_items) {
             // #1125: the window can be entirely hidden technical state events, so
@@ -1671,6 +1687,7 @@ impl TimelineActor {
                     own_user_id.as_deref(),
                     hide_redacted,
                     &ignored_user_ids,
+                    show_room_and_member_changes,
                 );
                 if reached_start {
                     break;
@@ -2171,6 +2188,7 @@ impl TimelineActor {
             thread_summary_projection_rx,
             thread_root_order,
             hide_redacted,
+            show_room_and_member_changes,
             timeline_actor_generations,
             actor_generation,
             subscription_generation,
@@ -3005,13 +3023,18 @@ impl TimelineActor {
             TimelineActorMessage::DisplayPolicyChanged {
                 thread_root_order,
                 hide_redacted,
+                show_room_and_member_changes,
             } => {
                 // #1110: the redaction preference belongs to the one
                 // authoritative visibility policy, so changing it re-emits the
                 // affected rows instead of leaving the renderer to recompute
-                // `is_hidden` from the setting on its own.
-                if self.hide_redacted != hide_redacted {
+                // `is_hidden` from the setting on its own. #2041 joins it, so
+                // one settings change is one visibility pass.
+                if self.hide_redacted != hide_redacted
+                    || self.show_room_and_member_changes != show_room_and_member_changes
+                {
                     self.hide_redacted = hide_redacted;
+                    self.show_room_and_member_changes = show_room_and_member_changes;
                     let ignored_user_ids = self.ignored_user_ids.clone();
                     Box::pin(self.reapply_item_visibility(ignored_user_ids)).await;
                 }
