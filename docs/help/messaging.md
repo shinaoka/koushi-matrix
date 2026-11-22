@@ -34,8 +34,18 @@ composer is read-only. The full shortcut list is under
 Scroll upward to read earlier messages. Older history loads automatically as you
 approach it; availability depends on the server, room history policy, and keys
 for encrypted messages. New messages do not pull you to the bottom while you are
-reading earlier history. Use **Jump to latest message** to return to the newest
-messages.
+reading earlier history.
+
+To return to the newest messages, use the down-arrow **Latest** button in the
+room header. While you are scrolled up and new messages from other people are
+waiting below, a **Jump to bottom, N new messages** bar also appears at the top of
+the message area.
+
+A room can also show a point in its history instead of the newest messages, for
+example when you open a search result or an Activity entry that is older than the
+messages already loaded. That view keeps the **Latest** button in the header and
+adds a **Jump to latest message** button inside the timeline; either one returns
+to the live conversation.
 
 ## Mention someone
 
@@ -108,8 +118,9 @@ replies in that thread; it does not offer nested threads.
 
 Select the sender line at the top of a reply preview to open the original
 message. If the original is already loaded in the room, Koushi scrolls to it and
-briefly highlights it there. Otherwise Koushi shows it in a focused context and
-briefly highlights it. Links
+briefly highlights it there. Otherwise Koushi opens the room at that point in its
+history, as described under [Read older messages](#read-older-messages), and
+briefly highlights the message there. Links
 inside the preview still open their own targets. If the original is unavailable,
 Koushi explains that instead of jumping elsewhere.
 
