@@ -346,6 +346,8 @@ impl AccountActor {
                 self.note_own_avatar_source(
                     profile.avatar.as_ref().map(|avatar| avatar.mxc_uri.clone()),
                 );
+                self.push_own_avatar_to_timelines(profile.avatar.as_ref())
+                    .await;
                 self.send_actions(vec![AppAction::ProfileUpdateSucceeded {
                     request_id: request_id.sequence,
                     profile,
@@ -461,6 +463,8 @@ impl AccountActor {
                 self.note_own_avatar_source(
                     profile.avatar.as_ref().map(|avatar| avatar.mxc_uri.clone()),
                 );
+                self.push_own_avatar_to_timelines(profile.avatar.as_ref())
+                    .await;
                 self.send_actions(vec![AppAction::ProfileUpdateSucceeded {
                     request_id: request_id.sequence,
                     profile,
@@ -964,6 +968,13 @@ impl AccountActor {
                 .send(TimelineMessage::IgnoredUsersUpdated { user_ids })
                 .await;
         }
+        if let Some(profile) = actions.iter().find_map(|action| match action {
+            AppAction::OwnProfileUpdated { profile } => Some(profile.clone()),
+            _ => None,
+        }) {
+            self.push_own_avatar_to_timelines(profile.avatar.as_ref())
+                .await;
+        }
         if let Some(aliases) = actions.iter().find_map(|action| match action {
             AppAction::LocalUserAliasesLoaded { aliases } => Some(aliases.clone()),
             _ => None,
@@ -974,6 +985,19 @@ impl AccountActor {
                 .await;
         }
         self.send_actions(actions).await;
+    }
+
+    /// #2059: hand the session user's account avatar to the timelines.
+    ///
+    /// The SDK's sender profile for the session user can be unavailable while the
+    /// account avatar is known; only Core's projection can fill that gap, so the
+    /// account-side owner of the profile pushes every change here.
+    async fn push_own_avatar_to_timelines(&mut self, avatar: Option<&AvatarImage>) {
+        let mxc_uri = avatar.map(|avatar| avatar.mxc_uri.clone());
+        let _ = self
+            .timeline_manager
+            .send(TimelineMessage::OwnAvatarUpdated { mxc_uri })
+            .await;
     }
 
     pub(super) async fn handle_ignore_user(

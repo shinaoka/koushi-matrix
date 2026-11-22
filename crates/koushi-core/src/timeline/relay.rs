@@ -596,6 +596,10 @@ impl TimelineActor {
         let display_context =
             DisplayProjectionContext::for_timeline(&self.key.kind, &self.viewport_observation)
                 .with_send_states(&self.send_statuses)
+                .with_own_avatar(
+                    self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
+                    self.own_avatar_mxc_uri.as_deref(),
+                )
                 .with_thread_roots(
                     self.thread_root_order,
                     self.thread_root_projection_service
@@ -1193,6 +1197,10 @@ impl TimelineActor {
             &mut self.navigation_items,
             &mut self.display_projection,
             &self.send_statuses,
+            (
+                self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
+                self.own_avatar_mxc_uri.as_deref(),
+            ),
             &self.event_tx,
             &self.thread_root_projection_service,
             self.thread_root_order,
@@ -1559,6 +1567,7 @@ pub(super) fn commit_authoritative_recovery_window<F>(
     navigation_items: &mut Vec<TimelineItem>,
     display_projection: &mut DisplayProjectionState,
     send_statuses: &HashMap<String, TimelineSendState>,
+    own_avatar: (Option<&str>, Option<&str>),
     event_tx: &broadcast::Sender<CoreEvent>,
     thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
     thread_root_order: koushi_state::TimelineThreadRootOrder,
@@ -1597,6 +1606,7 @@ where
     };
     let context = DisplayProjectionContext::for_timeline(&key.kind, viewport)
         .with_send_states(send_statuses)
+        .with_own_avatar(own_avatar.0, own_avatar.1)
         .with_thread_roots(
             thread_root_order,
             thread_root_projection_service

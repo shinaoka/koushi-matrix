@@ -2371,6 +2371,10 @@ impl TimelineActor {
         let context =
             DisplayProjectionContext::for_timeline(&self.key.kind, &self.viewport_observation)
                 .with_send_states(&self.send_statuses)
+                .with_own_avatar(
+                    self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
+                    self.own_avatar_mxc_uri.as_deref(),
+                )
                 .with_thread_roots(
                     self.thread_root_order,
                     self.thread_root_projection_service

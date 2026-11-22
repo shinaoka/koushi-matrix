@@ -394,6 +394,7 @@ impl TimelineManagerActor {
             terminal_rx,
             search_index_tx: None,
             ignored_user_ids: BTreeSet::new(),
+            own_avatar_mxc_uri: None,
             data_dir: None,
             link_preview_policy: LinkPreviewContext::default(),
             composer_formatting_options: ComposerFormattingOptions::default(),

@@ -617,6 +617,15 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   `notRequested` Activity avatars and submit typed thumbnail demand, as on other
   visible surfaces. Keep this cache outside React and outside per-view browser
   fake state.
+- Timeline rows follow the same resolver rule as Activity, and Core applies it:
+  the SDK's sender avatar (including a room-specific one) wins, a self-authored
+  row with none takes the session user's account avatar, and any other sender
+  stays empty. `DisplayProjectionContext` carries that input and
+  `apply_own_avatar_fallback` fills it inside `project_display_items`, so every
+  publish path — first window, live diff batch, overflow recovery, lagged send
+  table — renders the same sender image. React never substitutes an avatar for a
+  sender Core left empty, and the account avatar never reaches another sender
+  (#2059).
 - Activity Unread is a notification inbox: plain unread messages without a
   notification, highlight, or manual unread mark stay sidebar-only (contract:
   `docs/architecture/state-machine.md` Activity, #1072).

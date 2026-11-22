@@ -404,6 +404,11 @@ test("the display-row gate rejects a publish that skips the projection", () => {
       "fn context(kind: &TimelineKind, observation: &TimelineViewportObservation) -> DisplayProjectionContext {",
       "    DisplayProjectionContext::for_timeline(kind, observation)",
       "        .with_send_states(&HashMap::new())",
+      "        .with_own_avatar(None, None)",
+      "}",
+      "fn context_without_avatar(kind: &TimelineKind, observation: &TimelineViewportObservation) -> DisplayProjectionContext {",
+      "    DisplayProjectionContext::for_timeline(kind, observation)",
+      "        .with_send_states(&HashMap::new())",
       "}",
       "fn rematerialized(items: &[TimelineItem], context: &DisplayProjectionContext) -> Self {",
       "    let rebuilt = Self::from_canonical_window(items, 0..items.len());",
@@ -439,11 +444,13 @@ test("the display-row gate rejects a publish that skips the projection", () => {
   // Each entry names the line that publishes, and the function that owns it. A
   // copy that also assembles rows is refused by both rules, on the same line.
   assert.deepEqual(offenders, [
+    "display_projection.rs:35 (context_without_avatar) builds a projection context without the account avatar",
     "relay.rs:2 (publish) assembles public rows outside the projection",
     "relay.rs:6 (copy) writes the public row list without the projection",
     "relay.rs:6 (copy) assembles public rows outside the projection",
     "relay.rs:9 (rebuild) seeds the public row list outside the window constructors",
     "relay.rs:12 (context_for) builds a projection context without the send authority",
+    "relay.rs:12 (context_for) builds a projection context without the account avatar",
     "relay.rs:16 (commit_without_projection) builds a window and never projects it",
     "relay.rs:20 (reset_bounded) builds a window and never projects it"
   ]);

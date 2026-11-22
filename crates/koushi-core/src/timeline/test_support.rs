@@ -212,6 +212,7 @@ pub(super) fn live_tail_test_manager(
         terminal_rx,
         search_index_tx: None,
         ignored_user_ids: Default::default(),
+        own_avatar_mxc_uri: None,
         data_dir: None,
         link_preview_policy: LinkPreviewContext::default(),
         composer_formatting_options: ComposerFormattingOptions::default(),

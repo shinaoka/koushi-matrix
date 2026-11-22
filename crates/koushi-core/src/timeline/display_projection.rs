@@ -9,7 +9,7 @@ use koushi_protocol::event::{
     TimelineMessageKind, TimelineNoticeI18nKey, TimelineSendState, TimelineViewportObservation,
 };
 use koushi_protocol::ids::{TimelineKey, TimelineKind};
-use koushi_state::{LiveEventReceipts, TimelineThreadRootOrder};
+use koushi_state::{AvatarImage, AvatarThumbnailState, LiveEventReceipts, TimelineThreadRootOrder};
 
 // BEGIN GENERATED SIBLING IMPORTS
 use super::item_projection::SendStateAuthority;
@@ -1117,6 +1117,11 @@ pub(super) struct DisplayProjectionContext {
     /// #1846: the room's send authority for this projection. Empty for
     /// timelines that never render an outbound row.
     pub(super) send_states: SendStateAuthority,
+    /// #2059: the session user and the account avatar the SDK knows for it, as
+    /// one value because neither half is useful alone. The projection fills a
+    /// self-authored row's missing sender avatar from here; no other sender ever
+    /// takes it.
+    pub(super) own_avatar: Option<(String, String)>,
 }
 
 impl DisplayProjectionContext {
@@ -1134,6 +1139,7 @@ impl DisplayProjectionContext {
             thread_root_order: TimelineThreadRootOrder::RootEvent,
             thread_roots: Vec::new(),
             send_states: SendStateAuthority::default(),
+            own_avatar: None,
         }
     }
 
@@ -1145,6 +1151,19 @@ impl DisplayProjectionContext {
         statuses: &HashMap<String, TimelineSendState>,
     ) -> Self {
         self.send_states = SendStateAuthority::new(statuses);
+        self
+    }
+
+    /// #2059: the session user and its account avatar, for the self-authored
+    /// rows the SDK left without a sender avatar.
+    pub(super) fn with_own_avatar(
+        mut self,
+        own_user_id: Option<&str>,
+        own_avatar_mxc_uri: Option<&str>,
+    ) -> Self {
+        self.own_avatar = own_user_id
+            .zip(own_avatar_mxc_uri)
+            .map(|(user_id, mxc_uri)| (user_id.to_owned(), mxc_uri.to_owned()));
         self
     }
 
@@ -1169,6 +1188,7 @@ impl DisplayProjectionContext {
             thread_root_order: TimelineThreadRootOrder::RootEvent,
             thread_roots: Vec::new(),
             send_states: SendStateAuthority::default(),
+            own_avatar: None,
         }
     }
 }
@@ -1410,11 +1430,33 @@ fn project_display_items(
     // authority is rebuilt per projection and never stored in a row.
     let mut items = assemble_display_items(state, context);
     context.send_states.apply_all(&mut items);
+    apply_own_avatar_fallback(&mut items, context);
     // #2041: display-only grouping, after every row has its metadata.
     if context.room_window {
         group_consecutive_notices(&mut items);
     }
     items
+}
+
+/// #2059: give a self-authored row the account avatar when the SDK had none.
+///
+/// The SDK's sender profile for the session user can be unavailable, pending or
+/// without an avatar while the account avatar is known. Only the session user's
+/// own rows take this fallback, and only when nothing else filled the slot, so a
+/// room-specific avatar stays authoritative and another sender never receives it.
+fn apply_own_avatar_fallback(items: &mut [TimelineItem], context: &DisplayProjectionContext) {
+    let Some((own_user_id, own_avatar_mxc_uri)) = context.own_avatar.as_ref() else {
+        return;
+    };
+    for item in items {
+        if item.sender.as_deref() != Some(own_user_id) || item.sender_avatar.is_some() {
+            continue;
+        }
+        item.sender_avatar = Some(AvatarImage {
+            mxc_uri: own_avatar_mxc_uri.to_owned(),
+            thumbnail: AvatarThumbnailState::NotRequested,
+        });
+    }
 }
 
 /// #2041: how far apart two notices may be and still count as one burst.
@@ -2396,6 +2438,10 @@ mod issue_1981_tests;
 #[cfg(test)]
 #[path = "display_projection/issue_2041_tests.rs"]
 mod issue_2041_tests;
+
+#[cfg(test)]
+#[path = "display_projection/own_avatar_tests.rs"]
+mod own_avatar_tests;
 
 #[cfg(test)]
 #[path = "display_projection/send_state_tests.rs"]

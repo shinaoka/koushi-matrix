@@ -105,9 +105,15 @@ describe("ready avatar reuse", () => {
     const pending = { ...own, thumbnail: { kind: "notRequested" as const } };
     expect(resolvedAvatar(pending, undefined, own)).toBe(own);
   });
-  test("does not substitute a global avatar for a different room-specific image or missing sender image", () => {
+  test("does not substitute a global avatar for a different room-specific image", () => {
     const room = { mxc_uri: "mxc://example.invalid/room-avatar", thumbnail: { kind: "notRequested" as const } };
     expect(resolvedAvatar(room, undefined, own)).toBe(room);
+  });
+  test("does not invent a sender avatar when Core published none", () => {
+    // #2059: Core's projection fills the session user's own rows from the account
+    // avatar, and it never fills another sender's row. This third argument is
+    // therefore only a thumbnail-reuse hint, not a sender fallback: a row with no
+    // avatar at all still renders the initials the row is meant to show.
     expect(resolvedAvatar(null, undefined, own)).toBeNull();
   });
   test("does not replace a ready row with an unready own thumbnail", () => {

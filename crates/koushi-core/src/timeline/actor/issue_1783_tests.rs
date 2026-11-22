@@ -189,6 +189,7 @@ async fn spawn_room_actor(
         Default::default(),
         manager.terminal_ingress.clone(),
         manager.msg_tx.clone(),
+        None,
     )
     .await;
     ActorFixture {

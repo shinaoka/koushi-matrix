@@ -1484,6 +1484,7 @@ async fn room_actor_hydrates_a_historical_sender_without_a_live_event() {
         Default::default(),
         manager.terminal_ingress.clone(),
         manager.msg_tx.clone(),
+        None,
     )
     .await;
 
@@ -1609,6 +1610,7 @@ async fn timeline_actor_spawn_returns_before_authoritative_publish_waits_for_man
             SharedSendCompletionCoordinator::default(),
             terminal_ingress,
             manager_tx,
+            None,
         ),
     )
     .await
@@ -2939,6 +2941,7 @@ async fn replay_initial_items_republishes_unchanged_read_navigation() {
         Default::default(),
         manager.terminal_ingress.clone(),
         manager.msg_tx.clone(),
+        None,
     )
     .await;
     assert!(
@@ -3081,6 +3084,7 @@ async fn an_acknowledged_read_advances_a_boundary_the_window_cannot_place() {
         Default::default(),
         manager.terminal_ingress.clone(),
         manager.msg_tx.clone(),
+        None,
     )
     .await;
 
@@ -3204,6 +3208,7 @@ async fn a_queued_read_projection_cannot_roll_back_a_confirmed_boundary() {
         Default::default(),
         manager.terminal_ingress.clone(),
         manager.msg_tx.clone(),
+        None,
     )
     .await;
 

@@ -182,6 +182,7 @@ async fn exercise_ignored_reset(case: ResetCase) {
         Default::default(),
         manager.terminal_ingress.clone(),
         manager.msg_tx.clone(),
+        None,
     )
     .await;
     let mut items = Vec::new();

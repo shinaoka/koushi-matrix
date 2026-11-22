@@ -74,6 +74,20 @@ use super::room_key_recovery::{DecryptRetryReason, KeyRequestUiState};
 pub(super) const REPLY_QUOTE_PREVIEW_MAX_CHARS: usize = 160;
 
 impl TimelineManagerActor {
+    /// #2059: the session user's account avatar changed. Every timeline re-derives
+    /// its rows, so a visible self-authored row picks it up without a reopen.
+    pub(super) async fn handle_own_avatar_updated(&mut self, mxc_uri: Option<String>) {
+        if self.own_avatar_mxc_uri == mxc_uri {
+            return;
+        }
+        self.own_avatar_mxc_uri = mxc_uri.clone();
+        for handle in self.timelines.values() {
+            let _ = handle
+                .send(TimelineActorMessage::OwnAvatarUpdated(mxc_uri.clone()))
+                .await;
+        }
+    }
+
     pub(super) async fn handle_ignored_users_updated(
         &mut self,
         user_ids: std::collections::BTreeSet<String>,

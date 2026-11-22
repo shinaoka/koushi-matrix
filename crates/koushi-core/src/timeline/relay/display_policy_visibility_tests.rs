@@ -162,6 +162,7 @@ async fn redaction_preference_toggle_is_published_as_row_diffs() {
         Default::default(),
         manager.terminal_ingress.clone(),
         manager.msg_tx.clone(),
+        None,
     )
     .await;
 
@@ -349,6 +350,7 @@ async fn room_and_member_change_preference_hides_only_profile_and_membership_row
         Default::default(),
         manager.terminal_ingress.clone(),
         manager.msg_tx.clone(),
+        None,
     )
     .await;
 
