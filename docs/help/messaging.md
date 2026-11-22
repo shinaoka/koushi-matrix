@@ -34,8 +34,17 @@ composer is read-only. The full shortcut list is under
 Scroll upward to read earlier messages. Older history loads automatically as you
 approach it; availability depends on the server, room history policy, and keys
 for encrypted messages. New messages do not pull you to the bottom while you are
-reading earlier history. Use **Jump to latest message** to return to the newest
-messages.
+reading earlier history.
+
+The room header has a **Latest** button for returning to the newest messages.
+While you are scrolled up and newer or unread messages are waiting, the timeline
+also floats a **Jump to bottom** control that tells you how many are waiting; it
+is absent when nothing newer or unread is pending.
+
+A room can also show a point in its history instead of the newest messages, for
+example after jumping to a date. That view keeps the **Latest** button in the
+header and adds a **Jump to latest message** control inside the timeline; either
+one returns to the live conversation.
 
 ## Mention someone
 
