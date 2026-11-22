@@ -32,6 +32,7 @@ export const testkitTargets = [
   "runtime_account_management.rs",
   "runtime_activity.rs",
   "runtime_command_admission.rs",
+  "runtime_event_navigation_context.rs",
   "runtime_core.rs",
   "runtime_e2ee.rs",
   "runtime_intent_lifecycle.rs",
