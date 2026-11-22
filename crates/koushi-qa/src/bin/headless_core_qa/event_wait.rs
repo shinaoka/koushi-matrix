@@ -2977,6 +2977,7 @@ pub(super) fn projection_timeline_item(event_id: &str, is_redacted: bool) -> Tim
             Some("projection body".to_owned())
         },
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: None,

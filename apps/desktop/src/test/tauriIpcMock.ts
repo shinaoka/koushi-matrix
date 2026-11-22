@@ -377,6 +377,7 @@ export function defaultSnapshotResponse() {
           display: {
             code_block_wrap: true,
             hide_redacted: true,
+            show_room_and_member_changes: true,
             url_previews_enabled: true,
             encrypted_url_previews_enabled: false
           },

@@ -273,6 +273,7 @@ async fn back_paginated_pages_behind_a_superseded_reply_stay_visible_at_the_live
         // "Place threaded conversations at their latest reply" off.
         koushi_state::TimelineThreadRootOrder::RootEvent,
         false,
+        true,
         manager.timeline_actor_generations.clone(),
         actor_generation,
         None,

@@ -292,7 +292,7 @@ fn housekeeping_stays_hidden_after_ignore_and_unignore() {
         std::collections::BTreeSet::from(["@alice:example.invalid".into()]),
         std::collections::BTreeSet::new(),
     ] {
-        apply_timeline_item_visibility(&mut item, false, &ignored);
+        apply_timeline_item_visibility(&mut item, false, &ignored, true);
         assert!(item.is_hidden);
         assert!(!has_user_visible_content(&item));
     }

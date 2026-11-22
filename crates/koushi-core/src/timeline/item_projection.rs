@@ -51,9 +51,9 @@ use koushi_protocol::event::{
     RoomKeyRequestStateDto, RoomKeyRequestWithheldCode, ThreadSummaryDto, TimelineDiff,
     TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
     TimelineMediaSource, TimelineMediaThumbnail, TimelineMegolmSessionReason,
-    TimelineMessageActions, TimelineMessageKind, TimelineMessageSource, TimelineNoticeI18n,
-    TimelineNoticeI18nKey, TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
-    TimelineUnableToDecrypt, TimelineUnableToDecryptReason,
+    TimelineMessageActions, TimelineMessageKind, TimelineMessageSource, TimelineNoticeCategory,
+    TimelineNoticeI18n, TimelineNoticeI18nKey, TimelineSendFailureReason, TimelineSendState,
+    TimelineSpoilerSpan, TimelineUnableToDecrypt, TimelineUnableToDecryptReason,
 };
 use koushi_protocol::failure::TimelineFailureKind;
 use koushi_protocol::ids::{RequestId, TimelineKey, TimelineKind};
@@ -188,11 +188,17 @@ impl TimelineActor {
         }
         self.ignored_user_ids = ignored_user_ids;
         let hide_redacted = self.hide_redacted;
+        let show_room_and_member_changes = self.show_room_and_member_changes;
         let ignored_user_ids = self.ignored_user_ids.clone();
         let mut core_diffs = Vec::new();
         for (index, item) in self.navigation_items.iter_mut().enumerate() {
             let was_hidden = item.is_hidden;
-            apply_timeline_item_visibility(item, hide_redacted, &ignored_user_ids);
+            apply_timeline_item_visibility(
+                item,
+                hide_redacted,
+                &ignored_user_ids,
+                show_room_and_member_changes,
+            );
             if item.is_hidden != was_hidden {
                 core_diffs.push(TimelineDiff::Set {
                     index,
@@ -857,18 +863,28 @@ pub(crate) fn timeline_item_is_hidden(
     item: &TimelineItem,
     hide_redacted: bool,
     sender_ignored: bool,
+    show_room_and_member_changes: bool,
 ) -> bool {
     // A redacted message keeps its redaction placeholder, so `hide_redacted`
     // alone decides it; any other event with no renderable content is
     // suppressed by the content policy itself.
     let content_suppressed = !item.is_redacted && !has_user_visible_content(item);
-    content_suppressed || (hide_redacted && item.is_redacted) || sender_ignored
+    // #2041: the preference hides profile and membership lines. The rows it
+    // must never hide — encryption, room upgrade, ban, kick — carry no
+    // `notice_category`, so that one field is the whole exception.
+    let room_and_member_change_hidden =
+        !show_room_and_member_changes && item.notice_category.is_some();
+    content_suppressed
+        || (hide_redacted && item.is_redacted)
+        || sender_ignored
+        || room_and_member_change_hidden
 }
 
 pub(super) fn apply_timeline_item_visibility(
     item: &mut TimelineItem,
     hide_redacted: bool,
     ignored_user_ids: &std::collections::BTreeSet<String>,
+    show_room_and_member_changes: bool,
 ) {
     if !matches!(&item.id, TimelineItemId::Event { .. }) {
         return;
@@ -877,24 +893,40 @@ pub(super) fn apply_timeline_item_visibility(
         .sender
         .as_deref()
         .is_some_and(|sender| ignored_user_ids.contains(sender));
-    item.is_hidden = timeline_item_is_hidden(item, hide_redacted, sender_ignored);
+    item.is_hidden = timeline_item_is_hidden(
+        item,
+        hide_redacted,
+        sender_ignored,
+        show_room_and_member_changes,
+    );
 }
 
 pub(super) fn apply_timeline_item_visibility_to_diff(
     diff: &mut TimelineDiff,
     hide_redacted: bool,
     ignored_user_ids: &std::collections::BTreeSet<String>,
+    show_room_and_member_changes: bool,
 ) {
     match diff {
         TimelineDiff::PushFront { item }
         | TimelineDiff::PushBack { item }
         | TimelineDiff::Insert { item, .. }
         | TimelineDiff::Set { item, .. } => {
-            apply_timeline_item_visibility(item, hide_redacted, ignored_user_ids);
+            apply_timeline_item_visibility(
+                item,
+                hide_redacted,
+                ignored_user_ids,
+                show_room_and_member_changes,
+            );
         }
         TimelineDiff::Reset { items } => {
             for item in items {
-                apply_timeline_item_visibility(item, hide_redacted, ignored_user_ids);
+                apply_timeline_item_visibility(
+                    item,
+                    hide_redacted,
+                    ignored_user_ids,
+                    show_room_and_member_changes,
+                );
             }
         }
         TimelineDiff::Remove { .. } | TimelineDiff::Truncate { .. } | TimelineDiff::Clear => {}
@@ -2092,6 +2124,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
             let notice_i18n = message_projection
                 .as_ref()
                 .and_then(|projection| projection.notice_i18n.clone());
+            let notice_category = notice_category(content);
             let actionable_body = message_projection
                 .as_ref()
                 .filter(|projection| projection.body_is_user_content)
@@ -2226,6 +2259,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 sender_avatar,
                 body,
                 notice_i18n,
+                notice_category,
                 message_kind,
                 spoiler_spans,
                 timestamp_ms,
@@ -2268,6 +2302,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 sender_avatar: None,
                 body: None,
                 notice_i18n: None,
+                notice_category: None,
                 message_kind: TimelineMessageKind::default(),
                 spoiler_spans: Vec::new(),
                 timestamp_ms,
@@ -2718,6 +2753,45 @@ fn reply_quote_preview_from_message_projection(
         }),
     }?;
     collapsed_preview(source, REPLY_QUOTE_PREVIEW_MAX_CHARS)
+}
+
+/// #2041: which class of state change a notice row reports, when the
+/// "show room and member changes" preference governs it.
+///
+/// A ban or a kick is a moderation action, so it is deliberately not a class:
+/// hiding it would make a ban look permanent. Encryption and a room upgrade are
+/// neither a membership nor a profile change, so they never reach this
+/// decision.
+fn notice_category(content: &TimelineItemContent) -> Option<TimelineNoticeCategory> {
+    match content {
+        TimelineItemContent::ProfileChange(_) => Some(TimelineNoticeCategory::Profile),
+        TimelineItemContent::MembershipChange(change) => {
+            membership_notice_category(change.change())
+        }
+        _ => None,
+    }
+}
+
+fn membership_notice_category(change: Option<MembershipChange>) -> Option<TimelineNoticeCategory> {
+    // An explicit hideable set, not a catch-all: `None` means no membership
+    // change happened (an `m.room.member` event that only touched a power level
+    // or a reason), and `Error`/`NotImplemented` are rows this build does not
+    // understand. None of the three may be hidden.
+    match change {
+        Some(
+            MembershipChange::Joined
+            | MembershipChange::Left
+            | MembershipChange::Invited
+            | MembershipChange::InvitationAccepted
+            | MembershipChange::InvitationRejected
+            | MembershipChange::InvitationRevoked
+            | MembershipChange::Knocked
+            | MembershipChange::KnockAccepted
+            | MembershipChange::KnockRetracted
+            | MembershipChange::KnockDenied,
+        ) => Some(TimelineNoticeCategory::Membership),
+        _ => None,
+    }
 }
 
 fn message_projection_from_timeline_content(content: &TimelineItemContent) -> MessageProjection {
@@ -4568,6 +4642,9 @@ mod tests;
 
 #[cfg(test)]
 mod content_policy_tests;
+
+#[cfg(test)]
+mod notice_category_tests;
 
 #[cfg(test)]
 mod receipt_scope_tests;

@@ -11,7 +11,8 @@ import {
   Image,
   Link,
   LogOut,
-  Monitor
+  Monitor,
+  Users
 } from "lucide-react";
 
 import { uiDateTimeFormat } from "../domain/intlFormatCache";
@@ -858,6 +859,14 @@ export function UserSettingsPanel({
               {isSaving ? <span className="settings-save-state">{t("settings.saving")}</span> : null}
             </div>
             <div className="settings-toggle-list">
+              <DisplayToggle
+                label={t("settings.showRoomAndMemberChanges")}
+                description={t("settings.showRoomAndMemberChangesDescription")}
+                settingKey="show_room_and_member_changes"
+                icon="roomChanges"
+                current={selectedDisplay}
+                onSelect={onUpdateSettings}
+              />
               <TimelineThreadRootOrderToggle
                 label={t("settings.threadRootLatestReply")}
                 description={t("settings.threadRootLatestReplyDescription")}
@@ -1340,6 +1349,13 @@ function TimelineThreadRootOrderToggle({
   );
 }
 
+const DISPLAY_TOGGLE_ICONS = {
+  code: Code2,
+  hideRedacted: EyeOff,
+  link: Link,
+  roomChanges: Users
+};
+
 function DisplayToggle({
   label,
   description,
@@ -1351,12 +1367,12 @@ function DisplayToggle({
   label: string;
   description?: string;
   settingKey: keyof DisplaySettings;
-  icon: "code" | "hideRedacted" | "link";
+  icon: keyof typeof DISPLAY_TOGGLE_ICONS;
   current: DisplaySettings;
   onSelect: (patch: SettingsPatch) => void;
 }) {
   const checked = current[settingKey];
-  const Icon = icon === "code" ? Code2 : icon === "hideRedacted" ? EyeOff : Link;
+  const Icon = DISPLAY_TOGGLE_ICONS[icon];
   return (
     <button
       className="settings-toggle-row"

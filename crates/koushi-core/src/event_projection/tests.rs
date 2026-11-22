@@ -29,6 +29,7 @@ fn timeline_item_fixture(event_id: &str, is_redacted: bool) -> TimelineItem {
             Some("visible body".to_owned())
         },
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: Some(1),
@@ -103,6 +104,7 @@ fn timeline_item_serializes_thread_fields_reactions_and_redaction_affordances() 
         sender_avatar: None,
         body: Some("hello".to_owned()),
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: Some(1_234),
@@ -196,6 +198,7 @@ fn timeline_item_serializes_reply_quote_without_debugging_body() {
         sender_avatar: None,
         body: Some("reply body".to_owned()),
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: Some(1_234),
@@ -275,6 +278,7 @@ fn timeline_item_serializes_formatted_body_without_debugging_content() {
         sender_avatar: None,
         body: Some("plain fallback".to_owned()),
         notice_i18n: None,
+        notice_category: None,
         message_kind: TimelineMessageKind::Emote,
         spoiler_spans: vec![TimelineSpoilerSpan {
             start_utf16: 0,
@@ -359,6 +363,7 @@ fn timeline_item_serializes_rust_owned_message_actions() {
         sender_avatar: None,
         body: Some("copyable body".to_owned()),
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: Some(1_234),
@@ -647,6 +652,7 @@ fn timeline_item_serializes_outbound_send_state_without_raw_error() {
         sender_avatar: None,
         body: Some("hello".to_owned()),
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: Some(1_234),
@@ -700,6 +706,7 @@ fn timeline_item_serializes_media_metadata_without_encryption_secrets() {
         sender_avatar: None,
         body: Some("synthetic caption".to_owned()),
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: Some(1_234),
@@ -925,6 +932,7 @@ fn timeline_items_project_redacted_visibility_from_settings() {
 fn timeline_display_policy_update_serializes_and_redacts_debug() {
     let event = TimelineEvent::DisplayPolicyUpdated {
         hide_redacted: true,
+        show_room_and_member_changes: true,
     };
 
     let value = serde_json::to_value(&event).expect("DisplayPolicyUpdated serializes");
@@ -932,7 +940,8 @@ fn timeline_display_policy_update_serializes_and_redacts_debug() {
         value,
         json!({
                 "DisplayPolicyUpdated": {
-                    "hide_redacted": true
+                    "hide_redacted": true,
+                    "show_room_and_member_changes": true
             }
         })
     );
@@ -940,6 +949,7 @@ fn timeline_display_policy_update_serializes_and_redacts_debug() {
     let debug = format!("{event:?}");
     assert!(debug.contains("DisplayPolicyUpdated"), "{debug}");
     assert!(debug.contains("hide_redacted"), "{debug}");
+    assert!(debug.contains("show_room_and_member_changes"), "{debug}");
 }
 #[test]
 fn derive_display_label_updates_resolves_from_profile_state() {

@@ -63,6 +63,7 @@ pub(super) fn synthetic_timeline_item(
         sender_avatar: None,
         body: body.map(str::to_owned),
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: None,

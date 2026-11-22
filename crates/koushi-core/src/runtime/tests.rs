@@ -995,6 +995,7 @@ async fn settings_update_emits_timeline_display_policy_update() {
                     display: Some(DisplaySettings {
                         code_block_wrap: true,
                         hide_redacted: true,
+                        show_room_and_member_changes: false,
                         url_previews_enabled: true,
                         encrypted_url_previews_enabled: false,
                     }),
@@ -1006,14 +1007,20 @@ async fn settings_update_emits_timeline_display_policy_update() {
         .expect("settings update command should be accepted");
 
     let mut saw_policy_update = false;
+    let mut saw_room_and_member_changes = true;
     for _ in 0..4 {
         let event =
             tokio::time::timeout(std::time::Duration::from_secs(1), connection.recv_event())
                 .await
                 .expect("runtime should emit settings/timeline events")
                 .expect("event stream should stay open");
-        if let CoreEvent::Timeline(TimelineEvent::DisplayPolicyUpdated { hide_redacted }) = event {
+        if let CoreEvent::Timeline(TimelineEvent::DisplayPolicyUpdated {
+            hide_redacted,
+            show_room_and_member_changes,
+        }) = event
+        {
             saw_policy_update = hide_redacted;
+            saw_room_and_member_changes = show_room_and_member_changes;
             break;
         }
     }
@@ -1021,6 +1028,12 @@ async fn settings_update_emits_timeline_display_policy_update() {
     assert!(
         saw_policy_update,
         "SettingsChanged must reproject already-loaded redacted timeline rows"
+    );
+    // #2041: the same acknowledgement carries the room-and-member preference, so
+    // one settings change is one reprojection pass over the rows either hides.
+    assert!(
+        !saw_room_and_member_changes,
+        "the display policy update must carry show_room_and_member_changes"
     );
     runtime.shutdown_handle().abort();
 }

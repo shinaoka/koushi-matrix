@@ -509,6 +509,7 @@ pub(super) fn pending_send_item(
         sender_avatar: None,
         body: Some(body.to_owned()),
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: Some(
@@ -2333,6 +2334,7 @@ impl TimelineActor {
                     &mut item,
                     self.hide_redacted,
                     &self.ignored_user_ids,
+                    self.show_room_and_member_changes,
                 );
                 item
             })

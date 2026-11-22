@@ -869,6 +869,18 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   Expansion state is view-local session memory, so a room switch (the pane keys
   this view by room) starts collapsed. React never counts notices, compares notice
   text, or synthesizes a group id locally.
+- #2041: the "show room and member changes" preference is
+  `settings.values.display.show_room_and_member_changes` in `koushi-state`, and it
+  is applied by the same one visibility policy as `hide_redacted`, in two parallel
+  hops from one `SettingsChanged`: to the UI as `DisplayPolicyUpdated`, which the
+  renderer only acknowledges, and to Core as `DisplayPolicyChanged` → the manager
+  → the room actor, which recomputes `is_hidden` over the canonical window and
+  publishes ordinary `ItemsUpdated` diffs. `TimelineItem.notice_category` carries
+  the class Core classifies (`profile`, `membership`) and is unset for the rows
+  the preference must never hide (encryption, room upgrade, ban, kick, and a
+  member event that changes no membership at all); it is Core bookkeeping and
+  never crosses the wire, so the exception is data, not a renderer rule. The
+  renderer only ever honours `is_hidden`; it never reads the preference.
 - Message-action menus render only `TimelineItem.actions` affordances. Copy uses
   the Rust-projected row body or Rust-built permalink only; view source
   dispatches `load_message_source` and waits for `MessageSourceLoaded` before

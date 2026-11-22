@@ -810,7 +810,8 @@
   "timelineDisplayPolicyUpdated": {
     "event": {
       "DisplayPolicyUpdated": {
-        "hide_redacted": true
+        "hide_redacted": true,
+        "show_room_and_member_changes": true
       }
     },
     "kind": "Timeline"

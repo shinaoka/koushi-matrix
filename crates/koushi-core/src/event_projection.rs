@@ -61,6 +61,7 @@ pub(crate) fn project_timeline_item_display_labels(item: &mut TimelineItem, stat
             item,
             state.settings.values.display.hide_redacted,
             koushi_state::is_ignored_user(&state.profile, item.sender.as_deref()),
+            state.settings.values.display.show_room_and_member_changes,
         );
     }
     if let Some(reply_quote) = item.reply_quote.as_mut() {

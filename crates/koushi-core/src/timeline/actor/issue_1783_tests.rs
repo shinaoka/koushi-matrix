@@ -182,6 +182,7 @@ async fn spawn_room_actor(
         manager.thread_root_projection_service.clone(),
         koushi_state::TimelineThreadRootOrder::LatestReply,
         false,
+        true,
         manager.timeline_actor_generations.clone(),
         actor_generation,
         None,

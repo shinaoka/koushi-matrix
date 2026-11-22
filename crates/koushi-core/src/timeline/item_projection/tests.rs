@@ -124,16 +124,16 @@ fn ignored_sender_suppression_preserves_divider_and_restores_event() {
     let mut event = timeline_item("$ignored:test", Some("body"), "@ignored:test", false);
     let ignored = BTreeSet::from(["@ignored:test".to_owned()]);
 
-    apply_timeline_item_visibility(&mut divider, false, &ignored);
-    apply_timeline_item_visibility(&mut event, false, &ignored);
+    apply_timeline_item_visibility(&mut divider, false, &ignored, true);
+    apply_timeline_item_visibility(&mut event, false, &ignored, true);
     assert!(
         !divider.is_hidden,
         "ignoring a sender must not hide a date divider"
     );
     assert!(event.is_hidden);
 
-    apply_timeline_item_visibility(&mut divider, false, &BTreeSet::new());
-    apply_timeline_item_visibility(&mut event, false, &BTreeSet::new());
+    apply_timeline_item_visibility(&mut divider, false, &BTreeSet::new(), true);
+    apply_timeline_item_visibility(&mut event, false, &BTreeSet::new(), true);
     assert!(
         !divider.is_hidden,
         "unignore must leave the date divider visible"

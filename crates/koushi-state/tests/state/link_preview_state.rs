@@ -67,6 +67,7 @@ fn settings_update_toggles_global_url_previews() {
                 display: Some(DisplaySettings {
                     code_block_wrap: true,
                     hide_redacted: false,
+                    show_room_and_member_changes: true,
                     url_previews_enabled: false,
                     encrypted_url_previews_enabled: false,
                 }),
@@ -99,6 +100,7 @@ fn settings_update_toggles_encrypted_global_url_previews() {
                 display: Some(DisplaySettings {
                     code_block_wrap: true,
                     hide_redacted: false,
+                    show_room_and_member_changes: true,
                     url_previews_enabled: true,
                     encrypted_url_previews_enabled: true,
                 }),

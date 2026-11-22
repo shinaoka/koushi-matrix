@@ -167,6 +167,7 @@ enum SettingsPolicyMessage {
     Display {
         thread_root_order: koushi_state::TimelineThreadRootOrder,
         hide_redacted: bool,
+        show_room_and_member_changes: bool,
     },
     LinkPreviews {
         unencrypted: bool,
@@ -184,9 +185,11 @@ impl SettingsPolicyMessage {
             Self::Display {
                 thread_root_order,
                 hide_redacted,
+                show_room_and_member_changes,
             } => AccountMessage::DisplayPolicyChanged {
                 thread_root_order,
                 hide_redacted,
+                show_room_and_member_changes,
             },
             Self::LinkPreviews {
                 unencrypted,
@@ -308,6 +311,7 @@ impl AppActor {
             SettingsPolicyMessage::Display {
                 thread_root_order: values.timeline.thread_root_order,
                 hide_redacted: values.display.hide_redacted,
+                show_room_and_member_changes: values.display.show_room_and_member_changes,
             },
         ]);
         if self.current_account_key().is_some() {

@@ -679,6 +679,7 @@ export type TimelineEvent =
   | {
       DisplayPolicyUpdated: {
         hide_redacted: boolean;
+        show_room_and_member_changes: boolean;
       };
     }
   | {

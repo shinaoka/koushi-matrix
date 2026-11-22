@@ -37,7 +37,7 @@ translated app.
 | Scope and category | Settings and actions |
 | --- | --- |
 | App Settings → Appearance (外観) | Language (English, 日本語, 简体中文, 繁體中文, or 한국어); theme; display density; UI font and emoji style. |
-| App Settings → Preferences (環境設定) | Code-block wrapping; hiding removed messages; close to tray where configurable; the saved emoji picker size with **Reset to default**; placement of threaded conversations at their latest reply. |
+| App Settings → Preferences (環境設定) | Code-block wrapping; hiding removed messages; showing room and member changes; close to tray where configurable; the saved emoji picker size with **Reset to default**; placement of threaded conversations at their latest reply. |
 | App Settings → Keyboard (キーボード) | Send-message shortcut (Enter or the platform modifier+Enter); reference list of keyboard shortcuts and their availability. |
 | App Settings → Search history (検索履歴) | Shared background-work speed and pause/resume control. Search crawling and media prefetch use this budget across all accounts. **Off** pauses both. |
 | App Settings → AI assistants (AI アシスタント) | Switch that lets AI assistants on this computer connect; each assistant's five permissions (Read, Send, Attachments, Change messages, Write drafts) as separate per-account grants, with **Remove access**; **Register** buttons that run Claude Code's, Codex's, or pi's own registration command; **Create Claude Desktop extension** on macOS and Windows; registration text to copy for every client, including DeepSeek Harness and other MCP clients. See [Connect an AI assistant](ai-assistants.md). |
@@ -121,6 +121,24 @@ For consequences and prerequisites, see [Search](search.md),
 
 Older history always loads automatically when a room or existing thread does not
 fill the viewport or you scroll near its start. There is no switch to disable it.
+
+**Show room and member changes** decides whether a room's profile and membership
+notices appear in a timeline: someone changing their display name, picture or
+room profile, and someone joining, leaving, being invited or knocking. Turning it
+off removes those lines from every room and thread, and turning it back on brings
+them back; nothing is deleted and the events stay searchable. Four lines always
+stay visible whatever the switch says, because a timeline that hides them would
+mislead: **encryption enabled**, **room upgrade**, **ban** and **kick**. A
+membership line that reports no membership change at all (for example an update
+that only changes a power level) stays visible too, since it is not a join or a
+leave.
+
+The switch is applied by Koushi's core, so the change arrives as the same kind of
+timeline update as any other, not as a local filter that could disagree with the
+stored order. Because it hides rows rather than counting them as read, the unread
+badge does not change, but the divider that separates read from unread can move
+to the next line that is still shown. Profile bursts still group into one line
+with a count while the switch is on.
 
 ## Manage your account in a browser
 

@@ -1259,6 +1259,7 @@ test("rich formatted timeline rows render Rust-owned DTOs and code-wrap setting"
         display: {
           code_block_wrap: false,
           hide_redacted: true,
+          show_room_and_member_changes: true,
           url_previews_enabled: true,
           encrypted_url_previews_enabled: false
         }
@@ -1364,6 +1365,7 @@ test("hide deleted messages setting hides only Rust-marked redacted timeline row
         display: {
           code_block_wrap: true,
           hide_redacted: true,
+          show_room_and_member_changes: true,
           url_previews_enabled: true,
           encrypted_url_previews_enabled: false
         }
@@ -1720,6 +1722,7 @@ test("URL previews global toggle invokes update_settings", async ({ page }) => {
         display: {
           code_block_wrap: true,
           hide_redacted: true,
+          show_room_and_member_changes: true,
           url_previews_enabled: false,
           encrypted_url_previews_enabled: false
         }

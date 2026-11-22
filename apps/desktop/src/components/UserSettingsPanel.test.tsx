@@ -42,6 +42,7 @@ describe("UserSettingsPanel", () => {
       display: {
         code_block_wrap: true,
         hide_redacted: false,
+        show_room_and_member_changes: true,
         url_previews_enabled: true,
         encrypted_url_previews_enabled: false
       },
@@ -748,6 +749,50 @@ describe("UserSettingsPanel", () => {
     expect(screen.queryByRole("heading", { name: "Accounts" })).toBeNull();
   });
 
+  // #2041: the preference belongs to the Timeline section of app settings, and
+  // it only ever leaves the panel as a settings patch. Hiding the rows is Core's
+  // job through the display-policy path, not the renderer's.
+  test("offers the room-and-member-change preference in the Timeline section", () => {
+    const onUpdateSettings = vi.fn();
+    render(
+      <UserSettingsPanel
+        settingsScope="app"
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+        onUpdateSettings={onUpdateSettings}
+      />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Preferences" }));
+
+    const timelineSection = document.getElementById("settings-timeline");
+    expect(timelineSection).not.toBeNull();
+    const toggle = within(timelineSection!).getByRole("switch", {
+      name: t("settings.showRoomAndMemberChanges")
+    });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(
+      within(timelineSection!).getByText(t("settings.showRoomAndMemberChangesDescription"))
+    ).toBeTruthy();
+
+    fireEvent.click(toggle);
+
+    expect(onUpdateSettings).toHaveBeenCalledWith({
+      display: { ...settings.values.display, show_room_and_member_changes: false }
+    });
+  });
+
   test("exposes the shared background-work budget and pause/resume actions", () => {
     const onUpdateSettings = vi.fn();
     const { rerender } = render(
@@ -1250,6 +1295,7 @@ describe("UserSettingsPanel", () => {
             display: {
               code_block_wrap: false,
               hide_redacted: true,
+              show_room_and_member_changes: true,
               url_previews_enabled: true,
               encrypted_url_previews_enabled: false
             }

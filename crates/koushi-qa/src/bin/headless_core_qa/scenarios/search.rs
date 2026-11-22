@@ -274,6 +274,7 @@ pub(super) async fn run_hide_redacted_stage(
             display: Some(DisplaySettings {
                 code_block_wrap: true,
                 hide_redacted: true,
+                show_room_and_member_changes: true,
                 url_previews_enabled: true,
                 encrypted_url_previews_enabled: false,
             }),
@@ -305,7 +306,7 @@ async fn wait_for_display_policy_update(
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
-            CoreEvent::Timeline(TimelineEvent::DisplayPolicyUpdated { hide_redacted })
+            CoreEvent::Timeline(TimelineEvent::DisplayPolicyUpdated { hide_redacted, .. })
                 if hide_redacted == expected_hide_redacted =>
             {
                 return Ok(());
@@ -326,6 +327,7 @@ fn assert_hide_redacted_projection() -> Result<(), String> {
     state.settings.values.display = DisplaySettings {
         code_block_wrap: true,
         hide_redacted: true,
+        show_room_and_member_changes: true,
         url_previews_enabled: true,
         encrypted_url_previews_enabled: false,
     };

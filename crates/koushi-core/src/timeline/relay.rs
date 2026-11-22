@@ -452,6 +452,7 @@ impl TimelineActor {
                 diff,
                 self.hide_redacted,
                 &self.ignored_user_ids,
+                self.show_room_and_member_changes,
             );
         }
         let mut batch_media_sources = std::collections::HashMap::new();
@@ -1155,6 +1156,7 @@ impl TimelineActor {
                     &mut item,
                     self.hide_redacted,
                     &self.ignored_user_ids,
+                    self.show_room_and_member_changes,
                 );
                 item
             })

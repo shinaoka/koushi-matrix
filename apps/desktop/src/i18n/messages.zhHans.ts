@@ -918,6 +918,8 @@ export const zhHans: Catalog = {
   "settings.densityComfortable": "宽松",
   "settings.codeBlockWrap": "代码块中的长行自动换行",
   "settings.hideRedacted": "隐藏已删除的消息",
+  "settings.showRoomAndMemberChanges": "显示房间和成员变更",
+  "settings.showRoomAndMemberChangesDescription": "个人资料和成员身份通知（例如名称变更或有人加入）。加密、房间升级、封禁和移除始终显示。",
   "settings.closeToTray": "关闭按钮最小化到托盘",
   "settings.closeToTrayDescription": "关闭窗口后，Koushi 将继续在托盘中运行。要退出，请使用托盘菜单中的“退出”。",
   "settings.autoUpdate": "自动检查更新",

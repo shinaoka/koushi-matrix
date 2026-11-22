@@ -71,6 +71,7 @@ pub(super) fn timeline_item(
         sender_avatar: None,
         body: body.map(ToOwned::to_owned),
         notice_i18n: None,
+        notice_category: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: Some(1),
@@ -217,6 +218,7 @@ pub(super) fn live_tail_test_manager(
         account_work: AccountWorkScheduler::default(),
         thread_root_order: koushi_state::TimelineThreadRootOrder::LatestReply,
         hide_redacted: false,
+        show_room_and_member_changes: true,
         thread_root_projection_service: Arc::new(
             Mutex::new(ThreadRootProjectionService::default()),
         ),
