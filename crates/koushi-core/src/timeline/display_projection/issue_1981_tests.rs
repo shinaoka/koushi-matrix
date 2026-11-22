@@ -65,6 +65,9 @@ fn a_moved_thread_root_is_matched_by_its_content_event_id() {
         content_event_id: Some("$root:example.invalid".to_owned()),
         activity_event_id: Some("$latest-reply:example.invalid".to_owned()),
         display_timestamp_ms: None,
+        group_count: 1,
+        group_position: 0,
+        group_id: None,
     });
     let items = vec![root];
     assert!(display_items_show_event(&items, "$root:example.invalid"));

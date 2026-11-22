@@ -858,6 +858,17 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   active session, queries the full room/session identity only inside the trusted
   SDK boundary, and projects a closed reason or `notRetained`. React renders the
   enum and never derives a reason from dates, fingerprints, counters, or timing.
+- #2041: `TimelineDisplayMetadata.group_count` / `group_position` / `group_id`
+  are Rust-owned. Core decides which consecutive state notices form one display
+  row, how many events it stands for, and where the group breaks (a different
+  notice kind, more than five minutes apart, a date divider, the read marker).
+  `TimelineView` only decides how many of those rows are drawn: it drops a
+  collapsed group's members and keeps the head, and it keeps a group open when it
+  holds a navigation target. The unread/read-marker divider needs no render-time
+  rule because Core's cut already makes the row it anchors a group head.
+  Expansion state is view-local session memory, so a room switch (the pane keys
+  this view by room) starts collapsed. React never counts notices, compares notice
+  text, or synthesizes a group id locally.
 - Message-action menus render only `TimelineItem.actions` affordances. Copy uses
   the Rust-projected row body or Rust-built permalink only; view source
   dispatches `load_message_source` and waits for `MessageSourceLoaded` before

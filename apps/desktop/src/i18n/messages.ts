@@ -1819,6 +1819,7 @@ export type MessageId =
   | "timeline.notice.profileAvatarChanged"
   | "timeline.notice.profileDisplayNameAndAvatarChanged"
   | "timeline.notice.profileUpdated"
+  | "timeline.noticeGroupToggle"
   | "timeline.notice.roomNameSet"
   | "timeline.notice.roomNameChanged"
   | "timeline.notice.roomNameRemoved"
@@ -4359,6 +4360,7 @@ const en: Catalog = {
   "timeline.notice.profileAvatarChanged": "{sender} changed their profile picture",
   "timeline.notice.profileDisplayNameAndAvatarChanged": "{sender} changed their display name and profile picture",
   "timeline.notice.profileUpdated": "{sender} updated their room profile",
+  "timeline.noticeGroupToggle": "{count} similar notices",
   "timeline.notice.roomNameSet": "set the room name to {newName}",
   "timeline.notice.roomNameChanged": "changed the room name from {oldName} to {newName}",
   "timeline.notice.roomNameRemoved": "removed the room name",
@@ -6770,6 +6772,7 @@ const ja: Catalog = {
   "timeline.notice.profileAvatarChanged": "{sender}がプロフィール画像を変更しました",
   "timeline.notice.profileDisplayNameAndAvatarChanged": "{sender}が表示名とプロフィール画像を変更しました",
   "timeline.notice.profileUpdated": "{sender}がルーム内のプロフィールを更新しました",
+  "timeline.noticeGroupToggle": "同じ通知{count}件",
   "timeline.notice.roomNameSet": "ルーム名を「{newName}」に設定しました",
   "timeline.notice.roomNameChanged": "ルーム名を「{oldName}」から「{newName}」に変更しました",
   "timeline.notice.roomNameRemoved": "ルーム名を削除しました",

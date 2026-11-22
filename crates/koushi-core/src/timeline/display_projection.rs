@@ -6,7 +6,7 @@ use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
 use crate::threads_list::ThreadRootDisplayData;
 use koushi_protocol::event::{
     TimelineDiff, TimelineDisplayKind, TimelineDisplayMetadata, TimelineItem, TimelineItemId,
-    TimelineSendState, TimelineViewportObservation,
+    TimelineMessageKind, TimelineNoticeI18nKey, TimelineSendState, TimelineViewportObservation,
 };
 use koushi_protocol::ids::{TimelineKey, TimelineKind};
 use koushi_state::{LiveEventReceipts, TimelineThreadRootOrder};
@@ -18,6 +18,8 @@ use super::navigation::{
     TimelineActorGenerationLease,
 };
 // END GENERATED SIBLING IMPORTS
+
+use super::item_projection::timeline_item_event_id;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 
@@ -1408,7 +1410,112 @@ fn project_display_items(
     // authority is rebuilt per projection and never stored in a row.
     let mut items = assemble_display_items(state, context);
     context.send_states.apply_all(&mut items);
+    // #2041: display-only grouping, after every row has its metadata.
+    if context.room_window {
+        group_consecutive_notices(&mut items);
+    }
     items
+}
+
+/// #2041: how far apart two notices may be and still count as one burst.
+///
+/// The single source of the grouping threshold: the tests read it from here
+/// instead of repeating the number.
+pub(super) const NOTICE_GROUP_MAX_GAP_MS: u64 = 5 * 60 * 1_000;
+
+/// #2041: collapse a run of same-kind notices into one display row plus a count.
+///
+/// Only the row metadata changes: every notice keeps its own row here, in the
+/// canonical timeline and in the DTO stream, so search, read state, pins and
+/// reactions still address the individual event. The renderer draws the head
+/// row alone until the group is expanded, and Core is the one that decides
+/// which rows form a group (row visibility and order are Core-owned).
+fn group_consecutive_notices(items: &mut [TimelineItem]) {
+    let mut run: Vec<usize> = Vec::new();
+    for index in 0..items.len() {
+        let continues = run
+            .last()
+            .is_some_and(|previous| notice_continues_group(&items[*previous], &items[index]));
+        if continues {
+            run.push(index);
+            continue;
+        }
+        apply_notice_group(items, &run);
+        run.clear();
+        if notice_can_join_group(&items[index]) {
+            run.push(index);
+        }
+    }
+    apply_notice_group(items, &run);
+}
+
+/// Whether `item` is a notice the grouping rule may hide behind a count.
+///
+/// #2041: a notice whose row carries per-event work stays a row of its own —
+/// an undecryptable message keeps its key-request control, a call or a poll
+/// keeps its own wording, and a malformed or unsupported event keeps its
+/// explanation. Everything else is a state notice, where a burst is noise.
+fn notice_can_join_group(item: &TimelineItem) -> bool {
+    if item.is_hidden || item.sender.is_none() || item.timestamp_ms.is_none() {
+        return false;
+    }
+    if item.message_kind != TimelineMessageKind::Notice {
+        return false;
+    }
+    if !matches!(item.id, TimelineItemId::Event { .. }) {
+        return false;
+    }
+    let Some(notice) = item.notice_i18n.as_ref() else {
+        return false;
+    };
+    !matches!(
+        notice.key,
+        TimelineNoticeI18nKey::UnableToDecrypt
+            | TimelineNoticeI18nKey::Call
+            | TimelineNoticeI18nKey::Poll
+            | TimelineNoticeI18nKey::LiveLocation
+            | TimelineNoticeI18nKey::MalformedEvent
+            | TimelineNoticeI18nKey::UnsupportedMessage
+    )
+}
+
+/// Whether `item` repeats `previous`'s sentence close enough in time.
+///
+/// The grouping key is the structured notice (kind plus its parameters), never
+/// the rendered body, so two different renames never collapse into one line.
+/// A date divider, the read marker or any other row breaks the run before this
+/// check runs, which is what keeps a group inside one day and on one side of the
+/// unread divider. A repair gap is not visible here: the desktop inserts its
+/// placeholder after this projection, so a group can span one.
+fn notice_continues_group(previous: &TimelineItem, item: &TimelineItem) -> bool {
+    if !notice_can_join_group(item) {
+        return false;
+    }
+    if previous.sender != item.sender || previous.notice_i18n != item.notice_i18n {
+        return false;
+    }
+    let (Some(previous_at), Some(at)) = (previous.timestamp_ms, item.timestamp_ms) else {
+        return false;
+    };
+    at >= previous_at && at - previous_at <= NOTICE_GROUP_MAX_GAP_MS
+}
+
+fn apply_notice_group(items: &mut [TimelineItem], run: &[usize]) {
+    if run.len() < 2 {
+        return;
+    }
+    let Some(head_event_id) = timeline_item_event_id(&items[run[0]]) else {
+        return;
+    };
+    let group_id = format!("notice-group:{head_event_id}");
+    let count = run.len() as u32;
+    for (position, index) in run.iter().copied().enumerate() {
+        if let Some(metadata) = items[index].display_metadata.as_mut() {
+            metadata.group_count = count;
+            metadata.group_position = position as u32;
+            metadata.group_id = Some(group_id.clone());
+        }
+    }
 }
 
 fn assemble_display_items(
@@ -1659,6 +1766,9 @@ fn decorate_event_item(item: &TimelineItem) -> Option<TimelineItem> {
         content_event_id: content_event_id.clone(),
         activity_event_id: content_event_id,
         display_timestamp_ms: timestamp,
+        group_count: 1,
+        group_position: 0,
+        group_id: None,
     });
     Some(item)
 }
@@ -1702,6 +1812,9 @@ fn root_display_item(
         content_event_id: Some(root.root_event_id.clone()),
         activity_event_id: Some(activity_event_id),
         display_timestamp_ms,
+        group_count: 1,
+        group_position: 0,
+        group_id: None,
     });
     item
 }
@@ -2278,6 +2391,10 @@ mod issue_1692_tests;
 #[cfg(test)]
 #[path = "display_projection/issue_1981_tests.rs"]
 mod issue_1981_tests;
+
+#[cfg(test)]
+#[path = "display_projection/issue_2041_tests.rs"]
+mod issue_2041_tests;
 
 #[cfg(test)]
 #[path = "display_projection/send_state_tests.rs"]
