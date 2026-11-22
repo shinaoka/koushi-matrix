@@ -1489,18 +1489,21 @@ stateDiagram-v2
     BoundaryUnset --> BoundarySet: first target
     BoundarySet --> BoundarySet: same target [idempotent]
     BoundarySet --> BoundarySet: strictly greater rank
-    BoundarySet --> BoundarySet: observation, index cannot place either side
+    BoundarySet --> BoundarySet: observation, index cannot place current
     BoundarySet --> BoundarySet: acknowledged write, index cannot place current
 ```
 
 - Both positions are read from one index snapshot; a rank is only comparable
   inside its own generation, so the actor re-derives both instead of trusting a
   stored one.
-- A boundary the resident window cannot place is incomparable. An observation
-  keeps it and a later observation reconciles. The acknowledged write replaces
-  it: that boundary can never become observable again, so keeping it would leave
-  the scope pinned forever. This is the case a room enters on open when its
-  marker predates the live-edge window.
+- A boundary the resident window cannot place is incomparable: the index holds
+  only what it can place, so neither side can be ordered. An observation keeps
+  it and reconciles once the index places it again -- for a scope whose reads
+  never produce a write (a thread with receipts disabled), only reopening does.
+  The acknowledged write replaces it, because in the case this exists for, the
+  boundary does not become placeable on its own: a room opens with a marker
+  older than its live-edge window whenever more events arrived than the window
+  holds, and keeping it there would pin the scope for the actor's whole life.
 
 Rust keeps the local viewed boundary separate from server-confirmed read state.
 For the displayed read divider, comparable local and confirmed boundaries in the

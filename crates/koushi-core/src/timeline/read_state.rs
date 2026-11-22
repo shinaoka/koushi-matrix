@@ -2123,7 +2123,7 @@ impl TimelineActor {
     /// Applies one confirmed read boundary through the shared ordering rule
     /// (#2030). A projection can be queued behind a newer write, and an
     /// authoritative observation can arrive after this scope already confirmed a
-    /// later position, so the boundary only ever moves forward.
+    /// later position, so neither can move the boundary backwards.
     ///
     /// Both positions are re-derived from the live index rather than compared
     /// against a stored rank: a rank is only meaningful inside its own index

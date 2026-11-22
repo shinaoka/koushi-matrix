@@ -1118,6 +1118,9 @@ fn waiter_count(state: &ReadKeyState) -> usize {
         .map_or(0, |desired| desired.waiters.len())
 }
 
+/// Ranks are only comparable inside one index generation, and this rule's
+/// callers pass targets of different provenance (a persisted intent against a
+/// fresh observation), so the generation guard is load-bearing here.
 fn dominates(left: &ReadTarget, right: &ReadTarget) -> bool {
     matches!(
         (left.position, right.position),
@@ -1134,7 +1137,7 @@ fn same_target_or_dominated(confirmed: &ReadTarget, candidate: &ReadTarget) -> b
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BoundaryWriter {
     /// The read write the user's own action just completed and the server
-    /// acknowledged. It is the newest thing that happened locally.
+    /// acknowledged -- a real read of a real event, not a re-delivery.
     Acknowledged,
     /// An authoritative observation from sync, or a projection derived from one.
     Observed,
@@ -1145,20 +1148,24 @@ pub(crate) enum BoundaryWriter {
 ///
 /// One boundary exists per timeline key -- a room's main scope or one thread --
 /// and both writers, an acknowledged write and an authoritative observation,
-/// merge through this rule, so a delivery that arrives late can never move the
-/// boundary backwards.
+/// merge through this rule. A re-delivery of an older position therefore cannot
+/// move the boundary backwards; only an acknowledged write can, and only in the
+/// incomparable case below.
 ///
 /// Order is only ever taken from the timeline's canonical index: the incoming
 /// target replaces the current one when the index puts it at a strictly greater
 /// rank. Both positions must come from one index snapshot, which is what both
-/// callers do. A target the index cannot place is incomparable, so:
+/// callers do. A boundary the index cannot place is incomparable -- the resident
+/// window holds what it can place, so neither side can be ordered -- and the
+/// writers differ there:
 ///
-/// - an observation keeps the current boundary and reconciles on a later
-///   observation, because a window that does not contain the confirmed event
-///   cannot prove anything about either side;
-/// - an acknowledged write replaces it, because the user's own read just
-///   succeeded and a boundary the index cannot place is never observable: it
-///   would otherwise pin the scope for the actor's whole life.
+/// - an observation keeps the current boundary and a later observation
+///   reconciles once the index can place it. A scope whose reads never produce a
+///   write (a thread with receipts disabled) only reconciles by being reopened;
+/// - an acknowledged write replaces it. The write just read a real event, and in
+///   the case this exists for -- a room opening with a marker older than its
+///   live-edge window -- the boundary does not become placeable again on its own,
+///   so keeping it would pin the scope for the actor's whole life.
 ///
 /// Repeating the same target is idempotent. Event ids and arrival order are
 /// never evidence of order.

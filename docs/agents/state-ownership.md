@@ -307,14 +307,13 @@ through `AccountActor` to a session-generation-fenced manager control update;
 React cannot change this policy locally.
 
 There is one confirmed boundary per account session and read scope (a room's
-main scope, or one thread); the merge rule is specified in
+main scope, or one thread), written by an acknowledged read and by
+authoritative observations through one merge rule; the rule, its incomparable
+case, and which writer may replace a boundary the resident window cannot place
+are specified in
 [the state machine](../architecture/state-machine.md#confirmed-read-boundary).
-An acknowledged write and an authoritative sync observation merge through that
-one rule, and a projection the actor applies goes through it too, so neither a
-late observation nor a queued projection can roll the timeline back. A boundary
-the resident window cannot place is never observable, which is why the write
-that just succeeded may replace it while an observation may not: keeping it
-would pin the scope for the actor's whole life.
+Every projection `TimelineActor` applies goes through the same rule, so a
+projection queued behind a newer write cannot roll the timeline back.
 
 `TimelineNavigationSnapshot.read_marker_event_id` and unread counts remain the
 server-confirmed boundary. `local_viewed_event_id` and

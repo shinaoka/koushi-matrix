@@ -3487,6 +3487,9 @@ async fn an_acknowledged_write_advances_a_boundary_the_index_cannot_place() {
     );
 
     // The real write path: admit the read, wake it, and let the run succeed.
+    // Production reaches this through `ReadWorkerCompletion::ActorApplied`
+    // (`read_state.rs:1330-1341`); the hop from the actor's acknowledgement into
+    // `settle_read_operation` is covered by `read_state/tests.rs`.
     let session_generation = manager.read_workers.state.session_generation();
     manager.read_workers.state.admit(
         session_generation,
@@ -3558,11 +3561,7 @@ fn read_scope_with_confirmed_boundary(
     let (read_network_tx, _read_network_rx) = mpsc::unbounded_channel();
     manager.read_workers =
         ReadWorkerSupervisor::synthetic(read_network_tx, Duration::from_secs(30));
-    let position = ReadPositionEvidence {
-        generation: u128::from(generation) << 64,
-        rank: rank.unwrap_or(20),
-    };
-    let target = ReadTarget::with_position(confirmed.to_owned(), position);
+    let target = ReadTarget::new(confirmed.to_owned());
     manager.read_workers.local_read_correlations.insert(
         key.clone(),
         LocalReadCorrelation {
