@@ -9,6 +9,9 @@ pub(crate) enum RoomEventLookupResult {
     },
     Missing,
     Failed,
+    /// The room event cache does not hold the target and no remote lookup ran.
+    /// The focused build's `/context` is the first remote lookup (#2039).
+    NotCached,
 }
 
 mod account_management;

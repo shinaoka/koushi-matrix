@@ -3,6 +3,7 @@ mod runtime_activity;
 mod runtime_command_admission;
 mod runtime_core;
 mod runtime_e2ee;
+mod runtime_event_navigation_context;
 mod runtime_intent_lifecycle;
 mod runtime_navigation_network;
 mod runtime_notification_settings;

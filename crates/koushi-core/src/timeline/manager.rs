@@ -2396,7 +2396,8 @@ impl TimelineManagerActor {
                 actor_generation,
                 Some(sdk_started.elapsed().as_millis()),
             );
-            let timeline = timeline_result.map_err(|_| FocusedBuildFailure::Sdk)?;
+            let timeline =
+                timeline_result.map_err(|error| FocusedBuildFailure::from_build_error(&error))?;
             // #1676: the build just memoized this cache under the same key, so
             // the lookup returns it without another `/context` request.
             let focused_cache = match cache_key {
@@ -2443,6 +2444,18 @@ impl TimelineManagerActor {
             {
                 Some(session) => {
                     let subscription_generation = self.current_subscription_generation();
+                    // #2039: the build's `/context` decided whether the target
+                    // is a thread reply. Hand that to the commit AppActor reads
+                    // before any actor can publish it.
+                    if let Some(cache) = &focused_cache
+                        && let Ok(Some(root)) = cache.thread_root().await
+                    {
+                        self.timeline_actor_generations.record_focused_thread_root(
+                            &key,
+                            pending.activation.generation,
+                            root.to_string(),
+                        );
+                    }
                     let handle = Box::pin(self.spawn_timeline_actor(
                         session,
                         pending.request_id,

@@ -35,6 +35,7 @@ fn focused_projection_commit(
         timeline_generation: TimelineGeneration(0),
         item_count: u64::from(target_present),
         target_present,
+        thread_root_event_id: None,
     }
 }
 

@@ -3755,7 +3755,7 @@ async fn run_app_actor_cross_room_missing_navigation(
     ));
 
     loop {
-        if let AccountMessage::EnsureRoomEventCached { response_tx, .. } =
+        if let AccountMessage::FindCachedRoomEvent { response_tx, .. } =
             tokio::time::timeout(Duration::from_secs(1), account_rx.recv())
                 .await
                 .expect("lookup should be routed")
@@ -4202,7 +4202,7 @@ async fn event_navigation_preserves_opening_through_internal_room_selection() {
     ));
 
     loop {
-        if let AccountMessage::EnsureRoomEventCached { response_tx, .. } =
+        if let AccountMessage::FindCachedRoomEvent { response_tx, .. } =
             tokio::time::timeout(Duration::from_secs(1), account_rx.recv())
                 .await
                 .expect("lookup should be routed")
@@ -4235,6 +4235,7 @@ async fn event_navigation_preserves_opening_through_internal_room_selection() {
             timeline_generation: TimelineGeneration(1),
             item_count: 1,
             target_present: true,
+            thread_root_event_id: None,
         })
         .expect("focused projection commit");
 
@@ -4405,6 +4406,7 @@ async fn event_navigation_external_room_selection_fences_stale_work() {
             timeline_generation: TimelineGeneration(1),
             item_count: 1,
             target_present: true,
+            thread_root_event_id: None,
         })
         .expect("delayed stale focused commit");
     for _ in 0..4 {
@@ -4583,6 +4585,7 @@ async fn run_event_navigation_latest_source_case(
             timeline_generation: TimelineGeneration(1),
             item_count: 1,
             target_present: true,
+            thread_root_event_id: None,
         })
         .expect("delayed first focused commit");
     for _ in 0..4 {
@@ -4601,7 +4604,7 @@ async fn run_event_navigation_latest_source_case(
     loop {
         // #1060: the first navigation's room is already active, so its
         // superseded lookup may be queued ahead of the latest one.
-        if let AccountMessage::EnsureRoomEventCached {
+        if let AccountMessage::FindCachedRoomEvent {
             response_tx,
             event_id,
             ..
@@ -4820,6 +4823,7 @@ async fn run_event_navigation_external_supersession_case(command: CoreCommand) {
             timeline_generation: TimelineGeneration(1),
             item_count: 1,
             target_present: true,
+            thread_root_event_id: None,
         })
         .expect("delayed stale focused commit");
     for _ in 0..4 {
@@ -5179,6 +5183,7 @@ async fn focused_subscription_failure_settles_the_current_event_navigation_promp
                 room_id: room_id.clone(),
                 event_id: "$stale-event:example.invalid".to_owned(),
                 message: "timeline subscription failed".to_owned(),
+                failure_kind: koushi_state::OperationFailureKind::Sdk,
             }],
             ActionBatchOrigin::Actor,
         )
@@ -5195,6 +5200,7 @@ async fn focused_subscription_failure_settles_the_current_event_navigation_promp
                 room_id: room_id.clone(),
                 event_id: event_id.clone(),
                 message: "timeline subscription failed".to_owned(),
+                failure_kind: koushi_state::OperationFailureKind::Sdk,
             }],
             ActionBatchOrigin::Actor,
         )

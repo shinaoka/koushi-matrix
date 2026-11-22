@@ -361,6 +361,14 @@ pub(crate) enum AccountMessage {
         event_id: String,
         response_tx: oneshot::Sender<super::RoomEventLookupResult>,
     },
+    /// #2039: look the target up in the room event cache only. It never
+    /// issues `/event`; a cold target is left to the focused build's `/context`.
+    FindCachedRoomEvent {
+        request_id: RequestId,
+        room_id: String,
+        event_id: String,
+        response_tx: oneshot::Sender<super::RoomEventLookupResult>,
+    },
     /// #1981: whether the active account's live `Room` timeline currently
     /// shows `event_id` as a display row. `false` when no such timeline is
     /// retained.
@@ -2302,6 +2310,17 @@ impl AccountActor {
                         self.handle_ensure_room_event_cached(request_id, room_id, event_id),
                     )
                     .await;
+                    let _ = response_tx.send(result);
+                }
+                AccountMessage::FindCachedRoomEvent {
+                    request_id,
+                    room_id,
+                    event_id,
+                    response_tx,
+                } => {
+                    let result =
+                        Box::pin(self.handle_find_cached_room_event(request_id, room_id, event_id))
+                            .await;
                     let _ = response_tx.send(result);
                 }
                 AccountMessage::RoomTimelineShowsEvent {

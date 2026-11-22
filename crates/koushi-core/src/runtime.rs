@@ -2115,11 +2115,15 @@ impl AppActor {
                 continue;
             }
             if let AppAction::FocusedContextSubscriptionFailed {
-                room_id, event_id, ..
+                room_id,
+                event_id,
+                failure_kind,
+                ..
             } = &action
-                && let Some(owner) = self.focused_subscription_failure_owner(room_id, event_id)
+                && let Some((request_id, generation)) =
+                    self.focused_subscription_failure_owner(room_id, event_id)
             {
-                focused_subscription_failures.push(owner);
+                focused_subscription_failures.push((request_id, generation, *failure_kind));
             }
             // For SelectRoom: capture observable facts BEFORE reduce so
             // we can classify the outcome afterwards and emit the
@@ -2396,8 +2400,8 @@ impl AppActor {
             });
         }
 
-        for (request_id, generation) in focused_subscription_failures {
-            self.settle_focused_subscription_failure(request_id, generation)
+        for (request_id, generation, failure_kind) in focused_subscription_failures {
+            self.settle_focused_subscription_failure(request_id, generation, failure_kind)
                 .await;
         }
 

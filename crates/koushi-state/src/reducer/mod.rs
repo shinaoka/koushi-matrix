@@ -1991,6 +1991,7 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             event_id,
             message,
+            failure_kind: _,
         } => thread::handle_focused_context_subscription_failed(state, room_id, event_id, message),
         AppAction::CloseFocusedContext => thread::handle_close_focused_context(state),
         AppAction::SearchEdited { query, scope } => {

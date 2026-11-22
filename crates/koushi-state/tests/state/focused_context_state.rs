@@ -236,6 +236,7 @@ fn focused_context_subscription_failure_exits_matching_opening_context() {
             room_id: "!room:example.invalid".to_owned(),
             event_id: "$wanted:example.invalid".to_owned(),
             message: "fixture-access-token rejected synthetic-focused".to_owned(),
+            failure_kind: koushi_state::OperationFailureKind::Sdk,
         },
     );
 
@@ -273,6 +274,7 @@ fn stale_focused_context_subscription_failure_is_ignored() {
             room_id: "!room:example.invalid".to_owned(),
             event_id: "$stale:example.invalid".to_owned(),
             message: "late failure".to_owned(),
+            failure_kind: koushi_state::OperationFailureKind::Sdk,
         },
     );
 

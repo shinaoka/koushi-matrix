@@ -60,6 +60,9 @@ pub(crate) struct FocusedProjectionCommitted {
     pub(crate) timeline_generation: TimelineGeneration,
     pub(crate) item_count: u64,
     pub(crate) target_present: bool,
+    /// #2039: the thread the focused target replies into, as the build's
+    /// `/context` reported it. `None` for a room-shaped target.
+    pub(crate) thread_root_event_id: Option<String>,
 }
 
 /// Private projection work admitted only after Rust-owned room navigation has
@@ -243,6 +246,9 @@ pub(super) struct TimelineActorGenerationGate {
     pub(super) state: Mutex<TimelineActorGenerationGateState>,
     changes: watch::Sender<u64>,
     focused_projection_tx: Option<mpsc::UnboundedSender<FocusedProjectionCommitted>>,
+    /// #2039: thread root the focused build's `/context` reported, keyed by the
+    /// exact actor generation, consumed by that generation's first commit.
+    focused_thread_roots: Mutex<HashMap<(TimelineKey, u64), String>>,
 }
 
 pub(super) struct TimelineActorGenerationActivation {
@@ -263,6 +269,7 @@ impl Default for TimelineActorGenerationGate {
             state: Mutex::new(TimelineActorGenerationGateState::default()),
             changes,
             focused_projection_tx: None,
+            focused_thread_roots: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -277,7 +284,25 @@ impl TimelineActorGenerationGate {
         }
     }
 
-    fn publish_focused_projection_commit(&self, commit: FocusedProjectionCommitted) {
+    pub(super) fn record_focused_thread_root(
+        &self,
+        key: &TimelineKey,
+        actor_generation: u64,
+        root_event_id: String,
+    ) {
+        self.focused_thread_roots
+            .lock()
+            .expect("focused thread root lock must not be poisoned")
+            .insert((key.clone(), actor_generation), root_event_id);
+    }
+
+    fn publish_focused_projection_commit(&self, mut commit: FocusedProjectionCommitted) {
+        commit.thread_root_event_id = self
+            .focused_thread_roots
+            .lock()
+            .expect("focused thread root lock must not be poisoned")
+            .get(&(commit.key.clone(), commit.actor_generation))
+            .cloned();
         if let Some(tx) = self.focused_projection_tx.as_ref() {
             // This internal lane is scoped to one AppActor tree. It is unbounded so
             // publishing under a synchronous generation lease can neither block nor
@@ -601,6 +626,7 @@ pub(super) fn emit_timeline_events_with_lease(
                     timeline_generation: *generation,
                     item_count: items.len() as u64,
                     target_present,
+                    thread_root_event_id: None,
                 })
             }
             _ => None,

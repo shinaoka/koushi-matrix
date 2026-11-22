@@ -96,7 +96,7 @@ impl Harness {
                         let _ = observed_tx.send(Observed::DisplayQuery(room_id, event_id));
                         let _ = response_tx.send(shown);
                     }
-                    AccountMessage::EnsureRoomEventCached { response_tx, .. } => {
+                    AccountMessage::FindCachedRoomEvent { response_tx, .. } => {
                         let _ = observed_tx.send(Observed::Lookup);
                         let _ = response_tx.send(crate::account::RoomEventLookupResult::Located {
                             thread_root_event_id: None,
