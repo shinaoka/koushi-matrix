@@ -390,7 +390,10 @@ field decorations, form-control chrome) also runs in headless WebKit, the
 engine family of macOS WKWebView and Linux WebKitGTK, by adding it to the
 `webkit` project's `testMatch` in `playwright.config.ts`. Prove such a defect
 by behavior or pixels (for example, clicking the native control's hit target),
-not by DOM button counts. Install both engines once with
+not by DOM button counts. One exception: an issue whose acceptance requires the
+macOS layout joins the project even when the defect is a plain CSS layout one,
+because macOS only runs WebKit and reserves a native title bar above the WebView
+(#2045), and its config comment says so. Install both engines once with
 `npm --prefix apps/desktop exec -- playwright install chromium webkit`.
 
 The full-app harness (`apps/desktop/src/test/appHarnessMain.tsx`) must import
