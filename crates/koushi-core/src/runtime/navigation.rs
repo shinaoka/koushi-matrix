@@ -282,14 +282,35 @@ impl AppActor {
         else {
             return;
         };
+        // #2039: a focused build that `/context` answered with an absent
+        // target settles here after the focused owner was admitted.
+        let focused = self
+            .pending_focused_navigation
+            .as_ref()
+            .filter(|focused| {
+                focused.projection_request_id == request_id
+                    && focused.generation == Some(TimelineGeneration(generation))
+            })
+            .is_some()
+            .then(|| {
+                self.pending_focused_navigation
+                    .take()
+                    .expect("matching focused navigation must exist")
+            });
         self.pending_event_navigation.take();
         stop_event_navigation_task(&mut self.event_navigation_task).await;
         stop_event_navigation_task(&mut self.event_navigation_deadline_task).await;
         let before_state = self.snapshot_tx.borrow().state.clone();
-        let effects = reduce(
+        let mut effects = Vec::new();
+        if focused.as_ref().is_some_and(|focused| {
+            self.current_focused_context_timeline_key().as_ref() == Some(&focused.key)
+        }) {
+            effects.extend(reduce(&mut self.state, AppAction::CloseFocusedContext));
+        }
+        effects.extend(reduce(
             &mut self.state,
             AppAction::EventNavigationLiveFallback { generation },
-        );
+        ));
         self.handle_ui_event_effects(&effects).await;
         let published_generation = self
             .publish_state_delta(&before_state)
@@ -299,6 +320,9 @@ impl AppActor {
             outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::TimelineTargetMissing),
             published_generation,
         });
+        if let Some(focused) = focused {
+            self.release_focused_foreground(&focused.key);
+        }
     }
 
     async fn settle_event_navigation_failure(
@@ -395,6 +419,7 @@ impl AppActor {
         &mut self,
         request_id: RequestId,
         generation: u64,
+        failure_kind: koushi_state::OperationFailureKind,
     ) {
         record(
             DiagnosticEvent::new(
@@ -404,6 +429,31 @@ impl AppActor {
             )
             .field(DiagnosticField::count("generation", generation)),
         );
+        // #2039: `/context` is the first remote lookup of a cold jump, so its
+        // authoritative absence (`NotFound`) is the missing-target answer the
+        // `/event` pre-step used to give. Transport, timeout and SDK failures
+        // stay a timeline failure.
+        if failure_kind == koushi_state::OperationFailureKind::NotFound {
+            if matches!(
+                self.state.navigation.event_navigation,
+                koushi_state::EventNavigationState::Opening {
+                    generation: current,
+                    source: koushi_state::EventNavigationSource::Activity
+                        | koushi_state::EventNavigationSource::Search,
+                } if current == generation
+            ) {
+                self.settle_event_navigation_live_fallback(request_id, generation)
+                    .await;
+            } else {
+                self.settle_event_navigation_failure(
+                    request_id,
+                    generation,
+                    koushi_state::EventNavigationFailureKind::TargetMissing,
+                )
+                .await;
+            }
+            return;
+        }
         self.settle_event_navigation_failure(
             request_id,
             generation,
@@ -792,7 +842,7 @@ impl AppActor {
                 }
                 let (response_tx, response_rx) = tokio::sync::oneshot::channel();
                 let result = if account_actor
-                    .send(crate::account::AccountMessage::EnsureRoomEventCached {
+                    .send(crate::account::AccountMessage::FindCachedRoomEvent {
                         request_id,
                         room_id: room_id.clone(),
                         event_id: event_id.clone(),
@@ -841,6 +891,10 @@ impl AppActor {
             crate::account::RoomEventLookupResult::Located {
                 thread_root_event_id,
             } => thread_root_event_id,
+            // #2039: nothing local and nothing fetched yet. The focused build's
+            // `/context` is the first remote lookup; its result decides the
+            // thread root, absence and failure.
+            crate::account::RoomEventLookupResult::NotCached => None,
             crate::account::RoomEventLookupResult::Missing
                 if matches!(
                     self.state.navigation.event_navigation,
@@ -1053,6 +1107,41 @@ impl AppActor {
             &mut self.latest_focused_projection_generation,
             &commit,
         ) {
+            return;
+        }
+
+        // #2039: a cold target's thread root is only known once `/context`
+        // answered. A thread reply belongs to the thread pane, not to a
+        // thread-filtered main-pane window, so hand it over and retire the
+        // focused timeline the build just installed.
+        if let (Some(generation), Some(root_event_id)) = (
+            event_navigation_generation,
+            commit.thread_root_event_id.clone(),
+        ) {
+            self.pending_focused_navigation.take();
+            let before_state = self.snapshot_tx.borrow().state.clone();
+            if self.current_focused_context_timeline_key().as_ref() == Some(&navigation.key) {
+                let effects = reduce(&mut self.state, AppAction::CloseFocusedContext);
+                self.handle_ui_event_effects(&effects).await;
+                self.publish_state_delta(&before_state);
+            }
+            self.release_focused_foreground(&navigation.key);
+            self.send_timeline_command_or_fail(
+                commit.projection_request_id,
+                koushi_protocol::command::TimelineCommand::Unsubscribe {
+                    request_id: commit.projection_request_id,
+                    key: navigation.key.clone(),
+                },
+            )
+            .await;
+            Box::pin(self.handle_event_navigation_thread_target(
+                commit.projection_request_id,
+                generation,
+                navigation.room_id.clone(),
+                navigation.event_id.clone(),
+                root_event_id,
+            ))
+            .await;
             return;
         }
 

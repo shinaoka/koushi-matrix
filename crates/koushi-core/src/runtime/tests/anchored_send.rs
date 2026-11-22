@@ -158,6 +158,7 @@ fn committed(projection_request_id: RequestId, key: TimelineKey) -> FocusedProje
         timeline_generation: TimelineGeneration(1),
         item_count: 3,
         target_present: true,
+        thread_root_event_id: None,
     }
 }
 

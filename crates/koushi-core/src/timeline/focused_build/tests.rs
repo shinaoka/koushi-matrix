@@ -742,3 +742,35 @@ async fn sdk_focused_build_waiting_on_context_is_cancelled_and_retry_starts_fres
     );
     harness.no_pending_action();
 }
+
+/// #2039: only the server's own "no such event" answers are absence; any other
+/// SDK error stays a failure so a transport problem is never reported as a
+/// missing target.
+#[test]
+fn focused_build_error_classification_separates_absence_from_failure() {
+    use super::FocusedBuildFailure;
+    use matrix_sdk::event_cache::EventCacheError;
+    use matrix_sdk::paginators::PaginatorError;
+    use matrix_sdk_ui::timeline::Error;
+
+    let event_id = matrix_sdk::ruma::event_id!("$absent:example.org").to_owned();
+    let absent = Error::EventCacheError(EventCacheError::InitialPaginationError(
+        PaginatorError::EventNotFound(event_id),
+    ));
+    assert_eq!(
+        FocusedBuildFailure::from_build_error(&absent),
+        FocusedBuildFailure::NotFound
+    );
+    assert_eq!(
+        FocusedBuildFailure::from_build_error(&Error::UnsupportedEvent),
+        FocusedBuildFailure::Sdk
+    );
+    assert_eq!(
+        FocusedBuildFailure::from_build_error(&Error::EventCacheIsDisabled),
+        FocusedBuildFailure::Sdk
+    );
+    assert_eq!(
+        FocusedBuildFailure::NotFound.timeline_failure_kind(),
+        TimelineFailureKind::NotFound
+    );
+}

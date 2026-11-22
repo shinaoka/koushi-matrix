@@ -140,7 +140,7 @@ fn start_with(state: AppState) -> Harness {
     let account = tokio::spawn(async move {
         while let Some(message) = account_rx.recv().await {
             let command = match message {
-                AccountMessage::EnsureRoomEventCached { response_tx, .. } => {
+                AccountMessage::FindCachedRoomEvent { response_tx, .. } => {
                     let _ = response_tx.send(crate::account::RoomEventLookupResult::Located {
                         thread_root_event_id: None,
                     });
@@ -476,6 +476,7 @@ async fn observer_correlated_commit_is_ignored_and_the_owner_commit_anchors() {
             timeline_generation: TimelineGeneration(0),
             item_count: 1,
             target_present: true,
+            thread_root_event_id: None,
         })
         .expect("stale commit");
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -709,6 +710,7 @@ async fn a_commit_for_the_superseded_navigation_does_not_settle_the_repeat() {
             timeline_generation: TimelineGeneration(0),
             item_count: 1,
             target_present: true,
+            thread_root_event_id: None,
         })
         .expect("stale commit");
     tokio::time::sleep(Duration::from_millis(50)).await;

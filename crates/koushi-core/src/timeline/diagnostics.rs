@@ -474,6 +474,7 @@ pub(super) fn timeline_subscription_failed_action(
                 room_id: room_id.clone(),
                 event_id: event_id.clone(),
                 message: "timeline subscription failed".to_owned(),
+                failure_kind: thread_subscription_failure_kind(kind),
             })
         }
     }

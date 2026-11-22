@@ -540,13 +540,74 @@ impl AccountActor {
                     crate::account::RoomEventLookupResult::Failed => {
                         Self::record_event_cache_repair(request_id, "failed", "failed", "sdk");
                     }
-                    crate::account::RoomEventLookupResult::Located { .. } => unreachable!(),
+                    crate::account::RoomEventLookupResult::Located { .. }
+                    | crate::account::RoomEventLookupResult::NotCached => unreachable!(),
                 }
                 result
             }
             Err(_) => {
                 Self::record_event_cache_repair(request_id, "failed", "failed", "timeout");
                 crate::account::RoomEventLookupResult::Failed
+            }
+        }
+    }
+
+    /// #2039: the navigation pre-step. Reads the room event cache only; a
+    /// target it does not hold is `NotCached`, never a network lookup. Gap
+    /// repair stays here, off the critical path of the focused build.
+    pub(super) async fn handle_find_cached_room_event(
+        &mut self,
+        request_id: RequestId,
+        room_id: String,
+        event_id: String,
+    ) -> crate::account::RoomEventLookupResult {
+        let Some(session) = &self.session else {
+            Self::record_event_cache_repair(request_id, "failed", "failed", "no_session");
+            return crate::account::RoomEventLookupResult::Failed;
+        };
+        let Ok(parsed_room_id) = matrix_sdk::ruma::RoomId::parse(room_id.as_str()) else {
+            Self::record_event_cache_repair(request_id, "failed", "failed", "invalid_room");
+            return crate::account::RoomEventLookupResult::Failed;
+        };
+        let Ok(parsed_event_id) = matrix_sdk::ruma::EventId::parse(event_id.as_str()) else {
+            Self::record_event_cache_repair(request_id, "failed", "failed", "invalid_event");
+            return crate::account::RoomEventLookupResult::Failed;
+        };
+        if session.client().get_room(&parsed_room_id).is_none() {
+            Self::record_event_cache_repair(request_id, "failed", "failed", "room_missing");
+            return crate::account::RoomEventLookupResult::Failed;
+        }
+        let cached = match session.client().event_cache() {
+            Some(event_cache) => match event_cache.room(&parsed_room_id).await {
+                Ok((room_event_cache, _drop_handles)) => room_event_cache
+                    .find_event(&parsed_event_id)
+                    .await
+                    .ok()
+                    .flatten(),
+                Err(_) => None,
+            },
+            None => None,
+        };
+        if let Some(account_key) = self.active_account_key() {
+            self.route_timeline_command(TimelineCommand::RepairGaps {
+                request_id,
+                key: TimelineKey {
+                    account_key,
+                    kind: TimelineKind::Room { room_id },
+                },
+            })
+            .await;
+        }
+        match cached {
+            Some(event) => {
+                Self::record_event_cache_repair(request_id, "done", "succeeded", "cached");
+                crate::account::RoomEventLookupResult::Located {
+                    thread_root_event_id: koushi_sdk::timeline_event_thread_root(&event),
+                }
+            }
+            None => {
+                Self::record_event_cache_repair(request_id, "done", "succeeded", "not_cached");
+                crate::account::RoomEventLookupResult::NotCached
             }
         }
     }

@@ -62,7 +62,11 @@ pub(super) enum PreparedFocusedTimeline {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum FocusedBuildFailure {
+    /// Any SDK or transport error that is not an authoritative absence.
     Sdk,
+    /// #2039: the server answered `/context` with `M_NOT_FOUND`, or answered
+    /// without the target. The event is authoritatively absent.
+    NotFound,
     TimedOut,
     /// The task panicked before reporting.
     Interrupted,
@@ -72,13 +76,42 @@ impl FocusedBuildFailure {
     pub(super) fn timeline_failure_kind(self) -> TimelineFailureKind {
         match self {
             Self::TimedOut => TimelineFailureKind::Timeout,
+            Self::NotFound => TimelineFailureKind::NotFound,
             Self::Sdk | Self::Interrupted => TimelineFailureKind::Sdk,
         }
+    }
+
+    /// Classify a focused `TimelineBuilder` error. Only the server's own
+    /// "no such event" answers are absence; transport and every other SDK
+    /// error stay `Sdk`.
+    pub(super) fn from_build_error(error: &matrix_sdk_ui::timeline::Error) -> Self {
+        use matrix_sdk::event_cache::EventCacheError;
+        use matrix_sdk::paginators::PaginatorError;
+        use matrix_sdk::ruma::api::error::ErrorKind;
+
+        let sdk_not_found = |error: &matrix_sdk::Error| {
+            matches!(error.client_api_error_kind(), Some(ErrorKind::NotFound))
+                || error
+                    .as_client_api_error()
+                    .is_some_and(|api| api.status_code.as_u16() == 404)
+        };
+        let absent = match error {
+            matrix_sdk_ui::timeline::Error::Sdk(error) => sdk_not_found(error),
+            matrix_sdk_ui::timeline::Error::EventCacheError(
+                EventCacheError::InitialPaginationError(PaginatorError::EventNotFound(_)),
+            ) => true,
+            matrix_sdk_ui::timeline::Error::EventCacheError(
+                EventCacheError::InitialPaginationError(PaginatorError::SdkError(error)),
+            ) => sdk_not_found(error),
+            _ => false,
+        };
+        if absent { Self::NotFound } else { Self::Sdk }
     }
 
     fn token(self) -> &'static str {
         match self {
             Self::Sdk => "failed",
+            Self::NotFound => "not_found",
             Self::TimedOut => "timeout",
             Self::Interrupted => "interrupted",
         }

@@ -22,7 +22,7 @@ use koushi_protocol::command::{AppCommand, RoomCommand};
 use koushi_sdk::MatrixClientSession;
 use koushi_state::{
     AppAction, AppState, EventNavigationSource, EventNavigationState, MissingTargetPolicy,
-    SessionState,
+    SessionState, ThreadPaneState,
 };
 use matrix_sdk::ruma::{EventId, RoomId, user_id};
 use matrix_sdk::test_utils::mocks::{MatrixMockServer, RoomContextResponseTemplate};
@@ -52,6 +52,18 @@ struct Measurement {
     context_requests: usize,
     event_requests: usize,
     terminal: EventNavigationState,
+    /// The thread root the thread pane was opened on, if it was.
+    thread_root: Option<String>,
+}
+
+const THREAD_ROOT: &str = "$ctx-thread-root:example.org";
+
+fn thread_root_of(state: &AppState) -> Option<String> {
+    match &state.thread {
+        ThreadPaneState::Opening { root_event_id, .. }
+        | ThreadPaneState::Open { root_event_id, .. } => Some(root_event_id.clone()),
+        ThreadPaneState::Closed | ThreadPaneState::Failed { .. } => None,
+    }
 }
 
 fn event_id(id: &str) -> &EventId {
@@ -74,7 +86,36 @@ async fn room_requests(server: &MatrixMockServer) -> (usize, usize) {
     (count("/context/"), count("/event/"))
 }
 
+/// What the mock homeserver answers `/context` with, after `CONTEXT_DELAY`.
+#[derive(Clone, Copy)]
+enum ContextAnswer {
+    /// The target with its neighbours.
+    Usable,
+    /// The target is a reply inside a thread, so the build's `/context` is what
+    /// reveals the thread root.
+    ThreadReply,
+    /// `404 M_NOT_FOUND`: the server's authoritative "no such event".
+    NotFound,
+    /// `500`: a failure that says nothing about whether the event exists.
+    ServerError,
+}
+
 async fn measure_activity_click(seed_room_cache: bool) -> Measurement {
+    measure_click(
+        seed_room_cache,
+        ContextAnswer::Usable,
+        EventNavigationSource::Activity,
+        MissingTargetPolicy::LiveFallback,
+    )
+    .await
+}
+
+async fn measure_click(
+    seed_room_cache: bool,
+    answer: ContextAnswer,
+    source: EventNavigationSource,
+    missing_target_policy: MissingTargetPolicy,
+) -> Measurement {
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
     let own = user_id!("@alice:example.test").to_owned();
@@ -103,31 +144,63 @@ async fn measure_activity_click(seed_room_cache: bool) -> Measurement {
         )
         .mount(server.server())
         .await;
-    server
-        .mock_room_event_context()
-        .with_delay(CONTEXT_DELAY)
-        .ok(RoomContextResponseTemplate::new(
-            factory
-                .text_msg("target")
-                .event_id(event_id(TARGET))
-                .into_event(),
-        )
-        .events_before(vec![
-            factory
-                .text_msg("before")
-                .event_id(event_id(BEFORE))
-                .into_event(),
-        ])
-        .events_after(vec![
-            factory
-                .text_msg("after")
-                .event_id(event_id(AFTER))
-                .into_event(),
-        ])
-        .start("ctx-start")
-        .end("ctx-end"))
-        .mount()
-        .await;
+    if !matches!(answer, ContextAnswer::Usable | ContextAnswer::ThreadReply) {
+        let (status, body) = match answer {
+            ContextAnswer::NotFound => (
+                404,
+                serde_json::json!({"errcode": "M_NOT_FOUND", "error": "Event not found."}),
+            ),
+            _ => (
+                500,
+                serde_json::json!({"errcode": "M_UNKNOWN", "error": "synthetic failure"}),
+            ),
+        };
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/.*/rooms/.*/context/.*$",
+            ))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .set_body_json(body)
+                    .set_delay(CONTEXT_DELAY),
+            )
+            .mount(server.server())
+            .await;
+    } else {
+        server
+            .mock_room_event_context()
+            .with_delay(CONTEXT_DELAY)
+            .ok(
+                RoomContextResponseTemplate::new(if matches!(answer, ContextAnswer::ThreadReply) {
+                    factory
+                        .text_msg("target")
+                        .event_id(event_id(TARGET))
+                        .in_thread(event_id(THREAD_ROOT), event_id(TARGET))
+                        .into_event()
+                } else {
+                    factory
+                        .text_msg("target")
+                        .event_id(event_id(TARGET))
+                        .into_event()
+                })
+                .events_before(vec![
+                    factory
+                        .text_msg("before")
+                        .event_id(event_id(BEFORE))
+                        .into_event(),
+                ])
+                .events_after(vec![
+                    factory
+                        .text_msg("after")
+                        .event_id(event_id(AFTER))
+                        .into_event(),
+                ])
+                .start("ctx-start")
+                .end("ctx-end"),
+            )
+            .mount()
+            .await;
+    }
 
     let data_dir = tempfile::tempdir().expect("data dir");
     let credential_dir = tempfile::tempdir().expect("credential dir");
@@ -175,11 +248,11 @@ async fn measure_activity_click(seed_room_cache: bool) -> Measurement {
             request_id,
             room_id: ROOM.to_owned(),
             event_id: TARGET.to_owned(),
-            source: EventNavigationSource::Activity,
-            missing_target_policy: MissingTargetPolicy::LiveFallback,
+            source,
+            missing_target_policy,
         }))
         .await
-        .expect("submit Activity navigation");
+        .expect("submit navigation");
     let state = wait_until(&mut connection, |state| {
         matches!(
             state.navigation.event_navigation,
@@ -187,7 +260,7 @@ async fn measure_activity_click(seed_room_cache: bool) -> Measurement {
                 | EventNavigationState::LiveFallback { .. }
                 | EventNavigationState::InPlace { .. }
                 | EventNavigationState::Failed { .. }
-        )
+        ) || thread_root_of(state).is_some()
     })
     .await;
     let click_to_anchor = clicked.elapsed();
@@ -197,6 +270,7 @@ async fn measure_activity_click(seed_room_cache: bool) -> Measurement {
         context_requests,
         event_requests,
         terminal: state.navigation.event_navigation.clone(),
+        thread_root: thread_root_of(&state),
     };
     drop(connection);
     runtime.shutdown().await;
@@ -257,9 +331,107 @@ async fn warm_cache_activity_click_anchors_without_remote_lookup() {
     );
 }
 
-/// Cold room cache: records the `/event` and `/context` request counts.
+/// Cold room cache: `/context` is the first and only remote lookup. No
+/// `/event` precedes it, so the click costs one `/context` round trip.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cold_cache_activity_click_request_counts() {
+async fn cold_cache_activity_click_uses_context_as_first_lookup() {
     let m = measure_activity_click(false).await;
     report("cold", &m);
+    assert_eq!(m.event_requests, 0, "no /event before /context");
+    assert_eq!(m.context_requests, 1, "exactly one /context");
+    assert!(
+        m.click_to_anchor >= CONTEXT_DELAY,
+        "the cold click waits for its one /context ({:?})",
+        m.click_to_anchor
+    );
+    assert!(
+        matches!(m.terminal, EventNavigationState::Anchored { .. }),
+        "terminal: {:?}",
+        m.terminal
+    );
+}
+
+/// A cold thread reply: no `/event` precedes `/context`, and the thread root
+/// `/context` revealed routes the click to the thread pane instead of a
+/// thread-filtered main-pane window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_cache_thread_reply_opens_the_thread_from_context() {
+    let m = measure_click(
+        false,
+        ContextAnswer::ThreadReply,
+        EventNavigationSource::Activity,
+        MissingTargetPolicy::LiveFallback,
+    )
+    .await;
+    report("cold-thread-reply", &m);
+    assert_eq!(m.event_requests, 0, "no /event before /context");
+    assert_eq!(m.thread_root.as_deref(), Some(THREAD_ROOT));
+}
+
+/// `/context` answers `M_NOT_FOUND`: the target is authoritatively absent, so
+/// Activity falls back to the live room and Pinned reports the missing target.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_cache_context_not_found_is_absence() {
+    let activity = measure_click(
+        false,
+        ContextAnswer::NotFound,
+        EventNavigationSource::Activity,
+        MissingTargetPolicy::LiveFallback,
+    )
+    .await;
+    report("cold-not-found-activity", &activity);
+    assert_eq!(activity.event_requests, 0);
+    assert_eq!(activity.context_requests, 1);
+    assert!(
+        matches!(activity.terminal, EventNavigationState::LiveFallback { .. }),
+        "terminal: {:?}",
+        activity.terminal
+    );
+
+    let pinned = measure_click(
+        false,
+        ContextAnswer::NotFound,
+        EventNavigationSource::Pinned,
+        MissingTargetPolicy::Fail,
+    )
+    .await;
+    report("cold-not-found-pinned", &pinned);
+    assert_eq!(pinned.event_requests, 0);
+    assert!(
+        matches!(
+            pinned.terminal,
+            EventNavigationState::Failed {
+                failure_kind: koushi_state::EventNavigationFailureKind::TargetMissing,
+                ..
+            }
+        ),
+        "terminal: {:?}",
+        pinned.terminal
+    );
+}
+
+/// A `/context` server error says nothing about whether the event exists, so it
+/// is a timeline failure for every source, never a live fallback.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_cache_context_server_error_is_a_failure_not_absence() {
+    let m = measure_click(
+        false,
+        ContextAnswer::ServerError,
+        EventNavigationSource::Activity,
+        MissingTargetPolicy::LiveFallback,
+    )
+    .await;
+    report("cold-server-error-activity", &m);
+    assert_eq!(m.event_requests, 0);
+    assert!(
+        matches!(
+            m.terminal,
+            EventNavigationState::Failed {
+                failure_kind: koushi_state::EventNavigationFailureKind::Timeline,
+                ..
+            }
+        ),
+        "terminal: {:?}",
+        m.terminal
+    );
 }

@@ -1701,6 +1701,10 @@ pub enum AppAction {
         room_id: String,
         event_id: String,
         message: String,
+        /// #2039: `NotFound` is the server's authoritative answer that the
+        /// target is absent; every other kind is a transport, timeout or SDK
+        /// failure and must not be reported as a missing target.
+        failure_kind: crate::OperationFailureKind,
     },
     CloseFocusedContext,
     /// The user opened a search result at `(room_id, event_id)`.

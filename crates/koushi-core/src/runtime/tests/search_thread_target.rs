@@ -105,7 +105,7 @@ impl Harness {
         let account = tokio::spawn(async move {
             while let Some(message) = account_rx.recv().await {
                 match message {
-                    AccountMessage::EnsureRoomEventCached { response_tx, .. } => {
+                    AccountMessage::FindCachedRoomEvent { response_tx, .. } => {
                         let _ = response_tx.send(crate::account::RoomEventLookupResult::Located {
                             thread_root_event_id: thread_root_event_id.clone(),
                         });
