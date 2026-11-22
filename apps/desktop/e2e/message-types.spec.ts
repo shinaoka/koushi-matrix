@@ -49,7 +49,19 @@ async function pushInitialTimelineItems(page: Page) {
       key: timelineKey(),
       items: [
         makeItem("$emote:example.invalid", "waves", { message_kind: "emote" }),
-        makeItem("$notice:example.invalid", "bot notice", { message_kind: "notice" }),
+        makeItem("$notice:example.invalid", "bot notice", {
+          message_kind: "notice",
+          // #2041: the row's own rule hides Reply on a notice, not the DTO.
+          can_react: true,
+          actions: {
+            can_copy: false,
+            can_forward: false,
+            can_reply: true,
+            can_pin: true,
+            can_permalink: false,
+            can_view_source: false
+          }
+        }),
         makeItem("$spoiler:example.invalid", "keep secret hidden", {
           message_kind: "text",
           spoiler_spans: [{ start_utf16: 5, end_utf16: 11 }]
@@ -81,6 +93,18 @@ test("message kinds and spoilers render from Rust-owned timeline DTOs", async ({
   const notice = page.locator('[data-message-kind="notice"]');
   await expect(notice.locator(".message-body")).toHaveClass(/message-notice/);
   await expect(notice).toContainText("bot notice");
+
+  // #2041: a notice is one muted line, not a message row. No avatar slot, no
+  // message action bar, and the body shares the sender's line.
+  await expect(notice).toHaveClass(/message-notice-row/);
+  await expect(notice.locator(".avatar")).toHaveCount(0);
+  await expect(notice.getByRole("button", { name: "Reply to message" })).toHaveCount(0);
+  await expect(notice.getByRole("button", { name: "Edit message" })).toHaveCount(0);
+  // The kept affordances: react and pin.
+  await expect(notice.getByRole("button", { name: "Add reaction" })).toHaveCount(1);
+  // This page loads no app stylesheet (its own geometry is fixed at 48px per
+  // row), so the one-line layout is measured by e2e/notice-row-layout.spec.ts
+  // against the full app harness; here only the DOM contract is asserted.
 
   const plainSpoiler = page.locator('[data-item-id="$spoiler:example.invalid"]');
   await expect(plainSpoiler).toContainText("keep");

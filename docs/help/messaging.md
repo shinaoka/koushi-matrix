@@ -208,6 +208,18 @@ link to the new room. Routine alias, hierarchy and policy updates do not add
 conversation rows. Event details remain available through the existing message
 source action on visible events.
 
+A notice is one muted line, not a message: it has no avatar, no separate sender
+column and no message body box, and its text follows the sender's name on the
+same line. It has no hover action bar. **React**, **Pin** and the read-only
+**Message actions** menu sit on the line itself, so **Copy message**, **Copy
+link** and **View source** stay available. **Reply**, **Edit**, **Forward** and
+the sender alias are not offered, because a room or membership change has no
+message to answer, change or pass on. The sender's name still opens their
+profile, and the text stays selectable.
+
+A notice line shows no timestamp of its own; **View source** on the same line
+gives the event's time along with its details.
+
 Unreadable events and messages that cannot yet be displayed have neutral
 notices. These are distinct from messages waiting for decryption. Polls, live
 location and calls have explanatory placeholders; these placeholders do not
