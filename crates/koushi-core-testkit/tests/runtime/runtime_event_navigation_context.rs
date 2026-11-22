@@ -87,8 +87,7 @@ async fn measure_activity_click(seed_room_cache: bool) -> Measurement {
             .add_timeline_event(factory.text_msg("before").event_id(event_id(BEFORE)))
             .add_timeline_event(factory.text_msg("target").event_id(event_id(TARGET)));
     }
-    builder =
-        builder.add_timeline_event(factory.text_msg("after").event_id(event_id(AFTER)));
+    builder = builder.add_timeline_event(factory.text_msg("after").event_id(event_id(AFTER)));
     server.sync_room(&client, builder).await;
 
     // Hold the own-identity trust recheck for the whole test (see
@@ -237,9 +236,10 @@ fn report(label: &str, m: &Measurement) {
 }
 
 /// Warm room cache, no focused cache, `/context` delayed by `CONTEXT_DELAY`.
-/// Stage 1 characterises the current code: the click waits for remote context.
+/// The target is already local, so the click must neither wait for nor issue
+/// any remote lookup.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn warm_cache_activity_click_waits_for_delayed_context() {
+async fn warm_cache_activity_click_anchors_without_remote_lookup() {
     let m = measure_activity_click(true).await;
     report("warm", &m);
     assert!(
@@ -247,12 +247,14 @@ async fn warm_cache_activity_click_waits_for_delayed_context() {
         "terminal: {:?}",
         m.terminal
     );
+    assert_eq!(m.context_requests, 0, "no /context for a cached target");
+    assert_eq!(m.event_requests, 0, "no /event for a cached target");
     assert!(
-        m.click_to_anchor >= CONTEXT_DELAY,
-        "the current code anchors only after remote context ({:?})",
+        m.click_to_anchor < Duration::from_millis(500),
+        "click must not wait for the {:?} /context delay ({:?})",
+        CONTEXT_DELAY,
         m.click_to_anchor
     );
-    assert_eq!(m.context_requests, 1);
 }
 
 /// Cold room cache: records the `/event` and `/context` request counts.
