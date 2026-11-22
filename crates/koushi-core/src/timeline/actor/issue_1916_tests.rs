@@ -194,6 +194,7 @@ async fn a_backward_page_that_reveals_only_sdk_skipped_items_promises_no_prepend
         Default::default(),
         manager.terminal_ingress.clone(),
         manager.msg_tx.clone(),
+        None,
     )
     .await;
 

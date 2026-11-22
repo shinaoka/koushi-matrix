@@ -361,6 +361,11 @@ pub(crate) enum TimelineMessage {
     IgnoredUsersUpdated {
         user_ids: std::collections::BTreeSet<String>,
     },
+    /// #2059: the session user's account avatar changed; every timeline
+    /// re-derives its rows so a visible self-authored row picks it up.
+    OwnAvatarUpdated {
+        mxc_uri: Option<String>,
+    },
     /// Terminal result of the manager-owned bounded root lookup. It returns to
     /// the manager mailbox rather than publishing state/frontend changes from
     /// an unowned detached task.
@@ -663,6 +668,9 @@ pub struct TimelineManagerActor {
     /// is no active search index (pre-session or pre-Phase-6 builds).
     pub(super) search_index_tx: Option<mpsc::Sender<SearchIndexMessage>>,
     pub(super) ignored_user_ids: std::collections::BTreeSet<String>,
+    /// #2059: the session user's account avatar, pushed to every timeline so a
+    /// self-authored row without an SDK sender profile still shows it.
+    pub(super) own_avatar_mxc_uri: Option<String>,
     /// Application data directory for cached preview images.
     pub(super) data_dir: Option<std::path::PathBuf>,
     /// URL preview policy broadcast from AppState.
@@ -757,6 +765,7 @@ impl TimelineManagerActor {
             terminal_rx,
             search_index_tx: None,
             ignored_user_ids: std::collections::BTreeSet::new(),
+            own_avatar_mxc_uri: None,
             data_dir,
             link_preview_policy: LinkPreviewContext::default(),
             composer_formatting_options: ComposerFormattingOptions::default(),
@@ -864,6 +873,7 @@ impl TimelineManagerActor {
             terminal_rx,
             search_index_tx: Some(search_index_tx),
             ignored_user_ids: std::collections::BTreeSet::new(),
+            own_avatar_mxc_uri: None,
             data_dir,
             link_preview_policy,
             composer_formatting_options: ComposerFormattingOptions::default(),
@@ -1166,6 +1176,9 @@ impl TimelineManagerActor {
                 }
                 TimelineMessage::IgnoredUsersUpdated { user_ids } => {
                     Box::pin(self.handle_ignored_users_updated(user_ids)).await;
+                }
+                TimelineMessage::OwnAvatarUpdated { mxc_uri } => {
+                    Box::pin(self.handle_own_avatar_updated(mxc_uri)).await;
                 }
                 TimelineMessage::ThreadRootProjectionFetchFinished {
                     key,
@@ -2764,6 +2777,7 @@ impl TimelineManagerActor {
             Arc::clone(&self.send_completion),
             self.terminal_ingress.clone(),
             self.msg_tx.clone(),
+            self.own_avatar_mxc_uri.clone(),
         );
         let handle = Box::pin(self.await_driving_manager_workers(spawn)).await;
         if let Some(tx) = &self.history_recovery {
@@ -2957,3 +2971,6 @@ mod thread_hydration_tests;
 
 #[cfg(test)]
 mod return_to_live_tests;
+
+#[cfg(test)]
+mod own_avatar_tests;

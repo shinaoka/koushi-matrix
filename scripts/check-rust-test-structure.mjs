@@ -2835,11 +2835,25 @@ export function findUnprojectedDisplayRowPublishes(sources) {
         tokens[index - 3]?.value === "DisplayProjectionContext"
       ) {
         const close = openToClose.get(index + 1);
-        const chained =
-          tokens[close + 1]?.value === "." && tokens[close + 2]?.value === "with_send_states";
-        if (!chained) {
+        // Every chained builder on this context, in order.
+        const chained = new Set();
+        let cursor = close + 1;
+        while (tokens[cursor]?.value === "." && tokens[cursor + 2]?.value === "(") {
+          chained.add(tokens[cursor + 1].value);
+          cursor = (openToClose.get(cursor + 2) ?? cursor + 2) + 1;
+        }
+        if (!chained.has("with_send_states")) {
           offenders.push(
             `${relative}:${token.line} (${owner || "unknown function"}) builds a projection context without the send authority`
+          );
+        }
+        // #2059: the same boundary decides the session user's own sender avatar.
+        // A context built without that input publishes the initials the fallback
+        // exists to replace, and only a projection built by hand in a test would
+        // notice.
+        if (!chained.has("with_own_avatar")) {
+          offenders.push(
+            `${relative}:${token.line} (${owner || "unknown function"}) builds a projection context without the account avatar`
           );
         }
         continue;

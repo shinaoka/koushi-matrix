@@ -725,7 +725,9 @@ Each account remains an in-process actor system in `koushi-core`:
   its migration is complete. Timeline rows and their diagnostics may reuse the
   Rust-owned ready own-profile thumbnail when its MXC exactly matches the selected
   sender avatar, even if self is absent from the user-profile map. This reuse
-  changes neither the sender image identity nor the visible-demand boundary.
+  changes neither the sender image identity nor the visible-demand boundary, and
+  it only reuses a thumbnail: which sender image a row carries is decided in Core
+  by the [timeline sender avatar rule](../agents/state-ownership.md#activity).
   All-surface unification is deferred by the user's narrowed scope; see the
   [avatar demand contract](../superpowers/specs/2026-09-09-issue839-avatar-demand-completion.md).
   The old room-wide full-reader map is removed from the

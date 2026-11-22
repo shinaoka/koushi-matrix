@@ -280,6 +280,7 @@ async fn back_paginated_pages_behind_a_superseded_reply_stay_visible_at_the_live
         Default::default(),
         manager.terminal_ingress.clone(),
         manager.msg_tx.clone(),
+        None,
     )
     .await;
 

@@ -399,6 +399,7 @@ pub(super) enum TimelineActorMessage {
     },
     TypingUsersUpdated(Vec<String>),
     IgnoredUsersUpdated(std::collections::BTreeSet<String>),
+    OwnAvatarUpdated(Option<String>),
     LoadLinkPreviews {
         request_id: RequestId,
         event_id: String,
@@ -918,6 +919,10 @@ pub(super) struct TimelineActor {
     pub(super) pending_send_projections: Vec<PendingSendProjection>,
     /// Current account user id, used to project reaction ownership.
     pub(super) own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
+    /// #2059: the account avatar the SDK knows for the session user, when it is
+    /// known. The display projection fills a self-authored row's missing sender
+    /// avatar from it, so it must follow profile updates.
+    pub(super) own_avatar_mxc_uri: Option<String>,
     /// event_id → SDK transaction id for events this actor sent. Used to
     /// address local-echo items whose remote echo has not arrived (e.g.
     /// some Sliding Sync implementations do not echo own events into the timeline),
@@ -1135,7 +1140,11 @@ impl TimelineActor {
         // table as it stands now; nothing about the state is stored in a row.
         let mut context =
             DisplayProjectionContext::for_timeline(&self.key.kind, &self.viewport_observation)
-                .with_send_states(&self.send_statuses);
+                .with_send_states(&self.send_statuses)
+                .with_own_avatar(
+                    self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
+                    self.own_avatar_mxc_uri.as_deref(),
+                );
         if matches!(self.key.kind, TimelineKind::Room { .. }) {
             context.include_append = self.viewport_observation.at_bottom
                 && self
@@ -1562,6 +1571,7 @@ impl TimelineActor {
         send_completion: SharedSendCompletionCoordinator,
         terminal_ingress: TimelineSendTerminalIngress,
         manager_tx: mpsc::Sender<TimelineMessage>,
+        own_avatar_mxc_uri: Option<String>,
     ) -> TimelineActorHandle {
         let mut auxiliary_tasks: Vec<executor::JoinHandle<()>> = Vec::new();
 
@@ -1794,6 +1804,10 @@ impl TimelineActor {
             &TimelineViewportObservation::default(),
         )
         .with_send_states(&send_statuses)
+        .with_own_avatar(
+            own_user_id.as_ref().map(|user_id| user_id.as_str()),
+            own_avatar_mxc_uri.as_deref(),
+        )
         .with_thread_roots(
             thread_root_order,
             thread_root_projection_service
@@ -2173,6 +2187,7 @@ impl TimelineActor {
             send_handles,
             pending_send_projections,
             own_user_id,
+            own_avatar_mxc_uri,
             sent_event_txns,
             media_sources,
             media_downloads_in_progress: HashSet::new(),
@@ -3080,6 +3095,17 @@ impl TimelineActor {
             TimelineActorMessage::TypingUsersUpdated(user_ids) => {
                 self.emit_typing_users_action(user_ids);
             }
+            TimelineActorMessage::OwnAvatarUpdated(mxc_uri) => {
+                if self.own_avatar_mxc_uri != mxc_uri {
+                    self.own_avatar_mxc_uri = mxc_uri;
+                    // The rows are re-derived, so a visible self-authored row
+                    // gains the avatar without a reopen.
+                    let diffs = self.reproject_display_items();
+                    if !diffs.is_empty() {
+                        self.emit_items_updated(diffs);
+                    }
+                }
+            }
             TimelineActorMessage::IgnoredUsersUpdated(user_ids) => {
                 Box::pin(self.handle_ignored_users_updated(user_ids)).await;
             }
@@ -3264,3 +3290,7 @@ mod issue_1916_tests;
 #[cfg(test)]
 #[path = "actor/issue_1783_tests.rs"]
 mod issue_1783_tests;
+
+#[cfg(test)]
+#[path = "actor/own_avatar_tests.rs"]
+mod own_avatar_tests;

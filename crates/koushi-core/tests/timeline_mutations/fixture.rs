@@ -179,6 +179,7 @@ impl Fixture {
             Default::default(),
             manager.terminal_ingress.clone(),
             manager.msg_tx.clone(),
+            None,
         )
         .await;
         let sent_event_txns = match handle.enqueue_context.as_ref().unwrap() {

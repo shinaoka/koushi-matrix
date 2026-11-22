@@ -127,6 +127,7 @@ async fn fresh_room_subscription_reaches_a_message_behind_hidden_state_events() 
         Default::default(),
         manager.terminal_ingress.clone(),
         manager.msg_tx.clone(),
+        None,
     )
     .await;
 
