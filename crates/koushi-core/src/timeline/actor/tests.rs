@@ -12,7 +12,8 @@ use super::super::outbound_send::{PendingSendPhase, PendingSendProjection, pendi
 use super::super::test_support::{fake_rid, room_key, timeline_item};
 use super::{
     ThreadSummaryProjectionIngress, ThreadSummaryProjectionWake, TimelineActorControl,
-    TimelineActorHandle, TimelineActorMessage, canonical_pending_event_ids, should_fetch_members,
+    TimelineActorHandle, TimelineActorMessage, TimelinePositionIndex, canonical_pending_event_ids,
+    should_fetch_members,
 };
 
 struct DropFlag(Arc<AtomicBool>);
@@ -311,4 +312,43 @@ async fn timeline_actor_control_lane_bypasses_full_ordinary_mailbox() {
         ordinary_rx.recv().await,
         Some(TimelineActorMessage::OwnReadReceiptChanged)
     ));
+}
+
+/// #2030 B2: the room-list proof names the newest *readable* row, not the newest
+/// item. A state row, a redacted row or a thread reply can be newer without being
+/// activity of the main conversation, and blocking on them would keep the sidebar
+/// waiting for the echo in exactly the busy rooms that need this.
+///
+/// A hidden row still carries activity: hiding is a display decision (an ignored
+/// sender, `hide_redacted`, a hidden notice) and the server counts those events.
+#[test]
+fn position_index_names_the_newest_readable_row_of_the_main_conversation() {
+    let message = timeline_item("$message:test", Some("hello"), "@b:test", false);
+    let mut hidden = timeline_item("$hidden:test", Some("hidden"), "@b:test", false);
+    hidden.is_hidden = true;
+    let mut redacted = timeline_item("$redacted:test", Some("redacted"), "@b:test", false);
+    redacted.is_redacted = true;
+    let mut reply = timeline_item("$reply:test", Some("in a thread"), "@b:test", false);
+    reply.thread_root = Some("$message:test".to_owned());
+
+    let items = vec![
+        message,
+        // A row with no activity of its own still has a position but no preview.
+        timeline_item("$empty:test", None, "@b:test", false),
+        hidden,
+        redacted,
+        reply,
+    ];
+    let index = TimelinePositionIndex::from_items(7, Default::default(), &items);
+
+    assert_eq!(
+        index.newest_readable_event_id(),
+        Some("$hidden:test"),
+        "a hidden row is still unread activity the boundary has to cover"
+    );
+    assert_eq!(
+        index.evidence("$empty:test").map(|evidence| evidence.rank),
+        Some(1),
+        "every placed event keeps its position"
+    );
 }

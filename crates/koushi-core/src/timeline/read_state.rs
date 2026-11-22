@@ -1166,7 +1166,7 @@ impl TimelineManagerActor {
             actor_generation,
             &position_index,
         );
-        self.update_local_server_confirmation(
+        let _ = self.update_local_server_confirmation(
             BoundaryWriter::Observed,
             timeline_key,
             actor_generation,
@@ -1427,6 +1427,7 @@ impl TimelineManagerActor {
             .state
             .complete(&read_key, operation.fence(), outcome);
         let disposition = completion.disposition();
+        let mut room_list_boundary = None;
         if disposition == ReadCompletionDisposition::Succeeded
             && let Some(timeline_key) = self.read_timeline_key_for_operation(&operation)
         {
@@ -1435,17 +1436,23 @@ impl TimelineManagerActor {
                 .local_read_correlations
                 .get(&timeline_key)
                 .map_or(0, |correlation| correlation.actor_generation);
-            self.update_local_server_confirmation(
-                BoundaryWriter::Acknowledged,
-                &timeline_key,
-                actor_generation,
-                &read_key,
-                Some(operation.target().event_id()),
-            );
+            room_list_boundary = self
+                .update_local_server_confirmation(
+                    BoundaryWriter::Acknowledged,
+                    &timeline_key,
+                    actor_generation,
+                    &read_key,
+                    Some(operation.target().event_id()),
+                )
+                .map(|event_id| (timeline_key, event_id));
         }
         record_read_completion(&read_key, completion.diagnostic());
         let settlements = completion.settlements().to_vec();
         self.settle_read_waiters(settlements).await;
+        if let Some((timeline_key, boundary_event_id)) = room_list_boundary {
+            self.publish_confirmed_read_boundary(&timeline_key, &boundary_event_id)
+                .await;
+        }
         match disposition {
             ReadCompletionDisposition::Succeeded => {
                 self.read_workers.reset_retry(&read_key);
@@ -1709,6 +1716,9 @@ impl TimelineManagerActor {
             .await;
     }
 
+    /// Merges one writer's confirmed boundary into its scope (#2030) and reports
+    /// the boundary the room list may settle on once the caller has published the
+    /// completion this confirmation belongs to (#2030 B2).
     fn update_local_server_confirmation(
         &mut self,
         writer: crate::read_state::BoundaryWriter,
@@ -1716,25 +1726,24 @@ impl TimelineManagerActor {
         actor_generation: u64,
         read_key: &ReadStateKey,
         event_id: Option<&str>,
-    ) {
-        let Some(event_id) = event_id else {
-            return;
-        };
+    ) -> Option<String> {
+        let event_id = event_id?;
         if !Self::local_server_confirmation_key(timeline_key, read_key) {
-            return;
+            return None;
         }
         let index = self
             .timelines
             .get(timeline_key)
             .and_then(TimelineActorHandle::read_position_index);
         let evidence = |event_id: &str| index.as_ref().and_then(|index| index.evidence(event_id));
-        let Some(correlation) = self.read_workers.local_read_correlations.get(timeline_key) else {
-            return;
-        };
+        let correlation = self
+            .read_workers
+            .local_read_correlations
+            .get(timeline_key)?;
         if correlation.actor_generation != actor_generation
             || !correlation.required_keys.contains_key(read_key)
         {
-            return;
+            return None;
         }
         // #2030: a delayed observation merges through the same ordering rule as a
         // successful write, so it cannot lower a boundary this scope already
@@ -1745,14 +1754,72 @@ impl TimelineManagerActor {
             current.map(|current| (current, evidence(current))),
             (event_id, evidence(event_id)),
         );
-        if advance
-            && let Some(correlation) = self
+        if advance {
+            if let Some(correlation) = self
                 .read_workers
                 .local_read_correlations
                 .get_mut(timeline_key)
-        {
-            correlation.server_confirmed_read_event_id = Some(event_id.to_owned());
+            {
+                correlation.server_confirmed_read_event_id = Some(event_id.to_owned());
+            }
+        } else if current != Some(event_id) {
+            return None;
         }
+        // A repeat can still become publishable later: whatever blocked it when it
+        // was confirmed can go away.
+        //
+        // Only an acknowledged write settles the list. Our own write sent the
+        // private receipt the server counts unread from; an observation reads
+        // `m.fully_read` account data, which no server derives counts from, so
+        // publishing it could zero a badge the server still reports as unread.
+        if writer != crate::read_state::BoundaryWriter::Acknowledged
+            || !matches!(read_key, ReadStateKey::FullyReadAndPrivateUnthreaded { .. })
+        {
+            return None;
+        }
+        // The proof that nothing unread follows the boundary is made here, where
+        // the window's positions are: the boundary has to be the newest readable
+        // event of the room's main conversation. The room-list reducer then
+        // requires its own newest activity to be that same event, so either half
+        // alone cannot settle a badge. A snapshot from another timeline generation
+        // cannot certify either half.
+        let index = index?;
+        if index.actor_generation() != actor_generation {
+            return None;
+        }
+        (index.newest_readable_event_id() == Some(event_id)).then(|| event_id.to_owned())
+    }
+
+    /// #2030 B2: publish a confirmed main-room read boundary to the room list,
+    /// whatever room is in the foreground, instead of waiting for the sync echo.
+    async fn publish_confirmed_read_boundary(
+        &mut self,
+        timeline_key: &TimelineKey,
+        boundary_event_id: &str,
+    ) {
+        let TimelineKind::Room { room_id } = &timeline_key.kind else {
+            return;
+        };
+        // Waiting for the read waiters above can block on action-channel capacity
+        // while a newer row is projected, and that row would be one this boundary
+        // does not cover. Re-read the index so a stale proof cannot zero a badge.
+        let current = self
+            .timelines
+            .get(timeline_key)
+            .and_then(TimelineActorHandle::read_position_index);
+        if current
+            .as_deref()
+            .and_then(TimelinePositionIndex::newest_readable_event_id)
+            != Some(boundary_event_id)
+        {
+            return;
+        }
+        let _ = self
+            .emit_action_reliable(AppAction::ConfirmedReadBoundarySettled {
+                room_id: room_id.to_owned(),
+                event_id: boundary_event_id.to_owned(),
+            })
+            .await;
     }
 
     pub(super) async fn handle_local_read_boundary_observed(

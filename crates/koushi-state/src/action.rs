@@ -1922,6 +1922,17 @@ pub enum AppAction {
         room_id: String,
         event_id: Option<String>,
     },
+    /// #2030 B2: Core confirmed this room's main read boundary at `event_id`,
+    /// and the boundary is the newest event its main timeline holds.
+    ///
+    /// The reducer publishes it as the room's read position whatever room is in
+    /// the foreground, and settles the room list for it when the list's own
+    /// newest activity is still that event. A list that moved on keeps its
+    /// counts: the read covers what it covers, and nothing else.
+    ConfirmedReadBoundarySettled {
+        room_id: String,
+        event_id: String,
+    },
     TypingUsersUpdated {
         room_id: String,
         user_ids: Vec<String>,

@@ -2244,6 +2244,9 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::FullyReadMarkerUpdated { room_id, event_id } => {
             live_signals::handle_fully_read_marker_updated(state, room_id, event_id)
         }
+        AppAction::ConfirmedReadBoundarySettled { room_id, event_id } => {
+            live_signals::handle_confirmed_read_boundary_settled(state, room_id, event_id)
+        }
         AppAction::TypingUsersUpdated { room_id, user_ids } => {
             live_signals::handle_typing_users_updated(state, room_id, user_ids)
         }

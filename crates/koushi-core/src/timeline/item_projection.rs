@@ -1094,6 +1094,22 @@ pub(super) fn is_attention_eligible_event(item: &TimelineItem) -> bool {
         && eligible_activity_preview(item).is_some()
 }
 
+/// The allocation-free part of [`is_attention_eligible_event`] restricted to the
+/// main conversation: the position index answers "is this the newest row a room
+/// read boundary could name" on every projection (#2030 B2), so it cannot afford
+/// to collapse a preview per row.
+///
+/// It is deliberately over-inclusive: `is_hidden` is a display decision (a hidden
+/// notice, an ignored sender, `hide_redacted`) and the server counts those events
+/// anyway, so treating one as unreadable could settle a badge under an unread
+/// message. A row this keeps that the reader cannot see only delays a settlement.
+pub(super) fn has_readable_activity(item: &TimelineItem) -> bool {
+    matches!(item.id, TimelineItemId::Event { .. })
+        && !item.is_redacted
+        && item.thread_root.is_none()
+        && (item.formatted.is_some() || item.body.is_some() || item.media.is_some())
+}
+
 pub(super) fn is_unread_navigation_item(item: &TimelineItem, own_user_id: Option<&str>) -> bool {
     if !is_attention_eligible_event(item) {
         return false;

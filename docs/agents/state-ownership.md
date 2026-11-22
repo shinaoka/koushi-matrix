@@ -315,6 +315,12 @@ are specified in
 Every projection `TimelineActor` applies goes through the same rule, so a
 projection queued behind a newer write cannot roll the timeline back.
 
+A confirmed room main-scope boundary from a write this device sent also settles
+that room's room-list badge, whatever room is in the foreground
+(`AppAction::ConfirmedReadBoundarySettled` → `reducer/live_signals.rs`). The
+proof, what the reducer requires, and the scopes it preserves are specified in
+[room-list settlement](../architecture/state-machine.md#room-list-settlement).
+
 `TimelineNavigationSnapshot.read_marker_event_id` and unread counts remain the
 server-confirmed boundary. `local_viewed_event_id` and
 `read_marker_display_event_id` may advance while the write is pending or failed.

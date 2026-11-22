@@ -2027,3 +2027,6 @@ mod native_attention_candidate_lifetime;
 
 #[path = "tests/native_attention_mark_read.rs"]
 mod native_attention_mark_read;
+
+#[path = "tests/room_read_boundary_settlement.rs"]
+mod room_read_boundary_settlement;
