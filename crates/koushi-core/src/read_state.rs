@@ -1130,6 +1130,39 @@ fn same_target_or_dominated(confirmed: &ReadTarget, candidate: &ReadTarget) -> b
     confirmed.event_id == candidate.event_id || dominates(confirmed, candidate)
 }
 
+/// Decides whether an incoming confirmed read boundary may replace the current
+/// one for the same account, session and read scope (#2030).
+///
+/// There is one boundary per timeline key -- the room's main scope or one
+/// thread -- and two writers: a successful local write and an authoritative
+/// observation from sync. Both merge through this rule, so a delivery that
+/// arrives late can never move the boundary backwards.
+///
+/// Order is only ever taken from the timeline's current canonical index: the
+/// incoming target must carry a strictly greater rank inside the same index
+/// generation as the current one. Equal targets are idempotent. A target the
+/// index cannot place -- an event outside the resident window, or a rebuilt
+/// generation -- is incomparable: the current boundary is kept and the next
+/// observation reconciles. Event ids and arrival order are never used as
+/// evidence of order.
+pub(crate) fn confirmed_boundary_accepts(
+    current: Option<(&str, Option<ReadPositionEvidence>)>,
+    incoming: (&str, Option<ReadPositionEvidence>),
+) -> bool {
+    let Some((current_event_id, current_position)) = current else {
+        // Nothing confirmed yet: the first target is the only boundary there is.
+        return true;
+    };
+    if current_event_id == incoming.0 {
+        return false;
+    }
+    matches!(
+        (current_position, incoming.1),
+        (Some(current), Some(incoming)) if incoming.generation == current.generation
+            && incoming.rank > current.rank
+    )
+}
+
 fn evidence_is_older(candidate: ReadPositionEvidence, known: ReadPositionEvidence) -> bool {
     candidate.generation < known.generation
         || (candidate.generation == known.generation && candidate.rank < known.rank)

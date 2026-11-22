@@ -1713,21 +1713,41 @@ impl TimelineManagerActor {
         read_key: &ReadStateKey,
         event_id: Option<&str>,
     ) {
+        let Some(event_id) = event_id else {
+            return;
+        };
         if !Self::local_server_confirmation_key(timeline_key, read_key) {
             return;
         }
-        let Some(correlation) = self
-            .read_workers
-            .local_read_correlations
-            .get_mut(timeline_key)
-        else {
+        let index = self
+            .timelines
+            .get(timeline_key)
+            .and_then(TimelineActorHandle::read_position_index);
+        let evidence = |event_id: &str| index.as_ref().and_then(|index| index.evidence(event_id));
+        let Some(correlation) = self.read_workers.local_read_correlations.get(timeline_key) else {
             return;
         };
-        if correlation.actor_generation == actor_generation
-            && correlation.required_keys.contains_key(read_key)
-            && event_id.is_some()
+        if correlation.actor_generation != actor_generation
+            || !correlation.required_keys.contains_key(read_key)
         {
-            correlation.server_confirmed_read_event_id = event_id.map(ToOwned::to_owned);
+            return;
+        }
+        // #2030: a delayed observation merges through the same ordering rule as a
+        // successful write, so it cannot lower a boundary this scope already
+        // confirmed. An unprovable order keeps the confirmed boundary and leaves
+        // the reconciliation pending for the next observation.
+        let current = correlation.server_confirmed_read_event_id.as_deref();
+        let advance = crate::read_state::confirmed_boundary_accepts(
+            current.map(|current| (current, evidence(current))),
+            (event_id, evidence(event_id)),
+        );
+        if advance
+            && let Some(correlation) = self
+                .read_workers
+                .local_read_correlations
+                .get_mut(timeline_key)
+        {
+            correlation.server_confirmed_read_event_id = Some(event_id.to_owned());
         }
     }
 
@@ -2089,11 +2109,30 @@ impl TimelineActor {
             self.local_viewed_boundary =
                 Some(crate::timeline::actor::LocalViewedBoundary { event_id, position });
         }
-        if server_confirmed_read_event_id.is_some() {
-            self.server_confirmed_read_event_id = server_confirmed_read_event_id;
+        if let Some(event_id) = server_confirmed_read_event_id {
+            self.confirm_read_boundary(&event_id);
         }
         self.read_state_sync = sync;
         self.emit_navigation_if_changed();
+    }
+
+    /// Applies one confirmed read boundary through the shared ordering rule
+    /// (#2030). A projection can be queued behind a newer write, and an
+    /// authoritative observation can arrive after this scope already confirmed a
+    /// later position, so the boundary only ever moves forward.
+    fn confirm_read_boundary(&mut self, event_id: &str) {
+        let index = self.position_tx.borrow();
+        let evidence = |event_id: &str| index.evidence(event_id);
+        let advance = crate::read_state::confirmed_boundary_accepts(
+            self.server_confirmed_read_event_id
+                .as_deref()
+                .map(|current| (current, evidence(current))),
+            (event_id, evidence(event_id)),
+        );
+        drop(index);
+        if advance {
+            self.server_confirmed_read_event_id = Some(event_id.to_owned());
+        }
     }
 
     pub(super) async fn handle_read_success(
@@ -2145,7 +2184,7 @@ impl TimelineActor {
                     &snapshot,
                     &self.thread_attention,
                 );
-                self.server_confirmed_read_event_id = Some(authoritative_event_id);
+                self.confirm_read_boundary(&authoritative_event_id);
                 self.emit_navigation_if_changed();
                 true
             }
@@ -2163,7 +2202,7 @@ impl TimelineActor {
                     return false;
                 }
                 self.fully_read_event_id = Some(event_id.clone());
-                self.server_confirmed_read_event_id = Some(event_id);
+                self.confirm_read_boundary(&event_id);
                 self.emit_navigation_if_changed();
                 true
             }
