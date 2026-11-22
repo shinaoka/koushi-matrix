@@ -24,8 +24,8 @@ use koushi_protocol::ids::AccountKey;
 use koushi_protocol::ids::{TimelineKey, TimelineKind};
 
 use crate::read_state::{
-    ReadNetworkOutcome, ReadPersistenceSnapshot, ReadPositionEvidence, ReadStateEngine,
-    ReadStateKey, ReadTarget, ReadWaiterId, ReadWakeResult,
+    BoundaryWriter, ReadNetworkOutcome, ReadPersistenceSnapshot, ReadPositionEvidence,
+    ReadStateEngine, ReadStateKey, ReadTarget, ReadWaiterId, ReadWakeResult,
 };
 
 use koushi_diagnostics::DiagnosticValue;
@@ -1020,14 +1020,22 @@ fn actor_handle_with_positions(
 ) -> (TimelineActorHandle, mpsc::Receiver<TimelineActorControl>) {
     let (tx, _rx) = mpsc::channel(1);
     let (control_tx, control_rx) = mpsc::channel(32);
+    let ranks: HashMap<String, u64> = positions
+        .into_iter()
+        .map(|(event_id, rank)| (event_id.to_owned(), rank))
+        .collect();
+    // This fixture models positions only, so no non-readable row is newer than the
+    // newest event it places.
+    let newest_readable_event_id = ranks
+        .iter()
+        .max_by_key(|(_, rank)| **rank)
+        .map(|(event_id, _)| event_id.clone());
     let (_position_tx, position_rx) = watch::channel(Arc::new(TimelinePositionIndex {
         generation: u128::from(actor_generation) << 64,
         resident_item_struct_bytes: 0,
         resident_item_text_bytes: 0,
-        ranks: positions
-            .into_iter()
-            .map(|(event_id, rank)| (event_id.to_owned(), rank))
-            .collect(),
+        ranks,
+        newest_readable_event_id,
     }));
     (
         TimelineActorHandle {
@@ -1058,6 +1066,7 @@ async fn restored_read_waits_for_authoritative_reconciliation_before_retrying() 
         resident_item_struct_bytes: 0,
         resident_item_text_bytes: 0,
         ranks: HashMap::from([("$desired:test".to_owned(), 5)]),
+        newest_readable_event_id: None,
     }));
     let actor_handle = TimelineActorHandle {
         tx: ordinary_tx,
@@ -1239,6 +1248,7 @@ async fn reconnect_preserves_a_bounded_reconciliation_wake_for_new_read_waiters(
         resident_item_struct_bytes: 0,
         resident_item_text_bytes: 0,
         ranks: HashMap::new(),
+        newest_readable_event_id: None,
     }));
     let actor_handle = TimelineActorHandle {
         tx: ordinary_tx,
@@ -1459,6 +1469,7 @@ async fn authoritative_server_ahead_clears_restored_read_without_network_retry()
             ("$desired:test".to_owned(), 5),
             ("$server-ahead:test".to_owned(), 6),
         ]),
+        newest_readable_event_id: None,
     }));
     let actor_handle = TimelineActorHandle {
         tx: ordinary_tx,
@@ -1535,6 +1546,7 @@ async fn authoritative_reconciliation_keeps_unordered_remaining_candidate_pendin
             ("$positioned:test".to_owned(), 5),
             ("$server-ahead:test".to_owned(), 6),
         ]),
+        newest_readable_event_id: None,
     }));
     let actor_handle = TimelineActorHandle {
         tx: ordinary_tx,
@@ -1592,6 +1604,7 @@ async fn stalled_read_receipt_worker_does_not_block_cached_subscription_replay()
         resident_item_struct_bytes: 0,
         resident_item_text_bytes: 0,
         ranks: HashMap::from([("$read-target:test".to_owned(), 7)]),
+        newest_readable_event_id: None,
     }));
     let actor_handle = TimelineActorHandle {
         tx: ordinary_tx,
@@ -1671,6 +1684,7 @@ async fn newer_positioned_read_target_cancels_stale_worker_and_settles_both_wait
             ("$read-old:test".to_owned(), 7),
             ("$read-new:test".to_owned(), 8),
         ]),
+        newest_readable_event_id: None,
     }));
     let actor_handle = TimelineActorHandle {
         tx: ordinary_tx,
@@ -3658,5 +3672,383 @@ async fn a_provably_newer_read_from_another_device_advances_the_boundary() {
             .as_deref(),
         Some("$remote-newer:test"),
         "another device's provably later read is a newer truth"
+    );
+}
+
+/// #2030 B2: a room's confirmed main-room boundary is published to the room list
+/// as an action, so the reducer can settle the badge without waiting for the
+/// Sliding Sync echo.
+fn read_scope_for_publication(
+    key: &TimelineKey,
+    generation: u64,
+    positions: [(&'static str, u64); 2],
+    confirmed: Option<&'static str>,
+) -> (
+    TimelineManagerActor,
+    mpsc::Receiver<Vec<AppAction>>,
+    ReadStateKey,
+) {
+    let read_key = ReadStateKey::FullyReadAndPrivateUnthreaded {
+        room_id: key.room_id().to_owned(),
+    };
+    let (actor_handle, _control_rx) = actor_handle_with_positions(generation, positions);
+    let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+    let (read_network_tx, _read_network_rx) = mpsc::unbounded_channel();
+    manager.read_workers =
+        ReadWorkerSupervisor::synthetic(read_network_tx, Duration::from_secs(30));
+    let (action_tx, action_rx) = mpsc::channel(8);
+    manager.action_tx = action_tx;
+    let target = ReadTarget::new("$older:test".to_owned());
+    manager.read_workers.local_read_correlations.insert(
+        key.clone(),
+        LocalReadCorrelation {
+            actor_generation: generation,
+            local_target: target.clone(),
+            server_confirmed_read_event_id: confirmed.map(str::to_owned),
+            required_keys: std::collections::BTreeMap::from([(read_key.clone(), target)]),
+            admission_failure: None,
+        },
+    );
+    (manager, action_rx, read_key)
+}
+
+/// The hop a successful write takes outside the synthetic worker: merge the
+/// acknowledged boundary, then publish it for the room list.
+async fn publish_acknowledged_boundary(
+    manager: &mut TimelineManagerActor,
+    key: &TimelineKey,
+    read_key: &ReadStateKey,
+    event_id: &str,
+) {
+    let boundary = manager.update_local_server_confirmation(
+        BoundaryWriter::Acknowledged,
+        key,
+        7,
+        read_key,
+        Some(event_id),
+    );
+    if let Some(boundary) = boundary {
+        manager
+            .publish_confirmed_read_boundary(key, &boundary)
+            .await;
+    }
+}
+
+async fn published_boundaries(
+    actions: &mut mpsc::Receiver<Vec<AppAction>>,
+) -> Vec<(String, String)> {
+    let mut published = Vec::new();
+    while let Ok(batch) = actions.try_recv() {
+        for action in batch {
+            if let AppAction::ConfirmedReadBoundarySettled { room_id, event_id } = action {
+                published.push((room_id, event_id));
+            }
+        }
+    }
+    published
+}
+
+#[tokio::test]
+async fn a_confirmed_boundary_at_the_live_edge_is_published_to_the_room_list() {
+    let key = room_key();
+    let (mut manager, mut actions, read_key) = read_scope_for_publication(
+        &key,
+        7,
+        [("$older:test", 2), ("$newer:test", 5)],
+        Some("$older:test"),
+    );
+
+    publish_acknowledged_boundary(&mut manager, &key, &read_key, "$newer:test").await;
+
+    assert_eq!(
+        published_boundaries(&mut actions).await,
+        vec![(key.room_id().to_owned(), "$newer:test".to_owned())],
+        "the boundary is the newest event of the room's main timeline, so the \
+         room list may settle on it without waiting for an echo"
+    );
+}
+
+#[tokio::test]
+async fn an_observed_boundary_never_settles_the_room_list() {
+    // An observation reads `m.fully_read` account data, which no server derives
+    // unread counts from: another device can move that marker without sending a
+    // receipt. Settling the list on it would zero a badge the server still reports
+    // as unread, and the recorded activity would keep it zero.
+    let key = room_key();
+    let (mut manager, mut actions, read_key) = read_scope_for_publication(
+        &key,
+        7,
+        [("$older:test", 2), ("$newer:test", 5)],
+        Some("$older:test"),
+    );
+
+    manager
+        .handle_authoritative_read_state_observed(&key, 7, read_key, Some("$newer:test".to_owned()))
+        .await;
+
+    assert_eq!(
+        manager.read_workers.local_read_correlations[&key]
+            .server_confirmed_read_event_id
+            .as_deref(),
+        Some("$newer:test"),
+        "the boundary still advances for this scope"
+    );
+    assert!(
+        published_boundaries(&mut actions).await.is_empty(),
+        "only a receipt this device sent can settle the room list"
+    );
+}
+
+#[tokio::test]
+async fn a_boundary_a_later_event_follows_is_not_published() {
+    // $newer outranks the confirmed boundary: a message the read does not cover
+    // arrived, so the room list must keep its unread.
+    let key = room_key();
+    let (mut manager, mut actions, read_key) =
+        read_scope_for_publication(&key, 7, [("$older:test", 2), ("$newer:test", 5)], None);
+
+    publish_acknowledged_boundary(&mut manager, &key, &read_key, "$older:test").await;
+
+    assert_eq!(
+        manager.read_workers.local_read_correlations[&key]
+            .server_confirmed_read_event_id
+            .as_deref(),
+        Some("$older:test"),
+        "the boundary is still confirmed for this scope"
+    );
+    assert!(
+        published_boundaries(&mut actions).await.is_empty(),
+        "a boundary the live edge is newer than covers nothing to settle"
+    );
+}
+
+#[tokio::test]
+async fn a_write_that_replaces_an_unplaceable_boundary_publishes_the_live_edge() {
+    // The window cannot place the opened marker, so an observation may not move
+    // it; the write the reader's own action completed replaces it, and the
+    // replacement is then publishable like any other boundary.
+    let key = room_key();
+    let (mut manager, mut actions, read_key) = read_scope_for_publication(
+        &key,
+        7,
+        [("$older:test", 2), ("$newer:test", 5)],
+        Some("$evicted:test"),
+    );
+
+    let session_generation = manager.read_workers.state.session_generation();
+    manager.read_workers.state.admit(
+        session_generation,
+        read_key.clone(),
+        ReadTarget::with_position(
+            "$newer:test".to_owned(),
+            ReadPositionEvidence {
+                generation: u128::from(7_u64) << 64,
+                rank: 5,
+            },
+        ),
+        ReadWaiterId::new(1),
+    );
+    let operation = match manager.read_workers.state.wake(&read_key) {
+        ReadWakeResult::Start(operation) => operation,
+        other => panic!("expected a start, got {other:?}"),
+    };
+    manager
+        .settle_read_operation(operation, ReadNetworkOutcome::Succeeded)
+        .await;
+
+    assert_eq!(
+        published_boundaries(&mut actions).await,
+        vec![(key.room_id().to_owned(), "$newer:test".to_owned())],
+        "the acknowledged write moved the boundary to the live edge, which the \
+         room list may settle on"
+    );
+}
+
+#[tokio::test]
+async fn a_thread_boundary_is_never_published_as_the_room_boundary() {
+    let room_id = "!r:test";
+    let key = TimelineKey {
+        account_key: AccountKey("@a:test".to_owned()),
+        kind: TimelineKind::Thread {
+            room_id: room_id.to_owned(),
+            root_event_id: "$root:test".to_owned(),
+        },
+    };
+    let read_key = ReadStateKey::ThreadRead {
+        room_id: room_id.to_owned(),
+        root_event_id: "$root:test".to_owned(),
+    };
+    let (actor_handle, _control_rx) = actor_handle_with_positions(7, [("$thread-only:test", 5)]);
+    let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+    let (read_network_tx, _read_network_rx) = mpsc::unbounded_channel();
+    manager.read_workers =
+        ReadWorkerSupervisor::synthetic(read_network_tx, Duration::from_secs(30));
+    let (action_tx, mut actions) = mpsc::channel(8);
+    manager.action_tx = action_tx;
+    let target = ReadTarget::new("$thread-older:test".to_owned());
+    manager.read_workers.local_read_correlations.insert(
+        key.clone(),
+        LocalReadCorrelation {
+            actor_generation: 7,
+            local_target: target.clone(),
+            server_confirmed_read_event_id: None,
+            required_keys: std::collections::BTreeMap::from([(read_key.clone(), target)]),
+            admission_failure: None,
+        },
+    );
+
+    publish_acknowledged_boundary(&mut manager, &key, &read_key, "$thread-only:test").await;
+
+    assert!(
+        published_boundaries(&mut actions).await.is_empty(),
+        "a thread's read boundary is a different scope and never settles the \
+         room's main badge"
+    );
+}
+
+/// #2030 B2 acceptance: a confirmed read of a room the reader is not looking at
+/// settles that room's **room-list projection** without a sync echo.
+///
+/// The read is the manager's own settlement of a successful write (`admit` →
+/// `wake` → `settle_read_operation`, the hop the actor's acknowledgement takes in
+/// production). Its published boundary is reduced into a real `AppState`, so the
+/// assertion is on the sidebar's own projection rather than on a timeline
+/// snapshot, and no room-list update is sent afterwards.
+#[tokio::test]
+async fn a_confirmed_read_settles_the_room_list_badge_without_a_sync_echo() {
+    use koushi_state::{AppState, RoomLatestEventSummary, RoomSummary, SessionState};
+
+    const FOREGROUND_ROOM: &str = "!foreground:test";
+
+    fn room_summary(room_id: &str, latest_event_id: &str, timestamp_ms: u64) -> RoomSummary {
+        RoomSummary {
+            room_id: room_id.to_owned(),
+            display_name: room_id.to_owned(),
+            display_label: room_id.to_owned(),
+            original_display_label: room_id.to_owned(),
+            display_name_placeholder: None,
+            display_label_placeholder: None,
+            avatar: None,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: Default::default(),
+            unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
+            thread_unread_count: 0,
+            thread_highlight_count: 0,
+            marked_unread: false,
+            recency_stamp: Some(timestamp_ms),
+            conversation_activity: None,
+            latest_event: Some(RoomLatestEventSummary {
+                event_id: latest_event_id.to_owned(),
+                relation_type: None,
+                relation_event_id: None,
+                thread_root_event_id: None,
+                sender_id: Some("@bob:test".to_owned()),
+                sender_label: Some("Bob".to_owned()),
+                sender_avatar: None,
+                preview: Some("body".to_owned()),
+                message_text: None,
+                timestamp_ms,
+                is_redacted: false,
+            }),
+            parent_space_ids: Vec::new(),
+            dm_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 0,
+        }
+    }
+
+    let key = room_key();
+    let (mut manager, mut actions, read_key) =
+        read_scope_for_publication(&key, 7, [("$older:test", 2), ("$newer:test", 5)], None);
+
+    // The sidebar: the reader is in another room, and this room's newest event is
+    // the one about to be read.
+    let mut state = AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "http://example.invalid".into(),
+            user_id: "@a:test".to_owned(),
+            device_id: "DEVICE".into(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        ..AppState::default()
+    };
+    state.navigation.active_room_id = Some(FOREGROUND_ROOM.to_owned());
+    let mut unread = room_summary(key.room_id(), "$newer:test", 1_800_000_001_000);
+    unread.unread_count = 3;
+    unread.notification_count = 2;
+    unread.highlight_count = 1;
+    drop(koushi_state::reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: Vec::new(),
+            rooms: vec![
+                unread,
+                room_summary(FOREGROUND_ROOM, "$foreground:test", 1_800_000_002_000),
+            ],
+        },
+    ));
+    let badge = |state: &AppState, room_id: &str| {
+        let room = state
+            .rooms
+            .iter()
+            .find(|room| room.room_id == room_id)
+            .expect("room in the projection");
+        (
+            room.unread_count,
+            room.notification_count,
+            room.highlight_count,
+        )
+    };
+    assert_eq!(badge(&state, key.room_id()), (3, 2, 1));
+
+    // The write completes and the manager settles it.
+    let session_generation = manager.read_workers.state.session_generation();
+    manager.read_workers.state.admit(
+        session_generation,
+        read_key.clone(),
+        ReadTarget::with_position(
+            "$newer:test".to_owned(),
+            ReadPositionEvidence {
+                generation: u128::from(7_u64) << 64,
+                rank: 5,
+            },
+        ),
+        ReadWaiterId::new(1),
+    );
+    let operation = match manager.read_workers.state.wake(&read_key) {
+        ReadWakeResult::Start(operation) => operation,
+        other => panic!("expected a start, got {other:?}"),
+    };
+    manager
+        .settle_read_operation(operation, ReadNetworkOutcome::Succeeded)
+        .await;
+
+    while let Ok(batch) = actions.try_recv() {
+        for action in batch {
+            drop(koushi_state::reduce(&mut state, action));
+        }
+    }
+
+    assert_eq!(
+        badge(&state, key.room_id()),
+        (0, 0, 0),
+        "the room's own badge settles without any sync echo"
+    );
+    assert_eq!(
+        state
+            .live_signals
+            .rooms
+            .get(key.room_id())
+            .and_then(|signals| signals.fully_read_event_id.as_deref()),
+        Some("$newer:test"),
+        "the confirmed boundary is the room's published read position"
+    );
+    assert_eq!(
+        badge(&state, FOREGROUND_ROOM),
+        (0, 0, 0),
+        "the room the reader is looking at is untouched"
     );
 }

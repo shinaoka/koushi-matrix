@@ -1300,6 +1300,71 @@ pub(crate) fn handle_room_marked_as_read_succeeded(
     effects
 }
 
+/// #2030 B2: settle the room list for a confirmed main-room read boundary.
+///
+/// The boundary is proof only while the room list's own newest activity is still
+/// that event: then every event the list counts is at or before the boundary, so
+/// the main unread and attention it carries are stale. A list that moved on --
+/// a newer event, whether the timeline or the list saw it first -- keeps its
+/// counts, because a message that arrived before the read was confirmed is still
+/// unread.
+///
+/// `marked_unread` and the thread counts are different scopes and stay as they
+/// are: an explicit mark-unread is the reader's own intent, and a thread reply is
+/// never part of the main-room boundary. A room the reader marked unread also
+/// records no locally-read activity, so the stale-snapshot suppression below
+/// cannot clear that intent later.
+///
+/// Returns whether the projection changed.
+pub(crate) fn settle_room_list_read_boundary(
+    state: &mut AppState,
+    room_id: &str,
+    boundary_event_id: &str,
+) -> bool {
+    if !has_session_projection_context(state) {
+        return false;
+    }
+
+    let Some(room) = state.rooms.iter_mut().find(|room| room.room_id == room_id) else {
+        return false;
+    };
+    let list_shows_boundary = room
+        .latest_event
+        .as_ref()
+        .map(|latest| latest.event_id.as_str())
+        == Some(boundary_event_id);
+    if !list_shows_boundary {
+        return false;
+    }
+    // An explicit mark-unread is the reader's own intent, not a read position, and
+    // clearing counts under it would leave a dot that the next snapshot restores as
+    // stale counts.
+    if room.marked_unread {
+        return false;
+    }
+    let cleared = room.unread_count > 0 || room.notification_count > 0 || room.highlight_count > 0;
+    room.unread_count = 0;
+    // Room-level counters can include thread replies this device has not observed
+    // yet, and a thread highlight cannot be restored once dropped; keep them for
+    // the echo, which knows the thread's own read state.
+    if room.thread_unread_count == 0 {
+        room.notification_count = 0;
+        room.highlight_count = 0;
+    }
+    // Record the covered activity even when there was nothing left to clear: the
+    // echo may have settled these counts already, and a later snapshot that still
+    // shows this activity is stale either way.
+    let activity = RoomReadActivity::of(room);
+    state
+        .locally_read_activity
+        .insert(room_id.to_owned(), activity);
+    if !cleared {
+        return false;
+    }
+    recompute_room_list_projection(state);
+    true
+}
+
 pub(crate) fn handle_room_marked_as_read_failed(
     state: &mut AppState,
     request_id: u64,

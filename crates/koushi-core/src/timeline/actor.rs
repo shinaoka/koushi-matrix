@@ -56,10 +56,10 @@ use super::gap_repair::{
 use super::item_projection::{
     ReceiptObservationTarget, apply_link_previews_to_item, apply_timeline_item_visibility,
     cache_sdk_item_media_source, carry_resolved_send_failures, emit_receipt_observation_actions,
-    live_event_receipts_from_sdk_items, live_event_window_ids_from_sdk_items,
-    receipt_scope_for_timeline_kind, receipts_by_row, remember_local_echo,
-    sdk_item_to_timeline_item, thread_auto_requestable_event_id, timeline_room_id,
-    withheld_update_should_publish,
+    has_readable_activity, live_event_receipts_from_sdk_items,
+    live_event_window_ids_from_sdk_items, receipt_scope_for_timeline_kind, receipts_by_row,
+    remember_local_echo, sdk_item_to_timeline_item, thread_auto_requestable_event_id,
+    timeline_item_event_id, timeline_room_id, withheld_update_should_publish,
 };
 use super::manager::TimelineMessage;
 use super::media::{
@@ -689,6 +689,8 @@ fn text_len(text: &str) -> u64 {
 pub(super) struct TimelinePositionIndex {
     pub(super) generation: u128,
     pub(super) ranks: HashMap<String, u64>,
+    /// Newest row of the main conversation this window holds (#2030 B2).
+    pub(super) newest_readable_event_id: Option<String>,
     /// Lower bound of the resident projection's inline struct bytes (#1394).
     pub(super) resident_item_struct_bytes: u64,
     /// Bytes of resident message text this actor projects (#1394). Lower
@@ -727,12 +729,27 @@ impl TimelinePositionIndex {
             }
             bytes
         });
+        // The newest row a room read boundary could name: a row with content of
+        // its own, not a state change or a thread reply.
+        let newest_readable_event_id = items
+            .iter()
+            .filter(|item| has_readable_activity(item))
+            .filter_map(timeline_item_event_id)
+            .next_back()
+            .map(str::to_owned);
         Self {
             generation,
             ranks,
+            newest_readable_event_id,
             resident_item_struct_bytes,
             resident_item_text_bytes,
         }
+    }
+
+    /// The newest event of the main conversation this window can place; a read
+    /// boundary naming it has no readable row after it (#2030 B2).
+    pub(super) fn newest_readable_event_id(&self) -> Option<&str> {
+        self.newest_readable_event_id.as_deref()
     }
 
     pub(super) fn evidence(

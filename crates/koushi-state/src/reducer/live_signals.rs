@@ -173,6 +173,53 @@ pub(crate) fn handle_fully_read_marker_updated(
     vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
 }
 
+/// #2030 B2: publish a confirmed main-room read boundary to the room list.
+///
+/// Core only sends this once it has proven the boundary is the newest event the
+/// room's main timeline holds, so no unread event can follow it in this scope.
+/// The boundary becomes the room's read position regardless of which room is in
+/// the foreground, and the room-list reducer settles the counts it covers; a
+/// list that has already moved past the boundary keeps them.
+pub(crate) fn handle_confirmed_read_boundary_settled(
+    state: &mut AppState,
+    room_id: String,
+    event_id: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    // The marker path owns this field; a settlement only fills it in when nothing
+    // has published one yet, so a stale settlement cannot move the read divider
+    // back. The stale-snapshot suppression only needs it to be present.
+    let signals = state.live_signals.rooms.entry(room_id.clone()).or_default();
+    let mut effects = Vec::new();
+    if signals.fully_read_event_id.is_none() {
+        signals.fully_read_event_id = Some(event_id.clone());
+        effects.push(AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged));
+    }
+    // A room the projection does not hold yet has no counts to settle; the next
+    // room-list update brings it back.
+    if !super::room_exists(state, &room_id)
+        || !super::room::settle_room_list_read_boundary(state, &room_id, &event_id)
+    {
+        return effects;
+    }
+    // #1803: the counts moved, so the published candidate and the badge are
+    // recomputed in this same reduce instead of waiting for a room-list update.
+    let (native_attention_changed, native_attention_diagnostic) =
+        super::native_attention::recompute_native_attention_from_rooms(
+            state,
+            crate::state::NativeAttentionObservationKind::InitialSync,
+        );
+    effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
+    effects.push(native_attention_diagnostic);
+    if native_attention_changed {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged));
+    }
+    effects
+}
+
 pub(crate) fn handle_typing_users_updated(
     state: &mut AppState,
     room_id: String,

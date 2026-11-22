@@ -1178,8 +1178,10 @@ stateDiagram-v2
 - `RoomMarkedAsUnreadSucceeded` changes only the explicit `marked_unread` flag
   and recomputes the projection. It must not fabricate an unread-message count
   for the native badge; `unread: false` likewise leaves server-reported message
-  counts untouched. `RoomMarkedAsReadSucceeded` remains the operation that
-  clears all counters after the SDK confirms the read marker.
+  counts untouched. `RoomMarkedAsReadSucceeded` clears every counter after the
+  SDK confirms the read marker, and a confirmed main-scope read boundary settles
+  the room's main counters earlier (see
+  [room-list settlement](#room-list-settlement)).
 - Requested mark-read/unread actions are accepted only for known rooms in a
   Ready session and emit `RoomListChanged`.
 
@@ -1504,6 +1506,52 @@ stateDiagram-v2
   boundary does not become placeable on its own: a room opens with a marker
   older than its live-edge window whenever more events arrived than the window
   holds, and keeping it there would pin the scope for the actor's whole life.
+
+### Room-list settlement
+
+The room list's unread and attention normally follow the server's Sliding Sync
+echo. A confirmed room main-scope boundary lets the sidebar drop them earlier,
+but only when the boundary provably covers what the list shows. The proof has two
+halves, each made where its evidence lives:
+
+```mermaid
+stateDiagram-v2
+    [*] --> ListKept
+    ListKept --> ListSettled: boundary is the room window's newest event and the list's newest activity
+    ListKept --> ListKept: a newer event exists (timeline or list)
+    ListKept --> ListKept: boundary unplaceable in the window
+    ListSettled --> ListKept: a newer activity arrives
+```
+
+- **Core** (`TimelineManagerActor`) publishes
+  `AppAction::ConfirmedReadBoundarySettled` only for the boundary of a write this
+  device sent, and only when the current-generation position index names it as the
+  room window's newest *readable* row: a state row or a thread reply may be newer
+  without being activity of the main conversation. Hiding is a display decision,
+  so a hidden row still counts as activity and still blocks. An observation never
+  publishes: it reads `m.fully_read` account data, which no server derives unread
+  counts from. An unplaceable boundary, or one a later event follows, publishes
+  nothing, and the index is read again after the waiters settle so a row projected
+  in between cannot be zeroed.
+- **The reducer** (`reducer/live_signals.rs` → `reducer/room.rs`) publishes the
+  boundary as the room's read position regardless of the foreground room, and
+  clears the room's main unread and attention only while the room list's own
+  newest activity is that same event, the session is ready, the room is in the
+  projection, and the reader has not marked the room unread. Room-level
+  notification and highlight counters are kept while a thread in that room is
+  unread, because they can include thread replies this device has not observed and
+  a thread highlight cannot be restored once dropped.
+
+Preserved by construction, because they are different scopes or different
+intents: a thread's unread and mention counts, an explicit mark-unread (a room
+that is marked unread is not settled at all, so a stale snapshot can neither clear
+that intent nor resurrect counts under it), and every other room's counts. Reading
+a room is not a request to forget that a reader marked it unread.
+
+The proof is conservative, so a settlement that cannot be proven is simply not
+made: a list whose newest activity is a thread reply, a boundary the resident
+window no longer holds, or a readable row the window holds but the list does not
+keeps the counts until the echo arrives.
 
 Rust keeps the local viewed boundary separate from server-confirmed read state.
 For the displayed read divider, comparable local and confirmed boundaries in the
@@ -4098,12 +4146,14 @@ stateDiagram-v2
     Empty --> RoomSignals: LiveRoomReceiptSummariesUpdated
     Empty --> RoomSignals: LiveRoomReceiptsWindowReconciled
     Empty --> RoomSignals: FullyReadMarkerUpdated
+    Empty --> RoomSignals: ConfirmedReadBoundarySettled
     Empty --> RoomSignals: TypingUsersUpdated
     Empty --> PresenceSignals: PresenceUpdated
     RoomSignals --> RoomSignals: LiveRoomSignalsUpdated
     RoomSignals --> RoomSignals: LiveRoomReceiptSummariesUpdated
     RoomSignals --> RoomSignals: LiveRoomReceiptsWindowReconciled
     RoomSignals --> RoomSignals: FullyReadMarkerUpdated
+    RoomSignals --> RoomSignals: ConfirmedReadBoundarySettled
     RoomSignals --> RoomSignals: TypingUsersUpdated
     RoomSignals --> RoomAndPresence: PresenceUpdated
     PresenceSignals --> PresenceSignals: PresenceUpdated
@@ -4111,11 +4161,13 @@ stateDiagram-v2
     PresenceSignals --> RoomAndPresence: LiveRoomReceiptSummariesUpdated
     PresenceSignals --> RoomAndPresence: LiveRoomReceiptsWindowReconciled
     PresenceSignals --> RoomAndPresence: FullyReadMarkerUpdated
+    PresenceSignals --> RoomAndPresence: ConfirmedReadBoundarySettled
     PresenceSignals --> RoomAndPresence: TypingUsersUpdated
     RoomAndPresence --> RoomAndPresence: LiveRoomSignalsUpdated
     RoomAndPresence --> RoomAndPresence: LiveRoomReceiptSummariesUpdated
     RoomAndPresence --> RoomAndPresence: LiveRoomReceiptsWindowReconciled
     RoomAndPresence --> RoomAndPresence: FullyReadMarkerUpdated
+    RoomAndPresence --> RoomAndPresence: ConfirmedReadBoundarySettled
     RoomAndPresence --> RoomAndPresence: TypingUsersUpdated
     RoomAndPresence --> RoomAndPresence: PresenceUpdated
     RoomSignals --> Empty: LogoutRequested/LogoutFinished/SessionCleared
