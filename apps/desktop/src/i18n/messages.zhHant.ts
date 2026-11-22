@@ -1842,6 +1842,7 @@ export const zhHant: Catalog = {
   "timeline.notice.profileAvatarChanged": "{sender} 變更了個人頭像",
   "timeline.notice.profileDisplayNameAndAvatarChanged": "{sender} 變更了顯示名稱和個人頭像",
   "timeline.notice.profileUpdated": "{sender} 更新了聊天室內的個人資料",
+  "timeline.noticeGroupToggle": "{count} 則同類通知",
   "timeline.notice.roomNameSet": "將聊天室名稱設為 {newName}",
   "timeline.notice.roomNameChanged": "將聊天室名稱從 {oldName} 變更為 {newName}",
   "timeline.notice.roomNameRemoved": "移除了聊天室名稱",

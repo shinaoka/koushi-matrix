@@ -1842,6 +1842,7 @@ export const zhHans: Catalog = {
   "timeline.notice.profileAvatarChanged": "{sender} 更改了头像",
   "timeline.notice.profileDisplayNameAndAvatarChanged": "{sender} 更改了显示名称和头像",
   "timeline.notice.profileUpdated": "{sender} 更新了房间内的个人资料",
+  "timeline.noticeGroupToggle": "{count} 条同类通知",
   "timeline.notice.roomNameSet": "将房间名称设为 {newName}",
   "timeline.notice.roomNameChanged": "将房间名称从 {oldName} 更改为 {newName}",
   "timeline.notice.roomNameRemoved": "移除了房间名称",

@@ -979,6 +979,9 @@ fn room_thread_assertion_requires_rust_projected_root_activity_and_summary() {
         content_event_id: Some("$root:test".to_owned()),
         activity_event_id: Some("$reply:test".to_owned()),
         display_timestamp_ms: Some(2),
+        group_count: 1,
+        group_position: 0,
+        group_id: None,
     });
     assert!(
         assert_room_timeline_projects_root_activity_and_summary(
@@ -1080,6 +1083,9 @@ fn room_thread_summary_observer_rejects_stale_non_null_summary_until_rust_advanc
         content_event_id: Some("$root:test".to_owned()),
         activity_event_id: Some("$reply-b:test".to_owned()),
         display_timestamp_ms: Some(200),
+        group_count: 1,
+        group_position: 0,
+        group_id: None,
     });
     assert!(
         observer

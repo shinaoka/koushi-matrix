@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import type { TimelineItem } from "./coreEvents";
-import { projectTimelineDisplayRows } from "./timelineDisplayProjection";
+import { projectNoticeGroups, projectTimelineDisplayRows } from "./timelineDisplayProjection";
 
 function message(id: string, timestamp = 1): TimelineItem {
   return {
@@ -150,6 +150,59 @@ describe("Rust timeline display adapter", () => {
     expect(rows.filter((row) => row.kind === "event").map((row) => row.row_id)).toEqual([
       "$b",
       "$a"
+    ]);
+  });
+});
+
+describe("#2041 notice group collapse", () => {
+  function notice(id: string, groupId: string, position: number, count = 4): TimelineItem {
+    return {
+      ...message(id),
+      display_metadata: {
+        row_id: id,
+        kind: { kind: "event" as const },
+        content_event_id: id,
+        activity_event_id: id,
+        display_timestamp_ms: 1,
+        group_count: count,
+        group_position: position,
+        group_id: groupId
+      }
+    };
+  }
+
+  const notices = () => [
+    notice("$a", "group", 0),
+    notice("$b", "group", 1),
+    notice("$c", "group", 2),
+    notice("$d", "group", 3)
+  ];
+  const rows = () => projectTimelineDisplayRows(notices());
+
+  test("a collapsed group draws its head row only", () => {
+    const collapsed = projectNoticeGroups(rows(), new Set(), []);
+    expect(collapsed.rows.map((row) => row.row_id)).toEqual(["$a"]);
+    expect(collapsed.openGroupIds.size).toBe(0);
+  });
+
+  test("an expanded group draws every row", () => {
+    const expanded = projectNoticeGroups(rows(), new Set(["group"]), []);
+    expect(expanded.rows.map((row) => row.row_id)).toEqual(["$a", "$b", "$c", "$d"]);
+    expect([...expanded.openGroupIds]).toEqual(["group"]);
+  });
+
+  test("a row the view is pointed at opens its group, and the group reports open", () => {
+    const anchored = projectNoticeGroups(rows(), new Set(), ["$c"]);
+    expect(anchored.rows.map((row) => row.row_id)).toEqual(["$a", "$b", "$c", "$d"]);
+    expect([...anchored.openGroupIds]).toEqual(["group"]);
+  });
+
+  test("rows outside a group are never dropped", () => {
+    const plain = message("$plain");
+    const projected = projectTimelineDisplayRows([...notices(), plain]);
+    expect(projectNoticeGroups(projected, new Set(), []).rows.map((row) => row.row_id)).toEqual([
+      "$a",
+      "$plain"
     ]);
   });
 });

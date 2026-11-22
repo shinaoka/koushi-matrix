@@ -1339,6 +1339,27 @@ pub struct TimelineDisplayMetadata {
     pub content_event_id: Option<String>,
     pub activity_event_id: Option<String>,
     pub display_timestamp_ms: Option<u64>,
+    /// #2041: how many consecutive same-kind notices this row stands for. `1`
+    /// (or absent on the wire) is an ordinary row. Grouping is display only:
+    /// every source event keeps its own row in Core and in the DTO stream, and
+    /// the renderer draws the head row alone until the group is expanded.
+    #[serde(default, skip_serializing_if = "is_one")]
+    pub group_count: u32,
+    /// #2041: 0-based position of this row inside its group.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub group_position: u32,
+    /// #2041: expansion key, stable while the group grows. `None` for a row
+    /// that is not part of a group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+}
+
+fn is_one(value: &u32) -> bool {
+    *value == 1
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl fmt::Debug for TimelineDisplayMetadata {
@@ -1356,6 +1377,11 @@ impl fmt::Debug for TimelineDisplayMetadata {
                 &self.activity_event_id.as_ref().map(|_| "EventId(..)"),
             )
             .field("display_timestamp_ms", &self.display_timestamp_ms)
+            // #2041: the expansion key embeds the head event id, so it is
+            // redacted like every other identity in this struct.
+            .field("group_count", &self.group_count)
+            .field("group_position", &self.group_position)
+            .field("group_id", &self.group_id.as_ref().map(|_| "GroupId(..)"))
             .finish()
     }
 }

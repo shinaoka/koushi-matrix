@@ -393,6 +393,9 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
             content_event_id: Some("$e1".to_owned()),
             activity_event_id: Some("$thread-reply:example.test".to_owned()),
             display_timestamp_ms: Some(124),
+            group_count: 1,
+            group_position: 0,
+            group_id: None,
         }),
     };
     let media_item = TimelineItem {

@@ -3416,6 +3416,9 @@ fn room_viewed_boundary_resolves_latest_reply_row_without_reading_reply() {
         content_event_id: Some("$root:test".to_owned()),
         activity_event_id: Some("$reply:test".to_owned()),
         display_timestamp_ms: None,
+        group_count: 1,
+        group_position: 0,
+        group_id: None,
     });
     let display = vec![main, displayed_root];
     let result = viewed_boundary_target(

@@ -1842,6 +1842,7 @@ export const ko: Catalog = {
   "timeline.notice.profileAvatarChanged": "{sender} 님이 프로필 사진을 변경했습니다",
   "timeline.notice.profileDisplayNameAndAvatarChanged": "{sender} 님이 표시 이름과 프로필 사진을 변경했습니다",
   "timeline.notice.profileUpdated": "{sender} 님이 방 프로필을 업데이트했습니다",
+  "timeline.noticeGroupToggle": "같은 알림 {count}개",
   "timeline.notice.roomNameSet": "방 이름을 “{newName}”(으)로 설정했습니다",
   "timeline.notice.roomNameChanged": "방 이름을 “{oldName}”에서 “{newName}”(으)로 변경했습니다",
   "timeline.notice.roomNameRemoved": "방 이름을 삭제했습니다",

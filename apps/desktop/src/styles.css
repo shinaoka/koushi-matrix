@@ -3518,6 +3518,28 @@ button:disabled {
   vertical-align: text-bottom;
 }
 
+/* #2041: a notice group's head carries the count of notices it stands for. It
+   is a disclosure button, so it stays on the line and keeps the line's muted
+   reading size instead of becoming a control. */
+.message-notice-group-toggle {
+  margin-inline-start: 0;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.message-notice-group-toggle:hover,
+.message-notice-group-toggle:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
 .message-notice-controls .message-action {
   width: 24px;
   height: 24px;

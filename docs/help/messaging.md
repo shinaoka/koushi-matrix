@@ -217,8 +217,18 @@ the sender alias are not offered, because a room or membership change has no
 message to answer, change or pass on. The sender's name still opens their
 profile, and the text stays selectable.
 
-A notice line shows no timestamp of its own; **View source** on the same line
-gives the event's time along with its details.
+Consecutive room and profile changes of the same kind from the same sender arrive
+as one line with a count, such as **· 4**: a burst of four profile-picture changes
+is one line instead of four. The count opens the group and shows each event as its
+own line. A different kind of change, a gap of more than five minutes, a new day,
+or new messages breaks the group, so a line never stands for notices you read
+already and ones you have not. Join and leave lines, and a notice with work of its
+own — an unreadable message that can request keys, a call, a poll — are never
+counted this way.
+
+A collapsed notice line shows no timestamp; opening the group shows each event's
+time, and **View source** on the line gives the event's time along with its
+details.
 
 Unreadable events and messages that cannot yet be displayed have neutral
 notices. These are distinct from messages waiting for decryption. Polls, live

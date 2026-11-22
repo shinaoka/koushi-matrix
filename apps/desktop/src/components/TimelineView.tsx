@@ -177,9 +177,10 @@ import {
   rowHeightsUnpublished
 } from "./timeline/TimelineRowHeightCache";
 import {
-insertTimelineGapItems,
-projectTimelineDisplayRows,
-type TimelineDisplayRow
+  insertTimelineGapItems,
+  projectNoticeGroups,
+  projectTimelineDisplayRows,
+  type TimelineDisplayRow
 } from "../domain/timelineDisplayProjection";
 import {
 createInitialTimelineScrollDiagnostics,
@@ -380,6 +381,7 @@ const TIMELINE_LINK_PREVIEW_OVERSCAN_ITEMS = 8;
 // render would re-render every mounted row on any shell-level update.
 // These are shared and must never be mutated.
 const EMPTY_STRINGS: string[] = [];
+const NO_EXPANDED_NOTICE_GROUPS: ReadonlySet<string> = new Set();
 const EMPTY_TEXT_RANGES: TextRange[] = [];
 const EMPTY_RECEIPTS: LiveReadReceipt[] = [];
 const EMPTY_PROFILE_USERS: Record<string, UserProfile> = {};
@@ -977,6 +979,13 @@ export const TimelineView = memo(function TimelineView({
   const items = getItems(store, timelineKey);
   const navigationSnapshot = store.keys.get(timelineKeyHash)?.navigation ?? null;
   const displayWindow = navigationSnapshot?.display_window ?? null;
+  const roomSignals = liveSignals?.rooms[roomId] ?? null;
+  const unreadMarkerEventId = navigationSnapshot?.first_unread_display_event_id ?? null;
+  const readMarkerDisplayEventId =
+    navigationSnapshot?.read_marker_display_event_id ??
+    navigationSnapshot?.read_marker_event_id ??
+    ("Thread" in timelineKey.kind ? null : roomSignals?.fully_read_event_id) ??
+    null;
   // Physical bottom can be the end of a historical window, not the live edge.
   // Refs also fence delayed callbacks that captured the previous navigation DTO.
   const returnToLivePendingRef = useRef<{ key: string } | null>(null);
@@ -2219,16 +2228,43 @@ export const TimelineView = memo(function TimelineView({
   );
 
   const visibleItems = useMemo(() => items.filter((item) => !item.is_hidden), [items]);
+  // #2041: which notice groups the user opened. Session memory only, and the
+  // pane keys this view by room, so switching rooms starts collapsed again.
+  const [expandedNoticeGroups, setExpandedNoticeGroups] =
+    useState<ReadonlySet<string>>(NO_EXPANDED_NOTICE_GROUPS);
+  const toggleNoticeGroup = useCallback((groupId: string) => {
+    setExpandedNoticeGroups((current) => {
+      const next = new Set(current);
+      if (!next.delete(groupId)) next.add(groupId);
+      return next;
+    });
+  }, []);
   // The SDK-owned store stays canonical. Only these presentation rows feed
   // rendering, measuring, and virtualization for an opt-in Room projection.
-  const projectedVisibleRows = useMemo(() => {
+  // #2041: a collapsed group draws its head only. Core already keeps the
+  // unread divider's row at a group head, so only a navigation target has to
+  // force a group open here.
+  const noticeGroups = useMemo(() => {
     const itemsWithGaps = insertTimelineGapItems(
       items,
       timelineKeyState?.gapPositions ?? [],
       timelineKeyState?.gapGeneration ?? 0
     );
-    return projectTimelineDisplayRows(itemsWithGaps).filter((row) => !row.item.is_hidden);
-  }, [items, timelineKeyState]);
+    const rows = projectTimelineDisplayRows(itemsWithGaps).filter(
+      (row) => !row.item.is_hidden
+    );
+    return projectNoticeGroups(rows, expandedNoticeGroups, [
+      inPlaceTargetEventId,
+      pinnedTargetEventId
+    ]);
+  }, [
+    expandedNoticeGroups,
+    inPlaceTargetEventId,
+    items,
+    pinnedTargetEventId,
+    timelineKeyState
+  ]);
+  const projectedVisibleRows = noticeGroups.rows;
   const notSentTransactionIds = items.flatMap((item) => {
     if (item.send_state?.kind !== "notSent" || !("Transaction" in item.id)) return [];
     return [item.id.Transaction.transaction_id];
@@ -2670,7 +2706,6 @@ export const TimelineView = memo(function TimelineView({
         });
     }
   }, [replyQuoteThumbnails, roomId, timelineKey, transport, visibleRows]);
-  const roomSignals = liveSignals?.rooms[roomId] ?? null;
   // Issue #1255: each timeline reads receipts from its own scope. The timeline
   // key is authoritative, so a focused permalink on a thread reply reads its
   // focused scope and never the thread root's.
@@ -4484,12 +4519,6 @@ export const TimelineView = memo(function TimelineView({
     onRegisterJumpToLatest?.(jumpToBottom);
     return () => onRegisterJumpToLatest?.(null);
   }, [jumpToBottom, onRegisterJumpToLatest]);
-  const unreadMarkerEventId = navigationSnapshot?.first_unread_display_event_id ?? null;
-  const readMarkerDisplayEventId =
-    navigationSnapshot?.read_marker_display_event_id ??
-    navigationSnapshot?.read_marker_event_id ??
-    ("Thread" in timelineKey.kind ? null : roomSignals?.fully_read_event_id) ??
-    null;
   // #2012: the divider's row, advanced to where the confirmation will put it.
   const readMarkerAnchorRowId = effectiveReadMarkerRowId(
     visibleRows,
@@ -4635,6 +4664,10 @@ export const TimelineView = memo(function TimelineView({
               (unreadMarkerEventId === contentEventId || unreadMarkerEventId === activityEventId)
           );
           const isReadMarker = Boolean(readMarkerAnchorRowId && readMarkerAnchorRowId === row.row_id);
+          const noticeGroupId = item.display_metadata?.group_id ?? null;
+          const noticeGroupExpanded = Boolean(
+            noticeGroupId && noticeGroups.openGroupIds.has(noticeGroupId)
+          );
           const previousRow = visibleRows[visibleIndex - 1];
           const previousIsReadMarker = Boolean(
             readMarkerAnchorRowId && readMarkerAnchorRowId === previousRow?.row_id
@@ -4717,6 +4750,8 @@ export const TimelineView = memo(function TimelineView({
                 mediaUploadProgress={mediaUploadProgressForItem(store, timelineKey, item)}
                 {...rowTransportActions}
                 isPinned={contentEventId ? pinnedEventIds.includes(contentEventId) : false}
+                noticeGroupExpanded={noticeGroupExpanded}
+                onToggleNoticeGroup={toggleNoticeGroup}
                 isContinuation={isContinuation}
                 isTarget={
                   (presentationContext === "thread" &&

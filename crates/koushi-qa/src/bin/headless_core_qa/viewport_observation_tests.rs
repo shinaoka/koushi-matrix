@@ -172,6 +172,9 @@ async fn replay_boundary_skips_metadata_row_without_activity_identity() {
         content_event_id: Some("$pending-root:example.invalid".into()),
         activity_event_id: None,
         display_timestamp_ms: None,
+        group_count: 1,
+        group_position: 0,
+        group_id: None,
     });
     let mut initial = initial(cause());
     if let CoreEvent::Timeline(TimelineEvent::InitialItems { items, .. }) = &mut initial {

@@ -78,6 +78,54 @@ function timelineGapPlaceholderItem(
   };
 }
 
+/** #2041: which notice groups a view draws open, and the rows that follow. */
+export type NoticeGroupProjection = {
+  rows: TimelineDisplayRow[];
+  openGroupIds: ReadonlySet<string>;
+};
+
+/**
+ * #2041: the rows a collapsed notice group draws.
+ *
+ * Core decides which rows form a group and carries the count; the renderer only
+ * picks how many of them are drawn. A collapsed group keeps its head row (the
+ * one with the count) and drops the rest, so a burst of four profile notices is
+ * one line.
+ *
+ * A group is open when the user expanded it, and also when it holds a row the
+ * view is being pointed at — a navigation target — because that row must exist
+ * to be scrolled to. The open set is returned with the rows so the head row and
+ * its members report the same state: a group that is drawn open but reports
+ * itself closed would answer the disclosure button with no visible change.
+ */
+export function projectNoticeGroups(
+  rows: readonly TimelineDisplayRow[],
+  expandedGroupIds: ReadonlySet<string>,
+  targetEventIds: readonly (string | null)[]
+): NoticeGroupProjection {
+  const targets = new Set(targetEventIds.filter((id): id is string => id !== null));
+  const openGroupIds = new Set(expandedGroupIds);
+  for (const row of rows) {
+    const groupId = row.item.display_metadata?.group_id;
+    if (!groupId) continue;
+    if (
+      (row.content_event_id !== null && targets.has(row.content_event_id)) ||
+      (row.activity_event_id !== null && targets.has(row.activity_event_id))
+    ) {
+      openGroupIds.add(groupId);
+    }
+  }
+  return {
+    rows: rows.filter((row) => {
+      const metadata = row.item.display_metadata;
+      const groupId = metadata?.group_id;
+      if (!groupId || (metadata?.group_position ?? 0) === 0) return true;
+      return openGroupIds.has(groupId);
+    }),
+    openGroupIds
+  };
+}
+
 export function projectTimelineDisplayRows(items: readonly TimelineItem[]): TimelineDisplayRow[] {
   const rows = items.map((item) => displayRowFromItem(item));
   const latestReplyPlacement = rows.some(

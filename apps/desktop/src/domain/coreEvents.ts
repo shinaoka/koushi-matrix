@@ -428,6 +428,17 @@ export interface TimelineDisplayMetadata {
   content_event_id: string | null;
   activity_event_id: string | null;
   display_timestamp_ms: number | null;
+  /**
+   * #2041: how many consecutive same-kind notices this row stands for; absent
+   * (or 1) is an ordinary row. Core groups display rows only — every notice
+   * keeps its own row, so search, read state, pins and reactions still address
+   * the individual event.
+   */
+  group_count?: number;
+  /** #2041: 0-based position inside the group. */
+  group_position?: number;
+  /** #2041: expansion key, stable while the group grows. */
+  group_id?: string | null;
 }
 
 /** Stable string id usable as a React key and a `data-item-id` DOM hook. */

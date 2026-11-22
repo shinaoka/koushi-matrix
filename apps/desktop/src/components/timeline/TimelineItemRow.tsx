@@ -332,6 +332,8 @@ function TimelineItemRowView({
   isPinned = false,
   isContinuation = false,
   isTarget = false,
+  noticeGroupExpanded = false,
+  onToggleNoticeGroup,
   onPin = () => undefined,
   onUnpin = () => undefined,
   onDownloadMedia = () => undefined,
@@ -413,6 +415,10 @@ function TimelineItemRowView({
   isPinned?: boolean;
   isContinuation?: boolean;
   isTarget?: boolean;
+  /** #2041: whether this row's notice group is opened, so it shows its time. */
+  noticeGroupExpanded?: boolean;
+  /** #2041: opens or closes the notice group this row belongs to. */
+  onToggleNoticeGroup?: (groupId: string) => void;
   onPin?: TimelineRowActionHandlers["onPin"];
   onUnpin?: TimelineRowActionHandlers["onUnpin"];
   onDownloadMedia?: TimelineRowActionHandlers["onDownloadMedia"];
@@ -855,6 +861,15 @@ function TimelineItemRowView({
     noticeNamesSender && displayBody.startsWith(senderDisplayLabel)
       ? displayBody.slice(senderDisplayLabel.length)
       : displayBody;
+  // #2041: Core decides which consecutive notices form a group and how many
+  // rows that group stands for; a row keeps its own identity and time.
+  const noticeGroupCount = item.display_metadata?.group_count ?? 1;
+  const noticeGroupId = item.display_metadata?.group_id ?? null;
+  const isNoticeGroupHead =
+    isNoticeRow &&
+    noticeGroupId !== null &&
+    noticeGroupCount > 1 &&
+    (item.display_metadata?.group_position ?? 0) === 0;
   const replyLabel = t("timeline.replyToMessage");
   const replyInThreadLabel = t("timeline.replyInThread");
   const messageBodyClassName = [
@@ -1408,10 +1423,20 @@ function TimelineItemRowView({
         <div className="message-heading">
           <MessageMeta
             senderDisplayLabel={senderDisplayLabel}
-            // #2041: a notice line carries no timestamp — Element's information
-            // tiles show one line of text, and the time would sit between the
-            // sender and the sentence that continues it.
-            timestampMs={isNoticeRow ? null : separatePostingTime ? null : postingTimestampMs}
+            // #2041: a collapsed notice line carries no timestamp — Element's
+            // information tiles show one line of text, and the time would sit
+            // between the sender and the sentence that continues it. Once the
+            // reader opens the group, each event's own time is what tells the
+            // rows apart.
+            timestampMs={
+              isNoticeRow
+                ? noticeGroupExpanded
+                  ? postingTimestampMs
+                  : null
+                : separatePostingTime
+                  ? null
+                  : postingTimestampMs
+            }
             isEdited={item.is_edited}
             isRedacted={isRedacted}
             sendStateKind={sendStateKind}
@@ -1449,6 +1474,18 @@ function TimelineItemRowView({
         ) : (
           bodyContent
         )}
+        {isNoticeGroupHead && noticeGroupId && onToggleNoticeGroup ? (
+          <button
+            className="message-notice-group-toggle"
+            type="button"
+            aria-label={t("timeline.noticeGroupToggle", { count: noticeGroupCount })}
+            aria-expanded={noticeGroupExpanded}
+            onClick={() => onToggleNoticeGroup(noticeGroupId)}
+          >
+            {" · "}
+            {noticeGroupCount}
+          </button>
+        ) : null}
         {isNoticeRow && (reactionActionControl || pinActionControl || messageActionMenuControl) ? (
           <span className="message-notice-controls">
             {reactionActionControl}
