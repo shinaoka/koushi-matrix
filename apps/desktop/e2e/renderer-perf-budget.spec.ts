@@ -351,6 +351,142 @@ test("scrolling a virtualized room stays inside its per-step budget", async ({
   );
 });
 
+/**
+ * #2072: the resampled touchpad path commits the window inside its own frame
+ * (`flushSync(updateViewportMetrics)`), because the scroll event a resampled write
+ * fires runs behind the next step's input mark, which cancels the frame it
+ * scheduled. Native scrolling already pays one in-frame commit per scroll frame,
+ * so the resampled path must land at parity, not above it.
+ *
+ * The plain scroll scenario above cannot see this path at all: it moves
+ * `scrollTop` and dispatches scroll events, which never reaches the resampler. So
+ * this test measures both paths in the same run, on the same room and engine, and
+ * compares them per frame instead of against a number measured on another day.
+ */
+const RESAMPLE_FRAMES = 60;
+
+test.describe("resampled touchpad scroll", () => {
+  // The resampler runs only in the WebKitGTK webview, so it needs that engine and
+  // the user agent Koushi's Linux webview reports.
+  test.use({
+    userAgent: async ({ browserName }, use) => {
+      await use(
+        browserName === "webkit"
+          ? "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/60.5 Safari/605.1.15"
+          : undefined
+      );
+    }
+  });
+
+  test("a resampled touchpad frame costs what a native scroll frame costs", async ({
+    page,
+    browserName
+  }) => {
+    test.skip(browserName !== "webkit", "touchpad resampling only runs in WebKitGTK");
+    await gotoBudgetApp(page);
+    await measure(page, () => openBudgetRoom(page, BUDGET_ROOMS.long));
+    await parkInHistory(page);
+
+    // One resampled step writes scrollTop once, so a frame that moved the page is
+    // one resampled frame.
+    let resampledFrames = 0;
+    const resampled = await measure(page, async () => {
+      resampledFrames = await page.evaluate(async (frames) => {
+        const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]")!;
+        const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+        let lastTop = container.scrollTop;
+        let moved = 0;
+        let running = true;
+        const sample = () => {
+          if (!running) return;
+          if (container.scrollTop !== lastTop) {
+            moved += 1;
+            lastTop = container.scrollTop;
+          }
+          requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+        for (let index = 0; index < frames; index += 1) {
+          container.dispatchEvent(
+            new WheelEvent("wheel", {
+              bubbles: true,
+              cancelable: true,
+              deltaY: -(5.3 + 0.6 * Math.sin(index * 1.7)),
+              deltaMode: 0
+            })
+          );
+          await sleep(8);
+        }
+        await sleep(300);
+        running = false;
+        return moved;
+      }, RESAMPLE_FRAMES);
+    });
+    report("resampled touchpad frame", resampled);
+
+    await parkInHistory(page);
+    const native = await measure(page, async () => {
+      await page.evaluate(async (frames) => {
+        const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]")!;
+        const nextFrame = () =>
+          new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        for (let index = 0; index < frames; index += 1) {
+          container.scrollTop -= 6;
+          container.dispatchEvent(new Event("scroll", { bubbles: true }));
+          await nextFrame();
+        }
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }, RESAMPLE_FRAMES);
+    });
+    report("native scroll frame", native);
+
+    // The gesture ran through the resampler, not the native path, or this
+    // scenario measured nothing.
+    expect(
+      resampledFrames,
+      "the touchpad gesture did not reach the resampler"
+    ).toBeGreaterThanOrEqual(RESAMPLE_FRAMES / 2);
+
+    // Commits are the cost this change adds, so they get a ceiling per moved
+    // frame: 43-45 frames measured 50-51 commits (2026-11-24, five runs), i.e.
+    // the step's own commit plus the settle commits after the fingers lift, and
+    // the ceiling allows two. The native path is not the yardstick here: its
+    // scroll frames coalesce when the next scroll event re-schedules them, so the
+    // same gesture committed 7-20 times on the native path, fewer commits for
+    // more layout reads - not a target the resampled path can or should hit.
+    expectWithinBudget(
+      "resampled touchpad frame commits",
+      resampled.commits,
+      resampledFrames * 2,
+      resampled.layoutReadBuckets
+    );
+    // Layout reads are the cost that must not grow, and they are gated against
+    // the native path measured in this same run: the resampled commit reads the
+    // viewport metrics that a native scroll frame reads from its own event, so
+    // parity is the contract (measured 4582 against 6693).
+    expectWithinBudget(
+      "resampled touchpad frame layoutReads",
+      resampled.layoutReads,
+      Math.ceil(native.layoutReads * 1.2) + 50,
+      resampled.layoutReadBuckets
+    );
+  });
+});
+
+/** Mid-history, away from the live edge, with the window committed there. */
+async function parkInHistory(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]")!;
+    for (let step = 0; step < 12; step += 1) {
+      container.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -400 }));
+      container.scrollTop -= 400;
+      container.dispatchEvent(new Event("scroll", { bubbles: true }));
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  });
+}
+
 test("an idle app commits nothing and keeps its listener and observer sets", async ({ page }) => {
   await gotoBudgetApp(page);
   await measure(page, () => openBudgetRoom(page, BUDGET_ROOMS.busy));

@@ -68,7 +68,13 @@ function setup(touchpadScrollResampling: boolean) {
   );
   const timeline = screen.getByTestId("timeline-view");
   let scrollTop = 0;
-  const writes: Array<{ at: number; top: number }> = [];
+  const mountedWindowTop = () => {
+    const spacer = timeline.querySelector<HTMLElement>(".timeline-virtual-spacer");
+    return Number.parseFloat(spacer?.style.blockSize ?? "0") || 0;
+  };
+  // `paddingTop` is the mounted window's offset: a write records the window that
+  // is on screen when it lands, which is the frame that will paint it.
+  const writes: Array<{ at: number; top: number; windowTop: number }> = [];
   Object.defineProperty(timeline, "scrollHeight", { value: 40_000, configurable: true });
   Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
   Object.defineProperty(timeline, "scrollTop", {
@@ -77,24 +83,34 @@ function setup(touchpadScrollResampling: boolean) {
     set: (value: number) => {
       const changed = value !== scrollTop;
       scrollTop = value;
-      writes.push({ at: performance.now(), top: value });
+      writes.push({ at: performance.now(), top: value, windowTop: mountedWindowTop() });
       // jsdom fires no scroll event for a scrollTop write; a browser does, and
       // the timeline classifies the write there (user input or programmatic).
       if (changed) timeline.dispatchEvent(new Event("scroll"));
     }
   });
   act(() => {
+    // Enough rows that the window is virtualized here too: the swipe's
+    // scrollTop has to move a mounted window, which a short timeline cannot show.
     emit({
       kind: "Timeline",
-      event: { InitialItems: { request_id: null, key: KEY, generation: 1, items: messages(60) } }
+      event: { InitialItems: { request_id: null, key: KEY, generation: 1, items: messages(400) } }
     });
   });
   act(() => {
     vi.advanceTimersByTime(500);
   });
-  // Mid-history, away from both edges.
+  // Mid-history, away from both edges, and settled there: the window the reader
+  // starts a gesture on is already committed for their position.
   scrollTop = 20_000;
+  act(() => {
+    timeline.dispatchEvent(new Event("scroll"));
+    vi.advanceTimersByTime(800);
+  });
   writes.length = 0;
+  // The window is virtualized and committed at that position, so the invariant
+  // below compares against a window that exists.
+  expect(mountedWindowTop()).toBeGreaterThan(0);
   return {
     timeline,
     writes,
@@ -143,6 +159,20 @@ it("resamples a 250 Hz touchpad swipe into even, scaled, user-owned frames", () 
   // Chromium's distance for the resampled part of the swipe.
   const resampledInput = deltas.slice(1).reduce((sum, delta) => sum + delta, 0);
   expect(view.scrollTop - before).toBeCloseTo(resampledInput * TOUCHPAD_SCROLL.speed, 0);
+
+  // The mounted window follows the reader (the point of the in-frame commit):
+  // `scrollTop - paddingTop` is the one overscan screen of rows mounted above the
+  // viewport, so it must stay positive (nothing above the visible band is
+  // unmounted spacer) and below one and a half screens (a window that stopped
+  // committing would lag by the whole swipe). Without the commit this dips
+  // negative mid-swipe: the window sits below the reader and paints spacer.
+  const clientHeight = view.timeline.clientHeight;
+  const windowGaps = view.writes.map((write) => write.top - write.windowTop);
+  expect(Math.min(...windowGaps), `mounted window above the viewport: ${windowGaps.join(",")}`)
+    .toBeGreaterThan(0);
+  expect(Math.max(...windowGaps), `mounted window lagging: ${windowGaps.join(",")}`).toBeLessThanOrEqual(
+    clientHeight * 1.5
+  );
 
   // One write per frame, each moving about the same amount.
   const steps = view.writes.map((write, index) => write.top - (index === 0 ? before : view.writes[index - 1].top));

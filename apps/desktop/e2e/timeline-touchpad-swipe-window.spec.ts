@@ -117,7 +117,6 @@ type SwipeResult = {
   maxFrameJumpPx: number;
   /** Total distance the swipe moved the timeline, px. */
   travelledPx: number;
-  stallMs: number;
 };
 
 /**
@@ -165,9 +164,42 @@ function swipeUp(page: Page, stallMs: number): Promise<SwipeResult> {
     const scheduleRead = () => {
       if (!state.running || state.pending) return;
       state.pending = true;
-      requestAnimationFrame(readFrame);
+      nativeRequestAnimationFrame(readFrame);
     };
     container.addEventListener("scroll", scheduleRead, { passive: true });
+    // Every frame is sampled, not only the frames that follow a scroll event: the
+    // window commit and its paint can land in a frame no scroll listener sees
+    // (`docs/agents/troubleshooting.md`). Wrapping the app's own callbacks puts the
+    // sample after them in the same frame, and wrapping the resize observer covers
+    // the commits it delivers.
+    const nativeRequestAnimationFrame = window.requestAnimationFrame.bind(window);
+    const nativeResizeObserver = window.ResizeObserver;
+    window.requestAnimationFrame = (callback: FrameRequestCallback) =>
+      nativeRequestAnimationFrame((time) => {
+        try {
+          callback(time);
+        } finally {
+          scheduleRead();
+        }
+      });
+    window.ResizeObserver = class extends nativeResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        super((entries, observer) => {
+          try {
+            callback(entries, observer);
+          } finally {
+            scheduleRead();
+          }
+        });
+      }
+    };
+    // A frame in which the app registers nothing still paints the last write.
+    const tick = () => {
+      if (!state.running) return;
+      scheduleRead();
+      nativeRequestAnimationFrame(tick);
+    };
+    tick();
 
     let ownedEvents = 0;
     let index = 0;
@@ -214,6 +246,8 @@ function swipeUp(page: Page, stallMs: number): Promise<SwipeResult> {
     await sleep(1200);
     state.running = false;
     container.removeEventListener("scroll", scheduleRead);
+    window.requestAnimationFrame = nativeRequestAnimationFrame;
+    window.ResizeObserver = nativeResizeObserver;
     return {
       ownedEvents,
       clientHeight: container.clientHeight,
@@ -229,26 +263,23 @@ function swipeUp(page: Page, stallMs: number): Promise<SwipeResult> {
 test.describe("touchpad swipe through history (Linux WebKitGTK)", () => {
   test.skip(({ browserName }) => browserName !== "webkit", "touchpad resampling is WebKitGTK-only");
 
-  test("a swipe without a long frame never shows unmounted space", async ({ page }) => {
-    await openSeededTimeline(page, 400);
-    const result = await swipeUp(page, 0);
-    test.info().annotations.push({ type: "swipe", description: JSON.stringify(result) });
-    // The timeline owned the gesture and the swipe moved more than a screen.
-    expect(result.ownedEvents).toBeGreaterThanOrEqual(100);
-    expect(result.travelledPx).toBeGreaterThan(result.clientHeight);
-    expect(result.spacerFrames).toBe(0);
-  });
-
-  test("a long frame during a swipe never shows unmounted space", async ({ page }) => {
-    await openSeededTimeline(page, 400);
-    const result = await swipeUp(page, LONG_FRAME_MS);
-    test.info().annotations.push({ type: "swipe", description: JSON.stringify(result) });
-    expect(result.ownedEvents).toBeGreaterThanOrEqual(100);
-    expect(result.travelledPx).toBeGreaterThan(result.clientHeight);
-    expect(
-      result.spacerFrames,
-      `spacer visible in ${result.spacerFrames} frames (max ${result.maxSpacerPx} px); ` +
-        `largest frame jump ${result.maxFrameJumpPx} px on a ${result.clientHeight} px viewport`
-    ).toBe(0);
-  });
+  for (const stallMs of [0, LONG_FRAME_MS]) {
+    const name =
+      stallMs === 0
+        ? "a swipe without a long frame never shows unmounted space"
+        : "a long frame during a swipe never shows unmounted space";
+    test(name, async ({ page }) => {
+      await openSeededTimeline(page, 400);
+      const result = await swipeUp(page, stallMs);
+      test.info().annotations.push({ type: "swipe", description: JSON.stringify(result) });
+      // The timeline owned the gesture and the swipe moved more than a screen.
+      expect(result.ownedEvents).toBeGreaterThanOrEqual(100);
+      expect(result.travelledPx).toBeGreaterThan(result.clientHeight);
+      expect(
+        result.spacerFrames,
+        `spacer visible in ${result.spacerFrames} frames (max ${result.maxSpacerPx} px); ` +
+          `largest frame jump ${result.maxFrameJumpPx} px on a ${result.clientHeight} px viewport`
+      ).toBe(0);
+    });
+  }
 });
