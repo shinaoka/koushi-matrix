@@ -4769,11 +4769,12 @@ export const TimelineView = memo(function TimelineView({
           const isContinuation = Boolean(
             (row.kind === "event" || row.kind === "threadRoot") &&
               (previousRow?.kind === "event" || previousRow?.kind === "threadRoot") &&
-              // #2074: a notice line is not a message header — it renders no
-              // avatar and no sender — so it neither starts nor extends a
-              // message group. Membership notices carry the actor as sender,
-              // so without this a member's first message after their own join
-              // notice continued a group headed by whoever spoke before it.
+              // #2074: a notice line is an information line, not a message
+              // header — it has no avatar slot and its text shares the sender's
+              // line — so it neither starts nor extends a message group. A
+              // membership notice carries the actor as sender, so without this
+              // a member's first message after their own join notice continued
+              // a group headed by whoever spoke before it.
               item.message_kind !== "notice" &&
               previousRow?.item.message_kind !== "notice" &&
               item.sender &&

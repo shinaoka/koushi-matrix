@@ -93,7 +93,7 @@ function rowOf(eventId: string): HTMLElement {
 
 describe("TimelineView profile notices (#2041)", () => {
   it.each(["en", "ja"] as const)(
-    "identifies the member in localized profile notices in %s, even without a sender header",
+    "identifies the member in localized profile notices in %s",
     async (locale) => {
       setActiveLocaleProfile(locale, "none");
       renderTimeline([message("$before-profile", "Synthetic message"), ...profileNotices()]);

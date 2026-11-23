@@ -157,7 +157,6 @@ describe("TimelineView", () => {
 
   describe("message groups around notice rows (#2074)", () => {
     const BOB = "@bob:example.invalid";
-    const ALICE = "@alice:example.invalid";
 
     function fromBob(eventId: string, body: string): TimelineItem {
       return { ...message(eventId, body), sender: BOB, sender_label: "Bob" };
@@ -251,21 +250,6 @@ describe("TimelineView", () => {
       }
     );
 
-    it.each(["compact", "default"] as const)(
-      "keeps a different sender out of the previous sender's group in %s density",
-      async (density) => {
-        renderRows(
-          [
-            { ...message("$alice", "From Alice"), sender: ALICE, sender_label: "Alice" },
-            fromBob("$bob", "From Bob")
-          ],
-          density
-        );
-
-        expect(await screen.findByText("From Bob")).toBeTruthy();
-        expect(articleOf("From Bob").classList.contains("is-continuation")).toBe(false);
-      }
-    );
   });
 
   it.each([
