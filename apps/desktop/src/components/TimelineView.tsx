@@ -2899,7 +2899,8 @@ export const TimelineView = memo(function TimelineView({
         return null;
       }
       return {
-        canForward: Boolean(item.actions?.can_forward),
+        // #2066: the viewer's Redact beside it already takes the lock.
+        canForward: Boolean(canWrite && item.actions?.can_forward),
         forwardDestinations: effectiveForwardDestinations,
         onForward: (destinationRoomId: string) =>
           rowTransportActions.onForwardMessage(roomId, eventId, destinationRoomId),

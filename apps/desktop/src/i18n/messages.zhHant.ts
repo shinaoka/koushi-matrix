@@ -210,6 +210,7 @@ export const zhHant: Catalog = {
   "composer.replying": "回覆中",
   "composer.sendingAs": "以 {account} 身分傳送",
   "composer.slashCommandUnavailable": "此輸入框無法使用這個指令。",
+  "composer.sendRefusedSecureBackup": "Secure Backup 尚未就緒，因此未傳送。",
   "composer.removeAttachment": "移除附件",
   "composer.cancelReply": "取消回覆",
   "upload.captionForFile": "{filename} 的說明文字",

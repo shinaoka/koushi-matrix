@@ -212,6 +212,7 @@ export type MessageId =
   | "composer.replying"
   | "composer.sendingAs"
   | "composer.slashCommandUnavailable"
+  | "composer.sendRefusedSecureBackup"
   | "composer.removeAttachment"
   | "composer.cancelReply"
   | "upload.captionForFile"
@@ -2583,6 +2584,8 @@ const en: Catalog = {
   "composer.replying": "Replying",
   "composer.sendingAs": "Sending as {account}",
   "composer.slashCommandUnavailable": "This command is not available in this composer.",
+  "composer.sendRefusedSecureBackup":
+    "Secure Backup is not ready yet, so nothing was sent.",
   "composer.removeAttachment": "Remove attachment",
   "composer.cancelReply": "Cancel reply",
   "upload.captionForFile": "Caption for {filename}",
@@ -5004,6 +5007,8 @@ const ja: Catalog = {
   "composer.replying": "返信中",
   "composer.sendingAs": "{account}として送信",
   "composer.slashCommandUnavailable": "このコマンドはこの入力欄では実行できません。",
+  "composer.sendRefusedSecureBackup":
+    "Secure Backup の準備ができていないため、送信していません。",
   "composer.removeAttachment": "添付を削除",
   "composer.cancelReply": "返信をキャンセル",
   "composer.imageCompressionCompressed": "圧縮済み",

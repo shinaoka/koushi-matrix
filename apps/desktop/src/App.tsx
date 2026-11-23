@@ -66,7 +66,7 @@ import type { MatrixPermalinkTarget } from "./domain/matrixPermalink";
 import { resolveDirectorySubmission } from "./domain/directorySubmission";
 import { serverNameFromMatrixId } from "./domain/matrixPermalink";
 import { ActiveLocaleContext, activeLocaleKey } from "./i18n/activeLocaleContext";
-import { setActiveLocaleProfile, t } from "./i18n/messages";
+import { setActiveLocaleProfile, t, type MessageId } from "./i18n/messages";
 
 export function reconcileComposerSubmissionSnapshot(
   registry: ComposerSubmissionControllerRegistry,
@@ -108,6 +108,7 @@ import {
   type CoreEventPayload,
   type TimelineKey,
   focusedTimelineKey,
+  isSecureBackupSendRefusal,
   isUnsupportedSlashCommandRejection,
   noticeMatchesMainComposer,
   noticeMatchesThreadComposer,
@@ -833,6 +834,23 @@ type ComposerDraftOverlay = {
   document: ComposerDocument;
   revision: ComposerDraftRevision | null;
 };
+
+/**
+ * #450 / #2066: Rust answers a refused command with a keyless
+ * `OperationFailed`. These are the failures that earn a sentence beside the
+ * composer; everything else is either handled by its own keyed event or is not
+ * the reader's business. Returns the catalog id, so the wording stays in the
+ * catalogs and the routing stays in one place.
+ */
+export function composerRefusalNoticeId(payload: CoreEventPayload): MessageId | null {
+  if (isUnsupportedSlashCommandRejection(payload)) {
+    return "composer.slashCommandUnavailable";
+  }
+  if (isSecureBackupSendRefusal(payload)) {
+    return "composer.sendRefusedSecureBackup";
+  }
+  return null;
+}
 
 export function App() {
   useModalFocusTracking();
@@ -2970,7 +2988,13 @@ function AccountContent({
             // carries no key, so the notice keys to the active main room
             // (schedule-time rejections use the keyed
             // ComposerSlashCommandRejected event instead).
-            if (isUnsupportedSlashCommandRejection(payload)) {
+            //
+            // #2066: a Secure Backup refusal is the same kind of answer — the
+            // controls it refuses are hidden, but a menu opened just before the
+            // lock still holds a live item, so name the reason rather than
+            // letting the press look broken.
+            const refusalNotice = composerRefusalNoticeId(payload);
+            if (refusalNotice) {
               // The keyless OperationFailed surface is the legacy send path;
               // only show the notice when a ready account exists (the key
               // must be canonical to route at all).
@@ -2979,7 +3003,7 @@ function AccountContent({
               if (account && activeRoomId) {
                 showComposerNotice(
                   roomTimelineKey(account.userId, activeRoomId),
-                  t("composer.slashCommandUnavailable")
+                  t(refusalNotice)
                 );
               }
             }
