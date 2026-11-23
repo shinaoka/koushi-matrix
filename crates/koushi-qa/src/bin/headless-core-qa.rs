@@ -132,6 +132,8 @@ mod scenario_notification_delivery;
 mod scenario_read_state;
 #[path = "headless_core_qa/scenarios/rooms.rs"]
 mod scenario_rooms;
+#[path = "headless_core_qa/scenarios/scroll_back_cached_history.rs"]
+mod scenario_scroll_back_cached_history;
 #[path = "headless_core_qa/scenarios/search.rs"]
 mod scenario_search;
 #[path = "headless_core_qa/scenarios/search_catchup.rs"]

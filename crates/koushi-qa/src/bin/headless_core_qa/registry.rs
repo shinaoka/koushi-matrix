@@ -133,6 +133,7 @@ pub(super) enum QaScenario {
     ThreadReceiptFreshSession,
     HistoryKeyRecoveryWindow,
     IdleSyncGapInspection,
+    ScrollBackCachedHistory,
     NotificationDelivery,
     McpMessageActions,
     CachedReadBeforeFirstSync,
@@ -183,6 +184,7 @@ pub(super) enum QaStage {
     ThreadReceiptFreshSession,
     HistoryKeyRecoveryWindow,
     IdleSyncGapInspection,
+    ScrollBackCachedHistory,
     NotificationDelivery,
     McpMessageActions,
     CachedReadBeforeFirstSync,
@@ -269,6 +271,7 @@ impl QaScenario {
             "thread_receipt_fresh_session" => Ok(Self::ThreadReceiptFreshSession),
             "history_key_recovery_window" => Ok(Self::HistoryKeyRecoveryWindow),
             "idle_sync_gap_inspection" => Ok(Self::IdleSyncGapInspection),
+            "scroll_back_cached_history" => Ok(Self::ScrollBackCachedHistory),
             "notification_delivery" => Ok(Self::NotificationDelivery),
             "mcp_message_actions" => Ok(Self::McpMessageActions),
             "cached_read_before_first_sync" => Ok(Self::CachedReadBeforeFirstSync),
@@ -276,7 +279,7 @@ impl QaScenario {
             "account_notifications" => Ok(Self::AccountNotifications),
             "user_verification" => Ok(Self::UserVerification),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, session_status, credential_health, native_attention, e2ee_trust, e2ee_login_store, device_cleanup, invites_dm, room_space, directory, room_management, room_people_projection, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, redact_edit_convergence, search_crawler, search_crawler_catchup, room_history_export, scheduled_send, restore_cleanup, link_preview, read_state_convergence, hidden_state_acl, thread_late_joiner, thread_receipt_fresh_session, history_key_recovery_window, avatar_demand, account_notifications, user_verification, notification_delivery, mcp_message_actions; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, session_status, credential_health, native_attention, e2ee_trust, e2ee_login_store, device_cleanup, invites_dm, room_space, directory, room_management, room_people_projection, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, redact_edit_convergence, search_crawler, search_crawler_catchup, room_history_export, scheduled_send, restore_cleanup, link_preview, read_state_convergence, hidden_state_acl, thread_late_joiner, thread_receipt_fresh_session, history_key_recovery_window, idle_sync_gap_inspection, scroll_back_cached_history, avatar_demand, account_notifications, user_verification, notification_delivery, mcp_message_actions; got {other}"
             )),
         }
     }
@@ -298,6 +301,7 @@ impl QaScenario {
                     | QaStage::AccountNotifications
                     | QaStage::UserVerification
                     | QaStage::IdleSyncGapInspection
+                    | QaStage::ScrollBackCachedHistory
                     | QaStage::NotificationDelivery
                     | QaStage::McpMessageActions
                     | QaStage::CachedReadBeforeFirstSync
@@ -523,6 +527,9 @@ impl QaScenario {
             }
             Self::IdleSyncGapInspection => {
                 matches!(stage, QaStage::Safety | QaStage::IdleSyncGapInspection)
+            }
+            Self::ScrollBackCachedHistory => {
+                matches!(stage, QaStage::Safety | QaStage::ScrollBackCachedHistory)
             }
             Self::SearchCrawlerCatchup => {
                 matches!(stage, QaStage::Safety | QaStage::SearchCrawlerCatchup)
@@ -825,6 +832,14 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         ],
         QaStage::AvatarDemand => &["avatar_window_requests=ok"],
         QaStage::IdleSyncGapInspection => &["idle_sync_gap_inspection=ok"],
+        QaStage::ScrollBackCachedHistory => &[
+            "scroll_back_seeded=ok",
+            "scroll_back_restored=ok",
+            "scroll_back_reached_start=ok",
+            "scroll_back_store_served=ok",
+            "scroll_back_no_runaway=ok",
+            "scroll_back_cached_history=ok",
+        ],
         QaStage::NotificationDelivery => &[
             "notification_delivery_file_credential_store=ok",
             "notification_delivery_unfocused=ok",
@@ -1208,6 +1223,9 @@ pub(super) fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
         }
         QaScenario::HiddenStateAcl => vec![QaStage::Safety, QaStage::HiddenStateAcl],
         QaScenario::IdleSyncGapInspection => vec![QaStage::Safety, QaStage::IdleSyncGapInspection],
+        QaScenario::ScrollBackCachedHistory => {
+            vec![QaStage::Safety, QaStage::ScrollBackCachedHistory]
+        }
         QaScenario::NotificationDelivery => {
             vec![QaStage::Safety, QaStage::NotificationDelivery]
         }
@@ -1315,6 +1333,7 @@ pub(super) fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static st
         | QaScenario::ThreadReceiptFreshSession
         | QaScenario::HistoryKeyRecoveryWindow
         | QaScenario::IdleSyncGapInspection
+        | QaScenario::ScrollBackCachedHistory
         | QaScenario::NotificationDelivery
         | QaScenario::McpMessageActions
         | QaScenario::CachedReadBeforeFirstSync => stages_for_scenario(scenario)

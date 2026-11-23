@@ -199,6 +199,14 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
             .await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
+    if scenario == QaScenario::ScrollBackCachedHistory {
+        println!("safety=ok");
+        super::scenario_scroll_back_cached_history::run_scroll_back_cached_history_scenario(
+            &config,
+        )
+        .await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
     if scenario == QaScenario::NotificationDelivery {
         println!("safety=ok");
         super::scenario_notification_delivery::run_notification_delivery_scenario(&config).await?;

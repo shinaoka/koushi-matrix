@@ -1003,6 +1003,9 @@ impl QaCannedMessagesPage {
 struct QaMessagesProxyControl {
     state: QaMessagesProxyState,
     canned_page: Option<QaCannedMessagesPage>,
+    /// Every room `/messages` request the proxy forwarded to the homeserver,
+    /// armed or not, so a scenario can prove history was served locally.
+    forwarded_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1322,6 +1325,14 @@ impl QaTcpProxy {
         Ok(())
     }
 
+    /// Room `/messages` requests forwarded to the homeserver so far.
+    pub(super) fn room_messages_forwarded_count(&self) -> Result<usize, String> {
+        self.messages_control
+            .lock()
+            .map(|control| control.forwarded_count)
+            .map_err(|_| "timeline messages proxy state lock was poisoned".to_owned())
+    }
+
     pub(super) fn live_tail_messages_observation(
         &self,
     ) -> Result<QaMessagesProxyObservation, String> {
@@ -1566,6 +1577,11 @@ fn proxy_single_http_request(
     }
 
     let request = rewrite_http_request_connection_close(&request_head)?;
+    if request_kind == QaProxyRequestKind::RoomMessages
+        && let Ok(mut control) = messages_control.lock()
+    {
+        control.forwarded_count += 1;
+    }
     if count_forwarded_room_send {
         room_send_forwarded.fetch_add(1, Ordering::SeqCst);
     }

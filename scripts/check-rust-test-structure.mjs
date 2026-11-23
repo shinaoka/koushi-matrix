@@ -3696,6 +3696,32 @@ export function checkCoreQaPrivateSafeInviteTimeout() {
   return failures;
 }
 
+/**
+ * The scroll-back QA scenario pages the way the renderer does. Its page size is
+ * a copy of the desktop constant, so the copy is pinned to the product value;
+ * a drift would silently measure a page the app never requests (#2073).
+ */
+export function checkCoreQaScrollBackPageEventCount({
+  productSource = readTauriSource("commands/timeline.rs"),
+  copySource = coreQaSource("bin/headless_core_qa/scenarios/scroll_back_cached_history.rs")
+} = {}) {
+  const rule = "core.qa.scroll_back_page_event_count";
+  const product = rustIntegerConstant(productSource, "TIMELINE_PAGE_EVENT_COUNT");
+  const copy = rustIntegerConstant(copySource, "RENDERER_PAGE_EVENT_COUNT");
+  const failures = [];
+  if (product === null) failures.push(sourceContractFailure(rule, "TIMELINE_PAGE_EVENT_COUNT is missing from the desktop timeline commands"));
+  if (copy === null) failures.push(sourceContractFailure(rule, "RENDERER_PAGE_EVENT_COUNT is missing from the scroll-back scenario"));
+  if (product !== null && copy !== null && product !== copy) {
+    failures.push(sourceContractFailure(rule, `scroll-back page size ${copy} does not match the renderer's ${product}`));
+  }
+  return failures;
+}
+
+function rustIntegerConstant(source, name) {
+  const match = new RegExp(`const\\s+${name}\\s*:\\s*u(?:8|16|32|64|size)\\s*=\\s*(\\d+)\\s*;`, "u").exec(source);
+  return match === null ? null : Number.parseInt(match[1], 10);
+}
+
 export function checkCoreQaNoManualSyncOnce() {
   const rule = "core.qa.no_manual_sync_once";
   const source = coreQaProductionSource();
@@ -4293,6 +4319,7 @@ export function runSourceContractRules() {
     checkCoreQaReconnectEncryptionGate(),
     checkCoreQaPrivateSafeInviteTimeout(),
     checkCoreQaNoManualSyncOnce(),
+    checkCoreQaScrollBackPageEventCount(),
     checkCoreQaE2eeWaiterDeadline(),
     checkCoreQaMultiDeviceOrder(),
     checkCoreQaInviteBeforeOptionalLogin(),
