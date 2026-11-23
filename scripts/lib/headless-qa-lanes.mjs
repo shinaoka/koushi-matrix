@@ -56,6 +56,7 @@ export const NIGHTLY_SCENARIOS = Object.freeze([
   "account_notifications",
   "user_verification",
   "idle_sync_gap_inspection",
+  "scroll_back_cached_history",
   "notification_delivery",
   "mcp_message_actions"
 ]);
