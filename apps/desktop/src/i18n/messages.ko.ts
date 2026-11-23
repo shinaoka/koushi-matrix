@@ -919,7 +919,7 @@ export const ko: Catalog = {
   "settings.codeBlockWrap": "코드 블록의 긴 줄 줄바꿈",
   "settings.hideRedacted": "삭제된 메시지 숨기기",
   "settings.showRoomAndMemberChanges": "룸 및 멤버 변경 표시",
-  "settings.showRoomAndMemberChangesDescription": "프로필 및 멤버십 알림(이름 변경, 멤버 참여 등). 암호화, 룸 업그레이드, 차단, 강퇴는 항상 표시됩니다.",
+  "settings.showRoomAndMemberChangesDescription": "프로필 및 멤버십 알림(이름 변경, 멤버 참여 등). 암호화, 룸 업그레이드, 차단, 내보내기(차단을 함께 적용하는 내보내기 포함), 차단 해제, 멤버십이 바뀌지 않는 이벤트는 항상 표시됩니다.",
   "settings.closeToTray": "닫기 버튼으로 트레이에 최소화",
   "settings.closeToTrayDescription": "창을 닫아도 Koushi가 트레이에서 계속 실행됩니다. 종료하려면 트레이 메뉴에서 종료하세요.",
   "settings.autoUpdate": "자동으로 업데이트 확인",

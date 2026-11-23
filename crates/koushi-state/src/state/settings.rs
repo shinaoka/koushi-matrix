@@ -191,8 +191,10 @@ pub struct AppSettingsValues {
 pub struct AppDisplaySettings {
     pub code_block_wrap: bool,
     pub hide_redacted: bool,
-    /// #2041: hides profile and membership notices in Core. Encryption, room
-    /// upgrades, bans and kicks stay visible whatever this says.
+    /// #2041: hides profile and membership notices in Core. Only joins, leaves,
+    /// invites and knocks are hideable; every other row — encryption, a room
+    /// upgrade, moderation, a member event that changes no membership — stays
+    /// visible whatever this says.
     pub show_room_and_member_changes: bool,
 }
 

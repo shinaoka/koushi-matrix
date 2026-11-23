@@ -222,10 +222,12 @@ async fn redaction_preference_toggle_is_published_as_row_diffs() {
 /// #2041: the "show room and member changes" preference hides profile and
 /// membership notices, and never the rows a reader needs for safety.
 ///
-/// The four rows it must not hide are checked here as rows rather than as a
-/// rule, because the reason they survive is that their projection never sets a
-/// notice category at all: encryption and a room upgrade are room state, and a
-/// ban is a moderation action, not a join or a leave.
+/// The rows it must not hide are checked here as rows rather than as a rule,
+/// because the reason they survive is that their projection never sets a notice
+/// category at all: encryption and a room upgrade are room state, a ban is a
+/// moderation action, and a member event that changes no membership is not a
+/// join or a leave. Which changes are hideable at all is
+/// `item_projection::membership_notice_category`.
 #[tokio::test]
 async fn room_and_member_change_preference_hides_only_profile_and_membership_rows() {
     let server = MatrixMockServer::new().await;

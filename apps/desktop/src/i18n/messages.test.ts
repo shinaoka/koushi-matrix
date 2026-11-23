@@ -346,6 +346,39 @@ describe("i18n message catalog", () => {
     );
   });
 
+  test("the room and member changes description names every row that stays visible (#2062)", () => {
+    // Core keeps more than profile and membership lines: encryption, room
+    // upgrade, ban, kick, kick-and-ban, unban, and a membership event that
+    // changes no membership never carry a `notice_category`
+    // (crates/koushi-core/src/timeline/item_projection.rs, `membership_notice_category`).
+    // The description has to name the ones a user turning the switch off will
+    // still see, or the setting reads as broken.
+    const named = [
+      ["en", ["kicks", "unban", "change no membership"]],
+      ["ja", ["キック", "BANの解除", "メンバーシップが変わらない"]],
+      ["ko", ["내보내기", "차단 해제", "멤버십이 바뀌지 않는"]],
+      ["zh-Hans", ["移除", "解除封禁", "成员身份没有变化"]],
+      ["zh-Hant", ["移除", "解除封鎖", "成員身分沒有變更"]]
+    ] as const;
+    for (const [locale, expected] of named) {
+      const description = catalogs[locale]["settings.showRoomAndMemberChangesDescription"];
+      for (const term of expected) {
+        expect(description, `${locale} names "${term}"`).toContain(term);
+      }
+    }
+    // No counted enumeration in any locale: the list may grow again, and a count
+    // copied into five catalogs would then be a lie in all five. These sentences
+    // never need a digit. Locale count words are not checked here — Chinese
+    // 「一律」 would trip a numeral match — so the term assertions above are the
+    // real guard and this only catches an explicit "4 rows".
+    for (const [locale] of named) {
+      expect(
+        catalogs[locale]["settings.showRoomAndMemberChangesDescription"],
+        `${locale} counts the exceptions`
+      ).not.toMatch(/[0-9０-９]/);
+    }
+  });
+
   test("localizes the current-session status surface without changing protocol tokens", () => {
     expect(t("sessionStatus.title")).toBe("Current session");
     expect(t("sessionStatus.failureTimedOut")).toBe(
