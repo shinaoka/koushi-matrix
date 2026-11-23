@@ -4433,8 +4433,27 @@ export const TimelineView = memo(function TimelineView({
   // own wheel input: it is marked exactly as a wheel event is before the page
   // moves, so viewport ownership, live-edge release and top-of-history demand
   // treat it like native scrolling.
-  const touchpadInputRef = useRef({ markUserScrollInput, requestOlderHistoryFromInputAtTop });
-  touchpadInputRef.current = { markUserScrollInput, requestOlderHistoryFromInputAtTop };
+  //
+  // The step also commits the virtual window for the new scrollTop before the
+  // frame paints. Native scrolling gets that from the scroll event, which runs
+  // before animation-frame callbacks; a resampled write happens inside one, so
+  // its scroll event's commit frame would land a frame later, behind the next
+  // resampled step, whose input mark advances the viewport epoch and cancels
+  // it. Without this commit a continuous swipe never moves the window and the
+  // reader scrolls into unmounted spacer (white blocks).
+  const commitResampledScrollWindow = useCallback(() => {
+    flushSync(() => commitVirtualRangeForMetrics(readViewportMetrics()));
+  }, [commitVirtualRangeForMetrics, readViewportMetrics]);
+  const touchpadInputRef = useRef({
+    markUserScrollInput,
+    requestOlderHistoryFromInputAtTop,
+    commitResampledScrollWindow
+  });
+  touchpadInputRef.current = {
+    markUserScrollInput,
+    requestOlderHistoryFromInputAtTop,
+    commitResampledScrollWindow
+  };
   useEffect(() => {
     const container = containerRef.current;
     if (!touchpadScrollResampling || !container) return;
@@ -4450,6 +4469,7 @@ export const TimelineView = memo(function TimelineView({
       const desired = container.scrollTop + subPixelCarry + step;
       container.scrollTop = desired;
       subPixelCarry = desired - container.scrollTop;
+      input.commitResampledScrollWindow();
       if (step < 0) input.requestOlderHistoryFromInputAtTop();
       if (Math.abs(subPixelCarry) >= 1) {
         subPixelCarry = 0;
