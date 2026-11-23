@@ -836,7 +836,8 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "scroll_back_seeded=ok",
             "scroll_back_restored=ok",
             "scroll_back_reached_start=ok",
-            "scroll_back_page_budget=ok",
+            "scroll_back_store_served=ok",
+            "scroll_back_no_runaway=ok",
             "scroll_back_cached_history=ok",
         ],
         QaStage::NotificationDelivery => &[

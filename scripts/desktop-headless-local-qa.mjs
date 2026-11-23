@@ -276,7 +276,8 @@ async function runForServer(serverKind, scenario) {
       scenario !== "account_notifications" &&
       scenario !== "notification_delivery" &&
       scenario !== "user_verification" &&
-      scenario !== "history_key_recovery_window"
+      scenario !== "history_key_recovery_window" &&
+      scenario !== "scroll_back_cached_history"
     ) {
       const sdkUsers = await registerQaUsers(homeserver, "sdk");
 
@@ -473,6 +474,9 @@ function runCoreHeadlessQa({
     "KOUSHI_QA_STRESS_MESSAGES_PER_ROOM",
     "KOUSHI_QA_E2EE_RECIPIENT_SECOND_DEVICE",
     "KOUSHI_QA_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND",
+    "KOUSHI_QA_SCROLL_BACK_MESSAGES",
+    "KOUSHI_QA_SCROLL_BACK_PAGE_BUDGET_MS",
+    "KOUSHI_QA_SCROLL_BACK_RUNAWAY_MS",
     "KOUSHI_CORE_ACTOR_TRACE"
   ]) {
     if (process.env[name] !== undefined) {

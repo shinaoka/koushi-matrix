@@ -587,6 +587,7 @@ fn timeline_outcome_token(value: &str) -> &'static str {
         "end_reached" => "end_reached",
         "idle" => "idle",
         "in_flight" => "in_flight",
+        "gap_repair" => "gap_repair",
         "invalid_event" => "invalid_event",
         "invalid_private_receipt" => "invalid_private_receipt",
         "invalid_thread_root" => "invalid_thread_root",

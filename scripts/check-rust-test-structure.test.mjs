@@ -39,6 +39,7 @@ import {
   checkCoreTimelinePaginationScheduler,
   checkCoreTimelineSendStateDerivation,
   checkCoreTimelineSendSupervision,
+  checkCoreQaScrollBackPageEventCount,
   checkCoreTimelineThreadReadReceipts,
   checkSdkLibrarySourceManifest,
   findDiscardedSendStateDerivations,
@@ -148,6 +149,34 @@ test("runs representative migrated state, SDK, and src-tauri source-contract rul
   assert.deepEqual(checkSdkSessionBackupFence(), []);
   assert.deepEqual(checkDesktopTauriCommandRegistrationContract(), []);
   assert.deepEqual(checkDesktopNativeWindowLifecycleContract(), []);
+});
+
+test("pins the scroll-back scenario's page size to the renderer's", () => {
+  assert.deepEqual(checkCoreQaScrollBackPageEventCount(), []);
+});
+
+test("rejects a scroll-back page size the renderer never requests", () => {
+  const failures = checkCoreQaScrollBackPageEventCount({
+    productSource: "const TIMELINE_PAGE_EVENT_COUNT: u16 = 100;",
+    copySource: "const RENDERER_PAGE_EVENT_COUNT: u16 = 50;"
+  });
+  assert.equal(failures.length, 1);
+  assert.match(formatViolation(failures[0]), /scroll-back page size 50 does not match the renderer's 100/);
+});
+
+test("reports a page size missing from either side", () => {
+  const missingCopy = checkCoreQaScrollBackPageEventCount({
+    productSource: "const TIMELINE_PAGE_EVENT_COUNT: u16 = 100;",
+    copySource: "const RENDERER_PAGE_EVENT_COUNT_HINT: &str = \"100\";"
+  });
+  assert.equal(missingCopy.length, 1);
+  assert.match(formatViolation(missingCopy[0]), /RENDERER_PAGE_EVENT_COUNT is missing/);
+  const missingProduct = checkCoreQaScrollBackPageEventCount({
+    productSource: "// page size moved next door",
+    copySource: "const RENDERER_PAGE_EVENT_COUNT: u16 = 100;"
+  });
+  assert.equal(missingProduct.length, 1);
+  assert.match(formatViolation(missingProduct[0]), /TIMELINE_PAGE_EVENT_COUNT is missing/);
 });
 
 test("runs representative migrated core source-contract rules", () => {
