@@ -67,6 +67,11 @@ export default defineConfig({
         /upload-preview-heic\.spec\.ts$/,
         // #1574: short-image overlay clipping was reported in macOS WebKit.
         /media-attachments\.spec\.ts$/,
+        // #2063: #2041's acceptance states "Both engines: a headless spec pins the
+        // collapsed count, the expand, and the preference". The defect itself is
+        // not engine-native; #2063 and qa-lanes' both-engines exception are why
+        // this spec is in the opt-in.
+        /timeline-notice-grouping\.spec\.ts$/,
         // #1889: the layout-read budget is a browser layout fact.
         /room-switch-layout-budget\.spec\.ts$/,
         /inline-math-baseline\.spec\.ts$/,
