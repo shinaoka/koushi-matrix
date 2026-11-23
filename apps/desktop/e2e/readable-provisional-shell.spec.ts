@@ -236,6 +236,96 @@ test("the provisional cache keeps the composer, thread and upload surfaces read-
   expect(await page.evaluate(() => window.__harness.invocationsOf("set_fully_read").length)).toBe(0);
 });
 
+/** #2066: the lock must reach the three write paths the toolbar hides. */
+test("the read-only shell offers no forward, redact or reaction-chip write", async ({ page }) => {
+  await gotoReadyShell(page);
+  const row = page.locator('[data-event-id="$seed-event:example.invalid"]');
+  await expect(row).toBeVisible();
+  const pill = row.locator("button.reaction-pill").first();
+  const sendReactionCount = () =>
+    page.evaluate(() => window.__harness.invocationsOf("send_reaction").length);
+  const forwardCount = () =>
+    page.evaluate(() => window.__harness.invocationsOf("forward_message").length);
+  const actionsMenu = row.getByRole("button", { name: "Message actions" });
+  // The trigger toggles, and the lock can remove items from a menu that is
+  // already open, so open it by its own state rather than by blind toggling.
+  const openActionsMenu = async () => {
+    if ((await actionsMenu.getAttribute("aria-expanded")) !== "true") {
+      await actionsMenu.click();
+    }
+    await expect(actionsMenu).toHaveAttribute("aria-expanded", "true");
+  };
+  const forwardItem = page.getByRole("menuitem", { name: "Forward", exact: true });
+  const redactItem = page.getByRole("menuitem", { name: "Redact", exact: true });
+
+  // Control: while sending is admitted all three paths are offered and send.
+  await expect(pill).toBeEnabled();
+  await pill.click();
+  await expect.poll(sendReactionCount).toBe(1);
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await openActionsMenu();
+  await expect(forwardItem).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(forwardItem).toHaveCount(0);
+  await row.click({ button: "right" });
+  await expect(redactItem).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(redactItem).toHaveCount(0);
+
+  // The lock arrives while the Forward destinations are already open: the item
+  // leaves the open menu instead of staying pressable against a refusal.
+  await openActionsMenu();
+  await forwardItem.click();
+  await expect(page.locator(".message-forward-menu [role=\"menuitem\"]").first()).toBeVisible();
+  await pushAdmission(page, {
+    gate: { kind: "checking" },
+    readiness: { kind: "loading", source: "cache", generation: 6 }
+  });
+  await expect(composerNotice(page)).toHaveText(SEND_BLOCKED_COPY);
+  await expect(forwardItem).toHaveCount(0);
+  expect(await forwardCount()).toBe(0);
+
+  // Locked: the read-only items stay, the write items are gone.
+  await openActionsMenu();
+  await expect(page.getByRole("menuitem", { name: "Copy message" })).toBeVisible();
+  await expect(forwardItem).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await row.click({ button: "right" });
+  await expect(redactItem).toHaveCount(0);
+
+  // The chip keeps its count but takes no press, even a forced one.
+  await expect(pill).toBeDisabled();
+  await expect(pill).toContainText("1");
+  await pill.click({ force: true });
+  expect(await sendReactionCount()).toBe(0);
+
+  // A press that races the lock is answered with the reason, not with silence.
+  await page.evaluate(() =>
+    window.__harness.pushCoreEvent({
+      kind: "OperationFailed",
+      request_id: { connection_id: 1, sequence: 1 },
+      failure: { TimelineOperationFailed: { kind: "SecureBackupRequired" } }
+    })
+  );
+  const refusal = page.locator("main .composer-notice");
+  await expect(refusal).toHaveText("Secure Backup is not ready yet, so nothing was sent.");
+  await expect(refusal).toHaveAttribute("role", "status");
+
+  // Every path returns when the push admits sending again.
+  await pushAdmission(page, {
+    gate: { kind: "ready" },
+    readiness: { kind: "ready", source: "live", generation: 7 }
+  });
+  await expect(composerNotice(page)).toHaveCount(0);
+  await expect(pill).toBeEnabled();
+  await openActionsMenu();
+  await expect(forwardItem).toBeVisible();
+  await page.keyboard.press("Escape");
+  await row.click({ button: "right" });
+  await expect(redactItem).toBeVisible();
+  await page.keyboard.press("Escape");
+});
+
 test("an authoritative list clears the provisional notice and admits sending", async ({ page }) => {
   await gotoReadyShell(page);
   await pushAdmission(page, {

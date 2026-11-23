@@ -108,6 +108,7 @@ import {
   type CoreEventPayload,
   type TimelineKey,
   focusedTimelineKey,
+  isSecureBackupSendRefusal,
   isUnsupportedSlashCommandRejection,
   noticeMatchesMainComposer,
   noticeMatchesThreadComposer,
@@ -2970,7 +2971,17 @@ function AccountContent({
             // carries no key, so the notice keys to the active main room
             // (schedule-time rejections use the keyed
             // ComposerSlashCommandRejected event instead).
-            if (isUnsupportedSlashCommandRejection(payload)) {
+            //
+            // #2066: a Secure Backup refusal is the same kind of answer — the
+            // controls it refuses are hidden, but a menu opened just before the
+            // lock still holds a live item, so name the reason rather than
+            // letting the press look broken.
+            const refusalNotice = isUnsupportedSlashCommandRejection(payload)
+              ? t("composer.slashCommandUnavailable")
+              : isSecureBackupSendRefusal(payload)
+                ? t("composer.sendRefusedSecureBackup")
+                : null;
+            if (refusalNotice) {
               // The keyless OperationFailed surface is the legacy send path;
               // only show the notice when a ready account exists (the key
               // must be canonical to route at all).
@@ -2979,7 +2990,7 @@ function AccountContent({
               if (account && activeRoomId) {
                 showComposerNotice(
                   roomTimelineKey(account.userId, activeRoomId),
-                  t("composer.slashCommandUnavailable")
+                  refusalNotice
                 );
               }
             }

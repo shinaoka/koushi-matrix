@@ -132,9 +132,13 @@ Two notices describe it, and each appears on its own:
 - **Sending is unavailable until Secure Backup is ready.** A notice beside the
   message box means every send is closed, in every room, encrypted or not: the
   message box and its formatting, mention and emoji buttons, the attachment
-  button, thread replies, reactions, edits, scheduled sends and resending a
-  queued message. It goes away when Secure Backup becomes ready, which can
-  happen before or after the conversation list is confirmed.
+  button, thread replies, reactions, edits, forwarding, redactions, scheduled
+  sends and resending a queued message. The message menu's **Forward**, the
+  context menu's **Redact** and the reaction chips are therefore not offered
+  while it shows, and a press that was already on its way is answered with
+  **Secure Backup is not ready yet, so nothing was sent.** It goes away when
+  Secure Backup becomes ready, which can happen before or after the
+  conversation list is confirmed.
 
 Opening a saved conversation does not mark it read for you or for your other
 clients. Take the offered verification, recovery, or setup action to be able to

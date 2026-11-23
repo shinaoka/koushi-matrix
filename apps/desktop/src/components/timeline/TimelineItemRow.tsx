@@ -752,13 +752,16 @@ function TimelineItemRowView({
   }, [eventId, item.unable_to_decrypt?.can_request_keys, onRequestRoomKey, roomId]);
   const submitForward = useCallback(
     (destinationRoomId: string) => {
-      if (!eventId || !item.actions?.can_forward) {
+      // #2066: the Forward item is hidden while sending is locked, so this
+      // guard only covers a click already dispatched in the frame the lock
+      // arrives; the Rust refusal is surfaced by the composer notice.
+      if (!canWrite || !eventId || !item.actions?.can_forward) {
         return;
       }
       onForwardMessage(roomId, eventId, destinationRoomId);
       closeActionMenu();
     },
-    [closeActionMenu, eventId, item.actions?.can_forward, onForwardMessage, roomId]
+    [canWrite, closeActionMenu, eventId, item.actions?.can_forward, onForwardMessage, roomId]
   );
   const submitRetrySend = useCallback(() => {
     if (!transactionId) {
@@ -791,7 +794,8 @@ function TimelineItemRowView({
   // #2041: editing, forwarding and rewriting a sender's alias are message
   // actions, so a notice's read-only menu offers only Copy, permalink and source.
   const canEditRow = !isNoticeRow && item.can_edit;
-  const canForward = Boolean(!isNoticeRow && eventId && item.actions?.can_forward);
+  // #2066: forwarding is a send-family command, so the lock hides it like Reply.
+  const canForward = Boolean(!isNoticeRow && canWrite && eventId && item.actions?.can_forward);
   const canSetSenderAlias = Boolean(!isNoticeRow && eventId && item.sender && onOpenAliasDialog);
   const canShowMessageActionMenu =
     canSetSenderAlias ||
@@ -1125,7 +1129,9 @@ function TimelineItemRowView({
     const selectedText = messageSelectionWithin(event.currentTarget);
     const items = contextMenuItems({
       kind: "message",
-      canManage: currentUserId === item.sender,
+      // #2066: the menu's Redact entry is a send-family command too; the row's
+      // own redact button already takes the lock (`canWrite && item.can_redact`).
+      canManage: canWrite && currentUserId === item.sender,
       canEdit: canWrite && canEditRow,
       canReply: canShowReply,
       hasThread: item.thread_summary != null && presentationContext !== "thread",
@@ -1698,7 +1704,13 @@ function TimelineItemRowView({
                       key={pillKey}
                       type="button"
                       aria-pressed={reaction.reacted_by_me}
+                      disabled={!canWrite}
                       onClick={() => {
+                        // #2066: a disabled button fires nothing, but keep the
+                        // guard for a click already dispatched before the lock.
+                        if (!canWrite) {
+                          return;
+                        }
                         if (reaction.reacted_by_me) {
                           if (reaction.my_reaction_event_id) {
                             onRedactReaction(

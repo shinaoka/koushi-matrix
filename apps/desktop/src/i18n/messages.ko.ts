@@ -210,6 +210,7 @@ export const ko: Catalog = {
   "composer.replying": "답장 중",
   "composer.sendingAs": "{account}(으)로 보내는 중",
   "composer.slashCommandUnavailable": "이 입력창에서는 이 명령을 사용할 수 없습니다.",
+  "composer.sendRefusedSecureBackup": "Secure Backup이 준비되지 않아 보내지 않았습니다.",
   "composer.removeAttachment": "첨부 파일 제거",
   "composer.cancelReply": "답장 취소",
   "upload.captionForFile": "{filename}의 캡션",

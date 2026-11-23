@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isSecureBackupSendRefusal,
   isUnsupportedSlashCommandRejection,
   noticeMatchesMainComposer,
   noticeMatchesThreadComposer,
@@ -135,5 +136,26 @@ describe("composer notice routing (#450)", () => {
       noticeMatchesThreadComposer(roomKey, "!room:example.invalid", "$root:example.invalid", userId)
     ).toBe(false);
     expect(noticeMatchesMainComposer(threadKey, "!room:example.invalid", userId)).toBe(false);
+  });
+});
+
+describe("isSecureBackupSendRefusal (#2066)", () => {
+  const refusal = (kind: string): CoreEventPayload => ({
+    kind: "OperationFailed",
+    request_id: null,
+    failure: { TimelineOperationFailed: { kind } as never }
+  });
+
+  it("names the Secure Backup gate Rust answers every send-family refusal with", () => {
+    expect(isSecureBackupSendRefusal(refusal("SecureBackupRequired"))).toBe(true);
+  });
+
+  it("leaves the other timeline failures to their own handling", () => {
+    expect(isSecureBackupSendRefusal(refusal("UnsupportedSlashCommand"))).toBe(false);
+    expect(isSecureBackupSendRefusal(refusal("Forbidden"))).toBe(false);
+    expect(
+      isSecureBackupSendRefusal({ kind: "OperationFailed", request_id: null, failure: "SessionRequired" })
+    ).toBe(false);
+    expect(isSecureBackupSendRefusal({ kind: "ResyncMarker" })).toBe(false);
   });
 });

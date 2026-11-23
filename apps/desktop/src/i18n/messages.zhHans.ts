@@ -210,6 +210,7 @@ export const zhHans: Catalog = {
   "composer.replying": "正在回复",
   "composer.sendingAs": "以 {account} 身份发送",
   "composer.slashCommandUnavailable": "此命令在此输入框中不可用。",
+  "composer.sendRefusedSecureBackup": "Secure Backup 尚未就绪，因此未发送。",
   "composer.removeAttachment": "移除附件",
   "composer.cancelReply": "取消回复",
   "upload.captionForFile": "{filename} 的说明文字",

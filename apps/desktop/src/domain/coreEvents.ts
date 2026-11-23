@@ -139,6 +139,7 @@ export type TimelineFailureKind =
   | "InvalidReactionState"
   | "InvalidSendTarget"
   | "InvalidSendState"
+  | "SecureBackupRequired"
   | "UnsupportedSlashCommand"
   | "Forbidden"
   | "NotFound"
@@ -1517,6 +1518,25 @@ export function isUnsupportedSlashCommandRejection(
     return payload.event.SubmissionRejected.kind === "UnsupportedSlashCommand";
   }
   return false;
+}
+
+/**
+ * Issue #2066: whether a CoreEvent is Rust refusing a send-family command
+ * because Secure Backup has not admitted sending yet. Every command in
+ * `requires_send_admission` is answered this way, so the renderer can name the
+ * reason instead of looking inert.
+ */
+export function isSecureBackupSendRefusal(payload: CoreEventPayload): boolean {
+  if (payload.kind !== "OperationFailed") {
+    return false;
+  }
+  const failure = payload.failure;
+  return (
+    !!failure &&
+    typeof failure === "object" &&
+    "TimelineOperationFailed" in failure &&
+    failure.TimelineOperationFailed.kind === "SecureBackupRequired"
+  );
 }
 
 /**
