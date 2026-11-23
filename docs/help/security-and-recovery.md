@@ -133,12 +133,12 @@ Two notices describe it, and each appears on its own:
   message box means every send is closed, in every room, encrypted or not: the
   message box and its formatting, mention and emoji buttons, the attachment
   button, thread replies, reactions, edits, forwarding, redactions, scheduled
-  sends and resending a queued message. The message menu's **Forward**, the
-  context menu's **Redact** and the reaction chips are therefore not offered
-  while it shows, and a press that was already on its way is answered with
-  **Secure Backup is not ready yet, so nothing was sent.** It goes away when
-  Secure Backup becomes ready, which can happen before or after the
-  conversation list is confirmed.
+  sends and resending a queued message. While it shows, the message menu's
+  **Forward** and the context menu's **Redact** are not offered, and a reaction
+  chip keeps its count without responding to a click. A menu that was already
+  open when the lock arrived answers with **Secure Backup is not ready yet, so
+  nothing was sent.** The notice goes away when Secure Backup becomes ready,
+  which can happen before or after the conversation list is confirmed.
 
 Opening a saved conversation does not mark it read for you or for your other
 clients. Take the offered verification, recovery, or setup action to be able to

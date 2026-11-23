@@ -94,6 +94,36 @@ describe("ContextualRightPanel", () => {
     onSubmitIdentityResetPassword: () => undefined
   };
 
+  test("a keyless refusal only earns a composer notice when it names a reason", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { composerRefusalNoticeId } = await import("./App");
+    const refusal = (kind: string) =>
+      ({
+        kind: "OperationFailed",
+        request_id: null,
+        failure: { TimelineOperationFailed: { kind } as never }
+      }) as const;
+
+    // #2066: the Secure Backup gate and the #450 slash command are the two
+    // answers a reader sees explained beside the composer.
+    expect(composerRefusalNoticeId(refusal("SecureBackupRequired"))).toBe(
+      "composer.sendRefusedSecureBackup"
+    );
+    expect(composerRefusalNoticeId(refusal("UnsupportedSlashCommand"))).toBe(
+      "composer.slashCommandUnavailable"
+    );
+    // Anything else is either handled by its own keyed event or stays silent.
+    expect(composerRefusalNoticeId(refusal("Forbidden"))).toBeNull();
+    expect(
+      composerRefusalNoticeId({
+        kind: "OperationFailed",
+        request_id: null,
+        failure: "SessionRequired"
+      })
+    ).toBeNull();
+    expect(composerRefusalNoticeId({ kind: "ResyncMarker" })).toBeNull();
+  });
+
   test("composer disables sending while a transaction is pending", async () => {
     vi.stubGlobal("window", { location: { search: "" } });
     const { Composer } = await import("./App");

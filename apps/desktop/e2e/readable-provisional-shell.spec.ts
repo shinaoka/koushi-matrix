@@ -244,8 +244,6 @@ test("the read-only shell offers no forward, redact or reaction-chip write", asy
   const pill = row.locator("button.reaction-pill").first();
   const sendReactionCount = () =>
     page.evaluate(() => window.__harness.invocationsOf("send_reaction").length);
-  const forwardCount = () =>
-    page.evaluate(() => window.__harness.invocationsOf("forward_message").length);
   const actionsMenu = row.getByRole("button", { name: "Message actions" });
   // The trigger toggles, and the lock can remove items from a menu that is
   // already open, so open it by its own state rather than by blind toggling.
@@ -283,7 +281,6 @@ test("the read-only shell offers no forward, redact or reaction-chip write", asy
   });
   await expect(composerNotice(page)).toHaveText(SEND_BLOCKED_COPY);
   await expect(forwardItem).toHaveCount(0);
-  expect(await forwardCount()).toBe(0);
 
   // Locked: the read-only items stay, the write items are gone.
   await openActionsMenu();

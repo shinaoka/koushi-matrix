@@ -752,16 +752,13 @@ function TimelineItemRowView({
   }, [eventId, item.unable_to_decrypt?.can_request_keys, onRequestRoomKey, roomId]);
   const submitForward = useCallback(
     (destinationRoomId: string) => {
-      // #2066: the Forward item is hidden while sending is locked, so this
-      // guard only covers a click already dispatched in the frame the lock
-      // arrives; the Rust refusal is surfaced by the composer notice.
-      if (!canWrite || !eventId || !item.actions?.can_forward) {
+      if (!eventId || !item.actions?.can_forward) {
         return;
       }
       onForwardMessage(roomId, eventId, destinationRoomId);
       closeActionMenu();
     },
-    [canWrite, closeActionMenu, eventId, item.actions?.can_forward, onForwardMessage, roomId]
+    [closeActionMenu, eventId, item.actions?.can_forward, onForwardMessage, roomId]
   );
   const submitRetrySend = useCallback(() => {
     if (!transactionId) {
@@ -1706,11 +1703,6 @@ function TimelineItemRowView({
                       aria-pressed={reaction.reacted_by_me}
                       disabled={!canWrite}
                       onClick={() => {
-                        // #2066: a disabled button fires nothing, but keep the
-                        // guard for a click already dispatched before the lock.
-                        if (!canWrite) {
-                          return;
-                        }
                         if (reaction.reacted_by_me) {
                           if (reaction.my_reaction_event_id) {
                             onRedactReaction(

@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoreEventPayload, TimelineItem } from "../domain/coreEvents";
-import type { ContextMenuTarget, OpenContextMenu } from "../app/uiShared";
+import type { OpenContextMenu } from "../app/uiShared";
 import { setActiveLocaleProfile, t } from "../i18n/messages";
 import { TimelineView, clearTimelineViewportSessionMemoryForTests } from "./TimelineView";
 import { KEY, baseTransport, message } from "./timelineViewTestSupport";
@@ -39,7 +39,11 @@ function ownMessageWithReaction(): TimelineItem {
   };
 }
 
-function renderTimeline(canWrite: boolean, onOpenContextMenu: OpenContextMenu) {
+function renderRow(
+  item: TimelineItem,
+  canWrite: boolean,
+  onOpenContextMenu: OpenContextMenu = vi.fn()
+) {
   let emit: (payload: CoreEventPayload) => void = () => undefined;
   const sendReaction = vi.fn(async () => undefined);
   const transport = baseTransport({
@@ -64,9 +68,7 @@ function renderTimeline(canWrite: boolean, onOpenContextMenu: OpenContextMenu) {
   act(() =>
     emit({
       kind: "Timeline",
-      event: {
-        InitialItems: { request_id: null, key: KEY, generation: 1, items: [ownMessageWithReaction()] }
-      }
+      event: { InitialItems: { request_id: null, key: KEY, generation: 1, items: [item] } }
     })
   );
   return {
@@ -76,8 +78,8 @@ function renderTimeline(canWrite: boolean, onOpenContextMenu: OpenContextMenu) {
   };
 }
 
-function row(): HTMLElement {
-  const element = document.querySelector<HTMLElement>('[data-event-id="$own:example.invalid"]');
+function rowOf(eventId: string): HTMLElement {
+  const element = document.querySelector<HTMLElement>(`[data-event-id="${eventId}"]`);
   expect(element).toBeTruthy();
   return element!;
 }
@@ -102,10 +104,8 @@ function contextMenu(onOpenContextMenu: OpenContextMenu): {
 } {
   const menu = vi.mocked(onOpenContextMenu);
   menu.mockClear();
-  fireEvent.contextMenu(row());
+  fireEvent.contextMenu(rowOf("$own:example.invalid"));
   const call = menu.mock.calls.at(-1);
-  const target = call?.[1] as ContextMenuTarget | undefined;
-  expect(target?.kind ?? "message").toBe("message");
   return { opened: call !== undefined, ids: (call?.[2] ?? []).map((item) => item.id) };
 }
 
@@ -116,16 +116,18 @@ function openActionMenu(): void {
 describe("TimelineView read-only write paths (#2066)", () => {
   it("offers all three paths while sending is admitted", () => {
     const onOpenContextMenu = vi.fn();
-    renderTimeline(true, onOpenContextMenu);
+    renderRow(ownMessageWithReaction(), true, onOpenContextMenu);
 
     expect(enabled(reactionPill())).toBe(true);
     openActionMenu();
     expect(screen.getByRole("menuitem", { name: t("timeline.forwardMessage") })).toBeTruthy();
-    expect(contextMenu(onOpenContextMenu).ids).toContain("redactMessage");
+    const menu = contextMenu(onOpenContextMenu);
+    expect(menu.opened).toBe(true);
+    expect(menu.ids).toContain("redactMessage");
   });
 
   it("hides Forward from the message action menu while sending is locked", () => {
-    renderTimeline(false, vi.fn());
+    renderRow(ownMessageWithReaction(), false);
 
     openActionMenu();
     expect(screen.queryByRole("menuitem", { name: t("timeline.forwardMessage") })).toBeNull();
@@ -136,13 +138,36 @@ describe("TimelineView read-only write paths (#2066)", () => {
 
   it("hides Redact from the context menu while sending is locked", () => {
     const onOpenContextMenu = vi.fn();
-    renderTimeline(false, onOpenContextMenu);
+    renderRow(ownMessageWithReaction(), false, onOpenContextMenu);
 
-    expect(contextMenu(onOpenContextMenu).ids).not.toContain("redactMessage");
+    // Redact was this own message's only entry, so the menu itself is gone
+    // rather than offered with nothing in it.
+    const menu = contextMenu(onOpenContextMenu);
+    expect(menu.opened).toBe(false);
+    expect(menu.ids).not.toContain("redactMessage");
+  });
+
+  it("drops the message actions button when Forward was its only entry", () => {
+    // No body and no permalink or source facts: unlocking offers `…` for
+    // Forward alone, so the lock removes the button instead of emptying it.
+    const bare = {
+      ...message("$bare:example.invalid", ""),
+      body: null,
+      can_redact: true,
+      actions: {
+        ...message("$bare:example.invalid", "").actions!,
+        can_forward: true
+      }
+    };
+    const { rerenderWritable } = renderRow(bare, true);
+    expect(screen.getByRole("button", { name: t("timeline.messageActions") })).toBeTruthy();
+
+    rerenderWritable(false);
+    expect(screen.queryByRole("button", { name: t("timeline.messageActions") })).toBeNull();
   });
 
   it("keeps the reaction count but takes no press while sending is locked", () => {
-    const { sendReaction } = renderTimeline(false, vi.fn());
+    const { sendReaction } = renderRow(ownMessageWithReaction(), false);
     const pill = reactionPill();
 
     expect(pill.textContent).toContain("1");
@@ -152,7 +177,7 @@ describe("TimelineView read-only write paths (#2066)", () => {
   });
 
   it("sends the reaction when the lock is not there", () => {
-    const { sendReaction } = renderTimeline(true, vi.fn());
+    const { sendReaction } = renderRow(ownMessageWithReaction(), true);
 
     fireEvent.click(reactionPill());
 
@@ -161,7 +186,7 @@ describe("TimelineView read-only write paths (#2066)", () => {
 
   it("restores every path when the lock lifts", () => {
     const onOpenContextMenu = vi.fn();
-    const { rerenderWritable } = renderTimeline(false, onOpenContextMenu);
+    const { rerenderWritable } = renderRow(ownMessageWithReaction(), false, onOpenContextMenu);
     expect(enabled(reactionPill())).toBe(false);
 
     rerenderWritable(true);
@@ -169,6 +194,8 @@ describe("TimelineView read-only write paths (#2066)", () => {
     expect(enabled(reactionPill())).toBe(true);
     openActionMenu();
     expect(screen.getByRole("menuitem", { name: t("timeline.forwardMessage") })).toBeTruthy();
-    expect(contextMenu(onOpenContextMenu).ids).toContain("redactMessage");
+    const menu = contextMenu(onOpenContextMenu);
+    expect(menu.opened).toBe(true);
+    expect(menu.ids).toContain("redactMessage");
   });
 });
