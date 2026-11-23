@@ -155,6 +155,119 @@ describe("TimelineView", () => {
     expect(screen.getAllByRole("article")).toHaveLength(3);
   });
 
+  describe("message groups around notice rows (#2074)", () => {
+    const BOB = "@bob:example.invalid";
+    const ALICE = "@alice:example.invalid";
+
+    function fromBob(eventId: string, body: string): TimelineItem {
+      return { ...message(eventId, body), sender: BOB, sender_label: "Bob" };
+    }
+
+    /** A membership notice as Rust projects it: the actor is the sender, the
+     * sentence is the body, and there is no header slot (#2041). */
+    function joinedNotice(eventId: string): TimelineItem {
+      return {
+        ...fromBob(eventId, "Bob joined the room"),
+        message_kind: "notice"
+      };
+    }
+
+    function renderRows(items: TimelineItem[], density: "compact" | "default") {
+      const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+        InitialItems: { request_id: null, key: KEY, generation: 1, items }
+      });
+      render(
+        <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+          <TimelineView
+            timelineKey={KEY}
+            roomId="!room:example.invalid"
+            transport={baseTransport({})}
+            density={density}
+            onReply={vi.fn()}
+            onOpenSenderProfile={vi.fn()}
+          />
+        </TimelineStoreContext.Provider>
+      );
+    }
+
+    function articleOf(text: string): HTMLElement {
+      const article = screen.getByText(text).closest("article");
+      expect(article).toBeTruthy();
+      return article!;
+    }
+
+    it.each(["compact", "default"] as const)(
+      "gives a message after its sender's own notice a header in %s density",
+      async (density) => {
+        renderRows(
+          [fromBob("$before", "Before the notice"), joinedNotice("$join"), fromBob("$after", "After the notice")],
+          density
+        );
+
+        expect(await screen.findByText("After the notice")).toBeTruthy();
+        expect(articleOf("After the notice").classList.contains("is-continuation")).toBe(false);
+        if (density === "compact") {
+          expect(articleOf("After the notice").querySelector("button.sender-profile-button")).toBeTruthy();
+        }
+      }
+    );
+
+    it.each(["compact", "default"] as const)(
+      "still groups consecutive messages from one sender in %s density",
+      async (density) => {
+        renderRows([fromBob("$one", "First of the run"), fromBob("$two", "Second of the run")], density);
+
+        expect(await screen.findByText("Second of the run")).toBeTruthy();
+        expect(articleOf("First of the run").classList.contains("is-continuation")).toBe(false);
+        expect(articleOf("Second of the run").classList.contains("is-continuation")).toBe(true);
+        if (density === "compact") {
+          // The continuation drops the name-as-button, which is what compact
+          // density keys the hidden header on.
+          expect(articleOf("Second of the run").querySelector("button.sender-profile-button")).toBeNull();
+        }
+      }
+    );
+
+    it.each(["compact", "default"] as const)(
+      "gives a message after two notices from its sender a header in %s density",
+      async (density) => {
+        renderRows(
+          [
+            fromBob("$before", "Before the notices"),
+            joinedNotice("$join-one"),
+            joinedNotice("$join-two"),
+            fromBob("$after", "After two notices")
+          ],
+          density
+        );
+
+        expect(await screen.findByText("After two notices")).toBeTruthy();
+        expect(articleOf("After two notices").classList.contains("is-continuation")).toBe(false);
+        if (density === "compact") {
+          expect(
+            articleOf("After two notices").querySelector("button.sender-profile-button")
+          ).toBeTruthy();
+        }
+      }
+    );
+
+    it.each(["compact", "default"] as const)(
+      "keeps a different sender out of the previous sender's group in %s density",
+      async (density) => {
+        renderRows(
+          [
+            { ...message("$alice", "From Alice"), sender: ALICE, sender_label: "Alice" },
+            fromBob("$bob", "From Bob")
+          ],
+          density
+        );
+
+        expect(await screen.findByText("From Bob")).toBeTruthy();
+        expect(articleOf("From Bob").classList.contains("is-continuation")).toBe(false);
+      }
+    );
+  });
+
   it.each([
     [
       "an unread marker on the current row",

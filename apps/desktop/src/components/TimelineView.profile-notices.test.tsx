@@ -119,7 +119,9 @@ describe("TimelineView profile notices (#2041)", () => {
       }
       // The localized sentence wins over the fallback body, which the fixture
       // sets to the same words, so the exact-line assertion above is the check.
-      expect(rowOf("$profile-0").classList.contains("is-continuation")).toBe(true);
+      // #2074: a notice never continues the message above it, so its own line —
+      // not the previous sender's header — carries the name.
+      expect(rowOf("$profile-0").classList.contains("is-continuation")).toBe(false);
       expect(rowOf("$profile-0").querySelector(".message-notice-controls")).not.toBeNull();
     }
   );
