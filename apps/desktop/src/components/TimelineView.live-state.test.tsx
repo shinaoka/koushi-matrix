@@ -176,6 +176,8 @@ describe("TimelineView", () => {
       await waitFor(() => {
         expect(sendReadReceipt).not.toHaveBeenCalled();
         expect(setFullyRead).not.toHaveBeenCalled();
+        // #1892: observations are coalesced onto the frame that follows the scroll.
+        expect(observeViewport).toHaveBeenCalled();
       });
       expect(observeViewport).toHaveBeenCalledWith(
         "!room:example.invalid",

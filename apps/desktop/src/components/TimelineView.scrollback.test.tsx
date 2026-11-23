@@ -785,7 +785,9 @@ describe("TimelineView", () => {
       timeline.scrollTop += 4;
       fireEvent.scroll(timeline);
     });
-    expect(frames.size).toBe(1);
+    // The scroll frame plus the coalesced viewport observation (#1892): one
+    // observation per frame, not one per scroll event.
+    expect(frames.size).toBe(2);
 
     act(() => {
       rerender(renderView(threadKey));
@@ -872,7 +874,9 @@ describe("TimelineView", () => {
       timeline.scrollTop += 4;
       fireEvent.scroll(timeline);
     });
-    expect(frames.size).toBe(1);
+    // The scroll frame plus the coalesced viewport observation (#1892): one
+    // observation per frame, not one per scroll event.
+    expect(frames.size).toBe(2);
 
     act(() => {
       listener?.({

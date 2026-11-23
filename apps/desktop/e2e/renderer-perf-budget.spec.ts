@@ -84,7 +84,11 @@ const ENGINE_BUDGETS: Record<
     // 15 / 224 / 1 row / 78 nodes.
     startup: { commits: 18, layoutReads: 270, rows: 4, timelineSubtree: 100 },
     // 1247 reads / 9 commits; the row count is asserted against the threshold.
-    openBusy: { layoutReads: 1500, commits: 12 },
+    // #1892: 13 commits, one more than before, because the first viewport
+    // observation is coalesced onto its own frame instead of running inside the
+    // open's render. That frame is worth it: the same change takes a scroll from
+    // 5-8 observations per frame to one.
+    openBusy: { layoutReads: 1500, commits: 14 },
     // Per switch, worst of five: 1489 / 14 commits. Refs #1889.
     switchRoom: { layoutReads: 1800, commits: 18 },
     // Per step of 10 scroll events: 1055 / 8 commits / 1 anchor write. Refs #1894.
