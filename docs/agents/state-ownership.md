@@ -907,9 +907,11 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   renderer only acknowledges, and to Core as `DisplayPolicyChanged` → the manager
   → the room actor, which recomputes `is_hidden` over the canonical window and
   publishes ordinary `ItemsUpdated` diffs. `TimelineItem.notice_category` carries
-  the class Core classifies (`profile`, `membership`) and is unset for the rows
-  the preference must never hide (encryption, room upgrade, ban, kick, and a
-  member event that changes no membership at all); it is Core bookkeeping and
+  the class Core classifies (`profile`, `membership`). Only
+  `membership_notice_category` sets it, and it classifies joins, leaves, invites
+  and knocks only, so every other row keeps the exception for free: encryption, a
+  room upgrade, moderation (ban, unban, kick, kick-and-ban) and a member event
+  that changes no membership. It is Core bookkeeping and
   never crosses the wire, so the exception is data, not a renderer rule. The
   renderer only ever honours `is_hidden`; it never reads the preference.
 - Message-action menus render only `TimelineItem.actions` affordances. Copy uses

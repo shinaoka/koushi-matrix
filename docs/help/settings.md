@@ -126,12 +126,15 @@ fill the viewport or you scroll near its start. There is no switch to disable it
 notices appear in a timeline: someone changing their display name, picture or
 room profile, and someone joining, leaving, being invited or knocking. Turning it
 off removes those lines from every room and thread, and turning it back on brings
-them back; nothing is deleted and the events stay searchable. Four lines always
-stay visible whatever the switch says, because a timeline that hides them would
-mislead: **encryption enabled**, **room upgrade**, **ban** and **kick**. A
-membership line that reports no membership change at all (for example an update
-that only changes a power level) stays visible too, since it is not a join or a
-leave.
+them back; nothing is deleted and the events stay searchable.
+
+Some rows stay visible whatever the switch says, because a timeline that hides
+them would mislead: encryption being enabled, a room upgrade, a ban, a kick
+(including a kick that bans in the same step), and an unban. An unban stays
+visible so that a ban never looks permanent. Everything else a membership line
+can report stays visible too, including a member event that changes no membership
+and one this version cannot interpret: only joins, leaves, invites and knocks are
+hidden by the switch.
 
 The switch is applied by Koushi's core, so the change arrives as the same kind of
 timeline update as any other, not as a local filter that could disagree with the

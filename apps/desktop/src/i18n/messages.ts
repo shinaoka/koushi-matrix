@@ -3306,7 +3306,7 @@ const en: Catalog = {
   "settings.hideRedacted": "Hide deleted messages",
   "settings.showRoomAndMemberChanges": "Show room and member changes",
   "settings.showRoomAndMemberChangesDescription":
-    "Profile and membership notices, such as a name change or someone joining. Encryption, a room upgrade, a ban and a kick always stay visible.",
+    "Profile and membership notices, such as a name change or someone joining. Encryption, room upgrades, bans, kicks (including a kick that bans), unbans and membership updates that change no membership always stay visible.",
   "settings.closeToTray": "Close button minimises to tray",
   "settings.closeToTrayDescription":
     "Keep Koushi running in the tray when the window is closed. Quit from the tray menu to exit.",
@@ -5731,7 +5731,7 @@ const ja: Catalog = {
   "settings.hideRedacted": "削除されたメッセージを非表示",
   "settings.showRoomAndMemberChanges": "ルームとメンバーの変更を表示",
   "settings.showRoomAndMemberChangesDescription":
-    "プロフィールやメンバーシップの通知（表示名の変更、メンバーの参加など）。暗号化、ルームのアップグレード、BAN、キックは常に表示されます。",
+    "プロフィールやメンバーシップの通知（表示名の変更、メンバーの参加など）。暗号化、ルームのアップグレード、BAN、キック（BANを伴うキックを含む）、BANの解除、メンバーシップが変わらないイベントは常に表示されます。",
   "settings.closeToTray": "閉じるボタンでトレイに最小化",
   "settings.closeToTrayDescription":
     "ウィンドウを閉じても Koushi をトレイで実行し続けます。終了するにはトレイメニューの終了を使います。",

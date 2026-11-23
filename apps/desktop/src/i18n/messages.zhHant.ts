@@ -919,7 +919,7 @@ export const zhHant: Catalog = {
   "settings.codeBlockWrap": "在程式碼區塊中自動換行",
   "settings.hideRedacted": "隱藏已刪除的訊息",
   "settings.showRoomAndMemberChanges": "顯示房間和成員變更",
-  "settings.showRoomAndMemberChangesDescription": "個人資料和成員身分通知（例如名稱變更或有人加入）。加密、房間升級、封鎖和移除一律顯示。",
+  "settings.showRoomAndMemberChangesDescription": "個人資料和成員身分通知（例如名稱變更或有人加入）。加密、房間升級、封鎖、移除（包含同時封鎖的移除）、解除封鎖，以及成員身分沒有變更的事件，一律顯示。",
   "settings.closeToTray": "關閉按鈕會最小化至系統匣",
   "settings.closeToTrayDescription": "關閉視窗時讓 Koushi 繼續在系統匣中執行。若要結束，請從系統匣選單中選擇結束。",
   "settings.autoUpdate": "自動檢查更新",

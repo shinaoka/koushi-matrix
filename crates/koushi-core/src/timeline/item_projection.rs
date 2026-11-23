@@ -883,9 +883,9 @@ pub(crate) fn timeline_item_is_hidden(
     // alone decides it; any other event with no renderable content is
     // suppressed by the content policy itself.
     let content_suppressed = !item.is_redacted && !has_user_visible_content(item);
-    // #2041: the preference hides profile and membership lines. The rows it
-    // must never hide — encryption, room upgrade, ban, kick — carry no
-    // `notice_category`, so that one field is the whole exception.
+    // #2041: the preference hides profile and membership lines. `notice_category`
+    // is set only by `membership_notice_category`, so that one field carries the
+    // whole exception: every row this must never hide has none.
     let room_and_member_change_hidden =
         !show_room_and_member_changes && item.notice_category.is_some();
     content_suppressed
@@ -2804,9 +2804,9 @@ fn notice_category(content: &TimelineItemContent) -> Option<TimelineNoticeCatego
 
 fn membership_notice_category(change: Option<MembershipChange>) -> Option<TimelineNoticeCategory> {
     // An explicit hideable set, not a catch-all: `None` means no membership
-    // change happened (an `m.room.member` event that only touched a power level
-    // or a reason), and `Error`/`NotImplemented` are rows this build does not
-    // understand. None of the three may be hidden.
+    // change happened (a member event that restates the same membership), and
+    // `Error`/`NotImplemented` are rows this build does not understand. None of
+    // the three may be hidden.
     match change {
         Some(
             MembershipChange::Joined
