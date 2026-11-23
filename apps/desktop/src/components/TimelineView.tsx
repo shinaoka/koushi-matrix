@@ -4433,8 +4433,44 @@ export const TimelineView = memo(function TimelineView({
   // own wheel input: it is marked exactly as a wheel event is before the page
   // moves, so viewport ownership, live-edge release and top-of-history demand
   // treat it like native scrolling.
-  const touchpadInputRef = useRef({ markUserScrollInput, requestOlderHistoryFromInputAtTop });
-  touchpadInputRef.current = { markUserScrollInput, requestOlderHistoryFromInputAtTop };
+  //
+  // The step also commits the virtual window before the frame paints, with the
+  // same `flushSync(commitVirtualRangeForMetrics(..))` the native scroll frame
+  // runs (`onTimelineScroll`'s scheduled frame). The `flushSync` is what makes
+  // it a before-the-paint commit: `commitVirtualRangeForMetrics` ends in a
+  // `setVirtualRange`, and a plain state update from an animation frame is
+  // flushed in a later task, which lets a frame paint the stale window first.
+  // That is one frame of spacer after a large catch-up step.
+  //
+  // Native scrolling gets the window for free: the scroll event runs before the
+  // animation-frame callbacks, so its frame commits the new scrollTop and paints
+  // in the same frame. A resampled write happens *inside* a frame, so its own
+  // scroll event's commit frame would land behind the next resampled step — and
+  // that step's `markUserScrollInput` runs `advanceViewportEpoch`, which calls
+  // `cancelPendingScrollFrame`, so the pending commit is dropped every frame.
+  // Without this commit a continuous swipe never moves the mounted window and
+  // the reader scrolls into unmounted spacer (white blocks).
+  //
+  // The window can still sit on the transaction's anchor for a frame after a
+  // resampled step, because `commitVirtualRangeForMetrics` keeps a prepared
+  // window around its anchor while a viewport transaction is active, and the
+  // settlement frame drops it (`advanceViewportEpoch` cancels it). That is the
+  // same behaviour native scrolling has, not a new one: the anchor is what keeps
+  // the reader's content from jumping, so this defers a window move by a frame
+  // rather than losing it.
+  const commitResampledScrollWindow = useCallback(() => {
+    flushSync(() => commitVirtualRangeForMetrics(readViewportMetrics()));
+  }, [commitVirtualRangeForMetrics, readViewportMetrics]);
+  const touchpadInputRef = useRef({
+    markUserScrollInput,
+    requestOlderHistoryFromInputAtTop,
+    commitResampledScrollWindow
+  });
+  touchpadInputRef.current = {
+    markUserScrollInput,
+    requestOlderHistoryFromInputAtTop,
+    commitResampledScrollWindow
+  };
   useEffect(() => {
     const container = containerRef.current;
     if (!touchpadScrollResampling || !container) return;
@@ -4452,9 +4488,12 @@ export const TimelineView = memo(function TimelineView({
       subPixelCarry = desired - container.scrollTop;
       if (step < 0) input.requestOlderHistoryFromInputAtTop();
       if (Math.abs(subPixelCarry) >= 1) {
+        // The write was clamped at an edge: the page did not move, so there is no
+        // new window to commit.
         subPixelCarry = 0;
         return false;
       }
+      input.commitResampledScrollWindow();
       return true;
     };
     const runFrame = (now: number) => {

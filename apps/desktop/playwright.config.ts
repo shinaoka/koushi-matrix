@@ -81,6 +81,8 @@ export default defineConfig({
         /timeline-window-slide-anchor\.spec\.ts$/,
         // Linux WebKitGTK touchpad resampling is WebKit-only by design.
         /timeline-touchpad-resampling\.spec\.ts$/,
+        // The resampled swipe's own window commit (white blocks) is WebKit-only too.
+        /timeline-touchpad-swipe-window\.spec\.ts$/,
         // #1603: hover chrome is suppressed for content scrolling under a
         // stationary pointer; the report came from macOS WebKit.
         /timeline-hover-intent\.spec\.ts$/,
