@@ -572,15 +572,18 @@ describe("styles.css token system", () => {
       "--receipt-overflow-min-inline-size",
       "--receipt-overflow-padding-inline"
     ]);
-    // #314: the reader popup is a viewport-fixed floating panel. Its position
-    // and size come from resolveFloatingPlacement, so offset, size, and the
-    // hover transition tokens no longer belong to this block. The tokens stay
-    // defined because `.reaction-tooltip` is still a row-local popup.
+    // #314: the reader popup is a viewport-fixed floating panel, so offset and
+    // the hover transition tokens no longer belong to this block. The tokens
+    // stay defined because `.reaction-tooltip` is still a row-local popup.
+    // #2098: the width cap is this block's own now — the popup is sized from
+    // its content (`inline-size: max-content`) up to these two tokens.
     const readerPopupBlock = selectorBlock(".receipt-tooltip");
     expect(readerPopupBlock).toContain("position: fixed");
     expectBlockUses(readerPopupBlock, [
       "--receipt-tooltip-z-index",
       "--receipt-tooltip-gap",
+      "--receipt-tooltip-max-inline-size",
+      "--receipt-tooltip-max-viewport-inline-size",
       "--receipt-tooltip-padding-block",
       "--receipt-tooltip-padding-inline",
       "--receipt-tooltip-font-size"
