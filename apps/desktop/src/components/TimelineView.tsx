@@ -32,8 +32,7 @@ import {
   scrollContainerToBottom,
   SCROLL_EDGE_TOLERANCE_PX,
   timelineBackfillThreshold,
-  timelineKeyShouldReleaseViewportIntent,
-  visibleTimelineViewportFacts
+  timelineKeyShouldReleaseViewportIntent
 } from "./timeline/TimelineViewportObservation";
 export { timelineBackfillThresholdForTests } from "./timeline/TimelineViewportObservation";
 import {
@@ -77,13 +76,14 @@ import {
   timelineItemHeightAtIndex, timelineItemIndexInRange, timelineItemIndexRangeEquals,
   timelineLiveEdgeScrollTop, timelineRangeIncludingIndex, TIMELINE_ESTIMATED_ITEM_HEIGHT_PX,
   virtualRangeEquals,
-  type TimelineItemIndexRange, type TimelineScheduledFrame,
-  type TimelineViewportMetrics, type TimelineVirtualRangeState, type TimelineVirtualWindow
+  type TimelineItemIndexRange, type TimelineHeightModel, type TimelineScheduledFrame,
+  type TimelineViewportMetrics, type TimelineViewportModel, type TimelineVirtualRangeState, type TimelineVirtualWindow
 } from "./timeline/TimelineViewportVirtualization";
 import {
   createTimelineViewportScheduler,
   type TimelineViewportScheduler
 } from "./timeline/TimelineViewportScheduler";
+import { timelineViewportFactsFromModel } from "./timeline/TimelineViewportRows";
 import { createTimelineViewportTransactionController, VIEWPORT_ANCHOR_TOLERANCE_PX } from "./timeline/TimelineViewportTransaction";
 export { TimelineItemRow };
 export type { OpenSenderDeviceAdvisory, TimelineRowActionHandlers, TimelineThreadAttention };
@@ -886,6 +886,31 @@ export const TimelineView = memo(function TimelineView({
   const pendingMeasurementCountRef = useRef(0);
   const measurementEpochRef = useRef(0);
   const visibleRowsRef = useRef<readonly TimelineDisplayRow[]>([]);
+  /**
+   * #1890 item 5: the model the current render's spacers were written from.
+   * Assigned next to `visibleRowsRef`, so the pair always describes one render,
+   * and kept in a ref so the capture and observation callbacks (which run
+   * outside render) can answer "which rows are on screen" without a DOM scan.
+   */
+  const heightModelRef = useRef<TimelineHeightModel>({
+    fallbackHeight: TIMELINE_ESTIMATED_ITEM_HEIGHT_PX,
+    offsets: [0],
+    totalHeight: 0
+  });
+  /**
+   * #1890 item 5: the geometry a rect-free viewport read needs, as refs so the
+   * scroll callbacks can ask outside render: the rows and model the committed
+   * window was built from (whose indices the mounted rows follow), and the
+   * metrics the last frame read. Asking costs no layout at all.
+   */
+  const viewportModel = useCallback(
+    (): TimelineViewportModel => ({
+      rows: virtualRangeRowsRef.current ?? visibleRowsRef.current,
+      model: virtualRangeModelRef.current ?? heightModelRef.current,
+      metrics: viewportMetricsRef.current
+    }),
+    []
+  );
   const visibleRowsByIdRef = useRef<Map<string, TimelineDisplayRow>>(new Map());
   const mountedItemDomIdsRef = useRef<Set<string>>(new Set());
   /** Set by wheel/touch/keyboard/scrollbar intent; consumed by the next scroll event. */
@@ -1147,10 +1172,10 @@ export const TimelineView = memo(function TimelineView({
   }, []);
   const captureStableAnchor = useCallback((container: HTMLElement) => {
     const previous = stableAnchor();
-    const fresh = captureFreeScrollAnchor(container);
+    const fresh = captureFreeScrollAnchor(container, viewportModel());
     const residual = previous ? measureAnchorDelta(container, previous) ?? 0 : 0;
     rememberStableAnchor(fresh ? { ...fresh, offsetTop: fresh.offsetTop - residual } : null, container);
-  }, [rememberStableAnchor, stableAnchor]);
+  }, [rememberStableAnchor, stableAnchor, viewportModel]);
   const emitDiagnosticLog = useCallback(
     (source: string, message: string) => {
       onDiagnosticLogEntry?.({
@@ -1319,6 +1344,30 @@ export const TimelineView = memo(function TimelineView({
     fonts.addEventListener("loadingdone", onLoadingDone);
     return () => fonts.removeEventListener("loadingdone", onLoadingDone);
   }, []);
+  /**
+   * How far the row list starts below the scroll container's content origin. The
+   * list sits inside the container below its chrome, so `offsetTop` alone is only
+   * this distance when the container is the list's own offset parent; its raw
+   * value is otherwise measured from a higher ancestor (the app grid), which is
+   * short by the container's own offset. The rect fallback covers a list whose
+   * offset parent is unrelated, where neither static offset is comparable.
+   */
+  const listContentOffsetTop = useCallback((): number => {
+    const container = containerRef.current;
+    const list = listRef.current;
+    if (!container || !list) {
+      return 0;
+    }
+    if (list.offsetParent === container) {
+      return list.offsetTop;
+    }
+    if (list.offsetParent === container.offsetParent) {
+      return list.offsetTop - container.offsetTop;
+    }
+    return Math.round(
+      list.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
+    );
+  }, []);
   const readViewportMetrics = useCallback((): TimelineViewportMetrics => {
     const container = containerRef.current;
     if (!container) {
@@ -1327,11 +1376,11 @@ export const TimelineView = memo(function TimelineView({
     const next = {
       scrollTop: container.scrollTop,
       clientHeight: container.clientHeight,
-      listOffsetTop: listRef.current?.offsetTop ?? 0
+      listOffsetTop: listContentOffsetTop()
     };
     viewportMetricsRef.current = next;
     return next;
-  }, []);
+  }, [listContentOffsetTop]);
 
   /** Send the anchor a settling scroll left behind, if any. Reads no layout. */
   const flushPendingScrollAnchor = useCallback(() => {
@@ -1373,7 +1422,7 @@ export const TimelineView = memo(function TimelineView({
     if (!container) {
       return false;
     }
-    const captured = captureRoomScrollAnchor(container);
+    const captured = captureRoomScrollAnchor(container, viewportModel());
     if (!captured) {
       return false;
     }
@@ -1405,7 +1454,7 @@ export const TimelineView = memo(function TimelineView({
     flushPendingScrollAnchor();
     void transport.updateScrollAnchor(roomId, anchor).catch(() => undefined);
     return true;
-  }, [flushPendingScrollAnchor, roomId, roomTimelineRoomId, transport]);
+  }, [flushPendingScrollAnchor, roomId, roomTimelineRoomId, transport, viewportModel]);
 
   const runWithScrollWriteReason = useCallback(
     (reason: TimelineScrollWriteReason, action: () => void, transactionId: number | null = null) => {
@@ -1479,14 +1528,14 @@ export const TimelineView = memo(function TimelineView({
     }
     const container = containerRef.current;
     if (container) {
-      const fresh = capturePrependAnchor(container);
+      const fresh = capturePrependAnchor(container, viewportModel());
       const pendingDelta = transaction.anchor ? measureAnchorDelta(container, transaction.anchor) : 0;
       if (fresh && pendingDelta !== null) owner.rebase(transaction.id, { ...fresh, offsetTop: fresh.offsetTop - pendingDelta });
     }
     owner.markSettling(transaction.id);
     setViewportTransactionRevision((current) => current + 1);
     return true;
-  }, []);
+  }, [viewportModel]);
 
   // Whether a height commit finds the reader at the live end, judged where the
   // anchor compensation of the same commit will leave them. Rows mounted or
@@ -1691,7 +1740,7 @@ export const TimelineView = memo(function TimelineView({
     if (transaction && !transaction.projectionCommitted && container && (rebased === null || scrollTop !== transaction.scrollTop)) {
       const movement = scrollTop - transaction.scrollTop;
       const measuredDelta = rebased ? measureAnchorDelta(container, rebased) : null;
-      const fresh = captureFreeScrollAnchor(container);
+      const fresh = captureFreeScrollAnchor(container, viewportModel());
       // Recapture the OLD projection, retaining any height displacement that
       // still needs compensation rather than mistaking it for user movement.
       if (fresh && (rebased === null || measuredDelta !== null)) rebased = { ...fresh, offsetTop: fresh.offsetTop - (measuredDelta === null ? 0 : measuredDelta + movement) };
@@ -1699,7 +1748,7 @@ export const TimelineView = memo(function TimelineView({
     }
     owner.userInput(scrollTop);
     if (transaction && !transaction.projectionCommitted && rebased) owner.rebase(transaction.id, rebased);
-  }, []);
+  }, [viewportModel]);
   const markUserScrollInput = useCallback((options: { keepLiveEdgeAtBottom?: boolean } = {}) => {
     returnToLivePendingRef.current = null;
     // Input belongs to the user even when it leaves the logical intent kind
@@ -2343,7 +2392,7 @@ export const TimelineView = memo(function TimelineView({
         key: timelineKeyHash,
         generation,
         anchor: viewportTransactionRef.current.active()?.anchor ?? stableAnchor() ??
-          (container ? capturePrependAnchor(container) : null),
+          (container ? capturePrependAnchor(container, viewportModel()) : null),
         scrollTop: container?.scrollTop ?? 0,
         phase: "waiting-prepend"
       });
@@ -2358,7 +2407,7 @@ export const TimelineView = memo(function TimelineView({
       generation,
       rows: projectedVisibleRows
     };
-  }, [captureStableAnchor, deferPurePrepend, generation, projectedVisibleRows, stableAnchor, timelineKeyHash]);
+  }, [captureStableAnchor, deferPurePrepend, generation, projectedVisibleRows, stableAnchor, timelineKeyHash, viewportModel]);
   const projectionSnapshot = useMemo<TimelineProjectionSnapshot>(
     () => ({
       timelineKeyHash,
@@ -2393,9 +2442,9 @@ export const TimelineView = memo(function TimelineView({
       const anchor =
         !heldAnchorSurvives && container && (viewportIntentRef.current.kind !== "live-edge" || !windowReachesLiveEndRef.current)
           ? purePrepend
-            ? capturePrependAnchor(container)
-            : captureAnchor(container, {
-                isEligible: (node) => stableRowIds.has(node.dataset["itemId"] ?? "")
+            ? capturePrependAnchor(container, viewportModel())
+            : captureAnchor(container, viewportModel(), {
+                isEligible: (row) => stableRowIds.has(row.row_id)
               })
           : null;
       const pendingDelta = !heldAnchorSurvives && heldAnchor && container
@@ -2411,7 +2460,7 @@ export const TimelineView = memo(function TimelineView({
       const transaction = heldAnchor && !heldAnchorSurvives ? owner.begin(transactionInput) : owner.join(transactionInput);
       if (previous.chromeSignature !== next.chromeSignature) owner.markRangePrepared(transaction.id);
     },
-    [stableAnchor]
+    [stableAnchor, viewportModel]
   );
   const visibleRowsById = useMemo(
     () => new Map(visibleRows.map((row) => [row.row_id, row])),
@@ -2429,6 +2478,7 @@ export const TimelineView = memo(function TimelineView({
       ),
     [measuredHeightVersion, visibleRows, virtualItemHeight]
   );
+  heightModelRef.current = timelineHeightModel;
   useLayoutEffect(() => {
     rangeModelEpochRef.current += 1;
   }, [timelineHeightModel, visibleRows]);
@@ -2936,7 +2986,9 @@ export const TimelineView = memo(function TimelineView({
         (eventIds.at(-1) ?? null) !== displayWindow.last_event_id
       ) return;
     }
-    const visible = visibleTimelineViewportFacts(container);
+    // #1890 item 5: the range comes from the model the spacers were written
+    // from, so this pass reads no row at all.
+    const visible = timelineViewportFactsFromModel(viewportModel());
     if (
       !visible.firstVisibleEventId &&
       !visible.lastVisibleEventId &&
@@ -2997,6 +3049,7 @@ export const TimelineView = memo(function TimelineView({
     onReturnToLive,
     roomId,
     transport,
+    viewportModel,
     viewportThreadRootEventId,
     viewportTimelineRoomId
   ]);
@@ -3260,7 +3313,7 @@ export const TimelineView = memo(function TimelineView({
         anchorTopDeltaPx: delta
       }));
       if (viewportIntentRef.current.kind !== "live-edge") {
-        const fresh = captureFreeScrollAnchor(container);
+        const fresh = captureFreeScrollAnchor(container, viewportModel());
         const residual = anchor ? measureAnchorDelta(container, anchor) ?? 0 : 0;
         rememberStableAnchor(fresh ? { ...fresh, offsetTop: fresh.offsetTop - residual } : null, container);
       }
@@ -3304,6 +3357,7 @@ export const TimelineView = memo(function TimelineView({
     updateScrollDiagnostics,
     updateViewportMetrics,
     viewportTransactionRevision,
+    viewportModel,
     virtualWindow,
     visibleRows
   ]);
@@ -4087,7 +4141,7 @@ export const TimelineView = memo(function TimelineView({
       const clientHeight = Math.round(container.clientHeight);
       const scrollHeight = Math.round(container.scrollHeight);
       const scrollTop = Math.round(container.scrollTop);
-      const listOffsetTop = Math.round(listRef.current?.offsetTop ?? 0);
+      const listOffsetTop = listContentOffsetTop();
       const residentScrollTop = scrollTop - listOffsetTop;
       const projectedContentHeight = Math.round(timelineHeightModel.totalHeight);
       const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
@@ -4173,6 +4227,7 @@ export const TimelineView = memo(function TimelineView({
       backwardState,
       emitDiagnosticLog,
       items.length,
+      listContentOffsetTop,
       requestTimelineBackfill,
       suppressPaginationUi,
       timelineHeightModel.totalHeight,
@@ -4305,7 +4360,7 @@ export const TimelineView = memo(function TimelineView({
           setViewportIntentToLiveEdge();
         } else {
           releaseViewportIntent();
-          const captured = captureRoomScrollAnchor(container);
+          const captured = captureRoomScrollAnchor(container, viewportModel());
           if (captured) {
             timelineViewportSessionMemory.set(timelineKeyHash, {
               mode: "anchor",
@@ -4406,7 +4461,8 @@ export const TimelineView = memo(function TimelineView({
     commitVirtualRangeForMetrics,
     scheduleScrollFollowUpFrame,
     scheduleViewportFrame,
-    updateScrollDiagnostics
+    updateScrollDiagnostics,
+    viewportModel
   ]);
   // #1916: at the top, input that asks for older history scrolls nothing, so
   // no `scroll` event follows to carry it to the backfill policy. Evaluate it

@@ -1,19 +1,4 @@
 import type { KeyboardEvent } from "react";
-import type { TimelineGapId } from "../../domain/coreEvents";
-import { readTimelineViewportFacts } from "./TimelineViewportRows";
-
-export function visibleTimelineViewportFacts(container: HTMLElement): {
-  firstVisibleEventId: string | null;
-  lastVisibleEventId: string | null;
-  visibleGapIds: TimelineGapId[];
-} {
-  const facts = readTimelineViewportFacts(container);
-  return {
-    firstVisibleEventId: facts.firstVisibleEventId,
-    lastVisibleEventId: facts.lastVisibleEventId,
-    visibleGapIds: facts.visibleGapIds
-  };
-}
 
 export function isScrolledToBottom(container: HTMLElement): boolean {
   return (

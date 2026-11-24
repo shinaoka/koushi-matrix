@@ -3000,6 +3000,27 @@ stateDiagram-v2
 - `ObserveViewport` accepts only facts: first visible event id, last visible
   event id, and `at_bottom`. It does not carry unread counts, marker decisions,
   scroll intent, or Matrix API responses.
+
+Those facts describe the viewport rather than the DOM. The renderer's height
+model already states where every row sits inside the scrolled list, because the
+spacers the window is placed with are written from the same cumulative heights;
+the visible range is that model's offsets binary-searched at the container's
+scroll position, clamped to the modelled extent because the browser clamps
+`scrollTop` the same way. A list scrolled above its own chrome shows fewer pixels
+of itself than the viewport is tall, so the band's bottom edge is the scroll
+position plus the viewport height, not the viewport height alone. The observation
+frame reads the container once for its scroll offset and viewport height, and the
+scroll anchor reads that same container plus the one row it names — an anchor
+capture re-reads the container because it must not lag the scroll it was taken on,
+so "once per frame" holds for the observation, not for every scroll event in that
+frame. The height measurement pass that feeds the model reads the mounted rows as
+the model's own input; nothing in the facts path measures a row to learn what is
+on screen, so the cost of a fact does not follow the number of rows. A row the
+model places more than two pixels away from its measured height is a model defect
+to fix (wrapping, images, code blocks), not a reason to measure the window again
+(#1890). Modelled heights are rounded, so a boundary fact can be one row out, and
+`at_bottom` — which compares the last visible row with the newest one — inherits
+that tolerance; the observation consumer treats the edges as +-1 row.
 - The actor derives `read_marker_event_id`, `first_unread_event_id`,
   `unread_event_count`, `unread_position`, `newer_event_count`, and
   `can_jump_to_bottom` from Rust-owned item order. Local echoes, synthetic

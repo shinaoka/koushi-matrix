@@ -369,16 +369,23 @@ describe("TimelineView", () => {
     const betweenItem = message("$between:example.invalid", "Between");
     const afterItem = message("$after:example.invalid", "After");
     const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    // #1890 item 5: the visible range is the committed height model's, so this
+    // layout is the one the model can state: rows stack in order, `before` fills
+    // the screen above the reader and the root, the row after it and the gap
+    // share the visible band. Frames are keyed by their row id, which is what the
+    // measurement pass reads.
+    const gapRowId = "syn:timeline-gap-3-14695981039346656037-0";
     const rectSpy = mockTimelineRects(
       {
-        "$before:example.invalid": { top: -200, height: 40 },
-        "$thread-root:example.invalid": { top: 40, height: 40 },
-        "$between:example.invalid": { top: -200, height: 40 },
-        "$thread-reply:example.invalid": { top: 160, height: 40 },
-        "$after:example.invalid": { top: 800, height: 40 },
-        "timeline-gap-row": { top: 100, height: 40 }
+        "$before:example.invalid": { top: 0, height: 600 },
+        "thread-root:$thread-root:example.invalid": { top: 600, height: 40 },
+        "$thread-root:example.invalid": { top: 600, height: 40 },
+        "$between:example.invalid": { top: 640, height: 40 },
+        [gapRowId]: { top: 680, height: 40 },
+        "$thread-reply:example.invalid": { top: 680, height: 40 },
+        "$after:example.invalid": { top: 720, height: 40 }
       },
-      { top: 0, height: 500 },
+      { top: 0, height: 120 },
       scrollContainerRef
     );
     const transport = baseTransport({
@@ -409,10 +416,10 @@ describe("TimelineView", () => {
 
       const timeline = await screen.findByTestId("timeline-view");
       scrollContainerRef.current = timeline;
-      Object.defineProperty(timeline, "clientHeight", { value: 500, configurable: true });
+      Object.defineProperty(timeline, "clientHeight", { value: 120, configurable: true });
       Object.defineProperty(timeline, "scrollHeight", { value: 2_000, configurable: true });
       Object.defineProperty(timeline, "scrollTop", {
-        value: 0,
+        value: 600,
         writable: true,
         configurable: true
       });
@@ -447,15 +454,17 @@ describe("TimelineView", () => {
         });
       });
 
-      timeline.scrollTop = 0;
+      timeline.scrollTop = 600;
       fireEvent.wheel(timeline, { deltaY: 1 });
       fireEvent.scroll(timeline);
 
       await waitFor(() => {
+        // The first row on screen is the root, reported under its activity
+        // identity; the gap that crossed it is in the same band.
         expect(observeViewport).toHaveBeenCalledWith(
           "!room:example.invalid",
           "$thread-root:example.invalid",
-          "$thread-root:example.invalid",
+          "$between:example.invalid",
           [fullRangeGapId],
           false,
           // #872: the observation reports how the viewport arrived.
@@ -507,6 +516,7 @@ describe("TimelineView", () => {
           }
         });
       });
+      timeline.scrollTop = 640;
       fireEvent.scroll(timeline);
 
       await waitFor(() => {
@@ -522,9 +532,10 @@ describe("TimelineView", () => {
         expect(observeViewport).toHaveBeenCalledWith(
           "!room:example.invalid",
           "$thread-reply:example.invalid",
-          "$thread-reply:example.invalid",
+          "$after:example.invalid",
           [fullRangeGapId],
-          false,
+          // The band ends on the live row, so the viewport reports the bottom.
+          true,
           // #872: the observation reports how the viewport arrived.
           "user",
           null
@@ -566,15 +577,21 @@ describe("TimelineView", () => {
     );
     const liveEvent = message("$persisted-live:example.invalid", "New live event");
     const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    // #1890 item 5: the visible range is the committed height model's, so the
+    // layout is the one the model can state — rows stack in order, `before`
+    // fills the screen above the reader, and the live row fills it below. Frames
+    // are keyed by their row id, which is what the measurement pass reads.
+    const persistedGapRowId = "syn:timeline-gap-31-14695981039346656037-0";
     const rectSpy = mockTimelineRects(
       {
-        "$persisted-before:example.invalid": { top: -200, height: 40 },
-        "$persisted-thread-root:example.invalid": { top: 40, height: 40 },
-        "$persisted-between:example.invalid": { top: -200, height: 40 },
-        "$persisted-thread-reply:example.invalid": { top: 160, height: 40 },
-        "$persisted-live:example.invalid": { top: 600, height: 40 },
-        "$other-room-event:example.invalid": { top: 40, height: 40 },
-        "timeline-gap-row": { top: 100, height: 40 }
+        "$persisted-before:example.invalid": { top: 0, height: 380 },
+        "thread-root:$persisted-thread-root:example.invalid": { top: 380, height: 40 },
+        "$persisted-thread-root:example.invalid": { top: 380, height: 40 },
+        "$persisted-between:example.invalid": { top: 420, height: 40 },
+        [persistedGapRowId]: { top: 460, height: 40 },
+        "$persisted-thread-reply:example.invalid": { top: 460, height: 40 },
+        "$persisted-live:example.invalid": { top: 500, height: 500 },
+        "$other-room-event:example.invalid": { top: 0, height: 40 }
       },
       { top: 0, height: 500 },
       scrollContainerRef
@@ -643,15 +660,24 @@ describe("TimelineView", () => {
       });
       // Mount observations happen before jsdom receives stable dimensions.
       observeViewport.mockClear();
+      // This fixture keys the gap row's rect by its synthetic row id; if the
+      // id scheme changes, the lookup would silently measure the 72 px estimate
+      // instead of the stubbed height, so the id is asserted here.
+      expect(
+        timeline.querySelector(`[data-frame-item-id="${persistedGapRowId}"]`),
+        "the synthetic gap row id in this fixture no longer matches the rendered row"
+      ).not.toBeNull();
 
       fireEvent.wheel(timeline, { deltaY: 1 });
       fireEvent.scroll(timeline);
       await waitFor(() => {
         expect(observeViewport).toHaveBeenCalledWith(
           "!room:example.invalid",
-          "$persisted-thread-root:example.invalid",
-          "$persisted-thread-root:example.invalid",
+          "$persisted-before:example.invalid",
+          "$persisted-between:example.invalid",
           [gapId],
+          // The list is as tall as the viewport, so nothing is scrolled and the
+          // newest row is out of the band: not at the bottom.
           false,
           // #872: the observation reports how the viewport arrived.
           "user",
@@ -757,10 +783,16 @@ describe("TimelineView", () => {
       await act(async () => Promise.resolve());
 
       rerender(view(KEY, "!room:example.invalid", repairingAfterBatch));
+      const gapObservationsBefore = oldRoomGapObservations().length;
       timeline.scrollTop = 0;
       fireEvent.wheel(timeline, { deltaY: -1 });
       fireEvent.scroll(timeline);
-      await waitFor(() => expect(oldRoomGapObservations()).toHaveLength(2));
+      // The scroll produces one more report than the runs before it. The count is
+      // not pinned to an absolute number, because a height commit can also change
+      // the band and report it, and this fixture reaches the same band twice.
+      await waitFor(() =>
+        expect(oldRoomGapObservations().length).toBeGreaterThan(gapObservationsBefore)
+      );
       expect(screen.getByTestId("timeline-gap-row")).toBe(gap);
       expect(oldRoomGapObservations().at(-1)?.[3]).toEqual([gapId]);
       expect(oldRoomGapObservations().every((call) => call[3].length === 1)).toBe(true);
@@ -775,13 +807,23 @@ describe("TimelineView", () => {
       });
       rerender(view(KEY, "!room:example.invalid", repairingAfterBatch));
       await waitFor(() => expect(screen.queryByTestId("timeline-gap-row")).toBeNull());
+      // Let the removed gap's height commit reach the model before the band is
+      // placed: the scroll below is read against that model.
+      await act(async () => {
+        await Promise.resolve();
+      });
+      // Park the band on the relocated root: the rows above it end exactly at the
+      // band's top edge, so the root is the first row on screen.
+      timeline.scrollTop = 420;
+      fireEvent.scroll(timeline);
       await waitFor(() => {
         expect(observeViewport).toHaveBeenCalledWith(
           "!room:example.invalid",
           "$persisted-thread-reply:example.invalid",
-          "$persisted-thread-reply:example.invalid",
+          "$persisted-live:example.invalid",
           [],
-          false,
+          // The live row ends the band, so the viewport reports the bottom.
+          true,
           // #872: the observation reports how the viewport arrived.
           "user",
           null

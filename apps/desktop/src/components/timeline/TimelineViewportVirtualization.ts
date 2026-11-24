@@ -74,10 +74,25 @@ export const EMPTY_TIMELINE_ITEM_INDEX_RANGE: TimelineItemIndexRange = {
   endIndex: 0
 };
 
-type TimelineHeightModel = {
+export type TimelineHeightModel = {
   fallbackHeight: number;
   offsets: number[];
   totalHeight: number;
+};
+
+/**
+ * #1890 item 5: the committed rows, their height model, and the container
+ * metrics — everything a viewport question needs without touching a row.
+ *
+ * `metrics` is what the caller already read for this frame. An anchor capture
+ * re-reads `scrollTop`/`clientHeight` from the container instead, because a
+ * capture must not lag the scroll it was taken on; `listOffsetTop` is a layout
+ * constant between layout changes, so it may come from the cached read.
+ */
+export type TimelineViewportModel = {
+  rows: readonly TimelineDisplayRow[];
+  model: TimelineHeightModel;
+  metrics: TimelineViewportMetrics;
 };
 
 function estimatedItemHeight(height: number): number {
@@ -214,7 +229,7 @@ export function timelineItemIndexInRange(index: number, range: TimelineItemIndex
   return index >= range.startIndex && index < range.endIndex;
 }
 
-function timelineVisibleBounds(metrics: TimelineViewportMetrics): {
+export function timelineVisibleBounds(metrics: TimelineViewportMetrics): {
   relativeScrollTop: number;
   viewportHeight: number;
 } {
@@ -290,6 +305,66 @@ export function calculateTimelineIndexRangeForPixels({
   );
 
   return { startIndex, endIndex: Math.max(startIndex + 1, endIndex) };
+}
+
+/**
+ * #1890 item 5: the rows the committed model says intersect the viewport, as a
+ * half-open index range. The range comes from the model's cumulative offsets and
+ * the scroll position — the same binary search Telegram Desktop uses over its
+ * cached heights — so it costs no layout read and never touches a row.
+ *
+ * Positions are exact when the model is: `paddingTop` is the model's offset for
+ * the first mounted row, and every mounted row is measured by the same pass that
+ * commits the model, so a row's modelled top is where it physically is. Rounded
+ * heights can move a boundary row in or out by a pixel, which is why the reader
+ * of these facts treats the edges as +-1 row, not as exact.
+ */
+export function timelineVisibleItemRange(
+  model: TimelineHeightModel,
+  metrics: TimelineViewportMetrics,
+  itemCount: number
+): TimelineItemIndexRange {
+  // Nothing is visible in a container without a box, which is the truth the
+  // placement fallback below deliberately does not use (it mounts a screen so a
+  // layoutless render still has rows to measure).
+  if (itemCount <= 0 || metrics.clientHeight <= 0) {
+    return EMPTY_TIMELINE_ITEM_INDEX_RANGE;
+  }
+  const { bandTop, bandBottom } = timelineVisibleBand(metrics);
+  // The band is the browser's, not the model's: a physical list taller than the
+  // model (unmeasured rows, chrome) leaves scrollTop beyond the modelled extent,
+  // and the rows there are still on screen. The binary search clamps to the last
+  // row on its own, so the answer is the tail rather than nothing.
+  const startIndex = Math.max(0, timelineIndexAtOffset(model.offsets, bandTop));
+  let endIndex = Math.min(itemCount, timelineIndexAtOffset(model.offsets, bandBottom) + 1);
+  // A row that starts exactly at the bottom edge is not on screen; the binary
+  // search returns the row *containing* the edge, which is that row.
+  while (endIndex > startIndex + 1 && (model.offsets[endIndex - 1] ?? 0) >= bandBottom) {
+    endIndex -= 1;
+  }
+  return { startIndex, endIndex: Math.max(startIndex + 1, endIndex) };
+}
+
+/**
+ * #1890 item 5: the band of the list the container shows, in list coordinates.
+ *
+ * The bottom edge is not `bandTop + clientHeight` when the list is scrolled
+ * above its own chrome: with the container at `scrollTop` 0 and the list 48 px
+ * down, the list's first 452 px of a 500 px viewport are visible. Placement
+ * keeps the `timelineVisibleBounds` form because mounting a screen too many only
+ * costs a measurement; the facts are what the read state is derived from, so
+ * they use the exact band.
+ */
+function timelineVisibleBand(metrics: TimelineViewportMetrics): {
+  bandTop: number;
+  bandBottom: number;
+} {
+  const relativeTop = metrics.scrollTop - metrics.listOffsetTop;
+  const bandTop = Math.max(0, relativeTop);
+  return {
+    bandTop,
+    bandBottom: bandTop + Math.max(0, metrics.clientHeight + Math.min(0, relativeTop))
+  };
 }
 
 /** Scroll top that puts the live edge at the bottom of the viewport. */
