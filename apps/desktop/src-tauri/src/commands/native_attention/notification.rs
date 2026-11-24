@@ -115,6 +115,23 @@ pub(crate) enum NativeNotificationAuthorization {
 }
 
 impl NativeNotificationAuthorization {
+    /// Diagnostics token for this grant, one per wire state.
+    ///
+    /// The request diagnostics that use it are macOS-only; the shared tests keep
+    /// the mapping under test on every platform.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn token(self) -> &'static str {
+        match self {
+            Self::Authorized => "authorized",
+            Self::Provisional => "provisional",
+            Self::Ephemeral => "ephemeral",
+            Self::Denied => "denied",
+            Self::NotDetermined => "not_determined",
+            Self::Unsupported => "unsupported",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
     /// Whether the OS will show a banner for this app.
     ///
     /// The delivery gate is macOS-only today, but the answer is the same on
@@ -749,14 +766,158 @@ pub(crate) async fn clear_removed_account_notifications(tab: &AccountTabId) {
     let _ = tab;
 }
 
-/// Called only from the explicit Desktop notifications switch, never from a
-/// passive banner dispatch.
+/// Apple's `UNAuthorizationOptionBadge` and friends, kept as plain bits so the
+/// requested set is testable on every target: the authorization call itself only
+/// exists on macOS.
+const UNAUTHORIZATION_OPTION_BADGE: u64 = 1 << 0;
+const UNAUTHORIZATION_OPTION_SOUND: u64 = 1 << 1;
+const UNAUTHORIZATION_OPTION_ALERT: u64 = 1 << 2;
+
+/// Banners, sounds and the Dock badge.
+///
+/// The badge is the reason this set exists (#2095): `mac-usernotifications`
+/// 0.3.1 asks for alert and sound only, and macOS shows no *Badge application
+/// icon* switch — so the Dock badge Koushi sets can never appear — for an app
+/// that never requested the badge option.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const REQUESTED_NOTIFICATION_OPTIONS: u64 =
+    UNAUTHORIZATION_OPTION_ALERT | UNAUTHORIZATION_OPTION_SOUND | UNAUTHORIZATION_OPTION_BADGE;
+
+/// Called from the explicit Desktop notifications switch and once per launch,
+/// never from a passive banner dispatch.
 #[tauri::command]
 pub(crate) async fn request_native_attention_notification_permission() -> bool {
     #[cfg(target_os = "macos")]
-    return mac_usernotifications::request_auth().await.unwrap_or(false);
+    {
+        let granted =
+            request_macos_notification_authorization(REQUESTED_NOTIFICATION_OPTIONS).await;
+        record_notification_permission_state(granted).await;
+        granted.unwrap_or(false)
+    }
     #[cfg(not(target_os = "macos"))]
     true
+}
+
+/// Record the answer to an authorization request together with what the OS
+/// reports back, so a Dock badge that stays invisible can be told apart from a
+/// missing badge grant (#2095).
+#[cfg(target_os = "macos")]
+async fn record_notification_permission_state(granted: Option<bool>) {
+    let settings = mac_usernotifications::get_notification_settings()
+        .await
+        .ok();
+    // A user who chose "Don't Allow" answered the request; only a request the OS
+    // never answered is a warning.
+    let level = if granted.is_some() {
+        DiagnosticLevel::Info
+    } else {
+        DiagnosticLevel::Warn
+    };
+    let mut event = permission_state_event("permission_settled", level, settings.as_ref());
+    if let Some(granted) = granted {
+        event = event.field(DiagnosticField::boolean("granted", granted));
+    }
+    record(event);
+}
+
+/// What Koushi asks the OS for and what the OS says the app has.
+#[cfg(target_os = "macos")]
+fn permission_state_event(
+    stage: &'static str,
+    level: DiagnosticLevel,
+    settings: Option<&mac_usernotifications::NotificationSettings>,
+) -> DiagnosticEvent {
+    let authorization = settings
+        .map(|settings| authorization_from_status(settings.authorization_status))
+        .unwrap_or(NativeNotificationAuthorization::Unavailable);
+    let badge_setting = settings
+        .map(|settings| badge_setting_token(settings.badge_enabled))
+        .unwrap_or("unknown");
+    DiagnosticEvent::new(level, "desktop.native_notification", stage)
+        .field(DiagnosticField::boolean(
+            "alert_requested",
+            REQUESTED_NOTIFICATION_OPTIONS & UNAUTHORIZATION_OPTION_ALERT != 0,
+        ))
+        .field(DiagnosticField::boolean(
+            "sound_requested",
+            REQUESTED_NOTIFICATION_OPTIONS & UNAUTHORIZATION_OPTION_SOUND != 0,
+        ))
+        .field(DiagnosticField::boolean(
+            "badge_requested",
+            REQUESTED_NOTIFICATION_OPTIONS & UNAUTHORIZATION_OPTION_BADGE != 0,
+        ))
+        .field(DiagnosticField::token(
+            "authorization",
+            authorization.token(),
+        ))
+        .field(DiagnosticField::token("badge_setting", badge_setting))
+}
+
+/// Diagnostics token for the OS's badge setting: the only evidence that the
+/// badge option reached the user's notification settings.
+#[cfg(target_os = "macos")]
+fn badge_setting_token(setting: mac_usernotifications::NotificationSettingStatus) -> &'static str {
+    use mac_usernotifications::NotificationSettingStatus;
+
+    match setting {
+        NotificationSettingStatus::Enabled => "enabled",
+        NotificationSettingStatus::Disabled => "disabled",
+        NotificationSettingStatus::NotSupported => "not_supported",
+        NotificationSettingStatus::Unknown => "unknown",
+    }
+}
+
+/// Request the given Apple authorization options and wait for the answer.
+///
+/// `None` means the OS could not be asked (an unbundled process, or a dropped
+/// completion handler).
+#[cfg(target_os = "macos")]
+async fn request_macos_notification_authorization(options: u64) -> Option<bool> {
+    use std::cell::Cell;
+
+    use objc2::runtime::Bool;
+    use objc2_foundation::NSError;
+    use objc2_user_notifications::UNUserNotificationCenter;
+
+    if mac_usernotifications::check_bundle().is_err() {
+        return None;
+    }
+    let (sender, receiver) = tokio::sync::oneshot::channel::<bool>();
+    let sender = Cell::new(Some(sender));
+    {
+        // Scoped so the (not `Send`) notification center is dropped before the
+        // await: the command future has to be `Send`.
+        let center = UNUserNotificationCenter::currentNotificationCenter();
+        // The completion handler runs on an Apple-internal queue, not the main
+        // run loop, so nothing here needs the main thread pumped.
+        center.requestAuthorizationWithOptions_completionHandler(
+            macos_notification_options(options),
+            &block2::RcBlock::new(move |granted: Bool, _error: *mut NSError| {
+                if let Some(sender) = sender.take() {
+                    let _ = sender.send(granted.as_bool());
+                }
+            }),
+        );
+    }
+    receiver.await.ok()
+}
+
+/// Map the requested bits onto the UserNotifications option set.
+#[cfg(target_os = "macos")]
+fn macos_notification_options(bits: u64) -> objc2_user_notifications::UNAuthorizationOptions {
+    use objc2_user_notifications::UNAuthorizationOptions;
+
+    let mut options = UNAuthorizationOptions::empty();
+    for (bit, option) in [
+        (UNAUTHORIZATION_OPTION_ALERT, UNAuthorizationOptions::Alert),
+        (UNAUTHORIZATION_OPTION_SOUND, UNAuthorizationOptions::Sound),
+        (UNAUTHORIZATION_OPTION_BADGE, UNAuthorizationOptions::Badge),
+    ] {
+        if bits & bit != 0 {
+            options |= option;
+        }
+    }
+    options
 }
 
 /// Report what the OS currently authorizes for this app's banners.
@@ -791,11 +952,33 @@ fn authorization_from_status(
 #[cfg(target_os = "macos")]
 async fn current_authorization() -> NativeNotificationAuthorization {
     if mac_usernotifications::check_bundle().is_err() {
+        record(permission_state_event(
+            "grant_read",
+            DiagnosticLevel::Warn,
+            None,
+        ));
         return NativeNotificationAuthorization::Unavailable;
     }
     match mac_usernotifications::get_notification_settings().await {
-        Ok(settings) => authorization_from_status(settings.authorization_status),
-        Err(_) => NativeNotificationAuthorization::Unavailable,
+        Ok(settings) => {
+            // The badge switch is not part of the grant the settings UI reads, so
+            // an install that granted before the badge option existed can only be
+            // told apart here (#2095).
+            record(permission_state_event(
+                "grant_read",
+                DiagnosticLevel::Info,
+                Some(&settings),
+            ));
+            authorization_from_status(settings.authorization_status)
+        }
+        Err(_) => {
+            record(permission_state_event(
+                "grant_read",
+                DiagnosticLevel::Warn,
+                None,
+            ));
+            NativeNotificationAuthorization::Unavailable
+        }
     }
 }
 

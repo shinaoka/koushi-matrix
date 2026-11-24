@@ -13,7 +13,9 @@ import type {
  * One permission request per launch, never per render, mount, or account switch.
  *
  * macOS prompts at most once per install, so asking again cannot help the user
- * and can double-prompt when the startup path and the switch path race.
+ * and can double-prompt when the startup path and the switch path race. The one
+ * exception is an install that is already granted: it is asked once per launch
+ * so a newly requested option (the Dock badge, #2095) can be added to the grant.
  */
 let launchRequestSpent = false;
 
@@ -101,14 +103,18 @@ export function useNotificationPermission({
   }, [notifications]);
 
   // The migrated install: the switch is already ON, so the off→on request path
-  // never runs. Ask once instead, and only where the OS still has to decide.
+  // never runs. Ask once instead, and only where the OS can still answer.
   useEffect(() => {
     if (!desktopNotificationsEnabled || !canAsk || !claimLaunchNotificationRequest()) {
       return;
     }
     void (async () => {
       const state = await read();
-      if (state === "not_determined") {
+      // An install that granted before the request included the badge option has
+      // no *Badge application icon* switch, so the Dock badge never shows (#2095).
+      // Asking again adds the missing option; macOS does not decide a grant twice
+      // and a denial is never retried here.
+      if (state === "not_determined" || state === "authorized") {
         request();
         return;
       }

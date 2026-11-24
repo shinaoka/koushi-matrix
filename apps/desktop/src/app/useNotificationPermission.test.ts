@@ -80,15 +80,26 @@ test("asks the OS once at startup when the switch is on and macOS never decided"
   expect(harness.requestPermission).toHaveBeenCalledTimes(1);
 });
 
+test("an already authorized install is asked once at startup for the badge option", async () => {
+  // #2095: a grant made before the request included the badge option leaves the
+  // *Badge application icon* switch missing, so the Dock badge never shows. The
+  // launch-time ask is the only place that can add the option without the user
+  // touching the switch again.
+  harness.authorization.mockResolvedValue("authorized");
+  renderPermission();
+
+  await waitFor(() => expect(harness.requestPermission).toHaveBeenCalledTimes(1));
+});
+
 test("a second mount in the same launch does not ask again", async () => {
   harness.authorization.mockResolvedValue("authorized");
   renderPermission();
-  await waitFor(() => expect(harness.authorization).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(harness.requestPermission).toHaveBeenCalledTimes(1));
 
   // A remount (account switch) is not a new launch.
   renderPermission();
-  await waitFor(() => expect(harness.authorization).toHaveBeenCalledTimes(1));
-  expect(harness.requestPermission).not.toHaveBeenCalled();
+  await waitFor(() => expect(harness.authorization).toHaveBeenCalled());
+  expect(harness.requestPermission).toHaveBeenCalledTimes(1);
 });
 
 test("does not ask when macOS already denied; the UI offers System Settings instead", async () => {
@@ -133,12 +144,18 @@ test("the explicit switch ON spends the launch-time request instead of prompting
 test("re-queries when the settings dialog opens", async () => {
   harness.authorization.mockResolvedValue("authorized");
   const { result, rerender } = renderPermission();
-  await waitFor(() => expect(harness.authorization).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(result.current.authorization).toBe("authorized"));
+  // The launch-time ask (#2095) spends its own read on the answer.
+  await waitFor(() => expect(harness.requestPermission).toHaveBeenCalledTimes(1));
+  const readsBefore = harness.authorization.mock.calls.length;
 
   rerender({ enabled: true, settingsOpen: true });
-  await waitFor(() => expect(harness.authorization).toHaveBeenCalledTimes(2));
+  await waitFor(() =>
+    expect(harness.authorization.mock.calls.length).toBeGreaterThan(readsBefore)
+  );
   expect(result.current.authorization).toBe("authorized");
-  expect(harness.requestPermission).not.toHaveBeenCalled();
+  // The dialog only re-reads; the launch-time ask already happened, once.
+  expect(harness.requestPermission).toHaveBeenCalledTimes(1);
 });
 
 test("the explicit request asks the OS and re-queries the state", async () => {

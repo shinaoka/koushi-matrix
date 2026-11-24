@@ -254,6 +254,8 @@ fn notification_authorization_serializes_the_wire_state() {
             serde_json::to_value(state).expect("authorization serializes"),
             serde_json::json!(token)
         );
+        // Diagnostics readers see the same words as the settings UI.
+        assert_eq!(state.token(), token);
     }
 }
 
@@ -342,4 +344,106 @@ fn outcome_tokens_stay_stable_for_diagnostics() {
         serde_json::to_value(NativeNotificationOutcome::DisplayOnly).expect("outcome serializes"),
         serde_json::json!("displayOnly")
     );
+}
+
+#[test]
+fn the_authorization_request_asks_for_the_dock_badge() {
+    // #2095: macOS shows the *Badge application icon* switch — and honours the
+    // Dock badge Koushi sets — only for an app that requested the badge option.
+    assert_ne!(
+        REQUESTED_NOTIFICATION_OPTIONS & UNAUTHORIZATION_OPTION_BADGE,
+        0
+    );
+    assert_ne!(
+        REQUESTED_NOTIFICATION_OPTIONS & UNAUTHORIZATION_OPTION_SOUND,
+        0
+    );
+    assert_ne!(
+        REQUESTED_NOTIFICATION_OPTIONS & UNAUTHORIZATION_OPTION_ALERT,
+        0
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn the_requested_options_map_onto_the_user_notifications_bits() {
+    use objc2_user_notifications::UNAuthorizationOptions;
+
+    // The plain bits above stand in for Apple's constants on every target; a
+    // wrong value here would silently request the wrong permission.
+    assert_eq!(
+        UNAUTHORIZATION_OPTION_BADGE,
+        UNAuthorizationOptions::Badge.bits() as u64
+    );
+    assert_eq!(
+        UNAUTHORIZATION_OPTION_SOUND,
+        UNAuthorizationOptions::Sound.bits() as u64
+    );
+    assert_eq!(
+        UNAUTHORIZATION_OPTION_ALERT,
+        UNAuthorizationOptions::Alert.bits() as u64
+    );
+
+    let requested = macos_notification_options(REQUESTED_NOTIFICATION_OPTIONS);
+    assert!(requested.contains(UNAuthorizationOptions::Badge));
+    assert!(requested.contains(UNAuthorizationOptions::Alert));
+    assert!(requested.contains(UNAuthorizationOptions::Sound));
+    assert_eq!(
+        requested,
+        UNAuthorizationOptions::Alert
+            | UNAuthorizationOptions::Sound
+            | UNAuthorizationOptions::Badge
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn reading_the_grant_reports_what_was_requested_and_the_badge_setting() {
+    use koushi_diagnostics::DiagnosticValue;
+
+    let _guard = koushi_diagnostics::test_support::lock_async().await;
+    let cursor = koushi_diagnostics::test_support::detail_cursor();
+    let _ = current_authorization().await;
+    let records = koushi_diagnostics::test_support::detail_records_since(cursor);
+    let read = records
+        .iter()
+        .find(|record| {
+            record.event.source == "desktop.native_notification"
+                && record.event.stage == "grant_read"
+        })
+        .expect("a grant read records what the OS reports");
+    let field = |key: &str| {
+        read.event
+            .fields
+            .iter()
+            .find(|field| field.key == key)
+            .map(|field| match &field.value {
+                DiagnosticValue::Boolean(value) => value.to_string(),
+                DiagnosticValue::Token(token) => (*token).to_owned(),
+                other => format!("{other:?}"),
+            })
+    };
+    assert_eq!(field("alert_requested").as_deref(), Some("true"));
+    assert_eq!(field("sound_requested").as_deref(), Some("true"));
+    assert_eq!(field("badge_requested").as_deref(), Some("true"));
+    // `cargo test` has no bundle, so the OS cannot answer.
+    assert_eq!(field("authorization").as_deref(), Some("unavailable"));
+    assert_eq!(field("badge_setting").as_deref(), Some("unknown"));
+    // A read is not a request: it must not claim a grant answer.
+    assert_eq!(field("granted"), None);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn every_badge_setting_maps_to_its_own_diagnostics_token() {
+    use mac_usernotifications::NotificationSettingStatus as Setting;
+
+    for (setting, token) in [
+        (Setting::Enabled, "enabled"),
+        (Setting::Disabled, "disabled"),
+        (Setting::NotSupported, "not_supported"),
+        (Setting::Unknown, "unknown"),
+    ] {
+        assert_eq!(badge_setting_token(setting), token);
+    }
 }

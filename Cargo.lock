@@ -3325,6 +3325,7 @@ dependencies = [
 name = "koushi-desktop"
 version = "0.37.9"
 dependencies = [
+ "block2",
  "dirs 6.0.0",
  "futures-util",
  "gtk",
@@ -3346,6 +3347,7 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-foundation",
  "objc2-image-io",
+ "objc2-user-notifications",
  "reqwest",
  "serde",
  "serde_json",

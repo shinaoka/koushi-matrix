@@ -1904,15 +1904,24 @@ activates; dismissal and other actions do not navigate. A notification request
 accepted for dispatch does not prove the OS displayed it; asynchronous send
 errors produce `show_failed`. The explicit Desktop notifications switch requests
 macOS authorization when enabled; passive dispatch checks existing authorization
-without prompting. Because the switch is a persisted preference and the OS grant
+without prompting. The request asks for banners, sounds and badges together
+(#2095): macOS offers the *Badge application icon* switch, and honours the Dock
+badge the adapter sets, only for an app that requested the badge option. Because
+the switch is a persisted preference and the OS grant
 is separate, the adapter also reports the grant itself
 (`authorized`, `provisional`, `ephemeral`, `denied`, `not_determined`,
 `unsupported`, `unavailable`; an unbundled dev build reports `unavailable`) and
-can open the OS notification settings page. When the switch was already ON at
+can open the OS notification settings page. Each request and each grant read
+records what was requested and the OS's `badge_setting`
+(`enabled`, `disabled`, `not_supported`, `unknown`), so a missing Dock badge can
+be told apart from a missing grant. When the switch was already ON at
 launch — the migrated-install case — and the OS has still not decided, the
 webview asks once per launch and re-reads the answer; it never repeats that ask
 per render, mount, or account switch, and does not ask where the OS cannot
-answer (`unsupported`, `unavailable`). macOS prompts at most once per install,
+answer (`unsupported`, `unavailable`). An install that is already granted is
+asked once per launch as well, while the Desktop notifications switch is on,
+because a grant made before the badge option existed would otherwise never gain
+it. macOS prompts at most once per install,
 so a denial is never retried: Settings shows the switch's stored value plus the
 missing grant and an Open System Settings action, and the persisted value is
 never rewritten. Clearing read attention targets only the owning account and
