@@ -8,7 +8,7 @@ not rejected, not deferred. The renderer never asked again.
 ## Cause
 
 The renderer reports one viewport observation per settled frame, naming the display window
-revision it holds (`apps/desktop/src/components/TimelineView.tsx:2973-3048`,
+revision it holds (`apps/desktop/src/components/TimelineView.tsx:2965-3055`,
 `runViewportObservation`). The actor drops an observation whose revision is not current,
 before touching the read state:
 
@@ -21,7 +21,8 @@ if observation.display_window_revision != Some(self.display_projection.window_re
 ```
 
 `window_revision` advances on every window rebuild, rematerialization and bounded-window
-reconcile (`display_projection.rs:318,:335`, `bounded_window.rs:216`, `:1239`), and the
+reconcile (`display_projection.rs:318`, `:335`, `bounded_window.rs:60`, `:179`, `:217`,
+`:437`, `:478`), and the
 opening backward pagination rebuilds the window while the reader sits at the bottom. The
 observation the renderer settles with therefore arrives naming the previous revision and
 is discarded. There is no re-attempt: the drop returned before `self.viewport_observation`
@@ -38,8 +39,8 @@ and the window converge. The hole was the silent drop on the Core side.
 - `display_projection/bounded_window.rs`: `supersedes_observation` — the observation may
   be re-anchored when its endpoints are still projected in the reported order **and** its
   end is still the window's newest visible row, i.e. a prepend moved the window's start
-  above the reader, not the end past them. `observed_positions` is shared with
-  `observation_is_current` instead of being duplicated.
+  above the reader, not the end past them. `observation_span_is_projected` is shared with
+  `observation_is_current`, and the newest row comes from the existing `window_metadata`.
 - `timeline/actor.rs`: the room branch re-anchors such an observation to the current
   revision instead of returning. Everything after the guard runs unchanged, including
   `at_bottom &= window_reaches_live_end(..)` and the read-boundary gate.
@@ -52,6 +53,10 @@ Safety conditions, and why they still hold:
 - **A new message makes the room unread again.** The re-anchor needs the reported end to
   *be* the current end. A row that arrived after the observation moves that end, so the
   observation is rejected exactly as before and cannot read a row the reader never saw.
+  That case is still a Core drop with no Core-side re-attempt: what closes it is the
+  renderer, which re-reports once the rows and the window converge (a changed end is a
+  changed row set), and `viewed_boundary_target` independently requires the reported end
+  to be the newest attention-eligible row.
 - **A read covers the newest row at that moment.** The read target is the observed end,
   which the rule pins to the newest row; the actor test asserts the target.
 - **Inactive window / hidden room rules** are a different gate (subscription and read
@@ -66,8 +71,10 @@ Safety conditions, and why they still hold:
   superseded observation never reached the read boundary`); proven by restoring the early
   `return`.
 - `display_projection/bounded_window_tests.rs`: `a_superseded_observation_is_reanchored_only_at_the_same_end`
-  — a prepend is re-anchored; an observation ending below the newest row is rejected; an
-  observation whose first row is no longer projected is rejected.
+  — an observation whose revision a prepend superseded is re-anchored (the stale
+  revision is asserted to fail `observation_is_current` first, so the case is the one the
+  name claims); an observation ending below the newest row is rejected; an observation
+  whose first row is no longer projected is rejected.
 - `apps/desktop/src/components/TimelineView.window.test.tsx`: asks again once the rows and
   the display window converge, with the window arriving after the rows (the order that
   leaves no other trigger). Green before and after: it pins the renderer half of the
@@ -81,6 +88,15 @@ pre-existing vendored `ControlledMemoryStore` documentation warning);
 `node scripts/check-leaf-crate-boundaries.mjs`.
 
 ## Not done
+
+The live-edge test harness (`Observed`, the drain helpers, the 20-argument actor spawn) is
+now a fourth copy of the same shape in `issue_1692/1892/1916_tests.rs`. Consolidating it
+into `timeline/test_support.rs` is its own change; noted here instead of widening this one.
+
+The "stale and end moved" case has no actor-level negative test: acceptance of it would
+read nothing anyway (`viewed_boundary_target` requires the newest row), so such a test
+would pass whichever way the rule went.
+
 
 The field evidence is the reported log, not a captured failing run: the drop is proven by
 the actor test, but nothing here reproduces the exact renderer/actor timing that produced

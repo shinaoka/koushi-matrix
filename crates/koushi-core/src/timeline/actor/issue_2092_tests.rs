@@ -68,13 +68,17 @@ impl Observed {
         }
     }
 
+    /// The activity identity of each row, the way the projection names them.
     fn shown_event_ids(&self) -> Vec<String> {
         self.items
             .iter()
             .filter(|item| !item.is_hidden)
-            .filter_map(|item| match &item.id {
-                TimelineItemId::Event { event_id } => Some(event_id.clone()),
-                _ => None,
+            .filter_map(|item| match &item.display_metadata {
+                Some(display) => display.activity_event_id.clone(),
+                None => match &item.id {
+                    TimelineItemId::Event { event_id } => Some(event_id.clone()),
+                    _ => None,
+                },
             })
             .collect()
     }

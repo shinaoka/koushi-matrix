@@ -229,21 +229,15 @@ impl DisplayProjectionState {
 
     /// #2092: whether an observation naming a superseded revision still
     /// describes this window's end, so it may be re-anchored instead of dropped.
-    /// A prepend moves the window's start above the observation's rows but keeps
-    /// its newest row at the end, which is what a reader at the bottom reported.
-    /// Anything that moved the end — a newer message, a jump — is a different
-    /// span and stays rejected.
+    /// A prepend keeps the reader's newest row at the end; anything that moved
+    /// the end — a newer message, a jump — is a different span.
     pub(in crate::timeline) fn supersedes_observation(
         &self,
         observation: &TimelineViewportObservation,
     ) -> bool {
-        let Some((_, last_position)) = self.observed_positions(observation) else {
-            return false;
-        };
-        self.display_items
-            .iter()
-            .rposition(|item| !item.is_hidden && event_id(item).is_some())
-            == Some(last_position)
+        self.observation_span_is_projected(observation)
+            && observation.last_visible_event_id
+                == self.window_metadata(self.canonical_len).last_event_id
     }
 
     pub(in crate::timeline) fn window_metadata(
@@ -273,24 +267,25 @@ impl DisplayProjectionState {
         observation: &TimelineViewportObservation,
     ) -> bool {
         observation.display_window_revision == Some(self.window_revision)
-            && self.observed_positions(observation).is_some()
+            && self.observation_span_is_projected(observation)
     }
 
-    fn observed_positions(
-        &self,
-        observation: &TimelineViewportObservation,
-    ) -> Option<(usize, usize)> {
-        let first = observation.first_visible_event_id.as_deref()?;
-        let last = observation.last_visible_event_id.as_deref()?;
-        let first = self
-            .display_items
-            .iter()
-            .position(|item| event_id(item) == Some(first))?;
-        let last = self
-            .display_items
-            .iter()
-            .position(|item| event_id(item) == Some(last))?;
-        (first <= last).then_some((first, last))
+    /// Whether both reported endpoints are still projected rows, in the order
+    /// the renderer reported them.
+    fn observation_span_is_projected(&self, observation: &TimelineViewportObservation) -> bool {
+        let position = |id: Option<&str>| {
+            let id = id?;
+            self.display_items
+                .iter()
+                .position(|item| event_id(item) == Some(id))
+        };
+        match (
+            position(observation.first_visible_event_id.as_deref()),
+            position(observation.last_visible_event_id.as_deref()),
+        ) {
+            (Some(first), Some(last)) => first <= last,
+            _ => false,
+        }
     }
 
     fn observed_slots(&self, observation: &TimelineViewportObservation) -> Option<(usize, usize)> {

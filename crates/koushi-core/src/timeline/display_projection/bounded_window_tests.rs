@@ -176,10 +176,12 @@ fn window_observation_requires_revision_and_represented_ordered_endpoints() {
 fn a_superseded_observation_is_reanchored_only_at_the_same_end() {
     let canonical = items(1000);
     let state = DisplayProjectionState::from_canonical_window(&canonical, 880..1000);
-    let settled = observe(&state, 900, 999);
-    // The same reader, after a prepend: the window starts higher, its end is the
-    // row the observation named.
+    // The same reader after a prepend: the window starts higher and its end is
+    // still the row the observation named, but the revision it reported is stale.
     let after_prepend = DisplayProjectionState::from_canonical_window(&canonical, 870..1000);
+    let mut settled = observe(&state, 900, 999);
+    settled.display_window_revision = Some(after_prepend.window_revision.wrapping_sub(1));
+    assert!(!after_prepend.observation_is_current(&settled));
     assert!(
         after_prepend.supersedes_observation(&settled),
         "#2092: a prepend keeps the observed end, so the settled observation must not be dropped"
