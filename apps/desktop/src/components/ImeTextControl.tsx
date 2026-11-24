@@ -406,8 +406,14 @@ export const ImeInlineMentionEditor = forwardRef<
       controlRef.current?.dispatchEvent(new Event(EDITOR_HISTORY_CHANGED, { bubbles: true }));
     }, []);
 
+    // Issue #2090: a read-only editor never publishes a document. Typing is
+    // already stopped by `contentEditable={false}`, but that is the engine's
+    // behaviour, and the reported defect shows an engine delivering an edit to
+    // this element anyway. Guarding the three write funnels covers every
+    // handler, including ones added later, instead of each event remembering.
     const publish = useCallback(
       (mutation: DocumentMutation) => {
+        if (!editable) return;
         const changed = !documentsEqual(documentRef.current, mutation.document);
         historyRef.current = commitDocument(historyRef.current, mutation.document);
         documentRef.current = mutation.document;
@@ -416,12 +422,12 @@ export const ImeInlineMentionEditor = forwardRef<
         if (changed) onDocumentChange(mutation.document);
         notifyHistory();
       },
-      [onDocumentChange, onSelectionChange, notifyHistory]
+      [editable, onDocumentChange, onSelectionChange, notifyHistory]
     );
 
     const publishHistory = useCallback(
       (history: DocumentHistory) => {
-        if (history === historyRef.current) return;
+        if (!editable || history === historyRef.current) return;
         historyRef.current = history;
         documentRef.current = history.present;
         const caret = documentLength(history.present);
@@ -430,7 +436,7 @@ export const ImeInlineMentionEditor = forwardRef<
         onDocumentChange(history.present);
         notifyHistory();
       },
-      [onDocumentChange, onSelectionChange, notifyHistory]
+      [editable, onDocumentChange, onSelectionChange, notifyHistory]
     );
 
     useLayoutEffect(() => {
@@ -477,7 +483,7 @@ export const ImeInlineMentionEditor = forwardRef<
     const publishDom = useCallback(
       (commitHistory = true) => {
         const control = controlRef.current;
-        if (!control) return;
+        if (!editable || !control) return;
         const next = documentFromEditorDom(control, documentRef.current);
         const nextSelection = documentSelectionFromDom(control);
         if (commitHistory) {
@@ -488,7 +494,7 @@ export const ImeInlineMentionEditor = forwardRef<
         onSelectionChange?.(nextSelection);
         onDocumentChange(next);
       },
-      [onDocumentChange, onSelectionChange, publish]
+      [editable, onDocumentChange, onSelectionChange, publish]
     );
 
     const handleBeforeInput = useCallback(
@@ -569,6 +575,13 @@ export const ImeInlineMentionEditor = forwardRef<
       event.preventDefault();
     };
     const handleCut: ClipboardEventHandler<HTMLDivElement> = (event) => {
+      // A read-only cut returns before the range is copied, so it neither
+      // rewrites the draft nor overwrites the clipboard. `publish` refuses the
+      // edit itself; this branch is about not touching the clipboard.
+      if (!editable) {
+        event.preventDefault();
+        return;
+      }
       const range = selection();
       if (range.start === range.end) return;
       event.clipboardData.setData(
@@ -581,8 +594,10 @@ export const ImeInlineMentionEditor = forwardRef<
     const handlePaste: ClipboardEventHandler<HTMLDivElement> = (event) => {
       onPaste?.(event);
       if (event.defaultPrevented) return;
-      const range = selection();
+      // The engine's own insertion is cancelled either way; while read-only the
+      // `publish` below refuses, so the saved draft cannot be rewritten.
       event.preventDefault();
+      const range = selection();
       publish(
         pasteDocumentText(
           documentRef.current,

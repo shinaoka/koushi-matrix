@@ -113,6 +113,10 @@ export default defineConfig({
         // #1889/#1892 are engine layout costs: WebKit's own layout and resize
         // deliveries decide how many reads and commits the same action costs.
         /renderer-perf-budget\.spec\.ts$/,
+        // #2090: whether a paste event reaches a non-editable element at all is
+        // the webview's own decision, and the read-only composer report came
+        // from WebKitGTK, so the refusal is asserted on both engines.
+        /readable-provisional-shell\.spec\.ts$/,
         // #2045 is not an engine-native defect, but #2038's acceptance asked for
         // the macOS layout, and macOS only runs WebKit: the dialog's cap is 44px
         // tighter there (native title bar) and the report came from that window.
