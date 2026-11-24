@@ -47,6 +47,7 @@ use super::item_projection::{
     sdk_item_to_timeline_item_with_send_states, sdk_vector_diffs_to_timeline_diffs,
     thread_auto_requestable_event_id, timeline_item_event_id, timeline_room_id,
 };
+use super::manager::TimelineMessage;
 use super::media::{PrivateMediaEntry, authoritative_media_gallery_replacement};
 use super::navigation::{
     InitialItemsRequestIdentity, PreparedInitialWindow, TimelineActorGenerationGate,
@@ -59,7 +60,8 @@ use super::outbound_send::{
 use super::room_key_recovery::{decrypt_retry_diff_settlement, decrypt_retry_settlement_operation};
 use super::thread_projection::{
     ThreadAttentionBatchProvenance, ThreadAttentionObservation,
-    gap_repair_projections_from_sdk_diffs, overlay_thread_summary_diff, seed_thread_summary_diff,
+    gap_repair_projections_from_sdk_diffs, overlay_thread_root_reactions_diff,
+    overlay_thread_summary_diff, seed_thread_summary_diff, thread_root_reaction_change_event_ids,
     thread_summary_affected_root_event_ids,
 };
 // END GENERATED SIBLING IMPORTS
@@ -592,6 +594,31 @@ impl TimelineActor {
         }
         for diff in &mut core_diffs {
             overlay_thread_summary_diff(&self.thread_root_projection_service, &self.key, diff);
+            // #2080: a thread timeline's root row reads the room's reaction
+            // groups, so the same event id cannot show two counts.
+            overlay_thread_root_reactions_diff(
+                &self.thread_root_projection_service,
+                &self.key,
+                diff,
+            );
+        }
+        // #2080: a reaction on a thread root reaches the room cache only, so a
+        // thread pane that is open would keep the count it saw when it opened.
+        // The room actor owns the root row, so it wakes the matching thread
+        // actors instead of leaving them to the next unrelated activity.
+        if matches!(self.key.kind, TimelineKind::Room { .. }) {
+            for root_event_id in thread_root_reaction_change_event_ids(
+                &previous_navigation_items,
+                &raw_navigation_items,
+            ) {
+                let _ = self
+                    .manager_tx
+                    .try_send(TimelineMessage::ThreadRootReactionsChanged {
+                        account_key: self.key.account_key.clone(),
+                        room_id: self.key.room_id().to_owned(),
+                        root_event_id,
+                    });
+            }
         }
         let display_context =
             DisplayProjectionContext::for_timeline(&self.key.kind, &self.viewport_observation)

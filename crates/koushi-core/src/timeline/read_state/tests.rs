@@ -790,7 +790,8 @@ async fn local_read_correlation_reports_failed_then_synced_and_capacity_truthful
                         | TimelineActorControl::CancelLiveTailNetwork { .. }
                         | TimelineActorControl::BeginGapRepairDemand
                         | TimelineActorControl::EndGapRepairDemand
-                        | TimelineActorControl::RefreshThreadUnread => {}
+                        | TimelineActorControl::RefreshThreadUnread
+                        | TimelineActorControl::RefreshThreadRootReactions => {}
                     }
                 }
             };
@@ -1201,7 +1202,8 @@ async fn restored_fully_read_projects_pending_then_server_confirmed_after_apply(
                 | TimelineActorControl::CancelLiveTailNetwork { .. }
                 | TimelineActorControl::BeginGapRepairDemand
                 | TimelineActorControl::EndGapRepairDemand
-                | TimelineActorControl::RefreshThreadUnread => {}
+                | TimelineActorControl::RefreshThreadUnread
+                | TimelineActorControl::RefreshThreadRootReactions => {}
                 TimelineActorControl::ApplyReadSuccess { .. } => {
                     panic!("unexpected actor apply kind")
                 }
