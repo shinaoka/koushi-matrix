@@ -114,6 +114,50 @@ describe("desktop release scripts", () => {
     expect(packageJson.scripts?.["qa:real-homeserver"]).toBeUndefined();
   });
 
+  test.each(["scroll_back_cached_history", "thread_receipt_fresh_session"])(
+    "headless local QA rejects the core-only scenario %s without --core",
+    (scenario) => {
+      // #2079: the runner skipped the SDK lane for this core-only scenario, ran no
+      // Core scenario, and still exited 0. Admission has to fail before any server
+      // is started, with the same wording as the other core-only scenarios.
+      let failure: { message?: string; stderr?: Buffer | string } | null = null;
+      let output = "";
+      try {
+        output = runScript("scripts/desktop-headless-local-qa.mjs", [
+          "--run",
+          `--scenario=${scenario}`
+        ]);
+      } catch (error) {
+        failure = error as { message?: string; stderr?: Buffer | string };
+      }
+
+      expect(failure, `the runner accepted the scenario: ${output}`).not.toBeNull();
+      const text = `${failure?.message ?? ""}\n${String(failure?.stderr ?? "")}`;
+      expect(text).toContain(`--scenario=${scenario} requires --core because it validates Core state`);
+      // It failed at admission, not after starting a homeserver and skipping it.
+      expect(text).not.toContain("headless SDK QA skipped");
+    }
+  );
+
+  test("headless local QA admits the cached-history scroll-back run with --core", () => {
+    // --fixture-run is rejected after the --core guards, so reaching that rejection
+    // proves the scenario itself passed the --core guard without running a lane.
+    let message = "";
+    try {
+      runScript("scripts/desktop-headless-local-qa.mjs", [
+        "--run",
+        "--core",
+        "--scenario=scroll_back_cached_history",
+        "--fixture-run=/nonexistent-scroll-back-fixture"
+      ]);
+    } catch (error) {
+      message = String((error as Error).message);
+    }
+
+    expect(message).toContain("--fixture-run is currently supported only with --scenario=timeline_stress");
+    expect(message).not.toContain("requires --core");
+  });
+
   test("redact/edit convergence QA is registered with its closed token", () => {
     const registry = readFileSync(
       new URL("../../../../crates/koushi-qa/src/bin/headless_core_qa/registry.rs", import.meta.url),

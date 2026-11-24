@@ -155,6 +155,21 @@ export const HEADLESS_LOCAL_QA_SCENARIO_TOKENS = Object.freeze({
     "space_topic=ok",
     "knock_room_created=ok",
     "knock_join_request=ok"
+  ]),
+  thread_receipt_fresh_session: Object.freeze([
+    "thread_receipt_fresh_unthreaded=ok",
+    "thread_receipt_fresh_clash=ok",
+    "thread_receipt_fresh_read=ok",
+    "thread_receipt_fresh_restart=ok",
+    "thread_receipt_fresh_session=ok"
+  ]),
+  scroll_back_cached_history: Object.freeze([
+    "scroll_back_seeded=ok",
+    "scroll_back_restored=ok",
+    "scroll_back_reached_start=ok",
+    "scroll_back_store_served=ok",
+    "scroll_back_no_runaway=ok",
+    "scroll_back_cached_history=ok"
   ])
 });
 
