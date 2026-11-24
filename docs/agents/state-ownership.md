@@ -1872,20 +1872,32 @@ has caused a real visible bug.
   exactly this and silently stopped `send_reaction` until the reaction
   browser-headless test caught it. Outside-press dismissal belongs to the
   component that owns the panel.
-- A floating-layer popup's size is owned by the measurement it passes to
-  `useFloatingPlacement`, not by CSS. `floatingPlacementStyle` writes the resolved
-  `inlineSize`/`blockSize` as INLINE styles, so a stylesheet
-  `min-inline-size`/`max-inline-size` on the panel is dead code — that is why the
+- A floating-layer popup's size comes from the measurement it passes to
+  `useFloatingPlacement`, and only from there. `floatingPlacementStyle` writes the
+  resolved `inlineSize`/`blockSize` as INLINE styles, so on a panel sized by the
+  caller's `inlineSize`/`blockSize` options a stylesheet
+  `min-inline-size`/`max-inline-size` is dead code — that is why the
   `--receipt-tooltip-min/max-inline-size` tokens only ever affected
   `.reaction-tooltip`. When a popup is the wrong size, fix the measurement.
+- A panel whose width is its content's width passes `contentRef` instead of a
+  caller constant: the hook then measures the panel's own rendered box, so CSS
+  owns the box and the measurement follows it (`inline-size: max-content` bounded
+  by a `max-inline-size`, #2098). Such a panel must also pass `false` to
+  `floatingPlacementStyle`; otherwise the layer writes the measured size back and
+  the next measurement reads its own pin, so the box can never grow with content
+  that arrives after it opened (the receipt popup opened at one row and stayed
+  38px tall with twelve). Do not reintroduce a fixed `inlineSize` for such a
+  panel either — the pinned size is what a short name used to fill and push the
+  timestamp away from.
 - A constant `blockSize` for a variable-length list is a layout bug (#360). The
   reader popup passed a fixed 132px whatever the reader count, and because
   `.receipt-tooltip` is a grid its auto rows stretched to fill the slack: two
-  readers rendered as two ~55px rows with a large blank gap between them. Derive
-  the block size from the row count (`receiptPopupBlockSize`) and pair it with
-  `align-content: start` so residual slack can never stretch rows. Keep the JS
-  row/gap/padding constants in step with the matching `--receipt-tooltip-*` CSS
-  tokens.
+  readers rendered as two ~55px rows with a large blank gap between them. The
+  height must stay proportional to the row count — one fixed-height row per
+  reader, `gap` between them, and `align-content: start` so residual slack can
+  never stretch rows. The reader popup keeps that shape with no row-count
+  arithmetic: its measured box is exactly those rows (`receipt-popup-layout.spec.ts`
+  pins `row height <= 20` and no scrolling).
 - Assert popup compactness on measured slack, not on a guessed total. The useful
   invariant is `popupHeight - rowsHeight - (padding + border + row gaps) <
   lineHeight`; reading padding/border/`rowGap` from `getComputedStyle` keeps the

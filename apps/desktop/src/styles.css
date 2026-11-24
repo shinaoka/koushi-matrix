@@ -5086,7 +5086,9 @@ button.reply-quote-thumbnail:focus-visible {
 
 .receipt-reader-name {
   min-inline-size: 0;
-  flex: 1 1 auto;
+  /* #2098: the name hugs its text. Growing it to fill the row pushed the
+     timestamp to the far edge, leaving a wide blank gap beside a short name. */
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -5147,10 +5149,20 @@ button.reply-quote-thumbnail:focus-visible {
   z-index: var(--receipt-tooltip-z-index);
   display: grid;
   gap: var(--receipt-tooltip-gap);
+  /* #2098: the panel is as wide as its widest row and no wider, so a short name
+     with a timestamp is not a half-empty box. The layer measures this box, so
+     this is also the size it pins. */
+  inline-size: max-content;
+  max-inline-size: min(
+    var(--receipt-tooltip-max-inline-size),
+    var(--receipt-tooltip-max-viewport-inline-size)
+  );
   /* #360: the floating layer pins an explicit block size, and grid auto rows
      stretch to fill it — two readers in a 132px box became two 55px rows with
      a large blank gap between them. `start` keeps rows at their natural height
-     no matter how much slack the measured box has. */
+     no matter how much slack the measured box has. #2098: the measured box is
+     now the content's own, so the block size is the rows' own height and the
+     popup stays proportional to the reader count. */
   align-content: start;
   padding-block: var(--receipt-tooltip-padding-block);
   padding-inline: var(--receipt-tooltip-padding-inline);

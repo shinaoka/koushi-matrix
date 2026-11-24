@@ -16,30 +16,6 @@ import { Tooltip } from "../Tooltip";
 import type { LiveReadReceipt } from "../../domain/types";
 import { cachedDateTimeFormat } from "../../domain/intlFormatCache";
 
-/** Reader popup width; the panel narrows to the pane when it is smaller. */
-const RECEIPT_POPUP_INLINE_SIZE_PX = 420;
-/**
- * Reader popup height follows the row count (#360).
- *
- * A fixed height made the popup the same size for two readers as for six, and
- * because `.receipt-tooltip` is a grid, its auto rows stretched to fill the
- * slack — two readers rendered as two ~55px rows with a large blank gap. These
- * mirror the `--receipt-tooltip-*` CSS tokens; keep them in step.
- */
-const RECEIPT_POPUP_ROW_BLOCK_SIZE_PX = 20;
-const RECEIPT_POPUP_ROW_GAP_PX = 3;
-const RECEIPT_POPUP_PADDING_BLOCK_PX = 8;
-const RECEIPT_POPUP_BORDER_BLOCK_PX = 1;
-
-function receiptPopupBlockSize(rowCount: number): number {
-  const rows = Math.max(rowCount, 1);
-  return (
-    rows * RECEIPT_POPUP_ROW_BLOCK_SIZE_PX +
-    (rows - 1) * RECEIPT_POPUP_ROW_GAP_PX +
-    2 * (RECEIPT_POPUP_PADDING_BLOCK_PX + RECEIPT_POPUP_BORDER_BLOCK_PX)
-  );
-}
-
 function containsTarget(container: Element | null, target: EventTarget | null): boolean {
   return typeof Node !== "undefined" && target instanceof Node && container?.contains(target) === true;
 }
@@ -374,8 +350,10 @@ export function ReceiptReaders({
     anchorRef,
     // Every row with receipts owns this hook; only an open popup measures.
     enabled: open,
-    blockSize: receiptPopupBlockSize(readerRows.length + (readerRemainingCount > 0 ? 1 : 0)),
-    inlineSize: RECEIPT_POPUP_INLINE_SIZE_PX,
+    // #2098: the popup measures itself, so its box is the width its rows need
+    // (capped in CSS) instead of a width chosen here. A pinned 420px box made
+    // the name absorb the slack and pushed the timestamp to the far edge.
+    contentRef: popupRef,
     placement: "above",
     resolveBoundaryElement: receiptPopupBoundaryElement
   });
@@ -436,7 +414,11 @@ export function ReceiptReaders({
             aria-label={receiptLabel}
             aria-busy={readerState === "loading"}
             style={{
-              ...floatingPlacementStyle(placement),
+              // #2098: the popup is sized by its content, so the layer owns only
+              // the position. Writing the measured size back would make the next
+              // measurement read its own pin — the box would never grow with the
+              // rows that arrive after it opened.
+              ...floatingPlacementStyle(placement, false),
               maxBlockSize: "min(60vh, 420px)",
               overflowY: "auto"
             }}
