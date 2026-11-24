@@ -31,7 +31,7 @@ use crate::threads_list::{
 use koushi_protocol::command::{InitialBackfillPolicy, TimelineCommand};
 use koushi_protocol::event::{CoreEvent, LiveSignalsEvent, TimelineEvent, TimelineItem};
 use koushi_protocol::failure::{CoreFailure, TimelineFailureKind};
-use koushi_protocol::ids::{RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
+use koushi_protocol::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
 
 // BEGIN GENERATED SIBLING IMPORTS
 use super::actor::{
@@ -294,6 +294,15 @@ pub(crate) enum TimelineMessage {
     /// retained timeline is a no-op.
     RefreshThreadUnread {
         key: TimelineKey,
+    },
+    /// #2080: the room timeline reprojected a thread root's reaction groups; ask the
+    /// thread pane that shows that root to repaint its root row. A reaction on a root
+    /// is routed to the room cache only, so the thread timeline never sees it.
+    /// Best-effort: no retained thread actor for the root is a no-op.
+    ThreadRootReactionsChanged {
+        account_key: AccountKey,
+        room_id: String,
+        root_event_id: String,
     },
     /// Sync started: carries the one live `RoomListService`. Subscribing a timeline must also
     /// subscribe its room with the live service so the server streams that
@@ -1256,6 +1265,18 @@ impl TimelineManagerActor {
                         key,
                         actor_generation,
                         target,
+                    ))
+                    .await;
+                }
+                TimelineMessage::ThreadRootReactionsChanged {
+                    account_key,
+                    room_id,
+                    root_event_id,
+                } => {
+                    Box::pin(self.handle_thread_root_reactions_changed(
+                        account_key,
+                        room_id,
+                        root_event_id,
                     ))
                     .await;
                 }
@@ -2631,6 +2652,41 @@ impl TimelineManagerActor {
         output
     }
 
+    /// #2080: repaint the thread pane that shows `root_event_id` after the room
+    /// timeline reprojected that root's reaction groups.
+    pub(super) async fn handle_thread_root_reactions_changed(
+        &mut self,
+        account_key: AccountKey,
+        room_id: String,
+        root_event_id: String,
+    ) {
+        let keys = self
+            .timelines
+            .keys()
+            .filter(|key| key.account_key == account_key)
+            .filter(|key| {
+                matches!(
+                    &key.kind,
+                    TimelineKind::Thread {
+                        room_id: entry_room_id,
+                        root_event_id: entry_root_event_id,
+                    } if entry_room_id == &room_id && entry_root_event_id == &root_event_id
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in keys {
+            if let Some(handle) = self.timelines.get(&key) {
+                let deadline = executor::Instant::now() + LIVE_TAIL_CANCELLATION_DEADLINE;
+                let _ = Box::pin(executor::timeout_at(
+                    deadline,
+                    handle.send_control(TimelineActorControl::RefreshThreadRootReactions),
+                ))
+                .await;
+            }
+        }
+    }
+
     pub(super) async fn build_timeline_actor_handle(
         &mut self,
         request_id: RequestId,
@@ -2974,3 +3030,6 @@ mod return_to_live_tests;
 
 #[cfg(test)]
 mod own_avatar_tests;
+
+#[cfg(test)]
+mod thread_root_reaction_tests;

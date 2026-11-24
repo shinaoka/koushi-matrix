@@ -225,6 +225,9 @@ pub(super) enum TimelineActorMessage {
     /// #1259: re-overlay the room root items whose thread unread changed because a
     /// read marker advanced outside this actor.
     RefreshThreadUnread,
+    /// #2080: repaint this thread timeline's root row from the room timeline's
+    /// reaction groups.
+    RefreshThreadRootReactions,
     /// #1259: the same, retried while a threaded read's sync echo is still in flight.
     RefreshThreadUnreadRetry {
         attempt: u32,
@@ -456,6 +459,8 @@ pub(super) enum TimelineActorControl {
         cause_request_id: RequestId,
     },
     RefreshThreadUnread,
+    /// #2080: the room timeline reprojected this thread root's reaction groups.
+    RefreshThreadRootReactions,
     StartLiveTailRefresh {
         epoch: u64,
         operation_generation: u64,
@@ -543,6 +548,7 @@ impl From<TimelineActorControl> for TimelineActorMessage {
                 }
             }
             TimelineActorControl::RefreshThreadUnread => Self::RefreshThreadUnread,
+            TimelineActorControl::RefreshThreadRootReactions => Self::RefreshThreadRootReactions,
             TimelineActorControl::StartLiveTailRefresh {
                 epoch,
                 operation_generation,
@@ -1375,6 +1381,28 @@ impl TimelineActor {
         }
     }
 
+    /// #2080: repaint this thread timeline's root row from the room timeline's
+    /// reaction groups, so a reaction sent to the root shows the same count in
+    /// the thread pane as in the room row without reopening the thread.
+    fn repaint_thread_root_reactions(&mut self) {
+        if !matches!(self.key.kind, TimelineKind::Thread { .. }) {
+            return;
+        }
+        let Some(reactions) = super::thread_projection::thread_root_reactions(
+            &self.thread_root_projection_service,
+            &self.key,
+        ) else {
+            return;
+        };
+        if let Some(diff) = super::thread_projection::thread_root_reaction_repaint_diff(
+            &self.key,
+            &mut self.navigation_items,
+            reactions,
+        ) {
+            let _ = self.emit_non_sdk_item_sets(vec![diff]);
+        }
+    }
+
     fn drain_thread_summary_projection_wakes(&mut self) {
         if self
             .timeline_actor_generations
@@ -1721,6 +1749,14 @@ impl TimelineActor {
                 }
             }
         }
+        // #2080: the thread pane's root row reads the room timeline's reaction
+        // groups, so opening the thread cannot show a second count for the same
+        // event id.
+        super::thread_projection::overlay_thread_root_reactions_items(
+            &thread_root_projection_service,
+            &key,
+            &mut projected_initial_items,
+        );
         let mut initial_read_receipt_changes = if own_user_id.is_some() {
             Some(timeline.subscribe_own_user_read_receipts_changed().await)
         } else {
@@ -3163,6 +3199,9 @@ impl TimelineActor {
             TimelineActorMessage::RefreshThreadUnread => {
                 Box::pin(self.refresh_thread_unread_counts(true)).await;
                 self.schedule_thread_unread_recheck(1);
+            }
+            TimelineActorMessage::RefreshThreadRootReactions => {
+                self.repaint_thread_root_reactions();
             }
             TimelineActorMessage::RefreshThreadUnreadRetry { attempt } => {
                 Box::pin(self.refresh_thread_unread_counts(true)).await;

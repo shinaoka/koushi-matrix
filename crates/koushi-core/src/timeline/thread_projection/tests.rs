@@ -1826,3 +1826,206 @@ fn raw_projection_starts_a_loading_quote_for_its_reply_target() {
         .expect("the projected event must render");
     assert_eq!(item.reply_quote, None);
 }
+
+fn reaction(key: &str, count: u32, mine: bool) -> koushi_protocol::event::ReactionGroup {
+    koushi_protocol::event::ReactionGroup {
+        key: key.to_owned(),
+        count,
+        reacted_by_me: mine,
+        my_reaction_event_id: mine.then(|| format!("$reaction-{key}:test")),
+        sender_preview: Vec::new(),
+    }
+}
+
+fn threaded_root(reactions: Vec<koushi_protocol::event::ReactionGroup>) -> TimelineItem {
+    let mut root = timeline_item("$root:test", Some("root"), "@root:test", false);
+    root.thread_summary = Some(ThreadSummaryDto {
+        reply_count: 1,
+        unread_count: 0,
+        latest_event_id: Some("$reply:test".to_owned()),
+        latest_sender: Some("@b:test".to_owned()),
+        latest_sender_label: None,
+        latest_body_preview: Some("reply".to_owned()),
+        latest_timestamp_ms: Some(100),
+    });
+    root.reactions = reactions;
+    root
+}
+
+// #2080: one event id has one reaction count on every surface, so the thread
+// pane's root row reads the reaction groups the room timeline projected.
+#[test]
+fn a_thread_root_row_shows_the_room_timelines_reaction_groups() {
+    let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+    let room_root = threaded_root(vec![reaction("👍", 2, false), reaction("🎉", 1, true)]);
+    super::seed_thread_summary_item(&service, &room_key(), &room_root);
+
+    // The thread timeline's own aggregations only ever saw one of them.
+    let thread_root = threaded_root(vec![reaction("👍", 1, false)]);
+    let mut diff = TimelineDiff::Set {
+        index: 0,
+        item: thread_root,
+    };
+    super::overlay_thread_root_reactions_diff(&service, &thread_key(), &mut diff);
+    let TimelineDiff::Set { item, .. } = &diff else {
+        panic!("expected the root Set to stay a Set")
+    };
+    assert_eq!(item.reactions, room_root.reactions);
+    // The signed-in user's own reaction keeps its selected state on the root row.
+    let mine = item
+        .reactions
+        .iter()
+        .find(|group| group.key == "🎉")
+        .expect("own reaction group");
+    assert!(mine.reacted_by_me);
+    assert_eq!(
+        mine.my_reaction_event_id.as_deref(),
+        Some("$reaction-🎉:test")
+    );
+}
+
+// A removal is the same mechanism in the other direction: the room row loses a
+// sender, the repaint moves the root row with it.
+#[test]
+fn removing_a_reaction_on_the_root_repaints_the_thread_root_row() {
+    let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+    let mut room_root = threaded_root(vec![reaction("👍", 2, true)]);
+    super::seed_thread_summary_item(&service, &room_key(), &room_root);
+    let mut thread_items = vec![threaded_root(vec![reaction("👍", 2, true)])];
+
+    room_root.reactions = vec![reaction("👍", 1, false)];
+    super::seed_thread_summary_item(&service, &room_key(), &room_root);
+
+    let reactions = super::thread_root_reactions(&service, &thread_key()).expect("room root");
+    let diff =
+        super::thread_root_reaction_repaint_diff(&thread_key(), &mut thread_items, reactions)
+            .expect("the removed reaction repaints the root row");
+    let TimelineDiff::Set { item, .. } = &diff else {
+        panic!("expected a Set")
+    };
+    assert_eq!(item.reactions, vec![reaction("👍", 1, false)]);
+    assert!(!item.reactions[0].reacted_by_me);
+    assert_eq!(item.reactions[0].my_reaction_event_id, None);
+}
+
+// The thread timeline may see a reaction first; the room row is the surface the
+// reader compares against, so the root row follows the room and both agree.
+#[test]
+fn a_reaction_only_the_thread_timeline_saw_still_shows_the_rooms_count() {
+    let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+    super::seed_thread_summary_item(
+        &service,
+        &room_key(),
+        &threaded_root(vec![reaction("👍", 1, false)]),
+    );
+
+    let mut diff = TimelineDiff::Set {
+        index: 0,
+        item: threaded_root(vec![reaction("👍", 2, false), reaction("🎉", 1, false)]),
+    };
+    super::overlay_thread_root_reactions_diff(&service, &thread_key(), &mut diff);
+    let TimelineDiff::Set { item, .. } = &diff else {
+        panic!("expected the root Set to stay a Set")
+    };
+    assert_eq!(item.reactions, vec![reaction("👍", 1, false)]);
+}
+
+#[test]
+fn a_thread_root_row_keeps_its_own_reactions_when_the_room_holds_no_root() {
+    let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+    let thread_root = threaded_root(vec![reaction("👍", 1, false)]);
+    let mut diff = TimelineDiff::Set {
+        index: 0,
+        item: thread_root.clone(),
+    };
+    super::overlay_thread_root_reactions_diff(&service, &thread_key(), &mut diff);
+    let TimelineDiff::Set { item, .. } = &diff else {
+        panic!("expected the root Set to stay a Set")
+    };
+    assert_eq!(item.reactions, thread_root.reactions);
+}
+
+#[test]
+fn a_thread_reply_keeps_its_own_reaction_groups() {
+    let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+    super::seed_thread_summary_item(
+        &service,
+        &room_key(),
+        &threaded_root(vec![reaction("👍", 2, false)]),
+    );
+
+    let mut reply = thread_reply_item("$reply:test", "@b:test", "$root:test");
+    reply.reactions = vec![reaction("👀", 1, false)];
+    let mut diff = TimelineDiff::Set {
+        index: 1,
+        item: reply.clone(),
+    };
+    super::overlay_thread_root_reactions_diff(&service, &thread_key(), &mut diff);
+    let TimelineDiff::Set { item, .. } = &diff else {
+        panic!("expected the reply Set to stay a Set")
+    };
+    assert_eq!(item.reactions, reply.reactions);
+}
+
+#[test]
+fn a_room_timeline_root_keeps_its_own_reaction_groups() {
+    let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+    super::seed_thread_summary_item(
+        &service,
+        &room_key(),
+        &threaded_root(vec![reaction("👍", 2, false)]),
+    );
+
+    let mut diff = TimelineDiff::Set {
+        index: 0,
+        item: threaded_root(vec![reaction("👍", 1, false)]),
+    };
+    let before = match &diff {
+        TimelineDiff::Set { item, .. } => item.reactions.clone(),
+        _ => unreachable!(),
+    };
+    super::overlay_thread_root_reactions_diff(&service, &room_key(), &mut diff);
+    let TimelineDiff::Set { item, .. } = &diff else {
+        panic!("expected the root Set to stay a Set")
+    };
+    assert_eq!(item.reactions, before);
+}
+
+#[test]
+fn a_changed_room_root_reaction_group_names_the_thread_root_to_repaint() {
+    let before = vec![threaded_root(vec![reaction("👍", 1, false)])];
+    let after = vec![threaded_root(vec![reaction("👍", 2, false)])];
+    assert_eq!(
+        super::thread_root_reaction_change_event_ids(&before, &after),
+        vec!["$root:test".to_owned()]
+    );
+    // An unchanged reaction set is not a repaint.
+    assert!(super::thread_root_reaction_change_event_ids(&after, &after).is_empty());
+    // A plain reply row is not a thread root.
+    let reply = vec![thread_reply_item("$reply:test", "@b:test", "$root:test")];
+    assert!(super::thread_root_reaction_change_event_ids(&reply, &reply).is_empty());
+}
+
+#[test]
+fn the_thread_root_row_is_repainted_only_where_the_reaction_groups_differ() {
+    let key = thread_key();
+    let mut items = vec![
+        threaded_root(vec![reaction("👍", 1, false)]),
+        thread_reply_item("$reply:test", "@b:test", "$root:test"),
+    ];
+    let diff =
+        super::thread_root_reaction_repaint_diff(&key, &mut items, vec![reaction("👍", 2, false)])
+            .expect("a differing root reaction set repaints the root row");
+    let TimelineDiff::Set { index, item } = &diff else {
+        panic!("expected a Set")
+    };
+    assert_eq!(*index, 0);
+    assert_eq!(item.reactions, vec![reaction("👍", 2, false)]);
+    assert_eq!(items[1].reactions, Vec::new(), "the reply row is untouched");
+
+    assert!(
+        super::thread_root_reaction_repaint_diff(&key, &mut items, vec![reaction("👍", 2, false)])
+            .is_none(),
+        "an unchanged reaction set emits nothing"
+    );
+}

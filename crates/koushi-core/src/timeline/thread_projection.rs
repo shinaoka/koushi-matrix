@@ -22,7 +22,7 @@ use crate::threads_list::{
     classify_thread_list_error, classify_thread_request_error,
 };
 use koushi_protocol::event::{
-    ReactionGroup, ReactionSender, ThreadSummaryDto, TimelineItem, TimelineItemId,
+    ReactionGroup, ReactionSender, ThreadSummaryDto, TimelineDiff, TimelineItem, TimelineItemId,
     TimelineUnableToDecrypt, TimelineUnableToDecryptReason,
 };
 use koushi_protocol::ids::{TimelineKey, TimelineKind};
@@ -921,6 +921,133 @@ pub(super) fn overlay_thread_summary_diff(
         | koushi_protocol::event::TimelineDiff::Truncate { .. }
         | koushi_protocol::event::TimelineDiff::Clear => {}
     }
+}
+
+/// #2080: the reaction groups the room timeline projects for a thread root.
+///
+/// A thread pane draws its root row from the thread's own SDK timeline, whose
+/// aggregation map only holds the reaction events that timeline saw: the Event
+/// Cache routes an annotation on a thread root to the room cache alone
+/// (`vendor/matrix-rust-sdk/crates/matrix-sdk/src/event_cache/caches/aggregator.rs`,
+/// the `RelationType::Annotation` arm asks for the *target's* thread root, and a
+/// root is not itself in a thread). Reading the room's projection here keeps one
+/// event id at one reaction count on both surfaces.
+///
+/// `None` when this key is not a thread timeline, or when the room timeline has
+/// not projected that root (then there is no room row to disagree with, and the
+/// thread timeline's own value stays).
+pub(super) fn thread_root_reactions(
+    service: &Arc<Mutex<ThreadRootProjectionService>>,
+    key: &TimelineKey,
+) -> Option<Vec<ReactionGroup>> {
+    let TimelineKind::Thread {
+        room_id,
+        root_event_id,
+    } = &key.kind
+    else {
+        return None;
+    };
+    service
+        .lock()
+        .expect("thread-root projection service lock must not be poisoned")
+        .root_item(room_id, root_event_id)
+        .map(|item| item.reactions.clone())
+}
+
+/// #2080: overlay the room's reaction groups onto a thread timeline's root row.
+pub(super) fn overlay_thread_root_reactions_item(
+    service: &Arc<Mutex<ThreadRootProjectionService>>,
+    key: &TimelineKey,
+    item: &mut TimelineItem,
+) {
+    let TimelineKind::Thread { root_event_id, .. } = &key.kind else {
+        return;
+    };
+    if timeline_item_event_id(item) != Some(root_event_id.as_str()) {
+        return;
+    }
+    let Some(reactions) = thread_root_reactions(service, key) else {
+        return;
+    };
+    if item.reactions != reactions {
+        item.reactions = reactions;
+    }
+}
+
+pub(super) fn overlay_thread_root_reactions_items(
+    service: &Arc<Mutex<ThreadRootProjectionService>>,
+    key: &TimelineKey,
+    items: &mut [TimelineItem],
+) {
+    for item in items {
+        overlay_thread_root_reactions_item(service, key, item);
+    }
+}
+
+pub(super) fn overlay_thread_root_reactions_diff(
+    service: &Arc<Mutex<ThreadRootProjectionService>>,
+    key: &TimelineKey,
+    diff: &mut TimelineDiff,
+) {
+    match diff {
+        TimelineDiff::PushFront { item }
+        | TimelineDiff::PushBack { item }
+        | TimelineDiff::Insert { item, .. }
+        | TimelineDiff::Set { item, .. } => overlay_thread_root_reactions_item(service, key, item),
+        TimelineDiff::Reset { items } => {
+            overlay_thread_root_reactions_items(service, key, items);
+        }
+        TimelineDiff::Remove { .. } | TimelineDiff::Truncate { .. } | TimelineDiff::Clear => {}
+    }
+}
+
+/// #2080: the thread roots whose reaction groups this room batch changed. The
+/// room actor owns them, so it is the one that tells a matching thread pane to
+/// repaint instead of the pane waiting for unrelated activity.
+pub(super) fn thread_root_reaction_change_event_ids(
+    previous: &[TimelineItem],
+    next: &[TimelineItem],
+) -> Vec<String> {
+    let mut changed = Vec::new();
+    for item in next {
+        if item.thread_root.is_some() || item.thread_summary.is_none() {
+            continue;
+        }
+        let Some(event_id) = timeline_item_event_id(item) else {
+            continue;
+        };
+        let Some(before) = previous
+            .iter()
+            .find(|candidate| timeline_item_event_id(candidate) == Some(event_id))
+        else {
+            // A root this batch introduced has no earlier count to compare.
+            continue;
+        };
+        if before.reactions != item.reactions {
+            changed.push(event_id.to_owned());
+        }
+    }
+    changed
+}
+
+/// #2080: replace a thread timeline's root row with the room's reaction groups.
+/// Returns the `Set` to publish, or `None` when the row already agrees.
+pub(super) fn thread_root_reaction_repaint_diff(
+    key: &TimelineKey,
+    items: &mut [TimelineItem],
+    reactions: Vec<ReactionGroup>,
+) -> Option<TimelineDiff> {
+    let TimelineKind::Thread { root_event_id, .. } = &key.kind else {
+        return None;
+    };
+    let index = super::item_projection::item_index_for_event_id(items, root_event_id)?;
+    if items[index].reactions == reactions {
+        return None;
+    }
+    let mut item = items[index].clone();
+    item.reactions = reactions;
+    items[index] = item.clone();
+    Some(TimelineDiff::Set { index, item })
 }
 
 pub(super) fn thread_root_item_with_authoritative_aggregate(

@@ -933,6 +933,16 @@ impl ThreadRootProjectionService {
             .map(effective_aggregate)
     }
 
+    /// #2080: the room timeline's own projection of a thread root row. A thread
+    /// timeline draws its root row from this copy so one event id has one
+    /// reaction count on every surface.
+    pub(crate) fn root_item(&self, room_id: &str, root_event_id: &str) -> Option<&TimelineItem> {
+        self.attempts
+            .get(&(room_id.to_owned(), root_event_id.to_owned()))
+            .filter(|record| !record.retired)
+            .and_then(|record| record.root_item.as_ref())
+    }
+
     pub(crate) fn aggregate_at_revision(
         &self,
         room_id: &str,
