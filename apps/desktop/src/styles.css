@@ -6002,13 +6002,58 @@ mark {
 }
 
 /* #1748: the read-only reason sits beside the composer it explains. */
-.composer-read-only-notice {
+.composer-read-only-notice-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
   margin: 0;
   padding: 6px 12px;
   border-top: 1px solid var(--line);
   background: var(--surface);
   color: var(--text-muted);
   font-size: 12px;
+}
+
+/* #2086: the live region holds only the reason; its actions are siblings, so a
+ * status announcement never contains the buttons it announced. */
+.composer-read-only-notice {
+  min-width: 0;
+}
+
+.composer-read-only-notice-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-inline-start: auto;
+}
+
+/* #2086: the notice carries the way out of the block, so the action stays
+ * beside the reason instead of at the bottom of Settings. */
+.composer-read-only-notice-action,
+.composer-read-only-notice-link {
+  border: 0;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.composer-read-only-notice-action {
+  background: var(--brand-weak);
+  color: var(--brand);
+  font-weight: 600;
+}
+
+.composer-read-only-notice-action:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.composer-read-only-notice-link {
+  background: none;
+  color: var(--text-muted);
+  text-decoration: underline;
 }
 
 .composer-drop-overlay {

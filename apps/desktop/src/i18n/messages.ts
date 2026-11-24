@@ -201,6 +201,8 @@ export type MessageId =
   | "composer.mentionUsers"
   | "composer.messageComposer"
   | "composer.sendBlockedSecureBackup"
+  | "composer.sendBlockedSecureBackupRecheck"
+  | "composer.sendBlockedSecureBackupSettings"
   | "composer.imageCompressionCompressed"
   | "composer.imageCompressionOriginal"
   | "composer.imageCompressionPreviewAlt"
@@ -848,6 +850,7 @@ export type MessageId =
   | "sessionStatus.authToken"
   | "sessionStatus.backupDisabled"
   | "sessionStatus.backupReady"
+  | "sessionStatus.backupNotReady"
   | "sessionStatus.checking"
   | "sessionStatus.connectionUnavailable"
   | "sessionStatus.copyDeviceId"
@@ -1662,6 +1665,7 @@ export type MessageId =
   | "gate.secureBackupDiagnostics"
   | "gate.secureBackupCommandFailed"
   | "gate.secureBackupRuntimeDegraded"
+  | "gate.secureBackupRuntimeBlocked"
   | "slidingSync.blockedTitle"
   | "slidingSync.unsupported"
   | "slidingSync.unreachable"
@@ -2573,6 +2577,8 @@ const en: Catalog = {
   "composer.mentionUsers": "Users",
   "composer.messageComposer": "Message composer",
   "composer.sendBlockedSecureBackup": "Sending is unavailable until Secure Backup is ready.",
+  "composer.sendBlockedSecureBackupRecheck": "Re-check",
+  "composer.sendBlockedSecureBackupSettings": "Encryption settings",
   "composer.imageCompressionCompressed": "Compressed",
   "composer.imageCompressionOriginal": "Original",
   "composer.imageCompressionPreviewAlt": "Compressed image preview",
@@ -3234,6 +3240,7 @@ const en: Catalog = {
   "sessionStatus.authToken": "Access token",
   "sessionStatus.backupDisabled": "Disabled",
   "sessionStatus.backupReady": "Ready",
+  "sessionStatus.backupNotReady": "Not ready",
   "sessionStatus.checking": "Checking",
   "sessionStatus.connectionUnavailable": "Connection unavailable",
   "sessionStatus.copyDeviceId": "Copy Device ID",
@@ -4195,6 +4202,7 @@ const en: Catalog = {
   "gate.secureBackupDiagnostics": "Open secure backup diagnostics",
   "gate.secureBackupCommandFailed": "Secure backup action failed. Try again.",
   "gate.secureBackupRuntimeDegraded": "Secure Backup is temporarily degraded. Drafts, receiving, and local decryption remain available while Koushi retries; the notice beside the message box says whether sending is available.",
+  "gate.secureBackupRuntimeBlocked": "Secure Backup is unavailable and Koushi cannot reach it on its own. Drafts, receiving, and local decryption remain available; sending resumes only after a re-check confirms the backup is ready.",
   "slidingSync.blockedTitle": "Simplified Sliding Sync is required",
   "slidingSync.unsupported": "This homeserver does not support Simplified Sliding Sync.",
   "slidingSync.unreachable": "Koushi could not reach this homeserver to verify Simplified Sliding Sync support.",
@@ -5001,6 +5009,8 @@ const ja: Catalog = {
   "composer.mentionUsers": "ユーザー",
   "composer.messageComposer": "メッセージ入力欄",
   "composer.sendBlockedSecureBackup": "安全なバックアップの準備ができるまで送信できません。",
+  "composer.sendBlockedSecureBackupRecheck": "再チェック",
+  "composer.sendBlockedSecureBackupSettings": "暗号化の設定",
   "composer.placeholder": "{roomName}にメッセージ",
   "composer.assistantDraftMarker": "{client} が作成した下書きです。送信前に確認してください。",
   "composer.assistantDraftDismiss": "アシスタント表示を消す",
@@ -5662,6 +5672,7 @@ const ja: Catalog = {
   "sessionStatus.authToken": "アクセストークン",
   "sessionStatus.backupDisabled": "無効",
   "sessionStatus.backupReady": "準備完了",
+  "sessionStatus.backupNotReady": "未準備",
   "sessionStatus.checking": "確認中",
   "sessionStatus.connectionUnavailable": "接続を利用できません",
   "sessionStatus.copyDeviceId": "デバイス ID をコピー",
@@ -6612,6 +6623,7 @@ const ja: Catalog = {
   "gate.secureBackupDiagnostics": "安全なバックアップの診断を開く",
   "gate.secureBackupCommandFailed": "安全なバックアップの操作に失敗しました。もう一度お試しください。",
   "gate.secureBackupRuntimeDegraded": "安全なバックアップが一時的に低下しています。Koushi が再試行している間も、下書き、受信、端末上の復号は利用できます。送信できるかどうかはメッセージ入力欄の横の表示で確認できます。",
+  "gate.secureBackupRuntimeBlocked": "安全なバックアップを利用できず、Koushi だけでは回復できません。下書き、受信、端末上の復号は引き続き利用できます。再チェックでバックアップの準備完了を確認できたときにだけ送信できます。",
   "slidingSync.blockedTitle": "Simplified Sliding Sync が必要です",
   "slidingSync.unsupported": "このホームサーバーは Simplified Sliding Sync に対応していません。",
   "slidingSync.unreachable": "このホームサーバーに接続できず、Simplified Sliding Sync 対応を確認できませんでした。",

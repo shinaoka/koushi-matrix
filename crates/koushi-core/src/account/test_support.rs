@@ -537,6 +537,79 @@ pub(super) fn spawn_named_quarantine_password_server_with_controls(
     format!("http://{addr}")
 }
 
+const PROMOTION_LIVENESS: Duration = Duration::from_secs(60);
+
+/// Verified-promoted actor on a homeserver whose behaviour `control` owns.
+///
+/// Promotion needs an existing-but-unverified cross-signing identity and an
+/// SDK trust reading that is no longer `Unknown`, so both settle here before
+/// the actor is handed out (#1674).
+pub(super) async fn promoted_actor_with_control(
+    control: Arc<KeyQueryControl>,
+) -> (
+    AccountActorHandle,
+    mpsc::Receiver<Vec<AppAction>>,
+    Arc<KeyQueryControl>,
+) {
+    let homeserver = spawn_named_quarantine_password_server_with_controls(
+        "@fixture-user:example.invalid",
+        "FIXTUREDEVICE",
+        None,
+        Some(Arc::clone(&control)),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    );
+    let (handle, mut action_rx) = login_gated_actor_at(homeserver).await;
+    consume_initial_unknown_trust_projection(&mut action_rx).await;
+    handle.send(AccountMessage::CheckCurrentDeviceTrust).await;
+    crate::executor::timeout(PROMOTION_LIVENESS, async {
+        loop {
+            let batch = action_rx
+                .recv()
+                .await
+                .expect("existing identity trust result");
+            if batch.iter().any(|action| {
+                matches!(
+                    action,
+                    AppAction::AuthoritativeDeviceTrustChanged {
+                        trust: koushi_state::CurrentDeviceTrustState::Unverified,
+                        ..
+                    }
+                )
+            }) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("existing unverified identity is fetched before promotion");
+    handle
+        .send(AccountMessage::CurrentDeviceTrustChanged {
+            generation: 2,
+            trust: koushi_state::CurrentDeviceTrustState::Verified,
+        })
+        .await;
+    acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+    crate::executor::timeout(PROMOTION_LIVENESS, async {
+        loop {
+            let (response, trust) = oneshot::channel();
+            assert!(
+                handle
+                    .send(AccountMessage::InspectSdkDeviceTrust { response })
+                    .await
+            );
+            if trust.await.expect("SDK trust probe")
+                != Some(koushi_state::CurrentDeviceTrustState::Unknown)
+            {
+                return;
+            }
+            crate::executor::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("SDK device trust settles");
+    (handle, action_rx, control)
+}
+
 pub(crate) fn spawn_actor_with_dirs(
     cred_dir: &std::path::Path,
     data_dir: &std::path::Path,

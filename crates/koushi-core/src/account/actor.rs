@@ -452,6 +452,12 @@ pub(crate) enum AccountMessage {
     ConfigureSecureBackupDeferWait {
         wait: Duration,
     },
+    /// Shortens the inspection retry backoff so tests observe a retry without
+    /// a real multi-second wait.
+    #[cfg(test)]
+    ConfigureSecureBackupRetryBase {
+        base: Duration,
+    },
     /// Keeps promotion from starting the SDK Secure Backup state observer, so
     /// a test owns every gate-check trigger (#1674).
     #[cfg(test)]
@@ -852,6 +858,8 @@ pub(crate) struct SecureBackupOwnersSnapshot {
     pub(super) trust_generation: u64,
     pub(super) defer_serial: u64,
     pub(super) holds_revealed_recovery_key: bool,
+    pub(super) has_monitor_task: bool,
+    pub(super) send_admitted: bool,
 }
 
 /// Handle to the AccountActor background task.
@@ -1298,6 +1306,8 @@ pub struct AccountActor {
     /// so stale or replayed expiries cannot re-fail the gate.
     pub(super) secure_backup_defer_serial: u64,
     pub(super) secure_backup_connectivity_wait: Duration,
+    /// Base delay of the exponential inspection retry; shortened by tests.
+    pub(super) secure_backup_retry_base: Duration,
     pub(super) secure_backup_monitor_serial: u64,
     pub(super) secure_backup_inspection_pending: bool,
     pub(super) sync_connectivity_proven: bool,
@@ -1668,6 +1678,7 @@ impl AccountActor {
             secure_backup_defer_deadline_task: None,
             secure_backup_defer_serial: 0,
             secure_backup_connectivity_wait: SECURE_BACKUP_CONNECTIVITY_WAIT_TIMEOUT,
+            secure_backup_retry_base: super::recovery_backup::SECURE_BACKUP_RETRY_BASE,
             secure_backup_monitor_serial: 0,
             secure_backup_inspection_pending: false,
             sync_connectivity_proven: false,
@@ -2973,11 +2984,17 @@ impl AccountActor {
                         trust_generation: self.trust_generation,
                         defer_serial: self.secure_backup_defer_serial,
                         holds_revealed_recovery_key: self.revealed_recovery_key.is_some(),
+                        has_monitor_task: self.secure_backup_monitor_task.is_some(),
+                        send_admitted: self.secure_backup_ready,
                     });
                 }
                 #[cfg(test)]
                 AccountMessage::ConfigureSecureBackupDeferWait { wait } => {
                     self.secure_backup_connectivity_wait = wait;
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureSecureBackupRetryBase { base } => {
+                    self.secure_backup_retry_base = base;
                 }
                 #[cfg(test)]
                 AccountMessage::DisableSecureBackupObserver => {

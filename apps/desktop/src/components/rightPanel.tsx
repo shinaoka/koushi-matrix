@@ -1,4 +1,10 @@
-import { type FormEvent, type RefObject, useEffect, useMemo } from "react";
+import {
+  type FormEvent,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useMemo
+} from "react";
 import { X } from "lucide-react";
 import { t } from "../i18n/messages";
 import type {
@@ -168,8 +174,10 @@ export function ContextualRightPanel({
   canRestartSync = false,
   onRestartSync = () => undefined,
   runtimeAlerts = [],
+  secureBackupNotice = null,
   runtimeAlertRetrying = false,
   onRetryRuntimeAlert = () => undefined,
+  onRetrySecureBackupInspection,
   onRetrieveSessionAccessToken,
   sessionAccessTokenAvailable,
   onProbeLocalEncryption,
@@ -343,8 +351,15 @@ export function ContextualRightPanel({
   canRestartSync?: boolean;
   onRestartSync?: () => void;
   runtimeAlerts?: RuntimeAlert[];
+  /**
+   * #2086: the send-blocked notice element shared with the main composer, so
+   * the thread and scheduled-send panes offer the same way out of the block.
+   */
+  secureBackupNotice?: ReactNode;
   runtimeAlertRetrying?: boolean;
   onRetryRuntimeAlert?: (kind: RuntimeAlert["kind"]) => void;
+  /** #2086: Settings re-checks Secure Backup through the same typed command. */
+  onRetrySecureBackupInspection?: () => void;
   settingsScope?: "account" | "app";
   /** The Account Settings page to open on (#1505 opens Sessions). */
   accountSettingsCategory?: SettingsCategoryId;
@@ -795,6 +810,7 @@ export function ContextualRightPanel({
           runtimeAlerts={runtimeAlerts}
           runtimeAlertRetrying={runtimeAlertRetrying}
           onRetryRuntimeAlert={onRetryRuntimeAlert}
+          onRetrySecureBackupInspection={onRetrySecureBackupInspection}
           onLoadAccountManagementCapabilities={
             onLoadAccountManagementCapabilities ?? (() => undefined)
           }
@@ -1106,14 +1122,16 @@ export function ContextualRightPanel({
     return (
       <aside className="thread-pane" aria-label={t("panel.context")}>
         <PanelHeader title={t("scheduled.title")} onClose={onClosePanel} />
-        {composerReadOnly ? (
-          // #1983: this panel edits a pending send, so it is locked by the same
-          // admission as the composer and says why. The selected-room pane does
-          // not repeat it: its composer notice sits beside the same list.
-          <div className="composer-read-only-notice" role="status">
-            {t("composer.sendBlockedSecureBackup")}
-          </div>
-        ) : null}
+        {composerReadOnly
+          ? // #1983: this panel edits a pending send, so it is locked by the same
+            // admission as the composer and says why. The selected-room pane does
+            // not repeat it: its composer notice sits beside the same list.
+            (secureBackupNotice ?? (
+              <div className="composer-read-only-notice" role="status">
+                {t("composer.sendBlockedSecureBackup")}
+              </div>
+            ))
+          : null}
         {scheduledItems.length === 0 ? (
           <p className="panel-empty-state">{t("scheduled.panelEmpty")}</p>
         ) : (
@@ -1478,11 +1496,13 @@ export function ContextualRightPanel({
           roomName={t("panel.thread")}
         />
       ) : null}
-      {composerReadOnly ? (
-        <div className="composer-read-only-notice" role="status">
-          {t("composer.sendBlockedSecureBackup")}
-        </div>
-      ) : null}
+      {composerReadOnly
+        ? (secureBackupNotice ?? (
+            <div className="composer-read-only-notice" role="status">
+              {t("composer.sendBlockedSecureBackup")}
+            </div>
+          ))
+        : null}
       <ThreadComposer
         sendingAccount={sendingAccount}
         composerMode={threadComposerMode}

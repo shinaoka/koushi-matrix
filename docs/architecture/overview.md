@@ -3012,9 +3012,21 @@ complete and the existing
 trusted backup is enabled locally. Pending room-key upload is observed as
 health/progress after that authority is established; it does not keep the
 normal shell hidden or close ordinary encrypted sending. A transient failure
-before initial authority is established remains blocking for sending and
-exposes explicit retry/diagnostics instead of entering an automatic retry loop.
-React never infers readiness from a click or from backup existence alone.
+before initial authority is established remains blocking for sending, and it
+keeps a bounded re-inspection on the same jittered exponential backoff the
+post-authority retry uses (5 seconds through 5 minutes) instead of waiting for
+a user action; a non-retryable failure (rejected credential, key or backup
+mismatch) stops retrying. Nothing on that path may open sending: the only
+admission change is a completed inspection that positively reports a ready
+backup, so a retry that answers "no server backup", "recovery required", or
+another failure leaves the gate blocking. The same retry is exposed as an
+explicit re-check in the send-blocked notice and in Settings, plus a throttled
+re-check when the window regains focus, and the Key backup rows in Settings
+derive their value from this gate in both directions — usable when the gate is
+operational, not ready when it is not (#2086). Only a recorded failure Rust
+calls non-retryable hides the re-check, because asking again cannot change that
+answer. React never infers readiness from a click or from backup existence
+alone.
 
 An existing backup without its local decryption key is recovered in place.
 Automatic setup is permitted only when the authoritative probe reports no

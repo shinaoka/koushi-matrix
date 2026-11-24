@@ -2,7 +2,13 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { SessionVerificationGate } from "./components/SessionVerificationGate";
+import {
+  SessionVerificationGate,
+  secureBackupFailureIsRetryable,
+  secureBackupFocusRecheckDue,
+  secureBackupRecheckCanHelp,
+  secureBackupGateOperational
+} from "./components/SessionVerificationGate";
 import { setRendererSelectedAccountTabId } from "./backend/client";
 import { createDesktopApiFixture } from "./test/desktopApiFixture";
 import { defaultSnapshotResponse } from "./test/tauriIpcMock";
@@ -49,6 +55,98 @@ const provisionalPhaseCases: Array<[ProvisionalPhase, string]> = [
   [{ recheckingTrust: { failureKind: "timeout" } }, "Finishing sign-in…"],
   [{ kind: "recheckingTrust", failureKind: "timeout" }, "Finishing sign-in…"],
 ];
+
+describe("Secure Backup gate presentation (#2086)", () => {
+  const blocked = (
+    failure: SecureBackupGateFailureKind,
+    detail?: SecureBackupFailureDetail | null
+  ): SecureBackupGateState => ({ kind: "blockedFailed", failure, detail });
+
+  test("treats the operational states as usable and the failures as not", () => {
+    expect(secureBackupGateOperational({ kind: "ready" })).toBe(true);
+    expect(
+      secureBackupGateOperational({ kind: "uploadingExistingKeys", pending: "zero" })
+    ).toBe(true);
+    expect(
+      secureBackupGateOperational({ kind: "degradedRetrying", failure: "network" })
+    ).toBe(true);
+    expect(secureBackupGateOperational(blocked("serverResponse"))).toBe(false);
+    expect(secureBackupGateOperational({ kind: "checking" })).toBe(false);
+  });
+
+  test("retries only what the structured detail says can succeed", () => {
+    expect(secureBackupFailureIsRetryable("serverResponse", null)).toBe(false);
+    expect(
+      secureBackupFailureIsRetryable("serverResponse", {
+        stage: "inspectServerTrust",
+        transport: "httpResponse",
+        httpStatus: 503,
+        matrixErrorKind: null,
+        retryable: true
+      })
+    ).toBe(true);
+    expect(
+      secureBackupFailureIsRetryable("unauthorized", {
+        stage: "inspectServerTrust",
+        transport: "httpResponse",
+        httpStatus: 401,
+        matrixErrorKind: null,
+        retryable: false
+      })
+    ).toBe(false);
+    expect(secureBackupFailureIsRetryable("network", null)).toBe(true);
+    expect(secureBackupFailureIsRetryable("timeout", null)).toBe(true);
+  });
+
+  test("offers a re-check unless Rust recorded a failure it cannot retry", () => {
+    const retryable = blocked("serverResponse", {
+      stage: "inspectServerTrust",
+      transport: "httpResponse",
+      httpStatus: 503,
+      matrixErrorKind: null,
+      retryable: true
+    });
+    expect(secureBackupRecheckCanHelp(retryable)).toBe(true);
+    expect(secureBackupRecheckCanHelp(blocked("network", null))).toBe(true);
+    // Nothing has failed yet: the automatic inspection is still running, so the
+    // warning keeps the "while Koushi retries" wording and offers a re-check.
+    expect(secureBackupRecheckCanHelp({ kind: "checking" })).toBe(true);
+    expect(secureBackupRecheckCanHelp({ kind: "ready" })).toBe(true);
+    // A rejected credential never becomes ready by being asked again.
+    expect(
+      secureBackupRecheckCanHelp(
+        blocked("unauthorized", {
+          stage: "inspectServerTrust",
+          transport: "httpResponse",
+          httpStatus: 401,
+          matrixErrorKind: null,
+          retryable: false
+        })
+      )
+    ).toBe(false);
+    expect(secureBackupRecheckCanHelp(blocked("unauthorized", null))).toBe(false);
+  });
+
+  test("asks for a re-check on window return only for a retryable blocking gate", () => {
+    const retryable = blocked("serverResponse", {
+      stage: "inspectServerTrust",
+      transport: "httpResponse",
+      httpStatus: 503,
+      matrixErrorKind: null,
+      retryable: true
+    });
+    expect(secureBackupFocusRecheckDue(retryable, 0, 60_000)).toBe(true);
+    // The interval keeps a focus storm from becoming a poll.
+    expect(secureBackupFocusRecheckDue(retryable, 60_000, 60_100)).toBe(false);
+    // Nothing to ask about: a rejected credential, an already-usable gate, and
+    // a gate that is still checking.
+    expect(
+      secureBackupFocusRecheckDue(blocked("unauthorized", null), 0, 60_000)
+    ).toBe(false);
+    expect(secureBackupFocusRecheckDue({ kind: "ready" }, 0, 60_000)).toBe(false);
+    expect(secureBackupFocusRecheckDue({ kind: "checking" }, 0, 60_000)).toBe(false);
+  });
+});
 
 describe("SessionVerificationGate interactions", () => {
   function secureBackupSnapshot(

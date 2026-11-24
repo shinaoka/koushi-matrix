@@ -27,14 +27,18 @@ import type {
   E2eeTrustState,
   IdentityResetState,
   KeyBackupStatus,
+  SecureBackupGateState,
   VerificationFlowState
 } from "../../domain/types";
+import { secureBackupGateOperational } from "../SessionVerificationGate";
 
 export function TrustSection({
   trust,
   currentSessionStatus,
+  secureBackupGate,
   onBootstrapCrossSigning,
   onEnableKeyBackup,
+  onRetrySecureBackupInspection,
   onAcceptVerification,
   onConfirmSasVerification,
   onCancelVerification,
@@ -45,6 +49,13 @@ export function TrustSection({
 }: {
   trust: E2eeTrustState;
   currentSessionStatus: CurrentSessionStatusState;
+  /**
+   * #2086: the same Rust gate the composer's send-blocked notice reads. One
+   * truth: while it is not operational, this row must not report the backup as
+   * ready from a session-status reading that can be older.
+   */
+  secureBackupGate?: SecureBackupGateState;
+  onRetrySecureBackupInspection?: () => void;
   onBootstrapCrossSigning: () => void;
   onEnableKeyBackup: () => void;
   onAcceptVerification: (flowId: number) => void;
@@ -58,7 +69,14 @@ export function TrustSection({
   const currentSessionDetails = currentSessionStatusDetails(currentSessionStatus);
   const overall = trustOverallStatus(trust, currentSessionStatus);
   const crossSigningEstablished = currentSessionDetails?.is_cross_signed_by_owner === true;
-  const keyBackupEstablished = currentSessionDetails?.key_backup === "ready";
+  // #2086: a gate that is not usable decides this row, because the session
+  // reading may predate the failure the gate already recorded. A usable gate
+  // does not decide it: "ready" means sending is admitted, not that a server
+  // backup exists, so a truly disabled backup must still offer Enable.
+  const gateBlocksKeyBackup =
+    secureBackupGate !== undefined && !secureBackupGateOperational(secureBackupGate);
+  const keyBackupEstablished =
+    !gateBlocksKeyBackup && currentSessionDetails?.key_backup === "ready";
 
   return (
     <section className="settings-section trust-section" aria-label={t("trust.encryption")}>
@@ -106,21 +124,33 @@ export function TrustSection({
           icon={<KeyRound size={16} />}
           label={t("trust.keyBackup")}
           value={
-            currentSessionDetails
-              ? currentSessionKeyBackupLabel(currentSessionDetails.key_backup)
-              : keyBackupStatusLabel(trust.key_backup)
+            gateBlocksKeyBackup
+              ? t("sessionStatus.backupNotReady")
+              : currentSessionDetails
+                ? currentSessionKeyBackupLabel(currentSessionDetails.key_backup)
+                : keyBackupStatusLabel(trust.key_backup)
           }
           tone={
-            currentSessionDetails
-              ? currentSessionDetails.key_backup === "ready"
-                ? "good"
-                : currentSessionDetails.key_backup === "disabled"
-                  ? "warning"
-                  : "neutral"
-              : keyBackupTone(trust.key_backup)
+            gateBlocksKeyBackup
+              ? "warning"
+              : currentSessionDetails
+                ? currentSessionDetails.key_backup === "ready"
+                  ? "good"
+                  : currentSessionDetails.key_backup === "disabled"
+                    ? "warning"
+                    : "neutral"
+                : keyBackupTone(trust.key_backup)
           }
           action={
-            !keyBackupEstablished && keyBackupActionAvailable(trust.key_backup) ? (
+            gateBlocksKeyBackup ? (
+              onRetrySecureBackupInspection ? (
+                <TrustActionButton
+                  icon={<RotateCcw size={14} />}
+                  label={t("composer.sendBlockedSecureBackupRecheck")}
+                  onClick={onRetrySecureBackupInspection}
+                />
+              ) : null
+            ) : !keyBackupEstablished && keyBackupActionAvailable(trust.key_backup) ? (
               <TrustActionButton
                 icon={<KeyRound size={14} />}
                 label={t("trust.enableKeyBackup")}

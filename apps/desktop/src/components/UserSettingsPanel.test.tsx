@@ -726,6 +726,92 @@ describe("UserSettingsPanel", () => {
     expect(onResetLocalData).toHaveBeenCalledTimes(1);
   });
 
+  // #2086: the notice beside the composer and this page disagreed — the gate had
+  // recorded a failed inspection while the row still read "Ready" from an older
+  // session-status reading. One truth: the gate wins while it is not usable.
+  test("Encryption reads the Secure Backup gate instead of a stale ready reading", () => {
+    const onRetrySecureBackupInspection = vi.fn();
+    const readyDetails = {
+      device_display_name: "Koushi on macOS",
+      device_id: "FAKEDEVICE",
+      authentication_method: "password" as const,
+      sync_state: "running" as const,
+      is_cross_signed_by_owner: true,
+      own_identity_verification: "unverified" as const,
+      key_backup: "ready" as const,
+      verification: "verified" as const,
+      checked_at_ms: 1_787_665_620_000
+    };
+    const view = () => (
+      <UserSettingsPanel
+        initialCategory="encryption"
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        currentSessionStatus={{ status: "ready", request_id: 41, details: readyDetails }}
+        e2eeTrust={e2eeTrust}
+        secureBackupGate={{
+          kind: "blockedFailed",
+          failure: "serverResponse",
+          detail: {
+            stage: "inspectServerTrust",
+            transport: "httpResponse",
+            httpStatus: 503,
+            matrixErrorKind: null,
+            retryable: true
+          }
+        }}
+        onRetrySecureBackupInspection={onRetrySecureBackupInspection}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+      />
+    );
+
+    const { rerender } = render(view());
+    expect(screen.queryByText(t("sessionStatus.backupReady"))).toBeNull();
+    expect(screen.getAllByText(t("sessionStatus.backupNotReady")).length).toBeGreaterThan(0);
+    fireEvent.click(
+      screen.getByRole("button", { name: t("composer.sendBlockedSecureBackupRecheck") })
+    );
+    expect(onRetrySecureBackupInspection).toHaveBeenCalledTimes(1);
+
+    // Once the gate reports an operational backup, the same row follows it
+    // again, and no re-check is offered because there is nothing to re-check.
+    rerender(
+      <UserSettingsPanel
+        initialCategory="encryption"
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        currentSessionStatus={{ status: "ready", request_id: 41, details: readyDetails }}
+        e2eeTrust={e2eeTrust}
+        secureBackupGate={{ kind: "ready" }}
+        onRetrySecureBackupInspection={onRetrySecureBackupInspection}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+      />
+    );
+    expect(screen.getAllByText(t("sessionStatus.backupReady")).length).toBeGreaterThan(0);
+    expect(screen.queryByText(t("sessionStatus.backupNotReady"))).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: t("composer.sendBlockedSecureBackupRecheck") })
+    ).toBeNull();
+  });
+
   test("hides the account switcher when there are no saved accounts", () => {
     render(
       <UserSettingsPanel
