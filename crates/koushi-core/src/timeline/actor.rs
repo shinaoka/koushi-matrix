@@ -2757,7 +2757,16 @@ impl TimelineActor {
                     if observation.display_window_revision
                         != Some(self.display_projection.window_revision)
                     {
-                        return;
+                        // #2092: a prepend that landed while the observation was
+                        // on its way supersedes the window it names without
+                        // changing what it says about the reader's end. Re-anchor
+                        // it rather than dropping it: a dropped observation has no
+                        // re-attempt, so the room stays unread at the bottom.
+                        if !self.display_projection.supersedes_observation(&observation) {
+                            return;
+                        }
+                        observation.display_window_revision =
+                            Some(self.display_projection.window_revision);
                     }
                     if !self.display_projection.observation_is_current(&observation) {
                         if observation.visible_gap_ids.is_empty() {
@@ -3329,6 +3338,10 @@ mod issue_1892_tests;
 #[cfg(test)]
 #[path = "actor/issue_1916_tests.rs"]
 mod issue_1916_tests;
+
+#[cfg(test)]
+#[path = "actor/issue_2092_tests.rs"]
+mod issue_2092_tests;
 
 #[cfg(test)]
 #[path = "actor/issue_1783_tests.rs"]

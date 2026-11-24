@@ -173,6 +173,32 @@ fn window_observation_requires_revision_and_represented_ordered_endpoints() {
 }
 
 #[test]
+fn a_superseded_observation_is_reanchored_only_at_the_same_end() {
+    let canonical = items(1000);
+    let state = DisplayProjectionState::from_canonical_window(&canonical, 880..1000);
+    // The same reader after a prepend: the window starts higher and its end is
+    // still the row the observation named, but the revision it reported is stale.
+    let after_prepend = DisplayProjectionState::from_canonical_window(&canonical, 870..1000);
+    let mut settled = observe(&state, 900, 999);
+    settled.display_window_revision = Some(after_prepend.window_revision.wrapping_sub(1));
+    assert!(!after_prepend.observation_is_current(&settled));
+    assert!(
+        after_prepend.supersedes_observation(&settled),
+        "#2092: a prepend keeps the observed end, so the settled observation must not be dropped"
+    );
+    // The window moved past the reader instead: the observation names an old end,
+    // so a newer row would be marked read without being seen.
+    assert!(
+        !after_prepend.supersedes_observation(&observe(&state, 900, 950)),
+        "#2092: an observation that ends below the newest row describes a span the reader has not seen"
+    );
+    // The rows the observation names are no longer projected at all.
+    let mut dropped_start = settled.clone();
+    dropped_start.first_visible_event_id = Some("$gone:example.invalid".to_owned());
+    assert!(!after_prepend.supersedes_observation(&dropped_start));
+}
+
+#[test]
 fn cached_window_movement_preserves_manager_owned_pending_sends() {
     let canonical = items(1000);
     let mut state = DisplayProjectionState::from_canonical_window(&canonical, 880..1000);
