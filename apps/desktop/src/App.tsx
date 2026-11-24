@@ -178,6 +178,7 @@ import {
   timelineDiagnosticsEqual,
   timelineDiagnosticsLogMessage
 } from "./app/qaDiagnostics";
+import { useAccountTabAvatarDemands } from "./app/useAccountTabAvatarDemands";
 import { useDesktopAttentionEffects } from "./app/useDesktopAttentionEffects";
 import {
   claimLaunchNotificationRequest,
@@ -922,6 +923,7 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
           homeserver: null,
           displayName: null,
           avatarSourceRef: null,
+          avatarMxcUri: null,
           status: "addAccount",
           unreadCount: 0
         }],
@@ -1101,6 +1103,9 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
       }
     }
   }
+
+  // #2059: every tab shows its account's avatar, including the background ones.
+  useAccountTabAvatarDemands(accountTabs);
 
   const selectedTabId = accountTabs?.selectedTabId ?? null;
   return (

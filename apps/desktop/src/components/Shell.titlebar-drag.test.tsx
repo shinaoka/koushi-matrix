@@ -25,6 +25,7 @@ const tabs = {
       homeserver: "https://matrix.org",
       displayName: "Member 1",
       avatarSourceRef: null,
+      avatarMxcUri: null,
       status: "ready" as const,
       unreadCount: 0
     }

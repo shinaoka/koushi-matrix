@@ -373,6 +373,7 @@ export function createReadmeFixture(
         homeserver: "work.local",
         displayName: text.accountTabs.work,
         avatarSourceRef: null,
+        avatarMxcUri: null,
         status: "ready",
         unreadCount: 0
       },
@@ -382,6 +383,7 @@ export function createReadmeFixture(
         homeserver: "home.local",
         displayName: text.accountTabs.home,
         avatarSourceRef: null,
+        avatarMxcUri: null,
         status: "ready",
         unreadCount: 4
       },
@@ -391,6 +393,7 @@ export function createReadmeFixture(
         homeserver: "club.local",
         displayName: text.accountTabs.club,
         avatarSourceRef: null,
+        avatarMxcUri: null,
         status: "ready",
         unreadCount: 12
       }

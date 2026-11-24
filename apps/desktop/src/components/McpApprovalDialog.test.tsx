@@ -28,6 +28,7 @@ const tabs: AccountTabSummary[] = [{
   homeserver: "example.invalid",
   displayName: "Synthetic Workspace",
   avatarSourceRef: null,
+  avatarMxcUri: null,
   status: "ready",
   unreadCount: 0
 } as AccountTabSummary];

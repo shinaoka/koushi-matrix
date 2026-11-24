@@ -183,6 +183,7 @@ describe("ContextualRightPanel", () => {
               homeserver: "https://matrix.org",
               displayName: "Member 1",
               avatarSourceRef: null,
+              avatarMxcUri: null,
               status: "ready",
               unreadCount: 3
             },
@@ -192,6 +193,7 @@ describe("ContextualRightPanel", () => {
               homeserver: "https://uni.example",
               displayName: "Lab",
               avatarSourceRef: null,
+              avatarMxcUri: null,
               status: "needsVerification",
               unreadCount: 0
             }
@@ -340,6 +342,7 @@ describe("ContextualRightPanel", () => {
     expect(productionTauriImportFiles()).toEqual([
       "backend/client.ts",
       "backend/tauri/clipboardImagePort.ts",
+      "backend/tauri/desktopAccountTabAvatarPort.ts",
       "backend/tauri/desktopAttentionPort.ts",
       "backend/tauri/desktopEventPort.ts",
       "backend/tauri/linkMediaPort.ts",
@@ -2441,6 +2444,7 @@ describe("TopBar account shell rendering", () => {
           homeserver: "https://matrix.org",
           displayName: "Work",
           avatarSourceRef: null,
+          avatarMxcUri: null,
           status: "ready",
           unreadCount: 0
         },
@@ -2450,6 +2454,7 @@ describe("TopBar account shell rendering", () => {
           homeserver: "https://example.org",
           displayName: "Personal",
           avatarSourceRef: null,
+          avatarMxcUri: null,
           status: "error",
           unreadCount: 0
         },
@@ -2459,6 +2464,7 @@ describe("TopBar account shell rendering", () => {
           homeserver: null,
           displayName: "Archived",
           avatarSourceRef: null,
+          avatarMxcUri: null,
           status: "signedOut",
           unreadCount: 0
         }

@@ -263,6 +263,9 @@ pub(crate) struct AccountTabSummary {
     pub account_key: Option<String>,
     pub homeserver: Option<String>,
     pub display_name: Option<String>,
+    /// The account's own avatar media resource, independent of whether a
+    /// thumbnail has been fetched yet (#2059).
+    pub avatar_mxc_uri: Option<String>,
     pub avatar_source_ref: Option<String>,
     pub status: AccountTabStatus,
     pub unread_count: u64,
@@ -549,6 +552,12 @@ fn account_tabs_snapshot_from_states(
                 | koushi_state::SessionState::Locked(_)
                 | koushi_state::SessionState::CapabilityBlocked { .. } => AccountTabStatus::Error,
             };
+            let avatar_mxc_uri = state
+                .profile
+                .own
+                .avatar
+                .as_ref()
+                .map(|avatar| avatar.mxc_uri.clone());
             let avatar_source_ref =
                 state
                     .profile
@@ -567,6 +576,7 @@ fn account_tabs_snapshot_from_states(
                 account_key: tab.account_key.map(|key| key.0),
                 homeserver: tab.homeserver,
                 display_name: state.profile.own.display_name,
+                avatar_mxc_uri,
                 avatar_source_ref,
                 status,
                 unread_count: attention.unread_count,

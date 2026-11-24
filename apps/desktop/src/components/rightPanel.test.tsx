@@ -391,6 +391,7 @@ describe("ContextualRightPanel settings modal", () => {
         homeserver: "https://matrix.org",
         displayName: "Work",
         avatarSourceRef: null,
+        avatarMxcUri: null,
         status: "ready",
         unreadCount: 0
       }],

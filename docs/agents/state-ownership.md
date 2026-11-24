@@ -972,6 +972,14 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
 - Own-profile state, per-user profile cache, room avatars, and space avatars are
   Rust-owned DTOs. React renders them and dispatches `set_display_name` /
   `set_avatar`; do not add React-local profile success/failure semantics.
+- Each account tab renders its own account's avatar, so the tab strip is one of
+  those demand surfaces: `AccountTabSummary` carries the account's own avatar MXC
+  whether or not a thumbnail exists yet, and the strip asks that account's own
+  client for it (#2059). Only background tabs: the selected account's demand
+  stays on its timeline's transport, and a tab without a session is not asked at
+  all. React still only submits demand — the tab shows initials until the
+  snapshot carries a Ready reference, and never reuses one account's image for
+  another.
 - React may discover visible/not-requested avatar MXCs and submit typed thumbnail
   demand. After submission, `AccountActor` owns single-flight deduplication,
   bounded concurrency, the two-attempt network policy and the session-terminal

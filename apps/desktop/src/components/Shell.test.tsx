@@ -104,7 +104,7 @@ describe("Rust-projected workspace shell", () => {
     render(<AccountTabStrip
       tabs={[{
         id: "account-one", accountKey: "@alice:example.invalid", homeserver: "https://example.invalid",
-        displayName: "Alice", avatarSourceRef: null, status: "ready", unreadCount: 2, inviteCount: 1
+        displayName: "Alice", avatarMxcUri: null, avatarSourceRef: null, status: "ready", unreadCount: 2, inviteCount: 1
       }]}
       selectedTabId="account-one"
       onSelect={vi.fn()}
@@ -805,6 +805,72 @@ describe("Rust-projected workspace shell", () => {
   });
 });
 
+describe("account tab avatars (#2059)", () => {
+  const tab = (overrides: Partial<AccountTabSummary> & Pick<AccountTabSummary, "id">): AccountTabSummary => ({
+    accountKey: `@${overrides.id}:example.invalid`,
+    homeserver: "https://example.invalid",
+    displayName: overrides.id,
+    avatarMxcUri: `mxc://example.invalid/${overrides.id}`,
+    avatarSourceRef: null,
+    status: "ready",
+    unreadCount: 0,
+    ...overrides
+  });
+
+  function strip(tabs: AccountTabSummary[]) {
+    return (
+      <AccountTabStrip
+        tabs={tabs}
+        selectedTabId={tabs[0]?.id ?? null}
+        onSelect={vi.fn()}
+        onAdd={vi.fn()}
+        onRemove={vi.fn()}
+      />
+    );
+  }
+
+  function avatarOf(name: string): Element {
+    return screen.getByRole("button", { name }).querySelector(".account-tab-avatar")!;
+  }
+
+  it("keeps initials until an account's thumbnail is ready, then shows it", () => {
+    // The desktop shell renders Core's thumbnail ref through the Tauri media
+    // protocol; the browser preview port passes refs like this through as null.
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    const unready = [
+      tab({ id: "Selected" }),
+      tab({ id: "Background" })
+    ];
+    const { rerender } = render(strip(unready));
+
+    // A background account whose avatar Core has not fetched yet: the strip
+    // knows the media resource, not a renderable image.
+    expect(avatarOf("Selected: Ready").querySelector("img")).toBeNull();
+    expect(avatarOf("Background: Ready").textContent).toBe("B");
+
+    rerender(
+      strip([
+        tab({ id: "Selected", avatarSourceRef: "avatar/0123456789abcdef" }),
+        tab({ id: "Background" })
+      ])
+    );
+
+    expect(avatarOf("Selected: Ready").querySelector("img")?.getAttribute("src")).toMatch(
+      /avatar\/0123456789abcdef$/
+    );
+    expect(avatarOf("Selected: Ready").textContent).toBe("");
+    // The account with no fetched thumbnail keeps its initials.
+    expect(avatarOf("Background: Ready").textContent).toBe("B");
+  });
+
+  it("keeps initials for an account that has no avatar at all", () => {
+    render(strip([tab({ id: "Plain", avatarMxcUri: null })]));
+
+    expect(avatarOf("Plain: Ready").querySelector("img")).toBeNull();
+    expect(avatarOf("Plain: Ready").textContent).toBe("P");
+  });
+});
+
 describe("composerSendingAccount", () => {
   const tab = (
     id: string,
@@ -816,6 +882,7 @@ describe("composerSendingAccount", () => {
     homeserver: null,
     displayName: "Same Name",
     avatarSourceRef: null,
+    avatarMxcUri: null,
     status,
     unreadCount: 0
   });

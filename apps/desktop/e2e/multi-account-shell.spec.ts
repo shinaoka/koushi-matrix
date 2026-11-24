@@ -20,6 +20,7 @@ function accountTabs(
         homeserver: "https://harness.example.invalid",
         displayName: "Harness",
         avatarSourceRef: null,
+        avatarMxcUri: null,
         status: "ready",
         unreadCount: 0
       },
@@ -30,6 +31,7 @@ function accountTabs(
             homeserver: "https://bob.example.invalid",
             displayName: "Bob",
             avatarSourceRef: null,
+            avatarMxcUri: null,
             status: bobStatus,
             unreadCount: 0
           }]
@@ -41,6 +43,7 @@ function accountTabs(
             homeserver: "https://harness.example.invalid",
             displayName: "New account",
             avatarSourceRef: null,
+            avatarMxcUri: null,
             status: "addAccount" as const,
             unreadCount: 0
           }]

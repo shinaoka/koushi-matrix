@@ -73,6 +73,8 @@ export interface AccountTabSummary {
   accountKey: string | null;
   homeserver: string | null;
   displayName: string | null;
+  /** The account's own avatar media resource, independent of its thumbnail (#2059). */
+  avatarMxcUri: string | null;
   avatarSourceRef: string | null;
   status: AccountTabStatus;
   unreadCount: number;

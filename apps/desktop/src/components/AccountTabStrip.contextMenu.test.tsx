@@ -12,6 +12,7 @@ function tab(overrides: Partial<AccountTabSummary> & Pick<AccountTabSummary, "id
     homeserver: "https://example.invalid",
     displayName: null,
     avatarSourceRef: null,
+    avatarMxcUri: null,
     status: "ready",
     unreadCount: 0,
     inviteCount: 0,
