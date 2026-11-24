@@ -20,8 +20,10 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type FormEvent,
   type MouseEvent
 } from "react";
@@ -37,7 +39,12 @@ import type { MediaSaveNameFacts } from "../../backend/linkMediaPort";
 import type { TimelineNoticeI18nKey } from "../../domain/coreEvents";
 import { contextMenuItems } from "../../domain/contextMenus";
 import { MESSAGE_PLACEHOLDER_PATTERN, t, type MessageId } from "../../i18n/messages";
-import { onMenuKeyDown } from "../ContextMenuSurface";
+import { menuTabTarget, onMenuKeyDown } from "../ContextMenuSurface";
+import {
+  FloatingLayer,
+  useFloatingPlacement,
+  type FloatingPlacementResult
+} from "../floatingLayer";
 import { LazyEmojiPicker } from "../LazyEmojiPicker";
 import { Tooltip } from "../Tooltip";
 import { HistoryKeyRecoveryControl } from "../HistoryKeyRecoveryControl";
@@ -227,6 +234,72 @@ function selectedRangeText(selection: Selection): string {
   }
   return parts.join("\n");
 }
+
+/// The Forward destination list (#2078): a column wide enough for a room name,
+/// as tall as the space its anchor leaves, and scrollable past that. The cap is
+/// what a large window is allowed to use; a side counts as roomy from
+/// `FORWARD_LIST_COMFORTABLE_BLOCK_SIZE_PX`, so a message near the bottom edge
+/// opens the list upwards instead of showing three rows of it.
+const FORWARD_LIST_INLINE_SIZE_PX = 240;
+const FORWARD_LIST_PREFERRED_BLOCK_SIZE_PX = 640;
+const FORWARD_LIST_COMFORTABLE_BLOCK_SIZE_PX = 240;
+
+/**
+ * Position the destination list at a resolved placement.
+ *
+ * The list is content-sized (a shorter list must not draw an empty box), so an
+ * `above` box anchors its block-end edge: the resolver's `top` assumes a box
+ * exactly `blockSize` tall and would otherwise float a short list far away from
+ * the item that opened it. The titlebar-safe and viewport clamping stay in the
+ * resolver; this only pins the edge that must not move.
+ */
+export function forwardListStyle(
+  resolved: FloatingPlacementResult | null
+): CSSProperties | undefined {
+  if (!resolved) {
+    // Not hidden: the layer resolves the placement in a layout effect, so the
+    // first commit never reaches the screen, and a hidden panel cannot take the
+    // focus that opening it asks for.
+    return undefined;
+  }
+  return {
+    inlineSize: `${resolved.inlineSize}px`,
+    left: `${resolved.left}px`,
+    maxBlockSize: `${resolved.blockSize}px`,
+    ...(resolved.placement === "above"
+      ? { bottom: `${window.innerHeight - (resolved.top + resolved.blockSize)}px` }
+      : { top: `${resolved.top}px` })
+  };
+}
+
+/**
+ * Whether any part of a Forward row is inside the box that scrolls it (#2078).
+ *
+ * A press may only act on a row the reader can see. A row cut in half by the
+ * list's edge is one they can see — and pressing it is deliberate — so the press
+ * is taken; only a row with no drawn part at all is refused. Chromium scrolls
+ * such a row into view on mousedown and WebKit does not, so a "fully drawn" rule
+ * would also make the two engines behave differently.
+ */
+function rowVisibleInScrollingList(
+  row: HTMLElement,
+  list: HTMLElement | null
+): boolean {
+  if (!list) {
+    return true;
+  }
+  const rowRect = row.getBoundingClientRect();
+  const listRect = list.getBoundingClientRect();
+  return rowRect.top < listRect.bottom && rowRect.bottom > listRect.top;
+}
+
+/** The keys a menu's roving focus handles, so a nested menu can hold them. */
+const ROVING_MENU_KEYS: ReadonlySet<string> = new Set([
+  "ArrowDown",
+  "ArrowUp",
+  "Home",
+  "End"
+]);
 
 const ignoreSendQueueAction = () => undefined;
 
@@ -524,6 +597,8 @@ function TimelineItemRowView({
   const [isReactionPickerOpen, setReactionPickerOpen] = useState(false);
   const [isActionMenuOpen, setActionMenuOpen] = useState(false);
   const [isForwardMenuOpen, setForwardMenuOpen] = useState(false);
+  const forwardMenuItemRef = useRef<HTMLDivElement>(null);
+  const forwardMenuListRef = useRef<HTMLDivElement>(null);
   const [actionMenuPlacement, setActionMenuPlacement] = useState<"above" | "below">("above");
   const [revealedSpoilers, setRevealedSpoilers] = useState<ReadonlySet<string>>(
     () => new Set()
@@ -557,13 +632,46 @@ function TimelineItemRowView({
     firstActionMenuItemRef.current?.focus();
   }, [isActionMenuOpen]);
 
+  // #2078: the destination list is a viewport-placed panel in the body layer.
+  // The timeline clips its rows (`.message-list { overflow: hidden }`), so a
+  // list anchored inside the row could only ever be as tall as the room left
+  // below the message, and the rooms past that edge were unreachable.
+  const forwardMenuPlacement = useFloatingPlacement({
+    align: "end",
+    anchorRef: forwardMenuItemRef,
+    blockSize: FORWARD_LIST_PREFERRED_BLOCK_SIZE_PX,
+    comfortableBlockSize: FORWARD_LIST_COMFORTABLE_BLOCK_SIZE_PX,
+    enabled: isForwardMenuOpen,
+    inlineSize: FORWARD_LIST_INLINE_SIZE_PX,
+    placement: "below"
+  });
+
+  // A submenu takes the focus, so ↓/↑ work without a pointer and Escape can
+  // return to the item that opened it. A layout effect, so the focus lands
+  // inside the same commit that inserted the panel: the click that opened it
+  // would otherwise leave the focus on the item it was pressed on.
+  useLayoutEffect(() => {
+    if (!isForwardMenuOpen) {
+      return;
+    }
+    forwardMenuListRef.current
+      ?.querySelector<HTMLElement>('[role="menuitem"]')
+      ?.focus();
+  }, [isForwardMenuOpen]);
+
   useEffect(() => {
     if (!isActionMenuOpen) {
       return;
     }
     const handlePointerDown = (event: PointerEvent) => {
       const control = actionMenuControlRef.current;
-      if (!control || control.contains(event.target as Node)) {
+      // The Forward list renders in the body-level floating layer (#2078), so
+      // containment is the row's control box plus that panel.
+      if (
+        !control ||
+        control.contains(event.target as Node) ||
+        forwardMenuListRef.current?.contains(event.target as Node)
+      ) {
         return;
       }
       setActionMenuOpen(false);
@@ -594,6 +702,13 @@ function TimelineItemRowView({
     setActionMenuOpen(false);
     setForwardMenuOpen(false);
     actionMenuTriggerRef.current?.focus();
+  }, []);
+
+  // Closing the submenu alone returns to the item that opened it, so the menu
+  // behind it stays usable (#2078).
+  const closeForwardList = useCallback(() => {
+    setForwardMenuOpen(false);
+    forwardMenuItemRef.current?.querySelector("button")?.focus();
   }, []);
 
   const revealSpoiler = useCallback((spoilerKey: string) => {
@@ -751,8 +866,15 @@ function TimelineItemRowView({
     onRequestRoomKey(roomId, eventId);
   }, [eventId, item.unable_to_decrypt?.can_request_keys, onRequestRoomKey, roomId]);
   const submitForward = useCallback(
-    (destinationRoomId: string) => {
+    (destinationRoomId: string, row: HTMLElement | null) => {
       if (!eventId || !item.actions?.can_forward) {
+        return;
+      }
+      // #2078: never forward to a row that is not drawn whole. Taking the focus
+      // already scrolls its row into view; a resize after that can still push it
+      // out of the scrolled list, so the submit path re-checks and only scrolls.
+      if (row && !rowVisibleInScrollingList(row, forwardMenuListRef.current)) {
+        row.scrollIntoView({ block: "nearest" });
         return;
       }
       onForwardMessage(roomId, eventId, destinationRoomId);
@@ -1353,7 +1475,7 @@ function TimelineItemRowView({
             </button>
           ) : null}
           {canForward ? (
-            <div className="message-forward-menu-control">
+            <div className="message-forward-menu-control" ref={forwardMenuItemRef}>
               <button
                 ref={
                   !senderAliasTarget &&
@@ -1374,20 +1496,71 @@ function TimelineItemRowView({
                 <span>{t("timeline.forwardMessage")}</span>
               </button>
               {isForwardMenuOpen ? (
-                <div className="message-forward-menu" role="menu">
-                  {forwardDestinations.map((destination) => (
-                    <button
-                      className="message-action-menu-item"
-                      type="button"
-                      role="menuitem"
-                      key={destination.room_id}
-                      onClick={() => submitForward(destination.room_id)}
-                    >
-                      <MessageCircle size={14} aria-hidden="true" />
-                      <span dir="auto">{destination.display_name}</span>
-                    </button>
-                  ))}
-                </div>
+                <FloatingLayer>
+                  {/* #2078: the list is bounded by the space its anchor leaves
+                      and scrolls its own rows, so every room is reachable and a
+                      focused row can always be brought into view. */}
+                  <div
+                    ref={forwardMenuListRef}
+                    className="message-forward-menu"
+                    role="menu"
+                    aria-label={t("timeline.forwardMessage")}
+                    style={forwardListStyle(forwardMenuPlacement)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        closeForwardList();
+                        return;
+                      }
+                      if (event.key === "Tab") {
+                        // #2078: the list is in the body-level layer, so the
+                        // browser's own Tab walk never reaches these rows in
+                        // document order. Tab is walked here instead, and at
+                        // either end it leaves the list — forwards it would
+                        // otherwise wrap out of the document with the panel
+                        // still open and Escape no longer able to reach it.
+                        const next = menuTabTarget(event.currentTarget, event.shiftKey);
+                        if (!next) {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          closeForwardList();
+                          return;
+                        }
+                        event.preventDefault();
+                        event.stopPropagation();
+                        next.focus();
+                        return;
+                      }
+                      // Roving stays inside the list: the outer menu must not
+                      // move the focus back out on the same key press.
+                      if (ROVING_MENU_KEYS.has(event.key)) {
+                        event.stopPropagation();
+                      }
+                      onMenuKeyDown(event, event.currentTarget);
+                    }}
+                  >
+                    {forwardDestinations.map((destination) => (
+                      <button
+                        className="message-action-menu-item"
+                        type="button"
+                        role="menuitem"
+                        key={destination.room_id}
+                        onClick={(event) =>
+                          submitForward(destination.room_id, event.currentTarget)
+                        }
+                        // Whichever way focus arrives — Tab, the arrows, or the
+                        // browser's own focus walk — its row comes into view.
+                        onFocus={(event) =>
+                          event.currentTarget.scrollIntoView({ block: "nearest" })
+                        }
+                      >
+                        <MessageCircle size={14} aria-hidden="true" />
+                        <span dir="auto">{destination.display_name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </FloatingLayer>
               ) : null}
             </div>
           ) : null}

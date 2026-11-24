@@ -726,7 +726,9 @@ test("message action menu dispatches source and forward through typed Rust contr
   await row.hover();
   await row.getByRole("button", { name: "Message actions" }).click();
   await row.getByRole("menuitem", { name: "Forward" }).click();
-  await row.getByRole("menuitem", { name: "Harness Room" }).click();
+  // #2078: the destination list renders in the body-level floating layer, so it
+  // is no longer scoped to the row.
+  await page.locator(".message-forward-menu").getByRole("menuitem", { name: "Harness Room" }).click();
 
   await expect.poll(() => invocationCount(page, "forward_message")).toBeGreaterThanOrEqual(1);
   await expect

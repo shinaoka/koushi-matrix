@@ -83,6 +83,28 @@ export function moveRovingMenuFocus(
   items[nextIndex].focus();
 }
 
+/**
+ * The row a Tab press moves to inside a menu, or null at either end (#2078).
+ *
+ * A menu that renders in the body-level floating layer is not in the browser's
+ * own Tab order — WebKit leaves such a panel at once — so walking the rows has
+ * to be asked for. The caller owns what happens at either end: this only says
+ * which row is next.
+ */
+export function menuTabTarget(
+  container: HTMLElement,
+  backwards: boolean
+): HTMLElement | null {
+  const rows = Array.from(
+    container.querySelectorAll<HTMLElement>('[role^="menuitem"]:not([hidden])')
+  ).filter((item) => item.closest('[role="menu"]') === container);
+  const index = rows.indexOf(document.activeElement as HTMLElement);
+  if (index < 0) {
+    return null;
+  }
+  return rows[index + (backwards ? -1 : 1)] ?? null;
+}
+
 /** Keydown handler for a menu container: arrows rove, Escape bubbles to the caller. */
 export function onMenuKeyDown(
   event: React.KeyboardEvent<HTMLElement>,

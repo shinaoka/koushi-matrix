@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ContextMenuItem } from "../domain/contextMenus";
-import { ContextMenuSurface, contextMenuPosition } from "./ContextMenuSurface";
+import { ContextMenuSurface, contextMenuPosition, menuTabTarget } from "./ContextMenuSurface";
 
 afterEach(cleanup);
 
@@ -144,5 +144,49 @@ describe("ContextMenuSurface", () => {
       expect(document.activeElement).not.toBe(subFirst);
       expect(document.activeElement).not.toBe(subSecond);
     });
+  });
+});
+
+describe("menuTabTarget (#2078)", () => {
+  function buildMenu() {
+    const menu = document.createElement("div");
+    menu.setAttribute("role", "menu");
+    const rows = ["A", "B"].map((label) => {
+      const row = document.createElement("button");
+      row.setAttribute("role", "menuitem");
+      row.textContent = label;
+      menu.append(row);
+      return row;
+    });
+    // A nested menu's rows belong to the nested menu, not to the one above it.
+    const nested = document.createElement("div");
+    nested.setAttribute("role", "menu");
+    const nestedRow = document.createElement("button");
+    nestedRow.setAttribute("role", "menuitem");
+    nested.append(nestedRow);
+    menu.append(nested);
+    document.body.append(menu);
+    return { menu, rows, nestedRow };
+  }
+
+  it("walks forwards and backwards inside one menu level", () => {
+    const { menu, rows } = buildMenu();
+    rows[0].focus();
+    expect(menuTabTarget(menu, false)).toBe(rows[1]);
+    expect(menuTabTarget(menu, true)).toBeNull();
+    rows[1].focus();
+    expect(menuTabTarget(menu, true)).toBe(rows[0]);
+    expect(menuTabTarget(menu, false)).toBeNull();
+    menu.remove();
+  });
+
+  it("excludes a nested menu's rows and reports nothing when focus is outside", () => {
+    const { menu, rows, nestedRow } = buildMenu();
+    rows[1].focus();
+    expect(menuTabTarget(menu, false)).toBeNull();
+    nestedRow.focus();
+    expect(menuTabTarget(menu, false)).toBeNull();
+    expect(menuTabTarget(menu, true)).toBeNull();
+    menu.remove();
   });
 });
