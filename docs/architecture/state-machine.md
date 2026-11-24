@@ -564,9 +564,15 @@ stateDiagram-v2
   detail exists) — use bounded
   exponential backoff with jitter (5 seconds through 5 minutes), preserving the
   attempt across connectivity flaps until a successful backup inspection resets
-  the epoch. A pre-authority inconclusive inspection is `BlockedFailed`, has no
-  automatic monitor, and requires the explicit typed retry. Successful
-  authoritative inspection resumes periodic monitoring every 30 minutes.
+  the epoch. A pre-authority inconclusive inspection is `BlockedFailed`: sending
+  stays closed, and a retryable one keeps the same bounded backoff retry rather
+  than waiting for the explicit typed retry (#2086). A non-retryable one arms
+  no monitor, and a deferred inspection that expired because connectivity was
+  never proven arms no monitor either (#860). No retry opens admission: only a
+  completed inspection that reports a ready backup raises it, so a retry that
+  concludes "no server backup" or any other non-ready state leaves sending
+  closed. Successful authoritative inspection resumes periodic monitoring every
+  30 minutes.
 - Secure-backup setup admission is Rust-owned and uses the closed
   `SecureBackupSetupIntent`. `InitialSetup` is admitted only by `SetupRequired`;
   `Reenable { confirmed: true }` is admitted only by

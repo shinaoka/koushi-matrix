@@ -95,9 +95,13 @@ function inviteActionFailureKind(error: unknown): InviteActionFailureKind {
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
 import {
   SessionVerificationGate,
-  secureBackupFailureLabel,
-  secureBackupGateFailure
+  secureBackupFailurePresentation,
+  secureBackupFocusRecheckDue,
+  secureBackupGateFailure,
+  secureBackupGateFailureDetail,
+  secureBackupRecheckCanHelp
 } from "./components/SessionVerificationGate";
+import { SecureBackupSendNotice } from "./components/SecureBackupSendNotice";
 import {
   type TimelineDiagnosticLogEntry,
   type TimelineDiagnostics,
@@ -1702,6 +1706,43 @@ function AccountContent({
   // renderer context at the moment it was requested, not a per-render resample.
   const [rendererContextDiagnostics, setRendererContextDiagnostics] =
     useState<RendererContextDiagnostics | null>(null);
+  // #2086: regaining the window is the moment a user expects the notice to be
+  // gone. While Rust still reports a retryable blocking failure, ask it to
+  // re-check — at most once per 15 seconds, and never more often than Rust's own
+  // backoff. Rust still decides admission; a focus event cannot open sending.
+  const secureBackupFocusRecheckAtRef = useRef(0);
+  useEffect(() => {
+    const recheckOnReturn = () => {
+      if (document.visibilityState === "hidden") return;
+      const domain = snapshotRef.current?.state.domain;
+      if (!domain || domain.session.kind !== "ready") return;
+      if (!domain.conversation_access.readable) return;
+      if (!api.retrySecureBackupInspection) return;
+      // A manual re-check is already running; a second command would make Rust
+      // discard the settling inspection and look again.
+      if (secureBackupInspectionRetryInFlightRef.current) return;
+      const now = Date.now();
+      if (
+        !secureBackupFocusRecheckDue(
+          domain.secure_backup_gate,
+          secureBackupFocusRecheckAtRef.current,
+          now
+        )
+      ) {
+        return;
+      }
+      secureBackupFocusRecheckAtRef.current = now;
+      void settleCommand(api.retrySecureBackupInspection()).catch(() => undefined);
+    };
+    window.addEventListener("focus", recheckOnReturn);
+    document.addEventListener("visibilitychange", recheckOnReturn);
+    return () => {
+      window.removeEventListener("focus", recheckOnReturn);
+      document.removeEventListener("visibilitychange", recheckOnReturn);
+    };
+    // `settleCommand` is a stable useCallback over `api`; both are the effect's
+    // only inputs, so the listeners are not re-registered on every render.
+  }, [api, settleCommand]);
   const displayDensity: DisplayDensity =
     snapshot?.state.domain.settings.values.appearance.density ?? "comfortable";
   const viewportSyncReporter = useMemo(() => createViewportSyncReporter(api), []);
@@ -7344,9 +7385,23 @@ function AccountContent({
     conversationAccess.readable &&
     secureBackupGate.kind !== "ready";
   const secureBackupRuntimeFailure = secureBackupGateFailure(secureBackupGate);
+  // #2086: one answer for "will looking again help?", used by both the warning
+  // sentence and the notice's re-check action, so the two surfaces cannot
+  // disagree about whether a retry is worth offering.
+  const secureBackupRetryCanHelp = secureBackupRecheckCanHelp(secureBackupGate);
   // A provisional cache is read-only: every user-content write is refused in
   // Rust while send admission is closed, including plaintext rooms.
   const composerReadOnly = !conversationAccess.sendAdmitted;
+  // #2086: the notice beside the composer carries the way out of the block, and
+  // the same element is reused by the thread and scheduled-send panes.
+  const secureBackupSendNotice = composerReadOnly ? (
+    <SecureBackupSendNotice
+      retrying={secureBackupInspectionRetrying}
+      retryable={secureBackupRetryCanHelp}
+      onRetry={() => runInBackground(retrySecureBackupInspection())}
+      onOpenSettings={() => openAccountSettings("encryption")}
+    />
+  ) : null;
 
   if (sessionKind === "restoring" || sessionKind === "loggingOut") {
     return <div className="boot-screen">{t("app.title")}</div>;
@@ -7462,8 +7517,18 @@ function AccountContent({
       severity: "warning",
       title: t("sessionStatus.runtimeAlertSecureBackup"),
       detail: [
-        t("gate.secureBackupRuntimeDegraded"),
-        secureBackupRuntimeFailure ? secureBackupFailureLabel(secureBackupRuntimeFailure) : null
+        // #2086: the warning must not promise retries that cannot happen.
+        secureBackupRetryCanHelp
+          ? t("gate.secureBackupRuntimeDegraded")
+          : t("gate.secureBackupRuntimeBlocked"),
+        // #2086: the explanation follows the recorded cause, so an immediate
+        // HTTP error is not described as a timeout.
+        secureBackupRuntimeFailure
+          ? secureBackupFailurePresentation(
+              secureBackupRuntimeFailure,
+              secureBackupGateFailureDetail(secureBackupGate)
+            ).explanation
+          : null
       ]
         .filter((value): value is string => Boolean(value))
         .join(" "),
@@ -7869,9 +7934,7 @@ function AccountContent({
             composerDraftKey={mainComposerDraftImeKey}
             composerMode={composerModeProp(snapshot.state.ui.timeline.composer.mode)}
             canEdit={!composerReadOnly}
-            readOnlyNotice={
-              composerReadOnly ? t("composer.sendBlockedSecureBackup") : null
-            }
+            readOnlyNotice={secureBackupSendNotice}
             resolveComposerKeyAction={resolveComposerKeyAction}
             searchQuery={searchHighlightQuery}
             searchResults={searchResults}
@@ -8040,6 +8103,7 @@ function AccountContent({
           onRestartSync={() => runInBackground(restartSync())}
           runtimeAlerts={runtimeAlerts}
           runtimeAlertRetrying={secureBackupInspectionRetrying}
+          secureBackupNotice={secureBackupSendNotice}
           onRetryRuntimeAlert={(kind) => {
             if (kind === "secureBackup") {
               runInBackground(retrySecureBackupInspection());
@@ -8047,6 +8111,9 @@ function AccountContent({
           }}
           settingsScope={settingsScope ?? "account"}
           accountSettingsCategory={accountSettingsCategory}
+          onRetrySecureBackupInspection={() =>
+            runInBackground(retrySecureBackupInspection())
+          }
           sendingAccount={sendingAccount}
           onSettingsScopeChange={requestSettingsScope}
           displayDensity={displayDensity}

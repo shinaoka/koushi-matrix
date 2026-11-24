@@ -164,6 +164,73 @@ export function secureBackupGateFailure(
   return null;
 }
 
+/**
+ * Whether the gate considers the backup usable, mirroring Rust's
+ * `SecureBackupGateState::backup_is_ready()`: an operational state, not a
+ * failure. `uploadingExistingKeys` and `degradedRetrying` are operational once
+ * authority exists, so ordinary encrypted sending stays open in them.
+ */
+export function secureBackupGateOperational(gate: SecureBackupGateState): boolean {
+  return (
+    gate.kind === "ready" ||
+    gate.kind === "uploadingExistingKeys" ||
+    gate.kind === "degradedRetrying"
+  );
+}
+
+/**
+ * Whether re-inspecting could succeed, mirroring Rust's
+ * `secure_backup_failure_is_retryable`: the structured detail is authoritative,
+ * the coarse kind is the fallback. A rejected credential or a key/backup
+ * mismatch is never retried.
+ */
+export function secureBackupFailureIsRetryable(
+  kind: SecureBackupGateFailureKind,
+  detail: SecureBackupFailureDetail | null
+): boolean {
+  if (detail) return detail.retryable;
+  return kind === "network" || kind === "rateLimited" || kind === "timeout";
+}
+
+/**
+ * #2086: whether asking Rust to look again can change the answer — one answer
+ * for the runtime warning's sentence and the blocked notice's re-check action.
+ * A gate with no recorded failure is still checking, and a recorded failure is
+ * only worth re-checking when Rust itself calls it retryable.
+ */
+export function secureBackupRecheckCanHelp(gate: SecureBackupGateState): boolean {
+  const failure = secureBackupGateFailure(gate);
+  return (
+    failure === null ||
+    secureBackupFailureIsRetryable(failure, secureBackupGateFailureDetail(gate))
+  );
+}
+
+/** #2086: the shortest gap between two window-return re-checks. */
+export const SECURE_BACKUP_FOCUS_RECHECK_MIN_INTERVAL_MS = 15_000;
+
+/**
+ * #2086: whether returning to the window should ask Rust to re-inspect.
+ *
+ * Only a gate that can still succeed is worth asking about, and never more
+ * often than the interval above, so a focus storm cannot become a poll. The
+ * answer is advisory: Rust owns admission, and a re-check can only confirm or
+ * keep the block.
+ */
+export function secureBackupFocusRecheckDue(
+  gate: SecureBackupGateState,
+  lastRecheckAtMs: number,
+  nowMs: number
+): boolean {
+  if (secureBackupGateOperational(gate)) return false;
+  const failure = secureBackupGateFailure(gate);
+  if (failure === null) return false;
+  if (!secureBackupFailureIsRetryable(failure, secureBackupGateFailureDetail(gate))) {
+    return false;
+  }
+  return nowMs - lastRecheckAtMs >= SECURE_BACKUP_FOCUS_RECHECK_MIN_INTERVAL_MS;
+}
+
 /** The structured, privacy-safe cause of a gate failure, when Rust recorded one. */
 export function secureBackupGateFailureDetail(
   gate: SecureBackupGateState

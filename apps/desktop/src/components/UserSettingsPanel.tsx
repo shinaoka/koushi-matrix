@@ -1,4 +1,5 @@
 import { SessionAccessTokenSection } from "./user-settings/SessionAccessTokenSection";
+import { secureBackupGateOperational } from "./SessionVerificationGate";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import {
   Bell,
@@ -98,6 +99,7 @@ export function UserSettingsPanel({
   profile,
   e2eeTrust,
   secureBackupGate,
+  onRetrySecureBackupInspection,
   localEncryption,
   platform,
   accountManagement,
@@ -171,6 +173,11 @@ export function UserSettingsPanel({
   e2eeTrust: E2eeTrustState;
   /** Account-level secure-backup gate for the row's account truth (#1201). */
   secureBackupGate?: SecureBackupGateState;
+  /**
+   * #2086: re-check Secure Backup from Settings, the same command the
+   * send-blocked notice offers, so both surfaces act on the same gate.
+   */
+  onRetrySecureBackupInspection?: () => void;
   localEncryption: LocalEncryptionState;
   platform: DisplayPlatform;
   /**
@@ -513,7 +520,14 @@ export function UserSettingsPanel({
               />
               <DetailRow
                 label={t("sessionStatus.keyBackup")}
-                value={currentSessionBackupLabel(currentSessionDetails?.key_backup)}
+                // #2086: the same truth as the send-blocked notice. A session
+                // check can predate a failed inspection, so the gate decides
+                // while it is not usable.
+                value={
+                  secureBackupGate && !secureBackupGateOperational(secureBackupGate)
+                    ? t("sessionStatus.backupNotReady")
+                    : currentSessionBackupLabel(currentSessionDetails?.key_backup)
+                }
               />
               <DetailRow
                 label={t("sessionStatus.lastChecked")}
@@ -941,6 +955,8 @@ export function UserSettingsPanel({
           <TrustSection
             trust={e2eeTrust}
             currentSessionStatus={currentSessionStatus}
+            secureBackupGate={secureBackupGate}
+            onRetrySecureBackupInspection={onRetrySecureBackupInspection}
             onAcceptVerification={onAcceptVerification}
             onBootstrapCrossSigning={onBootstrapCrossSigning}
             onCancelVerification={onCancelVerification}

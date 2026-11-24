@@ -439,6 +439,7 @@ async fn reset_local_data_clears_current_account_persistence_and_signs_out_local
         secure_backup_defer_deadline_task: None,
         secure_backup_defer_serial: 0,
         secure_backup_connectivity_wait: Duration::from_secs(30),
+        secure_backup_retry_base: super::super::recovery_backup::SECURE_BACKUP_RETRY_BASE,
         secure_backup_monitor_serial: 0,
         secure_backup_inspection_pending: false,
         sync_connectivity_proven: false,

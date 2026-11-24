@@ -4,7 +4,8 @@ import {
   useMemo,
   useRef,
   useState,
-  type FormEvent
+  type FormEvent,
+  type ReactNode
 } from "react";
 import {
   ArrowDown,
@@ -804,8 +805,11 @@ export function TimelinePane({
   activeRoomName: string;
   sendingAccount?: ComposerSendingAccount | null;
   canEdit?: boolean;
-  /** #1748: the Rust-owned reason sending is closed, shown beside the composer. */
-  readOnlyNotice?: string | null;
+  /**
+   * #1748: the Rust-owned reason sending is closed, shown beside the composer.
+   * #2086: it carries its own actions, so React passes the notice element.
+   */
+  readOnlyNotice?: ReactNode;
   composerDocument: ComposerDocument;
   composerDraftKey?: string;
   /** #1644: removes the assistant marker of the open room's draft. */
@@ -1485,11 +1489,8 @@ export function TimelinePane({
           roomName={activeRoomName}
         />
       ) : null}
-      {readOnlyNotice ? (
-        <div className="composer-read-only-notice" role="status">
-          {readOnlyNotice}
-        </div>
-      ) : null}
+      {/* The notice element owns its own live region and actions. */}
+      {readOnlyNotice}
       <Composer
         sendingAccount={sendingAccount}
         canEdit={canEdit}

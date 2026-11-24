@@ -219,15 +219,20 @@ const SECURE_BACKUP_INSPECTION_TIMEOUT: Duration = Duration::from_secs(30);
 /// armed deadline instead of extending it.
 pub(super) const SECURE_BACKUP_CONNECTIVITY_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
-const SECURE_BACKUP_RETRY_BASE: Duration = Duration::from_secs(5);
+pub(super) const SECURE_BACKUP_RETRY_BASE: Duration = Duration::from_secs(5);
 
 const SECURE_BACKUP_RETRY_MAX: Duration = Duration::from_secs(5 * 60);
 
 const SECURE_BACKUP_MONITOR_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
+#[cfg(test)]
 pub(super) fn secure_backup_retry_delay(attempt: u32, jitter_seed: u64) -> Duration {
+    secure_backup_retry_delay_from(SECURE_BACKUP_RETRY_BASE, attempt, jitter_seed)
+}
+
+fn secure_backup_retry_delay_from(base: Duration, attempt: u32, jitter_seed: u64) -> Duration {
     let exponent = attempt.min(6);
-    let base_ms = SECURE_BACKUP_RETRY_BASE
+    let base_ms = base
         .as_millis()
         .saturating_mul(1_u128 << exponent)
         .min(SECURE_BACKUP_RETRY_MAX.as_millis());
@@ -2171,24 +2176,41 @@ impl AccountActor {
         if let AppAction::SecureBackupGateChanged(gate) = &action {
             let admitted = gate.backup_is_ready();
             self.set_secure_backup_send_admitted(admitted).await;
-            let retrying = matches!(
-                gate,
-                koushi_state::SecureBackupGateState::DegradedRetrying { .. }
-            );
+            // #2086: a retryable failure must not be a terminal. Before this
+            // session confirmed the backup, such a failure is `BlockedFailed`
+            // (sending stays closed) and used to own no retry at all, so the
+            // composer stayed read-only long after the endpoint recovered.
+            // It now keeps the bounded backoff retry; a non-retryable failure
+            // (rejected credential, key mismatch) still stops retrying, and
+            // neither path can open sending: only a completed inspection that
+            // reports a ready backup raises admission above.
+            let retrying = match gate {
+                koushi_state::SecureBackupGateState::DegradedRetrying { .. } => true,
+                koushi_state::SecureBackupGateState::BlockedFailed { failure, detail } => {
+                    secure_backup_failure_is_retryable(*failure, *detail)
+                }
+                _ => false,
+            };
             record(secure_backup_inspection_settled_event(
                 gate,
                 started_at.elapsed().as_millis(),
             ));
             if retrying {
                 self.schedule_secure_backup_monitor(generation, true);
-            } else if !matches!(
-                gate,
-                koushi_state::SecureBackupGateState::BlockedFailed { .. }
-            ) {
+            } else {
+                // A settle that arms no retry clears the backoff, so a re-check
+                // after the user fixes the cause starts from the short delay
+                // rather than the ceiling the earlier failures reached. A
+                // non-retryable blocking failure still arms no monitor (#2086).
                 self.secure_backup_retry_attempt = 0;
-                self.secure_backup_recovery_epoch = false;
-                self.secure_backup_recovery_reset_consumed = false;
-                self.schedule_secure_backup_monitor(generation, false);
+                if !matches!(
+                    gate,
+                    koushi_state::SecureBackupGateState::BlockedFailed { .. }
+                ) {
+                    self.secure_backup_recovery_epoch = false;
+                    self.secure_backup_recovery_reset_consumed = false;
+                    self.schedule_secure_backup_monitor(generation, false);
+                }
             }
         }
         self.send_actions(vec![action]).await;
@@ -2201,7 +2223,11 @@ impl AccountActor {
             let attempt = self.secure_backup_retry_attempt;
             self.secure_backup_retry_attempt = self.secure_backup_retry_attempt.saturating_add(1);
             (
-                secure_backup_retry_delay(attempt, monitor_serial),
+                secure_backup_retry_delay_from(
+                    self.secure_backup_retry_base,
+                    attempt,
+                    monitor_serial,
+                ),
                 "retry_exponential",
                 Some(attempt),
             )

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use koushi_state::{AppAction, AuthFailureKind, VerificationCancelReason};
@@ -16,8 +17,9 @@ use super::{
 };
 use crate::account::actor::{AccountActorHandle, AccountMessage};
 use crate::account::test_support::{
-    acknowledge_next_verified_projection, consume_initial_unknown_trust_projection,
-    inspect_secure_backup_owners, inspect_session_runtime, inspect_sync_owners, login_gated_actor,
+    KeyQueryControl, acknowledge_next_verified_projection,
+    consume_initial_unknown_trust_projection, inspect_secure_backup_owners,
+    inspect_session_runtime, inspect_sync_owners, login_gated_actor, promoted_actor_with_control,
     shutdown_and_ack, spawn_actor_with_dirs, test_request_id,
 };
 use crate::account::verification::incoming_verification_request_id;
@@ -1140,6 +1142,174 @@ async fn deferred_inspection_deadline_exits_checking_without_connectivity() {
             .await
     );
     assert_no_gate_action_within(&mut action_rx, Duration::from_millis(300)).await;
+    shutdown_and_ack(&handle).await;
+}
+
+fn blocking_server_response_failure() -> koushi_state::SecureBackupInspectionFailure {
+    koushi_state::SecureBackupInspectionFailure {
+        kind: koushi_state::SecureBackupGateFailureKind::ServerResponse,
+        detail: Some(koushi_state::SecureBackupFailureDetail {
+            stage: koushi_state::SecureBackupFailureStage::InspectServerTrust,
+            transport: koushi_state::SecureBackupFailureTransport::HttpResponse,
+            http_status: Some(503),
+            matrix_error_kind: None,
+            retryable: true,
+        }),
+    }
+}
+
+fn blocking_unauthorized_failure() -> koushi_state::SecureBackupInspectionFailure {
+    koushi_state::SecureBackupInspectionFailure {
+        kind: koushi_state::SecureBackupGateFailureKind::Unauthorized,
+        detail: Some(koushi_state::SecureBackupFailureDetail {
+            stage: koushi_state::SecureBackupFailureStage::InspectServerTrust,
+            transport: koushi_state::SecureBackupFailureTransport::HttpResponse,
+            http_status: Some(401),
+            matrix_error_kind: None,
+            retryable: false,
+        }),
+    }
+}
+
+/// #2086: a retryable failure before this session ever confirmed the backup
+/// leaves sending closed, and nothing used to look again — the composer stayed
+/// read-only after the endpoint recovered. The blocking state must own a
+/// bounded backoff retry, and the lock must lift on its own only once a later
+/// inspection positively reports a ready backup.
+#[tokio::test]
+async fn a_retryable_blocking_failure_retries_with_backoff_and_clears_the_lock_when_ready() {
+    let control = Arc::new(KeyQueryControl {
+        existing_identity: true,
+        ..KeyQueryControl::default()
+    });
+    let (handle, mut action_rx, control) = promoted_actor_with_control(control).await;
+    // Long enough that the owners round trip below cannot overtake the first
+    // retry, short enough that the probe poll sees the retry happen.
+    handle
+        .send(AccountMessage::ConfigureSecureBackupRetryBase {
+            base: Duration::from_secs(1),
+        })
+        .await;
+    // Proven connectivity admits this session's first inspection. Let it
+    // settle on the fixture's conclusive "no server backup" answer so the
+    // injected failure below is the only gate event in play.
+    handle
+        .send(AccountMessage::SyncConnectivityChanged { proven: true })
+        .await;
+    recv_gate_action_matching(&handle, &mut action_rx, |gate| {
+        !matches!(gate, koushi_state::SecureBackupGateState::Checking)
+    })
+    .await;
+    let generation = inspect_secure_backup_owners(&handle).await.trust_generation;
+    let probes_before = control
+        .backup_probe_count
+        .load(std::sync::atomic::Ordering::SeqCst);
+
+    // The startup failure: the endpoint answered 503 before this session ever
+    // confirmed the backup.
+    handle
+        .send(AccountMessage::SecureBackupInspectionFinished {
+            generation,
+            started_at: std::time::Instant::now(),
+            result: Err(blocking_server_response_failure()),
+        })
+        .await;
+    let gate = recv_gate_action_matching(&handle, &mut action_rx, |gate| {
+        matches!(
+            gate,
+            koushi_state::SecureBackupGateState::BlockedFailed { .. }
+        )
+    })
+    .await;
+    assert!(
+        !gate.backup_is_ready(),
+        "a retryable failure before initial authority still blocks sending"
+    );
+    let owners = inspect_secure_backup_owners(&handle).await;
+    assert!(!owners.send_admitted, "sending must stay closed");
+    assert!(
+        owners.has_monitor_task,
+        "a retryable blocking failure must own a retry, not wait for a click"
+    );
+
+    // The retry runs on its own: no command is issued here. This fixture's
+    // homeserver reports no server backup, which is a conclusive answer that
+    // still leaves sending closed.
+    executor::timeout(Duration::from_secs(5), async {
+        while control
+            .backup_probe_count
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == probes_before
+        {
+            executor::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the blocking retry re-inspects the endpoint by itself");
+    let owners = inspect_secure_backup_owners(&handle).await;
+    assert!(
+        !owners.send_admitted,
+        "a retry that does not confirm a ready backup must not open sending"
+    );
+
+    // A later inspection that positively reports a ready backup lifts the lock.
+    handle
+        .send(AccountMessage::SecureBackupInspectionFinished {
+            generation,
+            started_at: std::time::Instant::now(),
+            result: Ok(ready_secure_backup_inspection()),
+        })
+        .await;
+    let gate = recv_gate_action_matching(&handle, &mut action_rx, |gate| {
+        matches!(gate, koushi_state::SecureBackupGateState::Ready)
+    })
+    .await;
+    assert!(gate.backup_is_ready());
+    let owners = inspect_secure_backup_owners(&handle).await;
+    assert!(owners.send_admitted, "a ready inspection lifts the lock");
+    shutdown_and_ack(&handle).await;
+}
+
+/// #2086: only a retryable failure retries. A rejected credential must not
+/// loop, and a blocking gate must not lift without a ready inspection.
+#[tokio::test]
+async fn a_non_retryable_blocking_failure_arms_no_retry() {
+    let control = Arc::new(KeyQueryControl {
+        existing_identity: true,
+        ..KeyQueryControl::default()
+    });
+    let (handle, mut action_rx, _control) = promoted_actor_with_control(control).await;
+    handle
+        .send(AccountMessage::ConfigureSecureBackupRetryBase {
+            base: Duration::from_millis(20),
+        })
+        .await;
+    let generation = inspect_secure_backup_owners(&handle).await.trust_generation;
+    handle
+        .send(AccountMessage::SecureBackupInspectionFinished {
+            generation,
+            started_at: std::time::Instant::now(),
+            result: Err(blocking_unauthorized_failure()),
+        })
+        .await;
+    let gate = recv_gate_action_matching(&handle, &mut action_rx, |gate| {
+        matches!(
+            gate,
+            koushi_state::SecureBackupGateState::BlockedFailed {
+                failure: koushi_state::SecureBackupGateFailureKind::Unauthorized,
+                ..
+            }
+        )
+    })
+    .await;
+    assert!(!gate.backup_is_ready());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let owners = inspect_secure_backup_owners(&handle).await;
+    assert!(
+        !owners.has_monitor_task,
+        "a rejected credential must not be retried on a timer"
+    );
+    assert!(!owners.send_admitted);
     shutdown_and_ack(&handle).await;
 }
 
