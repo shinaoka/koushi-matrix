@@ -153,7 +153,10 @@ for only yourself.
 A pinned message keeps a **Pinned message** marker under its text, in both
 densities and on a message that continues an earlier one's sender; unpinning
 removes it. The **Pinned** row at the top of the room opens the list of pinned
-messages, which also unpins from each row. The timeline's new notice reads
+messages, which also unpins from each row while sending is available; while the
+message box reports that sending is unavailable, that list keeps its messages
+and offers no unpin button, the same way the message actions offer no **Pin**.
+The timeline's new notice reads
 **pinned a message** or **unpinned a message** for a single change, and **updated
 pinned messages** when several messages changed at once.
 

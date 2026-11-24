@@ -3539,6 +3539,41 @@ pub(super) fn app_actor_event_navigation_fixture(
     app_actor_fixture_with_account_capacity(data_dir, state, 8)
 }
 
+/// A ready session whose Secure Backup gate decides send admission, for the
+/// tests that run one write command twice and differ only in the gate (#1983,
+/// #2087).
+///
+/// The closed gate is `Checking`, not a blocking one: both close sending, but
+/// only `Checking` still admits reading (#1737), so it is the state in which the
+/// panels whose controls are locked exist at all. A blocking gate would test a
+/// refusal for a shell the reader cannot reach.
+pub(super) fn ready_session_with_gate(gate_admits: bool) -> AppState {
+    let state = AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: "@synthetic:example.invalid".to_owned(),
+            device_id: "SYNTHETIC".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        secure_backup_gate: if gate_admits {
+            koushi_state::SecureBackupGateState::Ready
+        } else {
+            koushi_state::SecureBackupGateState::Checking
+        },
+        ..AppState::default()
+    };
+    let access = state.conversation_access();
+    assert_eq!(
+        access.send_admitted, gate_admits,
+        "the fixture must put send admission where the case says it is"
+    );
+    assert!(
+        access.readable,
+        "the locked controls live in a shell that still admits reading (#1737)"
+    );
+    state
+}
+
 /// The same fixture with a chosen account-work scheduler, so a test can make
 /// this runtime a background account tab (#1853).
 pub(super) fn app_actor_event_navigation_fixture_with_account_work(
@@ -5879,6 +5914,7 @@ mod direct_history;
 
 #[path = "tests/assistant_drafts.rs"]
 mod assistant_drafts;
+mod pin_send_lock;
 mod scheduled_send_lock;
 
 #[path = "tests/mcp_thread_reply_reveal.rs"]

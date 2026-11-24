@@ -9,7 +9,6 @@ use super::*;
 use koushi_state::{ScheduledSendHandle, ScheduledSendItem};
 
 const ROOM: &str = "!scheduled-lock-room:example.invalid";
-const USER: &str = "@synthetic:example.invalid";
 const SCHEDULED_ID: &str = "scheduled-lock-1";
 const ORIGINAL_BODY: &str = "original scheduled body";
 const ORIGINAL_SEND_AT_MS: u64 = 1_900_000_000_000;
@@ -27,20 +26,7 @@ fn request() -> RequestId {
 /// whether Secure Backup admission is open, which is the only difference
 /// between the locked and unlocked runs.
 fn state_with_scheduled_send(gate_admits: bool) -> AppState {
-    let mut state = AppState {
-        session: SessionState::Ready(SessionInfo {
-            homeserver: "https://example.invalid".to_owned(),
-            user_id: USER.to_owned(),
-            device_id: "SYNTHETIC".to_owned(),
-            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
-        }),
-        secure_backup_gate: if gate_admits {
-            koushi_state::SecureBackupGateState::Ready
-        } else {
-            koushi_state::SecureBackupGateState::SetupRequired
-        },
-        ..AppState::default()
-    };
+    let mut state = ready_session_with_gate(gate_admits);
     state.scheduled_sends.items.insert(
         SCHEDULED_ID.to_owned(),
         ScheduledSendItem {
@@ -52,11 +38,6 @@ fn state_with_scheduled_send(gate_admits: bool) -> AppState {
             handle: ScheduledSendHandle::Local,
             is_dispatching: false,
         },
-    );
-    assert_eq!(
-        state.conversation_access().send_admitted,
-        gate_admits,
-        "the fixture must put send admission where the case says it is"
     );
     state
 }
