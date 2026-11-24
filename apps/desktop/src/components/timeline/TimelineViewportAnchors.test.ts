@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
+import type { TimelineItem } from "../../domain/coreEvents";
+import type { TimelineDisplayRow } from "../../domain/timelineDisplayProjection";
 import {
   captureAnchor,
   captureFreeScrollAnchor,
@@ -8,41 +10,124 @@ import {
   timelineRowFullyInsideViewport,
   wholePixelScrollTop
 } from "./TimelineViewportAnchors";
-import { linearVisibleNodeSpan, visibleNodeSpan } from "./TimelineViewportRows";
+import {
+  timelineViewportFactsFromModel,
+  type TimelineViewportFacts
+} from "./TimelineViewportRows";
+import {
+  buildTimelineHeightModel,
+  timelineVisibleItemRange,
+  type TimelineViewportModel
+} from "./TimelineViewportVirtualization";
 
-function viewport(tops: number[]) {
+const BOX_TOP = 10;
+
+function row(index: number, overrides: Partial<TimelineDisplayRow> = {}): TimelineDisplayRow {
+  return {
+    row_id: `row-${index}`,
+    item: {} as TimelineItem,
+    content_event_id: `$row-${index}`,
+    activity_event_id: `$row-${index}`,
+    gap_id: null,
+    content_timestamp_ms: null,
+    display_timestamp_ms: null,
+    kind: "event",
+    ...overrides
+  };
+}
+
+/**
+ * A mounted window whose DOM rects and height model agree, which is the state
+ * the model-based reads are allowed to assume: the pass that commits the model
+ * is the pass that measured the mounted rows. The container box is 10..10+height.
+ */
+function view(options: {
+  heights?: readonly number[];
+  rows?: readonly TimelineDisplayRow[];
+  scrollTop?: number;
+  clientHeight?: number;
+  listOffsetTop?: number;
+} = {}): { container: HTMLElement; view: TimelineViewportModel; reads: () => number } {
+  const heights = options.heights ?? [72, 72];
+  const rows = options.rows ?? heights.map((_, index) => row(index));
+  const clientHeight = options.clientHeight ?? 200;
+  const listOffsetTop = options.listOffsetTop ?? 0;
+  const scrollTop = options.scrollTop ?? 0;
+  const model = buildTimelineHeightModel(
+    rows,
+    new Map(rows.map((entry, index) => [entry.row_id, heights[index] ?? 72])),
+    heights[0] ?? 72
+  );
   const container = document.createElement("div");
-  container.getBoundingClientRect = () => ({ top: 10, bottom: 210, height: 200 } as DOMRect);
-  Object.defineProperty(container, "clientHeight", { value: 200 });
-  tops.forEach((top, index) => {
-    const row = document.createElement("div");
-    row.dataset.itemId = `row-${index}`;
-    row.getBoundingClientRect = () => ({ top, bottom: top + 72, height: 72 } as DOMRect);
-    container.appendChild(row);
+  container.getBoundingClientRect = () =>
+    ({ top: BOX_TOP, bottom: BOX_TOP + clientHeight, height: clientHeight } as DOMRect);
+  Object.defineProperty(container, "clientHeight", { value: clientHeight });
+  Object.defineProperty(container, "scrollTop", { value: scrollTop, writable: true });
+  let reads = 0;
+  rows.forEach((entry, index) => {
+    const node = document.createElement("article");
+    node.dataset.itemId = entry.row_id;
+    const top = BOX_TOP + (model.offsets[index] ?? 0) - (scrollTop - listOffsetTop);
+    const height = heights[index] ?? 72;
+    node.getBoundingClientRect = () => {
+      reads += 1;
+      return { top, bottom: top + height, height } as DOMRect;
+    };
+    container.appendChild(node);
   });
-  return container;
+  return {
+    container,
+    view: { rows, model, metrics: { scrollTop, clientHeight, listOffsetTop } },
+    reads: () => reads
+  };
 }
 
-function threadRootViewport(tops: number[]) {
-  const container = viewport(tops);
-  for (const [index, node] of [...container.children].entries()) {
-    node.setAttribute("data-content-event-id", `$root-${index}`);
-    node.setAttribute("data-activity-event-id", `$row-${index}`);
-  }
-  return container;
+function threadRootRows(count: number): TimelineDisplayRow[] {
+  return Array.from({ length: count }, (_, index) =>
+    row(index, {
+      content_event_id: `$root-${index}`,
+      activity_event_id: `$activity-${index}`
+    })
+  );
 }
 
-describe("viewport anchor capture", () => {
-  it("does not capture an old virtual window wholly below the viewport", () => {
-    expect(captureAnchor(viewport([500, 572]))).toBeNull();
+describe("viewport anchor capture (#1890 item 5)", () => {
+  it("captures nothing when the model holds no rows", () => {
+    const empty = view({ heights: [], rows: [] });
+    expect(captureAnchor(empty.container, empty.view)).toBeNull();
   });
+
   it("keeps a partially visible row and its negative offset", () => {
-    expect(captureAnchor(viewport([-20, 52]))).toEqual({ itemId: "row-0", offsetTop: -30 });
+    const mounted = view({ heights: [72, 72], scrollTop: 30 });
+    expect(captureAnchor(mounted.container, mounted.view)).toEqual({
+      itemId: "row-0",
+      offsetTop: -30
+    });
   });
-  it("excludes rows exactly beyond either edge", () => {
-    expect(captureAnchor(viewport([-62, 210]))).toBeNull();
+
+  it("excludes a row that ends exactly at the viewport's top edge", () => {
+    const mounted = view({ heights: [62, 72], scrollTop: 62, clientHeight: 60 });
+    expect(captureAnchor(mounted.container, mounted.view)).toEqual({
+      itemId: "row-1",
+      offsetTop: 0
+    });
+  });
+
+  it("reads one row rect however many rows the window holds", () => {
+    const small = view({ heights: Array.from({ length: 20 }, () => 72), clientHeight: 400 });
+    const large = view({ heights: Array.from({ length: 600 }, () => 72), clientHeight: 400 });
+    expect(captureAnchor(small.container, small.view)).not.toBeNull();
+    expect(captureAnchor(large.container, large.view)).not.toBeNull();
+    // One rect for the anchor itself: the visible range comes from the model.
+    expect(small.reads()).toBe(1);
+    expect(large.reads()).toBe(1);
   });
 });
+
+function threadRootViewport(scrollTop: number) {
+  const rows = threadRootRows(2);
+  return view({ rows, heights: [72, 72], scrollTop });
+}
 
 describe("whole-pixel anchor writes (#1507)", () => {
   it("rounds to the nearest pixel instead of leaving truncation to the engine", () => {
@@ -53,62 +138,101 @@ describe("whole-pixel anchor writes (#1507)", () => {
 
 describe("pure prepend anchor (#1604)", () => {
   it("keeps latest-reply thread roots out of long-lived free-scroll memory", () => {
-    expect(captureFreeScrollAnchor(threadRootViewport([-20, 52]))).toBeNull();
+    const mounted = threadRootViewport(30);
+    expect(captureFreeScrollAnchor(mounted.container, mounted.view)).toBeNull();
   });
   it("falls back to an intersecting thread root for prepend compensation", () => {
-    expect(capturePrependAnchor(threadRootViewport([-20, 52]))).toEqual({
+    const mounted = threadRootViewport(30);
+    expect(capturePrependAnchor(mounted.container, mounted.view)).toEqual({
       itemId: "row-0",
       offsetTop: -30
     });
   });
 });
 
-describe("visible range search (#1889)", () => {
-  const box = { top: 10, bottom: 210 };
-  const rows = (tops: number[]) => {
-    const container = document.createElement("div");
-    for (const [index, top] of tops.entries()) {
-      const row = document.createElement("div");
-      row.dataset.itemId = `row-${index}`;
-      row.getBoundingClientRect = () => ({ top, bottom: top + 72, height: 72 } as DOMRect);
-      container.appendChild(row);
-    }
-    return Array.from(container.children) as HTMLElement[];
-  };
+describe("visible range from the height model (#1890 item 5)", () => {
+  const heights = (count: number) => Array.from({ length: count }, () => 72);
 
-  it("finds the visible run without reading every row", () => {
-    const nodes = rows(Array.from({ length: 200 }, (_, index) => index * 72 - 7000));
-    let reads = 0;
-    for (const node of nodes) {
-      const rect = node.getBoundingClientRect.bind(node);
-      node.getBoundingClientRect = () => {
-        reads += 1;
-        return rect();
-      };
-    }
-    const span = visibleNodeSpan(box, nodes);
-    expect(span).not.toBeNull();
-    expect(span!.end - span!.start).toBeLessThan(5);
-    expect(nodes.slice(span!.start, span!.end + 1).every((node) => {
-      const rect = node.getBoundingClientRect();
-      return rect.bottom > box.top && rect.top < box.bottom;
-    })).toBe(true);
-    expect(reads).toBeLessThan(nodes.length);
+  it("finds the visible run without reading any row", () => {
+    const mounted = view({ heights: heights(600), scrollTop: 7000, clientHeight: 200 });
+    const range = timelineVisibleItemRange(
+      mounted.view.model,
+      mounted.view.metrics,
+      mounted.view.rows.length
+    );
+    expect(range.startIndex).toBe(Math.floor(7000 / 72));
+    expect(range.endIndex - range.startIndex).toBeLessThan(5);
+    expect(mounted.reads()).toBe(0);
   });
 
-  it("matches the linear scan when a moved row breaks DOM order", () => {
-    // The latest-reply projection can leave a row at its old position while a
-    // later row moves above it, so bottoms do not increase down the list.
-    const tops = Array.from({ length: 60 }, (_, index) => index * 72 - 2000);
-    tops[30] = -4000;
-    const nodes = rows(tops);
-    expect(visibleNodeSpan(box, nodes)).toEqual(linearVisibleNodeSpan(box, nodes));
-    expect(visibleNodeSpan(box, nodes)).toEqual({ start: 27, end: 29 });
+  it("names the last rows for a scroll position past the modelled end", () => {
+    // A physical list taller than the model leaves scrollTop beyond the modelled
+    // extent while a measurement is owed; those rows are still on screen, so the
+    // answer is the tail, never nothing.
+    const mounted = view({ heights: [72, 72], scrollTop: 900 });
+    expect(
+      timelineVisibleItemRange(mounted.view.model, mounted.view.metrics, mounted.view.rows.length)
+    ).toEqual({ startIndex: 1, endIndex: 2 });
+    const empty = view({ heights: [], rows: [] });
+    expect(
+      timelineVisibleItemRange(empty.view.model, empty.view.metrics, empty.view.rows.length)
+    ).toEqual({ startIndex: 0, endIndex: 0 });
   });
 
-  it("reports nothing when every row is outside the viewport", () => {
-    expect(visibleNodeSpan(box, rows([-200, 900]))).toBeNull();
-    expect(visibleNodeSpan(box, [])).toBeNull();
+  it("counts the offset of a list that sits below the scrollport's top", () => {
+    const mounted = view({ heights: heights(10), scrollTop: 160, clientHeight: 200, listOffsetTop: 40 });
+    const range = timelineVisibleItemRange(
+      mounted.view.model,
+      mounted.view.metrics,
+      mounted.view.rows.length
+    );
+    // 160 - 40 = 120 px into the list, which is row 1 of 72 px rows.
+    expect(range.startIndex).toBe(1);
+  });
+
+  it("names the visible rows and gaps in one pass", () => {
+    const rows = [
+      row(0),
+      row(1),
+      row(2, { activity_event_id: null, content_event_id: null, kind: "timelineGap", gap_id: { topology_revision: "3", ordinal: 1 } }),
+      row(3),
+      row(4)
+    ];
+    const mounted = view({ rows, heights: [72, 72, 24, 72, 72], scrollTop: 60, clientHeight: 200 });
+    const facts: TimelineViewportFacts = timelineViewportFactsFromModel(mounted.view);
+    expect(facts.firstVisibleEventId).toBe("$row-0");
+    expect(facts.lastVisibleEventId).toBe("$row-4");
+    expect(facts.visibleGapIds).toEqual([{ topology_revision: "3", ordinal: 1 }]);
+    expect(mounted.reads()).toBe(0);
+  });
+
+  it("reports nothing for a container without a layout box", () => {
+    const mounted = view({ heights: heights(10), clientHeight: 0 });
+    expect(timelineViewportFactsFromModel(mounted.view)).toEqual({
+      firstVisibleEventId: null,
+      lastVisibleEventId: null,
+      visibleGapIds: []
+    });
+    expect(mounted.reads()).toBe(0);
+  });
+
+  it("shows less of the list when the list starts above the scrollport's top", () => {
+    // Container at scrollTop 0 with its list 40 px down: 160 of the 200 px
+    // viewport show the list, so the row starting at 160 px is below the fold. A
+    // band that ignored the offset would take the full 200 px and name it.
+    const mounted = view({
+      heights: [72, 88, 72],
+      scrollTop: 0,
+      clientHeight: 200,
+      listOffsetTop: 40
+    });
+    expect(timelineViewportFactsFromModel(mounted.view).lastVisibleEventId).toBe("$row-1");
+  });
+
+  it("stops at a row that starts exactly on the bottom edge", () => {
+    const rows = [row(0), row(1)];
+    const mounted = view({ rows, heights: [72, 72], clientHeight: 72 });
+    expect(timelineViewportFactsFromModel(mounted.view).lastVisibleEventId).toBe("$row-0");
   });
 });
 

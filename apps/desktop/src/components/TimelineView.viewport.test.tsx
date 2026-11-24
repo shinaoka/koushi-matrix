@@ -790,10 +790,13 @@ describe("TimelineView", () => {
       observeViewport
     });
     const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    // #1890 item 5: the visible range comes from the row heights the model
+    // committed, so these rows are laid out the way the model can represent
+    // them: the older row fills the viewport above the live one.
     const rectSpy = mockTimelineRects(
       {
-        "$older:example.invalid": { top: 100, height: 80 },
-        "$live:example.invalid": { top: 900, height: 80 }
+        "$older:example.invalid": { top: 0, height: 600 },
+        "$live:example.invalid": { top: 600, height: 400 }
       },
       { top: 0, height: 500 },
       scrollContainerRef

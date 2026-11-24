@@ -1,13 +1,17 @@
 import type { TimelineItem, TimelineKey } from "../../domain/coreEvents";
+import type { TimelineDisplayRow } from "../../domain/timelineDisplayProjection";
 import type { TimelineScrollAnchor } from "../../domain/types";
 import { timelineStoreKeyId } from "../../domain/timelineStore";
 import {
   cssEscape,
-  readTimelineViewportFacts,
+  timelineCaptureMetrics,
   timelineEventIdentitySelector,
-  timelineViewportBox,
-  visibleNodeSpan
+  timelineViewportFactsFromModel
 } from "./TimelineViewportRows";
+import {
+  timelineVisibleItemRange,
+  type TimelineViewportModel
+} from "./TimelineViewportVirtualization";
 
 // ---------------------------------------------------------------------------
 // Scroll anchor
@@ -26,31 +30,43 @@ type ScrollAnchorCaptureOptions = {
    * changed. This is essential for the latest-reply projection: restoring a
    * moved root would preserve the wrong visual intent.
    */
-  isEligible?: (node: HTMLElement) => boolean;
+  isEligible?: (row: TimelineDisplayRow) => boolean;
 };
 
-/** Capture the first eligible visible item as the anchor (id + pixel offset). */
+/**
+ * Capture the first eligible visible item as the anchor (id + pixel offset).
+ *
+ * #1890 item 5: the model names the visible rows, so this touches one row's box
+ * (the anchor's own, for the offset the transaction will compare against) plus
+ * the container's, instead of one rect per probe and per visible row.
+ */
 export function captureAnchor(
   container: HTMLElement,
+  view: TimelineViewportModel,
   options: ScrollAnchorCaptureOptions = {}
 ): ScrollAnchor | null {
-  const box = timelineViewportBox(container);
-  const nodes = Array.from(container.querySelectorAll<HTMLElement>("[data-item-id]"));
-  const span = visibleNodeSpan(box, nodes);
-  if (!span) {
-    return null;
-  }
-  // Only the visible run is scanned, so an ineligible row near the live edge no
-  // longer costs a read of every row above it.
-  for (let index = span.start; index <= span.end; index += 1) {
-    const node = nodes[index];
-    if (options.isEligible && !options.isEligible(node)) {
+  const { box, metrics } = timelineCaptureMetrics(container, view.metrics.listOffsetTop);
+  const range = timelineVisibleItemRange(view.model, metrics, view.rows.length);
+  for (let index = range.startIndex; index < range.endIndex; index += 1) {
+    const row = view.rows[index];
+    if (row === undefined) {
       continue;
     }
-    const rect = node.getBoundingClientRect();
+    if (options.isEligible && !options.isEligible(row)) {
+      continue;
+    }
+    const node = container.querySelector<HTMLElement>(
+      `[data-item-id="${cssEscape(row.row_id)}"]`
+    );
+    if (!node) {
+      // The model can name a row the DOM no longer has (a row without an
+      // identity box, or a boundary row the model moved in by a pixel); the
+      // next visible row is just as good an anchor.
+      continue;
+    }
     return {
-      itemId: node.dataset["itemId"] ?? "",
-      offsetTop: rect.top - box.top
+      itemId: row.row_id,
+      offsetTop: node.getBoundingClientRect().top - box.top
     };
   }
   return null;
@@ -61,13 +77,15 @@ export function captureAnchor(
  * anchor: the next reply/redaction can relocate it again. Prefer a normal
  * material row and leave the anchor empty when no such row is mounted.
  */
-export function captureFreeScrollAnchor(container: HTMLElement): ScrollAnchor | null {
-  return captureAnchor(container, {
-    isEligible: (node) => {
-      const contentEventId = node.dataset["contentEventId"] ?? null;
-      const activityEventId = node.dataset["activityEventId"] ?? null;
-      return contentEventId === null || activityEventId === null || contentEventId === activityEventId;
-    }
+export function captureFreeScrollAnchor(
+  container: HTMLElement,
+  view: TimelineViewportModel
+): ScrollAnchor | null {
+  return captureAnchor(container, view, {
+    isEligible: (row) =>
+      row.content_event_id === null ||
+      row.activity_event_id === null ||
+      row.content_event_id === row.activity_event_id
   });
 }
 
@@ -78,8 +96,11 @@ export function captureFreeScrollAnchor(container: HTMLElement): ScrollAnchor | 
  * root; it must not leave a prepend transaction without an anchor when every
  * visible row is such a root. Use this only for a prepend's own compensation.
  */
-export function capturePrependAnchor(container: HTMLElement): ScrollAnchor | null {
-  return captureFreeScrollAnchor(container) ?? captureAnchor(container);
+export function capturePrependAnchor(
+  container: HTMLElement,
+  view: TimelineViewportModel
+): ScrollAnchor | null {
+  return captureFreeScrollAnchor(container, view) ?? captureAnchor(container, view);
 }
 
 /** Measure the anchor's local delta; only the viewport transaction may apply it. */
@@ -157,15 +178,28 @@ export function setTimelineViewportSessionAnchorForTests(
   });
 }
 
-export function captureRoomScrollAnchor(container: HTMLElement): CapturedTimelineScrollAnchor | null {
-  const facts = readTimelineViewportFacts(container);
-  if (facts.lastVisibleEventId === null || facts.lastVisibleBottomOffset === null) {
+export function captureRoomScrollAnchor(
+  container: HTMLElement,
+  view: TimelineViewportModel
+): CapturedTimelineScrollAnchor | null {
+  const { box, metrics } = timelineCaptureMetrics(container, view.metrics.listOffsetTop);
+  const { lastVisibleEventId } = timelineViewportFactsFromModel({ ...view, metrics });
+  if (lastVisibleEventId === null) {
+    return null;
+  }
+  // The id comes from the model, the pixel offset from the row itself: it is what
+  // `restoreRoomScrollAnchor` compares against, and a modelled bottom carries up
+  // to a pixel of rounding per row inside the window. A row the model names but
+  // the DOM does not hold leaves no anchor, as it did when the offset was read
+  // from the row.
+  const node = findTimelineEventNode(container, "activity", lastVisibleEventId);
+  if (!node) {
     return null;
   }
   return {
-    event_id: facts.lastVisibleEventId,
+    event_id: lastVisibleEventId,
     edge: "bottom",
-    offset_px: facts.lastVisibleBottomOffset
+    offset_px: Math.round(node.getBoundingClientRect().bottom - box.bottom)
   };
 }
 
