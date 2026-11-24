@@ -157,7 +157,6 @@ if (args.has("--run")) {
 printUsage();
 
 async function run() {
-  assertSdkSubmoduleSynced({ repoRoot });
   const scenarios = selectedScenarios(scenarioOption);
   if (scenarios.includes("history_key_recovery_window") && !runCoreQa) {
     throw new Error("--scenario=history_key_recovery_window requires --core");
@@ -210,6 +209,12 @@ async function run() {
   if (scenarios.includes("notification_delivery") && !runCoreQa) {
     throw new Error("--scenario=notification_delivery requires --core because it validates Core state");
   }
+  if (scenarios.includes("scroll_back_cached_history") && !runCoreQa) {
+    throw new Error("--scenario=scroll_back_cached_history requires --core because it validates Core state");
+  }
+  if (scenarios.includes("thread_receipt_fresh_session") && !runCoreQa) {
+    throw new Error("--scenario=thread_receipt_fresh_session requires --core because it validates Core state");
+  }
   if (fixtureRunOption !== undefined) {
     if (scenarios.length !== 1 || scenarios[0] !== "timeline_stress") {
       throw new Error("--fixture-run is currently supported only with --scenario=timeline_stress");
@@ -219,11 +224,14 @@ async function run() {
     }
   }
   cargoProfileArgs();
-
   const servers = selectedServers(serverOption);
   if (fixtureRunOption !== undefined && (servers.length !== 1 || servers[0] !== "synapse")) {
     throw new Error("--fixture-run requires --server=synapse");
   }
+
+  // Admission above answers "is this invocation well-formed" from its arguments
+  // alone, so a bad one fails before an environment check can mask it.
+  assertSdkSubmoduleSynced({ repoRoot });
   mkdirSync(localSecretsRoot, { recursive: true });
 
   for (const serverKind of servers) {
