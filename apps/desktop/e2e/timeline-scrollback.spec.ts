@@ -1743,21 +1743,27 @@ test("timeline navigation keeps the unread marker and bottom control independent
 
   // The report has to name the row the reader sees first, which is more than
   // "not at the bottom". Both are read in one tick so a window shift between
-  // them cannot show up as a mismatch.
+  // them cannot show up as a mismatch. #2101: the report is answered from the
+  // height model while this row is read from its own rectangle, so a row that
+  // only grazes the top edge may sit on either side of it — the row just above
+  // the drawn one is the same statement about the top of the viewport.
   const observed = await container.evaluate((node) => {
     const top = node.getBoundingClientRect().top;
-    const row = Array.from(node.querySelectorAll<HTMLElement>("[data-item-id]"))
-      .filter((candidate) => candidate.getBoundingClientRect().bottom > top)
-      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0];
+    const rows = Array.from(node.querySelectorAll<HTMLElement>("[data-item-id]")).sort(
+      (a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top
+    );
+    const drawnIndex = rows.findIndex((candidate) => candidate.getBoundingClientRect().bottom > top);
     return {
       reported: window.__harness.invocationsOf("observe_timeline_viewport").at(-1)?.args as {
         firstVisibleEventId?: string;
       } | undefined,
-      dom: row?.getAttribute("data-item-id") ?? null
+      dom: drawnIndex >= 0 ? rows[drawnIndex]?.getAttribute("data-item-id") ?? null : null,
+      previousDom:
+        drawnIndex > 0 ? rows[drawnIndex - 1]?.getAttribute("data-item-id") ?? null : null
     };
   });
   expect(observed.dom).not.toBeNull();
-  expect(observed.reported?.firstVisibleEventId).toBe(observed.dom);
+  expect([observed.dom, observed.previousDom]).toContain(observed.reported?.firstVisibleEventId);
 
   await page.evaluate(
     ({ key }) => {

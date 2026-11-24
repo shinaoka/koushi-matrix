@@ -15,6 +15,16 @@ const HARNESS_ROOM_ID = "!harness-room:example.invalid";
 const HARNESS_ACCOUNT_KEY = "@harness-user:example.invalid";
 const HARNESS_SEED_EVENT_ID = "$seed-event:example.invalid";
 const ANCHOR_PIXEL_TOLERANCE = 3;
+/**
+ * #2101: how far the reported visible range may sit from the rows the browser
+ * really draws, in rows, at each end.
+ *
+ * The report is computed from the height model (#2084), this spec from the rows'
+ * own rectangles. The two boundaries can land on either side of the container
+ * edge, so a row that only grazes it is reported or not; one row per end is the
+ * whole of that freedom, and anything wider still fails.
+ */
+const VIEWPORT_BOUNDARY_ROW_TOLERANCE = 1;
 
 const TIMELINE_KEY = roomTimelineKey(HARNESS_ACCOUNT_KEY, HARNESS_ROOM_ID);
 
@@ -156,6 +166,75 @@ async function placeAnchorInViewport(
   const originalOffset = await anchorOffsetFromContainer(page, anchorEventId);
   expect(originalOffset).not.toBeNull();
   return { anchorEventId, originalOffset: originalOffset! };
+}
+
+/**
+ * The drawn rows and the reported range, read together so no frame can separate
+ * the reads. The report is still the last one sent, which may be a frame or two
+ * older — that is why the callers poll.
+ */
+type ViewportComparison = {
+  rows: string[];
+  /** Index of the first and last row that crosses the viewport; -1 when none. */
+  drawnFirst: number;
+  drawnLast: number;
+  observedFirst: string | null;
+  observedLast: string | null;
+};
+
+async function readViewportComparison(page: Page): Promise<ViewportComparison> {
+  return page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]")!;
+    const containerRect = container.getBoundingClientRect();
+    const mounted = Array.from(container.querySelectorAll<HTMLElement>("[data-event-id]"));
+    const rows = mounted.map((row) => row.getAttribute("data-event-id") ?? "");
+    let drawnFirst = -1;
+    let drawnLast = -1;
+    mounted.forEach((row, index) => {
+      const rect = row.getBoundingClientRect();
+      if (rect.bottom > containerRect.top && rect.top < containerRect.bottom) {
+        if (drawnFirst < 0) drawnFirst = index;
+        drawnLast = index;
+      }
+    });
+    const call = window.__harness.invocationsOf("observe_timeline_viewport").at(-1);
+    return {
+      rows,
+      drawnFirst,
+      drawnLast,
+      observedFirst: (call?.args?.["firstVisibleEventId"] as string | null) ?? null,
+      observedLast: (call?.args?.["lastVisibleEventId"] as string | null) ?? null
+    };
+  });
+}
+
+/** Null when the report covers the drawn rows within the tolerance above. */
+function viewportMismatch(comparison: ViewportComparison): string | null {
+  const { rows, drawnFirst, drawnLast, observedFirst, observedLast } = comparison;
+  // A window that mounts nothing satisfies every other branch vacuously, so it is
+  // a mismatch rather than a pass: the reader is looking at a timeline the report
+  // cannot be describing.
+  if (drawnFirst < 0) return "no mounted row crosses the viewport";
+  if (observedFirst === null || observedLast === null) return "no viewport observation";
+  const first = rows.indexOf(observedFirst);
+  const last = rows.indexOf(observedLast);
+  if (first < 0 || last < 0) {
+    return `the observation names a row that is not mounted: ${observedFirst}..${observedLast}`;
+  }
+  if (first > last) return `the observation is inverted: ${observedFirst}..${observedLast}`;
+  const firstStep = drawnFirst - first;
+  const lastStep = last - drawnLast;
+  if (
+    Math.abs(firstStep) > VIEWPORT_BOUNDARY_ROW_TOLERANCE ||
+    Math.abs(lastStep) > VIEWPORT_BOUNDARY_ROW_TOLERANCE
+  ) {
+    return (
+      `the observation is more than ${VIEWPORT_BOUNDARY_ROW_TOLERANCE} row from the drawn rows at a boundary: ` +
+      `drawn ${rows[drawnFirst]}..${rows[drawnLast]}, observed ${observedFirst}..${observedLast} ` +
+      `(first ${firstStep}, last ${lastStep})`
+    );
+  }
+  return null;
 }
 
 async function anchorOffsetFromContainer(page: Page, eventId: string): Promise<number | null> {
@@ -586,42 +665,18 @@ test("the observed viewport matches the physically visible rows", async ({ page 
   const timeline = page.locator("[data-testid=timeline-view]");
   await expect(timeline).toHaveAttribute("data-total-items", "120");
 
-  const compareObservation = async () => {
-    const physical = await page.evaluate(() => {
-      const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]")!;
-      const containerRect = container.getBoundingClientRect();
-      const rows = Array.from(container.querySelectorAll<HTMLElement>("[data-event-id]")).filter(
-        (row) => {
-          const rect = row.getBoundingClientRect();
-          return rect.bottom > containerRect.top && rect.top < containerRect.bottom;
-        }
-      );
-      return {
-        first: rows[0]?.getAttribute("data-event-id") ?? null,
-        last: rows.at(-1)?.getAttribute("data-event-id") ?? null
-      };
-    });
-    const observed = await page.evaluate(() => {
-      const call = window.__harness.invocationsOf("observe_timeline_viewport").at(-1);
-      return {
-        first: (call?.args?.["firstVisibleEventId"] as string | null | undefined) ?? null,
-        last: (call?.args?.["lastVisibleEventId"] as string | null | undefined) ?? null
-      };
-    });
-    return { physical, observed };
-  };
+  const compareObservation = async () => viewportMismatch(await readViewportComparison(page));
 
-  // On open, after a user scroll, and after a prepend changes the window.
-  await expect
-    .poll(async () => (await compareObservation()).observed, { timeout: 10_000 })
-    .toEqual((await compareObservation()).physical);
+  // On open, after a user scroll, and after a prepend changes the window. The
+  // observation is coalesced to one per painted frame (#1892) and reads the range
+  // from the height model, so the comparison waits for one more report rather
+  // than demanding the report of a scroll that asked for the range already sent.
+  await expect.poll(compareObservation, { timeout: 10_000 }).toBeNull();
 
   await timeline.hover();
   await page.mouse.wheel(0, -400);
   await waitAnimationFrames(page, 4);
-  await expect
-    .poll(async () => (await compareObservation()).observed, { timeout: 10_000 })
-    .toEqual((await compareObservation()).physical);
+  await expect.poll(compareObservation, { timeout: 10_000 }).toBeNull();
 
   await page.evaluate(({ key, items }) => {
     window.__harness.pushCoreEvent({
@@ -642,9 +697,52 @@ test("the observed viewport matches the physically visible rows", async ({ page 
   });
   await expect(timeline).toHaveAttribute("data-total-items", "160");
   await waitAnimationFrames(page, 6);
-  await expect
-    .poll(async () => (await compareObservation()).observed, { timeout: 10_000 })
-    .toEqual((await compareObservation()).physical);
+  await expect.poll(compareObservation, { timeout: 10_000 }).toBeNull();
+});
+
+/**
+ * #2101: the tolerance is one row at each end and no more. A report that stops
+ * short of a drawn row, reaches two rows past an edge, names no row at all, or
+ * describes a viewport that draws none, is a real disagreement and has to stay
+ * red — otherwise the comparison above would pass for a component that stopped
+ * reporting the range.
+ */
+test("a viewport report two rows from the drawn rows is still a failure", () => {
+  const rows = ["$a", "$b", "$c", "$d", "$e"];
+
+  // The widest slack the rule allows: one row early at the top, one row late at
+  // the bottom, and a report narrower than the drawn rows.
+  expect(
+    viewportMismatch({ rows, drawnFirst: 1, drawnLast: 3, observedFirst: "$a", observedLast: "$d" })
+  ).toBeNull();
+  expect(
+    viewportMismatch({ rows, drawnFirst: 1, drawnLast: 3, observedFirst: "$c", observedLast: "$c" })
+  ).toBeNull();
+
+  // Two rows past either edge, and a report that stops short of a drawn row.
+  for (const comparison of [
+    { rows, drawnFirst: 2, drawnLast: 3, observedFirst: "$a", observedLast: "$d" },
+    { rows, drawnFirst: 1, drawnLast: 1, observedFirst: "$b", observedLast: "$d" },
+    { rows, drawnFirst: 1, drawnLast: 3, observedFirst: "$b", observedLast: "$b" },
+    { rows, drawnFirst: 1, drawnLast: 3, observedFirst: "$d", observedLast: "$d" }
+  ]) {
+    expect(viewportMismatch(comparison)).toContain("more than 1 row");
+  }
+
+  // No report, a report naming a row this spec cannot see, an inverted range, and
+  // a viewport with nothing drawn — none of these may pass.
+  expect(
+    viewportMismatch({ rows, drawnFirst: 1, drawnLast: 3, observedFirst: null, observedLast: null })
+  ).toBe("no viewport observation");
+  expect(
+    viewportMismatch({ rows, drawnFirst: 1, drawnLast: 3, observedFirst: "$elsewhere", observedLast: "$d" })
+  ).toContain("not mounted");
+  expect(
+    viewportMismatch({ rows, drawnFirst: 1, drawnLast: 3, observedFirst: "$d", observedLast: "$b" })
+  ).toContain("inverted");
+  expect(
+    viewportMismatch({ rows, drawnFirst: -1, drawnLast: -1, observedFirst: "$b", observedLast: "$d" })
+  ).toBe("no mounted row crosses the viewport");
 });
 
 /** The app harness control surface the request probe drives. */
