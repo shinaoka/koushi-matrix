@@ -18,6 +18,7 @@ import { HARNESS_ROOM_ID } from "./support/basicOperations";
 const PROVISIONAL_COPY =
   "Showing saved conversations. Rooms and messages may be missing or out of date, and unread counts are the last values saved on this device.";
 const SEND_BLOCKED_COPY = "Sending is unavailable until Secure Backup is ready.";
+const PRE_LOCK_DRAFT = "Draft saved before the lock";
 
 const PROVISIONAL_COPY_BY_LOCALE = {
   ja: "保存済みの会話を表示しています。同期が完了していないため、ルームやメッセージが欠けていたり古い可能性があります。未読数は端末に保存されている最後の値です。",
@@ -41,6 +42,8 @@ async function pushAdmission(
     gate?: Record<string, unknown>;
     readiness?: Record<string, unknown>;
     session?: Record<string, unknown>;
+    /** #2090: a draft saved before the lock, so the read-only box holds text. */
+    draft?: string;
   }
 ): Promise<void> {
   await page.evaluate((next) => {
@@ -63,7 +66,22 @@ async function pushAdmission(
                   readiness: next.readiness as never
                 }
               }
-            : {})
+            : {}),
+          ...(next.draft === undefined
+            ? {}
+            : {
+                timeline: {
+                  ...snapshot.state.ui.timeline,
+                  composer: {
+                    ...snapshot.state.ui.timeline.composer,
+                    draft: next.draft,
+                    document: {
+                      version: 2 as const,
+                      inlines: [{ kind: "text" as const, text: next.draft }]
+                    }
+                  }
+                }
+              })
         }
       }
     });
@@ -641,4 +659,132 @@ test("the status copy follows the active catalog while it stays visible", async 
     const statusBox = await sidebarStatus(page).boundingBox();
     expect(statusBox?.height ?? 0).toBeGreaterThan(0);
   }
+});
+
+/**
+ * #2090: `contentEditable={false}` stopped typing but not the clipboard
+ * handlers, which resolved the selection inside the read-only box and committed
+ * a mutation — a draft save. The lock now refuses paste, cut and drop outright
+ * and keeps selection and copy, so a read-only box stays exactly as Rust saved
+ * it.
+ */
+test("a read-only composer refuses paste and cut but still selects and copies (#2090)", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await pushAdmission(page, {
+    gate: { kind: "checking" },
+    readiness: { kind: "loading", source: "cache", generation: 4 },
+    draft: PRE_LOCK_DRAFT
+  });
+
+  const composer = messageComposer(page);
+  // The editor pads its box by 12px/14px, so the selection has to aim at the
+  // rendered text, exactly where a reader double-clicks a word.
+  const draftText = composer.locator("span[data-composer-text]");
+  await expect(composer).toHaveAttribute("contenteditable", "false");
+  await expect(composer).toHaveText(PRE_LOCK_DRAFT);
+  await expect(composerNotice(page)).toHaveText(SEND_BLOCKED_COPY);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  const savedDraft = () =>
+    page.evaluate(() => window.__harness.currentSnapshot().state.ui.timeline.composer.draft);
+  const draftSaves = () =>
+    page.evaluate(() => window.__harness.invocationsOf("set_composer_draft").length);
+  const selectionText = () => page.evaluate(() => window.getSelection()?.toString() ?? "");
+  const dispatchPaste = (text: string) =>
+    composer.evaluate((element, clipboardText) => {
+      const data = new DataTransfer();
+      data.setData("text/plain", clipboardText);
+      const event = new ClipboardEvent("paste", {
+        clipboardData: data,
+        bubbles: true,
+        cancelable: true
+      });
+      element.dispatchEvent(event);
+      return { prevented: event.defaultPrevented };
+    }, text);
+
+  // Selecting is a read; it stays available and is what the defect needed.
+  await draftText.dblclick({ force: true });
+  expect((await selectionText()).length).toBeGreaterThan(0);
+
+  // In a writable editor a paste replaces the selection. Here the document must
+  // stay put — that assertion, not `prevented`, is the one the defect moved:
+  // both handlers already cancelled the default before this change.
+  await dispatchPaste("Clipboard text");
+  await expect(composer).toHaveText(PRE_LOCK_DRAFT);
+
+  // The same refusal with nothing selected: the guard is not selection-shaped.
+  await composer.evaluate((element) => {
+    window.getSelection()?.removeAllRanges();
+    element.focus();
+  });
+  await dispatchPaste("Clipboard text");
+  await expect(composer).toHaveText(PRE_LOCK_DRAFT);
+
+  // Cut is refused too, and the clipboard stays empty — which is this change's
+  // doing, since the old cut copied the selection before deleting it.
+  await draftText.dblclick({ force: true });
+  const cut = await composer.evaluate((element) => {
+    const data = new DataTransfer();
+    const event = new ClipboardEvent("cut", {
+      clipboardData: data,
+      bubbles: true,
+      cancelable: true
+    });
+    element.dispatchEvent(event);
+    return { prevented: event.defaultPrevented, text: data.getData("text/plain") };
+  });
+  expect(cut.prevented).toBe(true);
+  expect(cut.text).toBe("");
+  await expect(composer).toHaveText(PRE_LOCK_DRAFT);
+
+  // A dropped text payload is not an edit target either. The composer section
+  // already cancels every drop (#2090 changed nothing here); this pins it so a
+  // future drop handler cannot reopen the read-only box.
+  await composer.evaluate((element) => {
+    const data = new DataTransfer();
+    data.setData("text/plain", "Dropped text");
+    element.dispatchEvent(
+      new DragEvent("drop", { dataTransfer: data, bubbles: true, cancelable: true })
+    );
+  });
+  await expect(composer).toHaveText(PRE_LOCK_DRAFT);
+
+  // Copying a selection still works — the lock refuses edits, not reading.
+  await draftText.dblclick({ force: true });
+  const copied = await composer.evaluate((element) => {
+    const data = new DataTransfer();
+    element.dispatchEvent(
+      new ClipboardEvent("copy", { clipboardData: data, bubbles: true, cancelable: true })
+    );
+    return data.getData("text/plain");
+  });
+  expect(copied.trim().length).toBeGreaterThan(0);
+  expect(PRE_LOCK_DRAFT).toContain(copied.trim());
+
+  // Not one character of the draft changed, and no save was dispatched. The
+  // composer debounces a draft save by 350 ms, and the defective build reached
+  // `set_composer_draft` through that timer, so this has to outlast it or the
+  // check would pass on a defect it never saw.
+  await page.waitForTimeout(800);
+  expect(await savedDraft()).toBe(PRE_LOCK_DRAFT);
+  expect(await draftSaves()).toBe(0);
+
+  // Unlocking restores the ordinary editor: the same paste lands and the draft
+  // is saved.
+  await pushAdmission(page, {
+    gate: { kind: "ready" },
+    readiness: { kind: "ready", source: "live", generation: 5 }
+  });
+  await expect(composer).toHaveAttribute("contenteditable", "true");
+  await draftText.dblclick({ force: true });
+  const unlockedSelection = await selectionText();
+  expect(unlockedSelection.length).toBeGreaterThan(0);
+  expect((await dispatchPaste("Unlocked ")).prevented).toBe(true);
+  expect(await composer.textContent()).toBe(
+    PRE_LOCK_DRAFT.replace(unlockedSelection, "Unlocked ")
+  );
+  await expect.poll(draftSaves).toBeGreaterThan(0);
 });

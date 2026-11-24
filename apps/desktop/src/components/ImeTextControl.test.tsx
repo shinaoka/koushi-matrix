@@ -1149,3 +1149,145 @@ describe("focused structured editor history (#1569)", () => {
     expect(nativeUndo).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("read-only editor refuses edits but still reads (#2090)", () => {
+  // A draft that survived the send lock: the issue needs text in the box to
+  // select, so an empty read-only editor cannot show the defect.
+  const lockedDraft: ComposerDocument = {
+    version: 2,
+    inlines: [{ kind: "text", text: "Draft saved before the lock" }]
+  };
+
+  function LockedEditor({
+    editable,
+    onChange = () => undefined
+  }: {
+    editable: boolean;
+    onChange?: (document: ComposerDocument) => void;
+  }) {
+    const [document, setDocument] = useState(lockedDraft);
+    return (
+      <ImeInlineMentionEditor
+        aria-label={EDITOR_LABEL}
+        document={document}
+        editable={editable}
+        syncKey="locked-draft"
+        onDocumentChange={(next) => {
+          setDocument(next);
+          onChange(next);
+        }}
+      />
+    );
+  }
+
+  // The read-only cases never read the payload, so only the writable case names
+  // one.
+  function clipboard(text = "Replacement") {
+    return { getData: vi.fn(() => text), setData: vi.fn() };
+  }
+
+  // The editor renders plain text inside its own span, so the selection has to
+  // address that text node rather than the editable element.
+  function draftTextNode(control: HTMLElement): Node {
+    const node = control.firstChild?.firstChild;
+    if (!node) throw new Error("missing editor text");
+    return node;
+  }
+
+  function draftText(control: HTMLElement) {
+    return control.textContent;
+  }
+
+  it("refuses a paste over a selection", () => {
+    const onChange = vi.fn();
+    render(<LockedEditor editable={false} onChange={onChange} />);
+    const control = screen.getByRole("textbox", { name: EDITOR_LABEL });
+    const text = draftTextNode(control);
+    setSelection(text, 0, text, 5);
+
+    const event = createEvent.paste(control, { clipboardData: clipboard() });
+    fireEvent(control, event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(draftText(control)).toBe("Draft saved before the lock");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("refuses a paste at a bare caret", () => {
+    const onChange = vi.fn();
+    render(<LockedEditor editable={false} onChange={onChange} />);
+    const control = screen.getByRole("textbox", { name: EDITOR_LABEL });
+    setSelection(draftTextNode(control), 5);
+
+    const event = createEvent.paste(control, { clipboardData: clipboard() });
+    fireEvent(control, event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(draftText(control)).toBe("Draft saved before the lock");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("refuses a cut and copies nothing", () => {
+    const onChange = vi.fn();
+    render(<LockedEditor editable={false} onChange={onChange} />);
+    const control = screen.getByRole("textbox", { name: EDITOR_LABEL });
+    const text = draftTextNode(control);
+    setSelection(text, 0, text, 5);
+    const data = clipboard();
+
+    const event = createEvent.cut(control, { clipboardData: data });
+    fireEvent(control, event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(data.setData).not.toHaveBeenCalled();
+    expect(draftText(control)).toBe("Draft saved before the lock");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("refuses a delete over a selection", () => {
+    const onChange = vi.fn();
+    render(<LockedEditor editable={false} onChange={onChange} />);
+    const control = screen.getByRole("textbox", { name: EDITOR_LABEL });
+    const text = draftTextNode(control);
+    setSelection(text, 0, text, 5);
+
+    beforeInput(control, "deleteContentBackward");
+
+    expect(draftText(control)).toBe("Draft saved before the lock");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps copying a selection", () => {
+    render(<LockedEditor editable={false} />);
+    const control = screen.getByRole("textbox", { name: EDITOR_LABEL });
+    const text = draftTextNode(control);
+    setSelection(text, 0, text, 5);
+    const data = clipboard();
+
+    fireEvent.copy(control, { clipboardData: data });
+
+    expect(data.setData).toHaveBeenCalledWith("text/plain", "Draft");
+    expect(draftText(control)).toBe("Draft saved before the lock");
+  });
+
+  it("pastes again once the editor is editable", () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<LockedEditor editable={false} onChange={onChange} />);
+    const control = screen.getByRole("textbox", { name: EDITOR_LABEL });
+    const text = draftTextNode(control);
+    setSelection(text, 0, text, 5);
+    fireEvent(control, createEvent.paste(control, { clipboardData: clipboard("Nope") }));
+    expect(onChange).not.toHaveBeenCalled();
+
+    rerender(<LockedEditor editable onChange={onChange} />);
+    const editableText = draftTextNode(control);
+    setSelection(editableText, 0, editableText, 5);
+
+    const event = createEvent.paste(control, { clipboardData: clipboard("Updated") });
+    fireEvent(control, event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(control.textContent).toBe("Updated saved before the lock");
+  });
+});

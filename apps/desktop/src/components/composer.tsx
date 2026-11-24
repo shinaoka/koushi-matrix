@@ -1314,7 +1314,9 @@ export const Composer = memo(function Composer({
           if (!canAttach) {
             // #1904: swallow an image paste an editor cannot stage, but leave a
             // text paste to the editor. Reading the native clipboard here would
-            // hand the files to a surface that has nowhere to put them.
+            // hand the files to a surface that has nowhere to put them. #2090:
+            // the editor takes the paste when it is editable and refuses it when
+            // it is read-only, so this branch must not rewrite the draft either.
             if (files.length > 0 || attachmentPasteNeedsNativeImageRead(event.clipboardData)) {
               event.preventDefault();
             }
