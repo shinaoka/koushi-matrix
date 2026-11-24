@@ -872,6 +872,7 @@ function harnessAccountTabsSnapshot() {
       homeserver: HOMESERVER,
       displayName: USER_ID,
       avatarSourceRef: null,
+      avatarMxcUri: null,
       status: "ready" as const,
       unreadCount: 0
     }],

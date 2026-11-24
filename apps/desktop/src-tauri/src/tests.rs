@@ -592,6 +592,74 @@ fn account_tab_snapshot_projects_the_per_account_policy_from_every_runtime() {
     assert_ne!(snapshot.tabs[0].unread_count, snapshot.tabs[1].unread_count);
 }
 
+#[test]
+fn account_tab_snapshot_carries_the_own_avatar_before_its_thumbnail_is_ready() {
+    use koushi_core::account_runtime_manager::{AccountTabDescriptor, AccountTabId};
+    use koushi_protocol::AccountKey;
+    use koushi_state::{AvatarImage, AvatarThumbnailState};
+
+    let descriptor = |id: &str, user_id: &str| AccountTabDescriptor {
+        id: AccountTabId::from_string(id.to_owned()),
+        account_key: Some(AccountKey(user_id.to_owned())),
+        homeserver: Some("https://example.invalid".to_owned()),
+    };
+    let mxc = |name: &str| format!("mxc://example.invalid/{name}");
+    // A background tab has no timeline to demand a thumbnail through, so the tab
+    // strip needs the resource itself, not only the fetched result (#2059).
+    let mut background = ready_app_state();
+    background.profile.own.avatar = Some(AvatarImage {
+        mxc_uri: mxc("background"),
+        thumbnail: AvatarThumbnailState::NotRequested,
+    });
+    let mut selected = ready_app_state();
+    selected.profile.own.avatar = Some(AvatarImage {
+        mxc_uri: mxc("selected"),
+        thumbnail: AvatarThumbnailState::Ready {
+            source_ref: "asset://localhost/selected.png".to_owned(),
+            width: Some(64),
+            height: Some(64),
+            mime_type: Some("image/png".to_owned()),
+        },
+    });
+    let without_avatar = ready_app_state();
+
+    let snapshot = super::account_tabs_snapshot_from_states(
+        "account:@selected:example.invalid".to_owned(),
+        [
+            (
+                descriptor(
+                    "account:@background:example.invalid",
+                    "@background:example.invalid",
+                ),
+                background,
+            ),
+            (
+                descriptor(
+                    "account:@selected:example.invalid",
+                    "@selected:example.invalid",
+                ),
+                selected,
+            ),
+            (
+                descriptor("account:@plain:example.invalid", "@plain:example.invalid"),
+                without_avatar,
+            ),
+        ],
+    );
+
+    let json: Vec<serde_json::Value> = snapshot
+        .tabs
+        .iter()
+        .map(|tab| serde_json::to_value(tab).unwrap())
+        .collect();
+    assert_eq!(json[0]["avatarMxcUri"], mxc("background"));
+    assert_eq!(json[0]["avatarSourceRef"], serde_json::Value::Null);
+    assert_eq!(json[1]["avatarMxcUri"], mxc("selected"));
+    assert_eq!(json[1]["avatarSourceRef"], "asset://localhost/selected.png");
+    assert_eq!(json[2]["avatarMxcUri"], serde_json::Value::Null);
+    assert_eq!(json[2]["avatarSourceRef"], serde_json::Value::Null);
+}
+
 #[tokio::test]
 async fn selected_connection_waits_for_restore_before_caching_initial_runtime() {
     let data_dir = tempfile::tempdir().expect("data directory");

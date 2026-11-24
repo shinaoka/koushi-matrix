@@ -13,6 +13,7 @@ const accountTabs: AccountTabsSnapshot = {
     homeserver: "https://harness.example.invalid",
     displayName: "Harness",
     avatarSourceRef: null,
+    avatarMxcUri: null,
     status: "ready",
     unreadCount: 0
   }],

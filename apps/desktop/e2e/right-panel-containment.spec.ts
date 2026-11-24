@@ -62,6 +62,7 @@ function accountTabs(signedIn: 1 | 2): AccountTabsSnapshot {
         homeserver: "https://harness.example.invalid",
         displayName: LONG_ACCOUNT_ID,
         avatarSourceRef: null,
+        avatarMxcUri: null,
         status: "ready",
         unreadCount: 0
       },
@@ -73,6 +74,7 @@ function accountTabs(signedIn: 1 | 2): AccountTabsSnapshot {
               homeserver: "https://second.example.invalid",
               displayName: "Second Synthetic",
               avatarSourceRef: null,
+              avatarMxcUri: null,
               status: "ready" as const,
               unreadCount: 0
             }

@@ -16,6 +16,7 @@ function restoringTabs(): AccountTabsSnapshot {
         homeserver: "https://harness.example.invalid",
         displayName: "Harness",
         avatarSourceRef: null,
+        avatarMxcUri: null,
         status: "ready",
         unreadCount: 0
       },
@@ -25,6 +26,7 @@ function restoringTabs(): AccountTabsSnapshot {
         homeserver: "https://a-long-homeserver-name.example.invalid",
         displayName: "A very long account display name that overflows the tab",
         avatarSourceRef: null,
+        avatarMxcUri: null,
         status: "restoring",
         unreadCount: 0
       }

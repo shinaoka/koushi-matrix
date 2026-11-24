@@ -30,6 +30,7 @@ export function targetAccountTab(
     homeserver,
     displayName: null,
     avatarSourceRef: null,
+    avatarMxcUri: null,
     status: "ready",
     unreadCount: 0
   };

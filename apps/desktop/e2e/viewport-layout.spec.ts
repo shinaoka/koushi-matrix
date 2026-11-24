@@ -62,6 +62,7 @@ test("narrow account tabs retain visible avatars and status with accessible name
         homeserver: "https://harness.example.invalid",
         displayName: "Harness",
         avatarSourceRef: null,
+        avatarMxcUri: null,
         status: "ready",
         unreadCount: 0
       },
@@ -71,6 +72,7 @@ test("narrow account tabs retain visible avatars and status with accessible name
         homeserver: "https://error.example.invalid",
         displayName: "Error account",
         avatarSourceRef: null,
+        avatarMxcUri: null,
         status: "error",
         unreadCount: 0
       },
@@ -80,6 +82,7 @@ test("narrow account tabs retain visible avatars and status with accessible name
         homeserver: "https://signed-out.example.invalid",
         displayName: "Signed out",
         avatarSourceRef: null,
+        avatarMxcUri: null,
         status: "signedOut",
         unreadCount: 0
       }

@@ -39,6 +39,7 @@ function accountTabs(selectedTabId: string): AccountTabsSnapshot {
         homeserver: "https://harness.example.invalid",
         displayName: "Harness",
         avatarSourceRef: null,
+        avatarMxcUri: null,
         status: "ready",
         unreadCount: 0
       },
@@ -48,6 +49,7 @@ function accountTabs(selectedTabId: string): AccountTabsSnapshot {
         homeserver: "https://bob.example.invalid",
         displayName: "Bob",
         avatarSourceRef: null,
+        avatarMxcUri: null,
         status: "ready",
         unreadCount: 0
       }

@@ -40,6 +40,7 @@ const tab = (id: string, name: string) => ({
   homeserver: "example.invalid",
   displayName: name,
   avatarSourceRef: null,
+  avatarMxcUri: null,
   status: "ready",
   unreadCount: 0
 }) as AccountTabSummary;

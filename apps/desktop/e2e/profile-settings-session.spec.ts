@@ -90,6 +90,7 @@ async function gotoSignedOutAuth(page: Page): Promise<void> {
         homeserver: null,
         displayName: null,
         avatarSourceRef: null,
+        avatarMxcUri: null,
         status: "signedOut",
         unreadCount: 0
       }],
