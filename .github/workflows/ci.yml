@@ -435,6 +435,14 @@ jobs:
         run: |
           cargo test --profile ci -p koushi-desktop --lib --locked -- relaunch:: restart_barrier_tests:: 2>&1 | tee "$RUNNER_TEMP/relaunch-tests.log"
           grep -Eq '^test result: ok\. ([1-9][0-9]+) passed' "$RUNNER_TEMP/relaunch-tests.log"
+      # #2095: the requested authorization options and the grant-read diagnostics
+      # only exist in the macOS adapter; Linux CI type-checks them at most. The
+      # grep fails the step if a rename makes the filter match nothing.
+      - name: macOS notification authorization tests
+        shell: bash
+        run: |
+          cargo test --profile ci -p koushi-desktop --lib --locked -- native_attention::notification 2>&1 | tee "$RUNNER_TEMP/notification-tests.log"
+          grep -Eq '^test result: ok\. ([1-9][0-9]+) passed' "$RUNNER_TEMP/notification-tests.log"
 
   core-invites:
     # Prove invitation projection through the sole Simplified Sliding Sync

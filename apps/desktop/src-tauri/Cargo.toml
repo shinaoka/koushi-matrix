@@ -66,6 +66,13 @@ webkit2gtk = "2.0.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 # UNUserNotificationCenter delegate delivers body clicks asynchronously.
 mac-usernotifications = "0.3.1"
+# `mac-usernotifications` 0.3.1 asks macOS for alert and sound authorization only,
+# so the Dock badge never gets the switch it needs (#2095). The authorization
+# request is made here instead, through the same bindings that crate links
+# (`UNAuthorizationOptions::Badge` lives there), and `block2` builds its
+# completion handler.
+objc2-user-notifications = "0.3"
+block2 = "0.6"
 # Mach `proc_pid_rusage` and libmalloc `malloc_zone_statistics` for the #1344
 # diagnostic memory audit.
 libc = "0.2"
