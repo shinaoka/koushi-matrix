@@ -29,6 +29,7 @@ describe("people-facing media list labels", () => {
             redacted: false
           }
         ]}
+        canWrite
         onUnpin={() => undefined}
       />
     );
@@ -54,6 +55,7 @@ describe("people-facing media list labels", () => {
             thread_root_event_id: null
           }
         ]}
+        canWrite
         onOpen={onOpen}
         onUnpin={() => undefined}
       />
@@ -370,5 +372,59 @@ describe("room media gallery older media (#1969)", () => {
       />
     );
     expect(screen.getByText("No media in this room")).toBeTruthy();
+  });
+});
+
+describe("a pinned message's write and read controls (#2087)", () => {
+  const pinnedEvent = {
+    event_id: "$pinned:example.invalid",
+    sender: "@private:example.invalid",
+    sender_label: "Pinned Alias",
+    body_preview: "Pinned body",
+    redacted: false,
+    timestamp_ms: 1_800_000_000_000,
+    state: "ready" as const,
+    thread_root_event_id: null
+  };
+
+  it("offers no unpin while the composer reports it cannot send", () => {
+    const onUnpin = vi.fn();
+    const onOpen = vi.fn();
+    render(
+      <PinnedEventsList
+        roomId="!room:example.invalid"
+        pinnedEvents={[pinnedEvent]}
+        canWrite={false}
+        onOpen={onOpen}
+        onUnpin={onUnpin}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: "Unpin message" })).toBeNull();
+
+    // The read half is untouched: opening the message is not a write.
+    fireEvent.click(screen.getByRole("button", { name: /Pinned body/ }));
+    expect(onOpen).toHaveBeenCalledWith(
+      "!room:example.invalid",
+      "$pinned:example.invalid",
+      null
+    );
+    expect(onUnpin).not.toHaveBeenCalled();
+  });
+
+  it("offers the unpin again once sending is admitted", () => {
+    const onUnpin = vi.fn();
+    render(
+      <PinnedEventsList
+        roomId="!room:example.invalid"
+        pinnedEvents={[pinnedEvent]}
+        canWrite
+        onUnpin={onUnpin}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Unpin message" }));
+
+    expect(onUnpin).toHaveBeenCalledWith("!room:example.invalid", "$pinned:example.invalid");
   });
 });

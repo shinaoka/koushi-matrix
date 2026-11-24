@@ -1087,6 +1087,7 @@ export function ContextualRightPanel({
             roomId={pinnedRoomId}
             pinnedEvents={pinnedEvents}
             profileUsers={snapshot.state.domain.profile.users}
+            canWrite={!composerReadOnly}
             onOpen={onOpenPinnedEvent}
             onUnpin={onUnpinPinnedEvent}
           />

@@ -454,7 +454,8 @@ stateDiagram-v2
   send stays closed until the existing Secure Backup admission above opens it —
   including plaintext rooms that the previous all-or-nothing startup screen made
   unreachable — together with replies, threads, attachments, reactions, edits,
-  redactions, retries, and scheduled-send creation and release. A fully-read
+  redactions, retries, room pin and unpin (#2087), and scheduled-send creation
+  and release. A fully-read
   marker is refused for a separate reason: it is a read-state write derived from
   the visible timeline, so it needs a server-confirmed list rather than backup
   admission, and a provisional cache projection may omit or misorder the newest

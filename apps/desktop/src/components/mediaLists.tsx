@@ -375,12 +375,19 @@ function PinnedEventsList({
   roomId,
   pinnedEvents,
   profileUsers = {},
+  canWrite,
   onOpen,
   onUnpin
 }: {
   roomId: string;
   pinnedEvents: DesktopSnapshot["state"]["domain"]["room_interactions"][string]["pinned_events"];
   profileUsers?: Record<string, UserProfile>;
+  /**
+   * #2087: unpinning is a room-state write every member reads, so it is closed
+   * while the composer reports that nothing can be sent — the same rule the
+   * message row's Pin follows. Opening a pinned message is a read and stays.
+   */
+  canWrite: boolean;
   onOpen?: (roomId: string, eventId: string, threadRootEventId: string | null) => void;
   onUnpin: (roomId: string, eventId: string) => void;
 }) {
@@ -444,19 +451,21 @@ function PinnedEventsList({
               ) : null}
               </span>
             </button>
-            <Tooltip label={t("timeline.unpinMessage")} placement="below" align="end">
-              {(tooltipProps) => (
-                <button
-                  className="pinned-event-action"
-                  type="button"
-                  aria-label={t("timeline.unpinMessage")}
-                  onClick={() => onUnpin(roomId, event.event_id)}
-                  {...tooltipProps}
-                >
-                  <PinOff size={ICON_SIZE.micro} aria-hidden="true" />
-                </button>
-              )}
-            </Tooltip>
+            {canWrite ? (
+              <Tooltip label={t("timeline.unpinMessage")} placement="below" align="end">
+                {(tooltipProps) => (
+                  <button
+                    className="pinned-event-action"
+                    type="button"
+                    aria-label={t("timeline.unpinMessage")}
+                    onClick={() => onUnpin(roomId, event.event_id)}
+                    {...tooltipProps}
+                  >
+                    <PinOff size={ICON_SIZE.micro} aria-hidden="true" />
+                  </button>
+                )}
+              </Tooltip>
+            ) : null}
           </div>
           );
         })}

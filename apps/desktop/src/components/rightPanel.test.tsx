@@ -737,6 +737,74 @@ describe("ContextualRightPanel thread upload previews", () => {
   });
 });
 
+// #2087: the panel's unpin is a room-state write, so it follows the composer's
+// admission like the message row's Pin does. Opening a pinned message stays.
+describe("ContextualRightPanel pinned messages under the send lock", () => {
+  function pinnedSnapshot(): DesktopSnapshot {
+    const base = threadSnapshot("");
+    return {
+      ...base,
+      state: {
+        ...base.state,
+        domain: {
+          ...base.state.domain,
+          room_interactions: {
+            [room.room_id]: {
+              pinned_events: [
+                {
+                  event_id: "$pinned:example.invalid",
+                  sender: "@private:example.invalid",
+                  sender_label: "Pinned Alias",
+                  body_preview: "Pinned body",
+                  redacted: false,
+                  state: "ready",
+                  thread_root_event_id: null
+                }
+              ],
+              pin_operation: { kind: "idle" }
+            }
+          }
+        }
+      }
+    } as unknown as DesktopSnapshot;
+  }
+
+  test("does not offer unpin while sending is unavailable", () => {
+    const onUnpinPinnedEvent = vi.fn();
+    const onOpenPinnedEvent = vi.fn();
+    renderPanel({
+      mode: "pinned",
+      snapshot: pinnedSnapshot(),
+      composerReadOnly: true,
+      onUnpinPinnedEvent,
+      onOpenPinnedEvent
+    });
+
+    expect(screen.queryByRole("button", { name: "Unpin message" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Pinned body/ }));
+    expect(onOpenPinnedEvent).toHaveBeenCalledWith(
+      room.room_id,
+      "$pinned:example.invalid",
+      null
+    );
+    expect(onUnpinPinnedEvent).not.toHaveBeenCalled();
+  });
+
+  test("offers unpin again once the lock clears", () => {
+    const onUnpinPinnedEvent = vi.fn();
+    renderPanel({
+      mode: "pinned",
+      snapshot: pinnedSnapshot(),
+      onUnpinPinnedEvent
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Unpin message" }));
+
+    expect(onUnpinPinnedEvent).toHaveBeenCalledWith(room.room_id, "$pinned:example.invalid");
+  });
+});
+
 describe("ContextualRightPanel secure-backup degradation", () => {
   test("disables the thread composer while encrypted sending is blocked", () => {
     renderPanel({
