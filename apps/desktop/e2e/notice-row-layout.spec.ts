@@ -201,6 +201,57 @@ test("a profile notice names its sender once", async ({ page }) => {
   await expect(row.locator(".message-heading")).toHaveCount(1);
 });
 
+test("a message after its sender's own notice keeps its avatar and name (#2074)", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await seedTimelineItems(page, [
+    topicNotice("$before-notice:example.invalid"),
+    item("$after-notice:example.invalid", "First message after the notice"),
+    item("$continuation:example.invalid", "Second message from the same sender")
+  ]);
+
+  // Compact density is where the defect showed: it is the only density that
+  // hides a continuation's avatar and name.
+  await page.evaluate(() => {
+    document.querySelector<HTMLElement>(".desktop")!.dataset.density = "compact";
+  });
+
+  const after = page.locator('[data-event-id="$after-notice:example.invalid"]');
+  const continuation = page.locator('[data-event-id="$continuation:example.invalid"]');
+  await expect(after).toBeVisible();
+
+  // The message that follows the notice is not a continuation, so the header is
+  // drawn: a visible avatar and the sender name as its profile button.
+  await expect(after).not.toHaveClass(/is-continuation/);
+  await expect(after.locator(".avatar").first()).toBeVisible();
+  const nameButton = after.getByRole("button", { name: t("people.openProfile", { name: "Harness User" }) });
+  await expect(nameButton).toBeVisible();
+  await expect(nameButton).toHaveText("Harness User");
+
+  // The same sender's next message still groups with it, which is the behaviour
+  // the notice must not break. Compact density hides a continuation's header by
+  // clipping the name to a 1px box rather than removing it, so measure it.
+  await expect(continuation).toHaveClass(/is-continuation/);
+  await expect(continuation.locator(".avatar").first()).toBeHidden();
+  const senderWidth = async (row: typeof after) =>
+    await row.locator(".sender").first().evaluate((el) => el.getBoundingClientRect().width);
+  expect(await senderWidth(after)).toBeGreaterThan(await senderWidth(continuation));
+
+  // The header costs the row height, and that is the price of attributing the
+  // message to its real sender; the continuation keeps the compact height.
+  const heights = await page.evaluate(() => {
+    const height = (eventId: string) =>
+      document.querySelector<HTMLElement>(`[data-event-id="${eventId}"]`)!.getBoundingClientRect()
+        .height;
+    return {
+      header: height("$after-notice:example.invalid"),
+      continuation: height("$continuation:example.invalid")
+    };
+  });
+  expect(heights.header).toBeGreaterThan(heights.continuation);
+});
+
 test("the notice line follows the density setting", async ({ page }) => {
   await gotoReadyShell(page);
   await seedTimelineItems(page, [topicNotice("$density-notice:example.invalid")]);

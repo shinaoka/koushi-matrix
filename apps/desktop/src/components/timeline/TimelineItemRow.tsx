@@ -806,10 +806,10 @@ function TimelineItemRowView({
   const canShowReactions = !isRedacted && !isEditing && item.reactions.length > 0;
   const senderAvatar = resolvedAvatar(item.sender_avatar, profile?.avatar, ownAvatar);
   const senderDisplayLabel = peopleFacingLabel(item.sender_label);
-  // #2041: compact density drops the header's profile link on a continuation
-  // row, but on a notice the name is the only place the actor appears.
+  // Compact density drops the header's profile link on a continuation row. A
+  // notice is never a continuation (#2074), so it always keeps its name.
   const senderProfileUserId =
-    isNoticeRow || !(isContinuation && density === "compact") ? item.sender : null;
+    !(isContinuation && density === "compact") ? item.sender : null;
   const canStartDirectMessage = Boolean(
     !(isContinuation && density === "compact") &&
       item.sender &&

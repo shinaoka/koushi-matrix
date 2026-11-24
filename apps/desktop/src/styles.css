@@ -3494,20 +3494,6 @@ button:disabled {
   line-height: 1.45;
 }
 
-/* Compact density hides a continuation row's sender, but on a notice line that
-   sender is the only place the name appears. The extra `.message` outranks
-   `.desktop[data-density="compact"] .message.is-continuation .sender`, whose
-   specificity would otherwise tie with this rule and win on file order. */
-.desktop[data-density="compact"] .message.message-notice-row .message-heading .sender {
-  position: static;
-  width: auto;
-  height: auto;
-  padding: 0;
-  overflow: visible;
-  clip: auto;
-  white-space: normal;
-}
-
 /* #2041: a notice line keeps react and pin, so they sit on the line itself
    instead of in a hover bar: a state event has nothing to reply to or edit. */
 .message-notice-controls {

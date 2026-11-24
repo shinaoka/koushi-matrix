@@ -621,12 +621,6 @@ describe("styles.css token system", () => {
     for (const box of ["border", "background", "box-shadow"]) {
       expect(body).not.toContain(`${box}:`);
     }
-    // Compact density hides a continuation row's sender; a notice line keeps it.
-    const compact = selectorBlock(
-      '.desktop[data-density="compact"] .message.message-notice-row .message-heading .sender'
-    );
-    expect(compact).toContain("position: static");
-    expect(compact).toContain("clip: auto");
     // The two controls a notice keeps sit on the line, not in a hover bar.
     const controls = selectorBlock(".message-notice-controls");
     expect(controls).toContain("display: inline-flex");
