@@ -173,6 +173,18 @@ fn send_admission_covers_every_composer_surface() {
             send_at_ms: 1,
             draft_revision: 1.into(),
         }),
+        // #2087: a pin is room state every member reads, so the message row's
+        // Pin and the Pinned messages panel's Unpin both wait for it.
+        CoreCommand::Room(RoomCommand::PinEvent {
+            request_id: id,
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$event:example.invalid".to_owned(),
+        }),
+        CoreCommand::Room(RoomCommand::UnpinEvent {
+            request_id: id,
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$event:example.invalid".to_owned(),
+        }),
         // #1983: editing a pending send is a write like scheduling it, so the
         // panel's editor waits for the same admission the composer body does.
         CoreCommand::App(AppCommand::RescheduleScheduledSend {
@@ -217,6 +229,12 @@ fn send_admission_covers_every_composer_surface() {
             target: koushi_state::ComposerTarget::Main {
                 room_id: "!room:example.invalid".to_owned(),
             },
+        }),
+        // Reading a room's surfaces stays admitted: opening a pinned message and
+        // listing what is pinned write nothing (#2087).
+        CoreCommand::Room(RoomCommand::LoadRoomSettings {
+            request_id: id,
+            room_id: "!room:example.invalid".to_owned(),
         }),
     ] {
         assert!(

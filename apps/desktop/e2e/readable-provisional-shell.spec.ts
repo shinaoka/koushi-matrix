@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { HARNESS_ROOM_ID } from "./support/basicOperations";
+
 /**
  * #1748: the desktop shell renders the Rust-projected read/send admission.
  *
@@ -321,6 +323,90 @@ test("the read-only shell offers no forward, redact or reaction-chip write", asy
   await row.click({ button: "right" });
   await expect(redactItem).toBeVisible();
   await page.keyboard.press("Escape");
+});
+
+// #2087: the Pinned messages panel keeps its read half and loses its write half
+// while the composer reports that nothing can be sent. The message row's Pin is
+// the control: it is already hidden in the same state.
+test("the pinned messages panel offers no unpin while sending is unavailable", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  const pinnedRegion = page.getByRole("region", { name: "Pinned messages" });
+  const unpin = pinnedRegion.getByRole("button", { name: "Unpin message" });
+  const pinnedRow = pinnedRegion.getByRole("button", { name: /Pinned preview/ });
+  const unpinCount = () =>
+    page.evaluate(() => window.__harness.invocationsOf("unpin_event").length);
+  const openCount = () =>
+    page.evaluate(() => window.__harness.invocationsOf("open_pinned_event").length);
+
+  await page.evaluate((roomId) => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          room_interactions: {
+            ...snapshot.state.domain.room_interactions,
+            [roomId]: {
+              pinned_events: [
+                {
+                  event_id: "$seed-event:example.invalid",
+                  sender: "@harness-user:example.invalid",
+                  body_preview: "Pinned preview from Rust state",
+                  redacted: false
+                }
+              ],
+              pin_operation: { kind: "idle" }
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateUpdate();
+  }, HARNESS_ROOM_ID);
+
+  // Control: while sending is admitted the panel offers unpin and it dispatches.
+  await page.getByRole("button", { name: "Pinned · 1", exact: true }).click();
+  await expect(pinnedRegion).toBeVisible();
+  await expect(unpin).toBeVisible();
+  await unpin.click();
+  await expect.poll(unpinCount).toBe(1);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  // The lock arrives with the panel already open: the write half leaves, the
+  // read half stays pressable, and no command is dispatched from the panel.
+  await pushAdmission(page, {
+    gate: { kind: "checking" },
+    readiness: { kind: "loading", source: "cache", generation: 8 }
+  });
+  await expect(composerNotice(page)).toHaveText(SEND_BLOCKED_COPY);
+  await expect(pinnedRegion).toBeVisible();
+  await expect(unpin).toHaveCount(0);
+
+  // The row's own Pin is hidden in the same state, which is the control for this
+  // whole case: the two surfaces agree.
+  const row = page.locator('[data-event-id="$seed-event:example.invalid"]');
+  await row.hover();
+  await expect(row.getByRole("button", { name: "Pin message" })).toHaveCount(0);
+  await expect(row.getByRole("button", { name: "Unpin message" })).toHaveCount(0);
+
+  // Opening a pinned message is a read and still works while locked.
+  await pinnedRow.click();
+  await expect.poll(openCount).toBe(1);
+  expect(await unpinCount()).toBe(0);
+
+  // Every path returns when the push admits sending again.
+  await pushAdmission(page, {
+    gate: { kind: "ready" },
+    readiness: { kind: "ready", source: "live", generation: 9 }
+  });
+  await expect(composerNotice(page)).toHaveCount(0);
+  await expect(unpin).toBeVisible();
+  await unpin.click();
+  await expect.poll(unpinCount).toBe(1);
 });
 
 test("an authoritative list clears the provisional notice and admits sending", async ({ page }) => {

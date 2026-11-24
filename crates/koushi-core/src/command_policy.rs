@@ -1,7 +1,7 @@
 use crate::composer_draft_lifecycle::ComposerDraftScope;
 use crate::native_artifact::NativeArtifactKind;
 use koushi_protocol::command::{
-    AccountCommand, AppCommand, CoreCommand, SearchScope, TimelineCommand,
+    AccountCommand, AppCommand, CoreCommand, RoomCommand, SearchScope, TimelineCommand,
 };
 use koushi_protocol::ids::{RequestId, TimelineKind};
 use koushi_state::{AppAction, AppState, OperationFailureKind, admit_space_leave_room_ids};
@@ -209,8 +209,8 @@ pub trait CoreCommandPolicy {
     /// Whether this command sends user content, or creates/releases a queued
     /// send, so it needs the session's Secure Backup send admission (#1737). A
     /// restored session that may read cached conversations still cannot send
-    /// from any composer surface, thread, upload, reaction, edit, retry, or
-    /// scheduled-send entry point before that admission.
+    /// from any composer surface, thread, upload, reaction, edit, retry,
+    /// scheduled-send entry point, or room pin before that admission (#2087).
     fn requires_send_admission(&self) -> bool;
     /// Whether this command writes read state derived from the visible
     /// timeline, so it needs a server-confirmed room list (#1737). A provisional
@@ -360,9 +360,14 @@ impl CoreCommandPolicy for CoreCommand {
             Self::App(
                 AppCommand::ScheduleSend { .. } | AppCommand::RescheduleScheduledSend { .. },
             ) => true,
-            Self::App(_) | Self::Account(_) | Self::Sync(_) | Self::Room(_) | Self::Search(_) => {
-                false
-            }
+            // #2087: a pin is room state every member reads, so it is a write
+            // like a message. The Pinned messages panel used to reach the server
+            // with it while the composer said it could not send.
+            Self::Room(command) => matches!(
+                command,
+                RoomCommand::PinEvent { .. } | RoomCommand::UnpinEvent { .. }
+            ),
+            Self::App(_) | Self::Account(_) | Self::Sync(_) | Self::Search(_) => false,
         }
     }
 

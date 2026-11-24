@@ -293,10 +293,12 @@ describe("TimelineView", () => {
       // All material content is visible even while trailing layout space is
       // outside the viewport. Rust must receive the same bottom fact as for an
       // ordinary message, then resolve the root without reading its hidden reply.
-      timeline.scrollTop = 400;
-      rects["$reply:example.invalid"].top = 300;
-      observeViewport.mockClear();
-      fireEvent.scroll(timeline);
+      //
+      // #2089: this range is reported as soon as the timeline has its rows, and it
+      // is read from the height model rather than from those rects, so scrolling
+      // cannot change it. Waiting for the report — instead of clearing the mock
+      // and assuming a later scroll would produce a second, different one — is
+      // what makes the case behave the same on a slow runner as on a fast one.
       await waitFor(() => {
         expect(observeViewport).toHaveBeenCalledWith(
           "!room:example.invalid",
