@@ -2760,10 +2760,10 @@ button:disabled {
   grid-row: 3;
 }
 
-/* The reaction emoji picker is not listed here: it renders in the body-level
-   floating layer, so it never needs the message list lifted above the sticky
-   timeline navigation. */
-.timeline-scroll:has(.message-action-menu, .message-forward-menu) > .message-list {
+/* The reaction emoji picker and the Forward destination list are not listed
+   here: both render in the body-level floating layer, so neither needs the
+   message list lifted above the sticky timeline navigation. */
+.timeline-scroll:has(.message-action-menu) > .message-list {
   position: relative;
   z-index: 12;
 }
@@ -3784,6 +3784,14 @@ button:disabled {
   opacity: 1;
 }
 
+/* #2078: a popover that renders in the body-level layer (the Forward
+   destination list) takes the pointer and the focus out of the row, so neither
+   `:hover` nor `:focus-within` can hold the bar it was opened from. One of the
+   bar's own triggers still reports the open state, which is what holds it. */
+.timeline-view .message:has(.message-actions [aria-expanded="true"]) .message-actions {
+  opacity: 1;
+}
+
 /* Reduce Motion may skip the fade, but not the scroll/pointer-intent gate. */
 @media (prefers-reduced-motion: reduce) {
   .timeline-view[data-hover-armed="true"] .message:hover,
@@ -3815,8 +3823,7 @@ button:disabled {
   display: inline-grid;
 }
 
-.message-action-menu,
-.message-forward-menu {
+.message-action-menu {
   position: absolute;
   z-index: 40;
   display: grid;
@@ -3826,9 +3833,6 @@ button:disabled {
   border-radius: 8px;
   background: var(--surface);
   box-shadow: 0 12px 32px rgb(15 23 42 / 16%);
-}
-
-.message-action-menu {
   inset-inline-end: 0;
 }
 
@@ -3840,9 +3844,23 @@ button:disabled {
   inset-block-start: 28px;
 }
 
+/* #2078: the Forward destination list lives in the body-level floating layer.
+   The layer owns the box: `left`/`top` (or `bottom`), the inline size, and an
+   inline `max-block-size` taken from the space the anchor leaves. This rule only
+   adds what the layer cannot know: the rows past that cap scroll here, which is
+   what makes every room reachable. */
 .message-forward-menu {
-  inset-block-start: 0;
-  inset-inline-end: calc(100% + 6px);
+  position: fixed;
+  z-index: 80;
+  display: grid;
+  align-content: start;
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgb(15 23 42 / 16%);
 }
 
 .message-action-menu-item {

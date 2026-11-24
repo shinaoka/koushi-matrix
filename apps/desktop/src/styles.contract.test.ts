@@ -272,14 +272,37 @@ describe("styles.css token system", () => {
   });
 
   test("timeline message action menus can stack above sticky timeline navigation", () => {
-    const block = selectorBlock(
-      ".timeline-scroll:has(.message-action-menu, .message-forward-menu) > .message-list"
-    );
+    const block = selectorBlock(".timeline-scroll:has(.message-action-menu) > .message-list");
     expect(block).toContain("position: relative;");
     expect(block).toContain("z-index: 12;");
-    // The reaction emoji picker renders in the body-level floating layer, so it
-    // must not need the message list lifted for it.
+    // The reaction emoji picker and the Forward destination list render in the
+    // body-level floating layer, so neither needs the message list lifted.
     expect(css).not.toContain(":has(.message-action-menu, .message-forward-menu, .timeline-reaction-emoji-picker)");
+  });
+
+  test("the Forward destination list is a bounded scroll box (#2078)", () => {
+    const block = selectorBlock(".message-forward-menu");
+    // Viewport-fixed in the body-level layer, so the timeline cannot clip it.
+    expect(block).toContain("position: fixed;");
+    // The layer writes the available block size inline; the list itself must
+    // scroll past it instead of growing under the window edge.
+    expect(block).toContain("overflow-y: auto;");
+    expect(block).toContain("overscroll-behavior: contain;");
+    // One owner for the box: the layer writes the size and the position.
+    expect(block).not.toContain("inline-size");
+    expect(block).not.toContain("inset-");
+  });
+
+  test("an open popover keeps the message actions bar it came from visible (#2078)", () => {
+    // The Forward list renders in the body-level layer, so the row loses the
+    // hover and focus that hold the bar; its own trigger still reports open.
+    const block = selectorBlock(
+      '.timeline-view .message:has(.message-actions [aria-expanded="true"]) .message-actions'
+    );
+    expect(block).toContain("opacity: 1;");
+    // Scoped to the bar's own triggers: a row's media details disclosure is also
+    // `aria-expanded` and must not hold the bar lit.
+    expect(block).not.toContain(':has([aria-expanded="true"])');
   });
 
   test("emoji picker floats over clipped panes with a compact fixed-format layout", () => {

@@ -72,6 +72,10 @@ export default defineConfig({
         // not engine-native; #2063 and qa-lanes' both-engines exception are why
         // this spec is in the opt-in.
         /timeline-notice-grouping\.spec\.ts$/,
+        // #2078's acceptance asks for both engines: the Forward destination list
+        // is placed from measured viewport rectangles, which is where the two
+        // engines' scroll and focus-into-view behavior can differ.
+        /forward-destination-list\.spec\.ts$/,
         // #1889: the layout-read budget is a browser layout fact.
         /room-switch-layout-budget\.spec\.ts$/,
         /inline-math-baseline\.spec\.ts$/,
