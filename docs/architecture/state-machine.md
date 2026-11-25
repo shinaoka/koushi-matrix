@@ -3017,10 +3017,20 @@ scroll position, clamped to the modelled extent because the browser clamps
 of itself than the viewport is tall, so the band's bottom edge is the scroll
 position plus the viewport height, not the viewport height alone. The observation
 frame reads the container once for its scroll offset and viewport height, and the
-scroll anchor reads that same container plus the one row it names — an anchor
+scroll anchor reads that same container plus the rows it probes — an anchor
 capture re-reads the container because it must not lag the scroll it was taken on,
 so "once per frame" holds for the observation, not for every scroll event in that
-frame. The height measurement pass that feeds the model reads the mounted rows as
+frame. The row it names has to be one the reader can see: the model's first row
+can end above the container's top edge (the same boundary row the +-1 row
+tolerance below covers), and a height change inside such a row never moves its
+own top, so an anchor on it cannot see the growth that pushed every row the
+reader does see (#2101). A capture therefore walks the model range from its first
+row until a row's own box crosses the container's top edge, reading the one rect
+per candidate it already needed for the offset; a window whose rows all end above
+the edge keeps the first such row, which is the anchor it would have had. The
+top edge is the container's, the same edge the visible band measures from, so a
+row behind the sticky navigation bar still counts as visible. The height
+measurement pass that feeds the model reads the mounted rows as
 the model's own input; nothing in the facts path measures a row to learn what is
 on screen, so the cost of a fact does not follow the number of rows. A row the
 model places more than two pixels away from its measured height is a model defect
