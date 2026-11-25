@@ -25,7 +25,9 @@ import {
   useState,
   type CSSProperties,
   type FormEvent,
-  type MouseEvent
+  type MouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode
 } from "react";
 
 import {
@@ -96,6 +98,7 @@ import { MessageMeta } from "./MessageMeta";
 import { MessageTimestamp } from "./MessageTimestampLabel";
 import { formatMessageTimestamp } from "./messageTimestamp";
 import { ReceiptReaders } from "./ReceiptReaders";
+import { ReactionSenders, type ReactionSenderProfile } from "./ReactionSenders";
 import { TimelineMediaAttachment } from "./TimelineMedia";
 import { mediaViewerEntryFromMedia, type MediaViewerEntry } from "../mediaViewer";
 import {
@@ -438,7 +441,7 @@ function TimelineItemRowView({
   presence,
   profile,
   ownAvatar,
-  reactionSenderLabelsByUserId = {},
+  reactionSendersByUserId = {},
   mentionProfileUsers = {},
   mentionCandidates = [],
   mentionCandidatesLoading = false,
@@ -529,7 +532,9 @@ function TimelineItemRowView({
   presence?: PresenceKind;
   profile?: UserProfile;
   ownAvatar?: UserProfile["avatar"];
-  reactionSenderLabelsByUserId?: Readonly<Record<string, string>>;
+  // #2111: one map for both surfaces — the tooltip reads `label`, the
+  // right-click list reads `avatar` — so a reactor's identity has one source.
+  reactionSendersByUserId?: Readonly<Record<string, ReactionSenderProfile>>;
   mentionProfileUsers?: Record<string, UserProfile>;
   mentionCandidates?: MentionCandidate[];
   mentionCandidatesLoading?: boolean;
@@ -604,11 +609,39 @@ function TimelineItemRowView({
     () => new Set()
   );
   const reactionTriggerRef = useRef<HTMLButtonElement>(null);
+  // #2111: the fixed list of everyone who reacted with one key. A tooltip
+  // vanishes as soon as the pointer moves, so a chip opens this one instead.
+  const [senderListKey, setSenderListKey] = useState<string | null>(null);
+  // The group the open sender list belongs to; a diff that removes the reaction
+  // closes the list with it.
+  const senderListGroup =
+    senderListKey === null
+      ? undefined
+      : item.reactions?.find((reaction) => reaction.key === senderListKey);
+  const senderListAnchorRef = useRef<Element | null>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressOpenedRef = useRef(false);
+  const longPressOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const senderListReturnFocusRef = useRef<HTMLElement | null>(null);
+  // #2111: a tooltip of up to 50 names is taller than a row, and the timeline
+  // clips its rows (`.message-list { overflow: hidden }`, #2078), so a box above
+  // a chip near the pane's top edge is cut off. Flip it below when the space
+  // above the chip cannot hold it.
+  const [tooltipBelow, setTooltipBelow] = useState(false);
   const actionMenuControlRef = useRef<HTMLDivElement>(null);
   const actionMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const firstActionMenuItemRef = useRef<HTMLButtonElement>(null);
   const requestedLinkPreviewsRef = useRef<Set<string>>(new Set());
 
+  useEffect(() => cancelReactionLongPress, []);
+  useEffect(() => {
+    // The last reactor removed the group, so the list lost its rows: drop the
+    // key with them instead of re-opening the list when the group comes back.
+    if (senderListKey !== null && senderListGroup === undefined) {
+      setSenderListKey(null);
+      longPressOpenedRef.current = false;
+    }
+  }, [senderListGroup, senderListKey]);
   useEffect(() => {
     if (!autoLoadLinkPreviews) {
       return;
@@ -1239,6 +1272,99 @@ function TimelineItemRowView({
         }
       />
     ) : null;
+  /**
+   * #2111: a hold on a chip opens the people who reacted with it. A mouse has a
+   * right button and reaches the same list through `contextmenu`, so the timer
+   * only runs for touch and pen.
+   */
+  function cancelReactionLongPress() {
+    if (longPressTimerRef.current !== null) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }
+  function startReactionLongPress(
+    event: ReactPointerEvent<HTMLElement>,
+    reactionKey: string
+  ) {
+    if (event.button !== 0 || event.pointerType === "mouse") return;
+    cancelReactionLongPress();
+    longPressOpenedRef.current = false;
+    const anchor = event.currentTarget;
+    longPressOriginRef.current = { x: event.clientX, y: event.clientY };
+    longPressTimerRef.current = setTimeout(() => {
+      longPressTimerRef.current = null;
+      longPressOpenedRef.current = true;
+      openReactionSenders(reactionKey, anchor);
+    }, REACTION_LONG_PRESS_MS);
+  }
+  function placeReactionTooltip(event: React.SyntheticEvent<HTMLElement>) {
+    const shell = event.currentTarget;
+    const tooltip = shell.querySelector(".reaction-tooltip");
+    const pane = shell.closest(".message-list");
+    if (!(tooltip instanceof HTMLElement) || pane === null) return;
+    const roomAbove = shell.getBoundingClientRect().top - pane.getBoundingClientRect().top;
+    // `offsetHeight` is the capped, laid-out height even while the box is only
+    // `visibility: hidden`, so this measures what the reader would be shown.
+    const below = tooltip.offsetHeight > roomAbove;
+    setTooltipBelow((current) => (current === below ? current : below));
+  }
+  /** The tooltip's own scroll offset is stale after a move, so it starts at the top. */
+  function resetReactionTooltipScroll(event: React.SyntheticEvent<HTMLElement>) {
+    const tooltip = event.currentTarget.querySelector(".reaction-tooltip");
+    if (tooltip instanceof HTMLElement) tooltip.scrollTop = 0;
+  }
+  /**
+   * A touch pointer is captured implicitly, so sliding off the chip never fires
+   * `pointerleave`; a drag that leaves the slop is a scroll, not a hold.
+   */
+  function trackReactionLongPress(event: ReactPointerEvent<HTMLElement>) {
+    const origin = longPressOriginRef.current;
+    if (origin === null || longPressTimerRef.current === null) return;
+    if (
+      Math.abs(event.clientX - origin.x) > REACTION_LONG_PRESS_SLOP_PX ||
+      Math.abs(event.clientY - origin.y) > REACTION_LONG_PRESS_SLOP_PX
+    ) {
+      cancelReactionLongPress();
+    }
+  }
+  function consumeReactionLongPress(): boolean {
+    if (!longPressOpenedRef.current) return false;
+    longPressOpenedRef.current = false;
+    return true;
+  }
+  function openReactionSenders(reactionKey: string, anchor: Element) {
+    // Where the focus came from: a right-click from the composer must return the
+    // caret there, not to the chip the pointer happened to land on.
+    if (senderListKey === null) {
+      const active = document.activeElement;
+      senderListReturnFocusRef.current = active instanceof HTMLElement ? active : null;
+    }
+    senderListAnchorRef.current = anchor;
+    setSenderListKey((current) => {
+      if (current !== reactionKey) return reactionKey;
+      // A second right-click on the same chip closes what it opened.
+      longPressOpenedRef.current = false;
+      return null;
+    });
+  }
+  function closeReactionSenders(restoreFocus = true) {
+    setSenderListKey(null);
+    longPressOpenedRef.current = false;
+    if (!restoreFocus) return;
+    const previous = senderListReturnFocusRef.current;
+    senderListReturnFocusRef.current = null;
+    const chip = senderListAnchorRef.current?.querySelector("button");
+    // The list took the focus; return it to the chip, or to whatever held it
+    // before the list opened when that control is still on screen.
+    const target =
+      previous !== null && previous !== document.body && previous.isConnected
+        ? previous
+        : chip instanceof HTMLElement && !chip.disabled
+          ? chip
+          : null;
+    target?.focus();
+  }
   function handleContextMenu(event: MouseEvent<HTMLElement>) {
     if (!onOpenContextMenu) {
       return;
@@ -1843,39 +1969,82 @@ function TimelineItemRowView({
                     reaction.key,
                     reaction.count,
                     reaction.sender_preview,
-                    reactionSenderLabelsByUserId
+                    reactionSendersByUserId
                   );
                   const pillKey = `${reaction.key}:${reaction.my_reaction_event_id ?? index}`;
+                  // #2111: the shell owns the right-click and long-press. A
+                  // read-only chip stays `disabled` (#2066) and a disabled
+                  // control swallows pointer events, so the shell is told to
+                  // keep receiving them through CSS (`pointer-events: none`).
+                  const shell = (pill: ReactNode) => (
+                    <span
+                      className="reaction-pill-shell"
+                      key={pillKey}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        cancelReactionLongPress();
+                        openReactionSenders(reaction.key, event.currentTarget);
+                      }}
+                      onFocus={(event) => {
+                        resetReactionTooltipScroll(event);
+                        placeReactionTooltip(event);
+                      }}
+                      onPointerDown={(event) => startReactionLongPress(event, reaction.key)}
+                      onPointerEnter={(event) => {
+                        resetReactionTooltipScroll(event);
+                        placeReactionTooltip(event);
+                      }}
+                      onPointerMove={trackReactionLongPress}
+                      onPointerUp={cancelReactionLongPress}
+                      onPointerCancel={cancelReactionLongPress}
+                      onPointerLeave={cancelReactionLongPress}
+                    >
+                      {pill}
+                    </span>
+                  );
+                  const tooltip = reactionTooltip ? (
+                    <span
+                      className={`reaction-tooltip${tooltipBelow ? " reaction-tooltip-below" : ""}`}
+                      role="tooltip"
+                      dir="auto"
+                      // The tooltip scrolls when the list of names outgrows it;
+                      // a press inside it must not toggle the reaction.
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      {reactionTooltip}
+                    </span>
+                  ) : null;
                   if (!eventId) {
-                    return (
+                    return shell(
                       <span
                         aria-label={ariaLabel}
                         className="reaction-pill"
                         data-reacted-by-me={reaction.reacted_by_me || undefined}
-                        key={pillKey}
                       >
                         <span className="reaction-pill-key" dir="auto">
                           {reactionKeyDisplayText(reaction.key)}
                         </span>
                         <span className="reaction-pill-count">{reaction.count}</span>
-                        {reactionTooltip ? (
-                          <span className="reaction-tooltip" role="tooltip" dir="auto">
-                            {reactionTooltip}
-                          </span>
-                        ) : null}
+                        {tooltip}
                       </span>
                     );
                   }
-                  return (
+                  return shell(
                     <button
                       aria-label={ariaLabel}
                       className="reaction-pill"
                       data-reacted-by-me={reaction.reacted_by_me || undefined}
-                      key={pillKey}
                       type="button"
                       aria-pressed={reaction.reacted_by_me}
+                      // A right-click (or the ContextMenu key) opens the list, so
+                      // the chip announces one; its click still toggles.
+                      aria-haspopup="dialog"
                       disabled={!canWrite}
                       onClick={() => {
+                        // A long press already opened the sender list; the click
+                        // that ends it is not a toggle.
+                        if (consumeReactionLongPress()) return;
                         if (reaction.reacted_by_me) {
                           if (reaction.my_reaction_event_id) {
                             onRedactReaction(
@@ -1894,15 +2063,29 @@ function TimelineItemRowView({
                         {reactionKeyDisplayText(reaction.key)}
                       </span>
                       <span className="reaction-pill-count">{reaction.count}</span>
-                      {reactionTooltip ? (
-                        <span className="reaction-tooltip" role="tooltip" dir="auto">
-                          {reactionTooltip}
-                        </span>
-                      ) : null}
+                      {tooltip}
                     </button>
                   );
                 })}
               </div>
+            ) : null}
+            {senderListGroup ? (
+              <ReactionSenders
+                anchorRef={senderListAnchorRef}
+                currentUserId={currentUserId}
+                open
+                profiles={reactionSendersByUserId}
+                reactionLabel={reactionKeyDisplayText(senderListGroup.key)}
+                senders={senderListGroup.sender_preview}
+                totalCount={senderListGroup.count}
+                onClose={closeReactionSenders}
+                onOpenProfile={
+                  onOpenSenderProfile
+                    ? (userId) => onOpenSenderProfile(roomId, userId)
+                    : undefined
+                }
+                onRequestAvatarThumbnail={onRequestAvatarThumbnail}
+              />
             ) : null}
             {receiptTotalCount > 0 ? (
               <ReceiptReaders
@@ -2005,6 +2188,11 @@ export function aliasTargetIsActive(target: TimelineAliasTarget): boolean {
 /** U+FE0F (emoji presentation) and U+FE0E (text presentation) selectors. */
 const EMOJI_VARIATION_SELECTORS = /[\uFE0E\uFE0F]/g;
 
+/** #2111: a hold on a chip opens its sender list after this delay. */
+const REACTION_LONG_PRESS_MS = 500;
+/** A hold that drifts further than this is a scroll or a swipe, not a hold. */
+const REACTION_LONG_PRESS_SLOP_PX = 8;
+
 /**
  * The notice keys whose localized sentence begins with `{sender}` (#2041).
  * Their row shows the name as the profile button instead of repeating it, and
@@ -2049,13 +2237,15 @@ function formatReactionTooltip(
   reactionKey: string,
   totalCount: number,
   senderPreview: readonly ReactionSender[],
-  senderLabelsByUserId: Readonly<Record<string, string>> = {}
+  sendersByUserId: Readonly<Record<string, ReactionSenderProfile>> = {}
 ): string | null {
   if (totalCount <= 0) {
     return null;
   }
   const previewLabels = senderPreview.map((sender) =>
-    peopleFacingLabel(sender.display_label?.trim() || senderLabelsByUserId[sender.user_id] || null)
+    peopleFacingLabel(
+      sender.display_label?.trim() || sendersByUserId[sender.user_id]?.label || null
+    )
   );
   const overflowCount = Math.max(0, totalCount - previewLabels.length);
   const labels =

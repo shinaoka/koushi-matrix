@@ -1183,6 +1183,148 @@ describe("TimelineView", () => {
     });
   });
 
+  it("names every reactor instead of a three-person summary (#2111)", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              {
+                ...message("$many-reactions", "Many reactions"),
+                reactions: [
+                  {
+                    key: "🎉",
+                    count: 5,
+                    reacted_by_me: false,
+                    my_reaction_event_id: null,
+                    sender_preview: [
+                      { user_id: "@a:example.invalid", display_label: "Alice" },
+                      { user_id: "@b:example.invalid", display_label: "Bob" },
+                      { user_id: "@c:example.invalid", display_label: "Carol" },
+                      { user_id: "@d:example.invalid", display_label: "Dana" },
+                      { user_id: "@e:example.invalid", display_label: "Erin" }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      // Five reactors, five names: no "N more" behind a cap the renderer cannot
+      // see past.
+      expect(
+        screen.getByText("Alice, Bob, Carol, Dana, and Erin reacted with 🎉")
+      ).toBeTruthy();
+    });
+  });
+
+  it("opens the reactor list on right-click while a click still toggles (#2111)", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const sendReaction = vi.fn(async () => undefined);
+    const openSenderProfile = vi.fn();
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      sendReaction
+    });
+
+    render(
+      <TimelineView
+        currentUserId="@a:example.invalid"
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onOpenSenderProfile={openSenderProfile}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              {
+                ...message("$reacted", "Reacted message"),
+                reactions: [
+                  {
+                    key: "🎉",
+                    count: 3,
+                    reacted_by_me: false,
+                    my_reaction_event_id: null,
+                    sender_preview: [
+                      { user_id: "@a:example.invalid", display_label: "Alice" },
+                      { user_id: "@b:example.invalid", display_label: "Bob" },
+                      { user_id: "@c:example.invalid", display_label: "Carol" }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      });
+    });
+
+    const pill = await screen.findByRole("button", { name: /Reaction 🎉/ });
+    fireEvent.contextMenu(pill);
+
+    const dialog = await screen.findByRole("dialog", { name: "Reacted with 🎉" });
+    const names = Array.from(dialog.querySelectorAll(".receipt-reader-name")).map(
+      (name) => name.textContent
+    );
+    expect(names).toEqual(["Alice", "Bob", "Carol"]);
+    expect(
+      Array.from(dialog.querySelectorAll(".reaction-sender-self")).map(
+        (marker) => marker.textContent
+      )
+    ).toEqual(["You"]);
+
+    // A row opens that person's profile.
+    fireEvent.click(screen.getByRole("button", { name: "Bob" }));
+    expect(openSenderProfile).toHaveBeenCalledWith(
+      "!room:example.invalid",
+      "@b:example.invalid"
+    );
+
+    // The chip itself still toggles the reaction, and keeps its pressed state
+    // contract while the list is open.
+    fireEvent.click(pill);
+    expect(sendReaction).toHaveBeenCalledTimes(1);
+    expect(pill.getAttribute("aria-pressed")).toBe("false");
+  });
+
   it("renders structured timeline notices in the active locale as plain text", async () => {
     setActiveLocaleProfile("ja", "none");
     let emit: (payload: CoreEventPayload) => void = () => undefined;

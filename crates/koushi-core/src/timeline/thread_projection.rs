@@ -1465,7 +1465,7 @@ fn reaction_groups_from_cached_relation_events(
                     .flatten(),
                 sender_preview: senders
                     .keys()
-                    .take(3)
+                    .take(super::item_projection::REACTION_SENDER_PREVIEW_LIMIT)
                     .cloned()
                     .map(|user_id| ReactionSender {
                         user_id,

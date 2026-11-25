@@ -1167,13 +1167,15 @@ fn reaction_groups_project_my_sender_and_remote_event_id() {
         groups[0].my_reaction_event_id.as_deref(),
         Some("$reaction:me")
     );
+    // #2111: every sender of a small group is named; the cap only matters for
+    // a group past `DOCUMENTED_REACTION_SENDER_PREVIEW_LIMIT`.
     assert_eq!(
         groups[0]
             .sender_preview
             .iter()
             .map(|sender| sender.user_id.as_str())
             .collect::<Vec<_>>(),
-        vec!["@me:test", "@alice:test", "@bob:test"]
+        vec!["@me:test", "@alice:test", "@bob:test", "@carol:test"]
     );
 }
 
@@ -1255,6 +1257,80 @@ fn reaction_groups_follow_sdk_redaction_removal() {
     assert_eq!(groups[0].count, 3);
     assert!(!groups[0].reacted_by_me);
     assert_eq!(groups[0].my_reaction_event_id, None);
+}
+
+/// #2111: the documented cap on how many reaction senders one group names. The
+/// count is always complete; only the names are bounded, so a row's payload does
+/// not grow with a message's popularity. Pinned here, not read from the product
+/// constant, so raising it is a deliberate change with a documented reason.
+const DOCUMENTED_REACTION_SENDER_PREVIEW_LIMIT: usize = 50;
+
+/// #2111: `n` senders on one reaction key, inserted in id order so the preview
+/// order is a fact the test can read back.
+fn reaction_groups_with_senders(n: usize) -> ReactionsByKeyBySender {
+    let mut reactions = ReactionsByKeyBySender::default();
+    let senders = reactions.entry("🎉".to_owned()).or_default();
+    for index in 0..n {
+        senders.insert(
+            OwnedUserId::try_from(format!("@reactor-{index:03}:test").as_str()).expect("user id"),
+            ReactionInfo {
+                timestamp: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch(
+                    (index as u64).try_into().expect("timestamp"),
+                ),
+                send_state: None,
+                event_id: Some(
+                    matrix_sdk::ruma::OwnedEventId::try_from(
+                        format!("$reaction-{index:03}:test").as_str(),
+                    )
+                    .expect("event id"),
+                ),
+            },
+        );
+    }
+    reactions
+}
+
+#[test]
+fn reaction_groups_name_every_sender_up_to_the_preview_limit() {
+    let groups = reaction_groups_from_sdk(
+        &reaction_groups_with_senders(DOCUMENTED_REACTION_SENDER_PREVIEW_LIMIT),
+        None,
+    );
+
+    assert_eq!(groups.len(), 1);
+    assert_eq!(
+        groups[0].count as usize,
+        DOCUMENTED_REACTION_SENDER_PREVIEW_LIMIT
+    );
+    assert_eq!(
+        groups[0].sender_preview.len(),
+        DOCUMENTED_REACTION_SENDER_PREVIEW_LIMIT
+    );
+    assert_eq!(
+        groups[0].sender_preview[DOCUMENTED_REACTION_SENDER_PREVIEW_LIMIT - 1].user_id,
+        format!(
+            "@reactor-{:03}:test",
+            DOCUMENTED_REACTION_SENDER_PREVIEW_LIMIT - 1
+        )
+    );
+}
+
+#[test]
+fn reaction_groups_stop_the_named_preview_at_the_limit_and_keep_the_full_count() {
+    let limit = DOCUMENTED_REACTION_SENDER_PREVIEW_LIMIT;
+    let groups = reaction_groups_from_sdk(&reaction_groups_with_senders(limit + 1), None);
+
+    assert_eq!(groups.len(), 1);
+    // The count stays complete; only the names stop.
+    assert_eq!(groups[0].count as usize, limit + 1);
+    assert_eq!(groups[0].sender_preview.len(), limit);
+    assert!(
+        !groups[0]
+            .sender_preview
+            .iter()
+            .any(|sender| sender.user_id == format!("@reactor-{limit:03}:test")),
+        "the sender past the limit is not named"
+    );
 }
 
 #[test]

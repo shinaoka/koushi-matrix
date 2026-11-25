@@ -4480,6 +4480,17 @@ pub(crate) fn validate_cancel_send(
     }
 }
 
+/// #2111: how many reaction senders one `ReactionGroup` names.
+///
+/// `count` is always the true total, so this bounds only the names one reaction
+/// key of one row ships and the renderer lists. A message that hundreds of people
+/// reacted to would otherwise put a list of every reactor of every key into every
+/// projection of that row, and into every diff that carries it. The renderer's
+/// tooltip and its "reacted with" popover read up to this many names; the senders
+/// past it are reported as a count, never as a name, so neither surface pretends
+/// its list is complete. Raising it is a payload decision, not a display one.
+pub(crate) const REACTION_SENDER_PREVIEW_LIMIT: usize = 50;
+
 pub(crate) fn reaction_groups_from_sdk(
     reactions: &ReactionsByKeyBySender,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
@@ -4510,7 +4521,7 @@ pub(crate) fn reaction_groups_from_sdk(
             }),
             sender_preview: senders
                 .keys()
-                .take(3)
+                .take(REACTION_SENDER_PREVIEW_LIMIT)
                 .map(|sender| ReactionSender {
                     user_id: sender.to_string(),
                     display_label: None,

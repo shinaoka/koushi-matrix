@@ -1,24 +1,20 @@
 import { createTrackedObjectURL, revokeTrackedObjectURL } from "../../domain/objectUrlDiagnostics";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useActiveLocaleKey } from "../../i18n/activeLocaleContext";
 import { getActiveLocale, localeLanguageTag, t } from "../../i18n/messages";
 import { avatarInitial, peopleFacingLabel } from "../../app/uiShared";
 import {
-  FloatingLayer,
-  floatingPlacementStyle,
-  useFloatingPlacement
-} from "../floatingLayer";
+  containsTarget,
+  PersonListPopover,
+  personListBoundaryElement,
+  type PersonListRow
+} from "./PersonListPopover";
 import { timelineKeyIdentity, type ReceiptSourceRef, type ReaderRow } from "../../domain/coreEvents";
 import { EntityAvatar } from "../Shell";
 import { api as defaultApi } from "../../backend/appRuntime";
-import { Tooltip } from "../Tooltip";
 import type { LiveReadReceipt } from "../../domain/types";
 import { cachedDateTimeFormat } from "../../domain/intlFormatCache";
-
-function containsTarget(container: Element | null, target: EventTarget | null): boolean {
-  return typeof Node !== "undefined" && target instanceof Node && container?.contains(target) === true;
-}
 
 /**
  * Read-receipt avatar stack plus its reader popup.
@@ -58,8 +54,6 @@ export function ReceiptReaders({
   const [readerResourceUrls, setReaderResourceUrls] = useState<Record<string, string>>({});
   const [readerStart, setReaderStart] = useState(0);
   const [readerTotal, setReaderTotal] = useState(0);
-  const [readerWindowSequence, setReaderWindowSequence] = useState("0");
-  const [focusedReaderUserId, setFocusedReaderUserId] = useState<string | null>(null);
   const [readerState, setReaderState] = useState<"loading" | "ready" | "failed">("loading");
   // #1557: the rows capture the catalog locale for their timestamps, so a
   // locale switch must rebuild them.
@@ -87,8 +81,7 @@ export function ReceiptReaders({
   const appliedReaderRevisionRef = useRef<string | null>(null);
   const readerSequenceRef = useRef(0);
   const avatarObservationSequenceRef = useRef(0n);
-  const readerRowRefs = useRef(new Map<string, HTMLSpanElement>());
-  const pendingReaderFocusRef = useRef<{ index: number; sequence: string } | null>(null);
+  const readerRowRefs = useRef(new Map<string, HTMLElement>());
   const sourceRef = useRef(source);
   sourceRef.current = source;
   const sourceIdentity = source
@@ -101,52 +94,19 @@ export function ReceiptReaders({
       ])
     : null;
   const requestReaderWindowAt = useCallback(
-    (start: number): string | null => {
-      if (!readerScope || !readerRevision || readerTotal <= 0) return null;
+    (start: number) => {
+      if (!readerScope || !readerRevision || readerTotal <= 0) return;
       const nextStart = Math.max(0, Math.min(Math.trunc(start), readerTotal - 1));
       const sequence = String(++readerSequenceRef.current);
-      setReaderWindowSequence(sequence);
       void receiptApi.updateReceiptReaderWindow(readerScope, {
         installed_revision: readerRevision,
         sequence,
         target: { kind: "index", start: String(nextStart) },
         limit: 256
       });
-      return sequence;
     },
     [readerRevision, readerScope, readerTotal, receiptApi]
   );
-  const focusReaderAt = useCallback(
-    (index: number) => {
-      const offset = index - readerStart;
-      const row = readerRows[offset];
-      if (row) {
-        setFocusedReaderUserId(row.user_id);
-        readerRowRefs.current.get(row.user_id)?.focus();
-        return;
-      }
-      const requestStart = index >= readerTotal - 1 ? Math.max(readerTotal - 256, 0) : index;
-      const sequence = requestReaderWindowAt(requestStart);
-      if (sequence) pendingReaderFocusRef.current = { index, sequence };
-    },
-    [readerRows, readerStart, readerTotal, requestReaderWindowAt]
-  );
-  useLayoutEffect(() => {
-    const pending = pendingReaderFocusRef.current;
-    if (
-      !pending ||
-      pending.sequence !== readerWindowSequence ||
-      pending.index < readerStart ||
-      pending.index >= readerStart + readerRows.length
-    ) {
-      return;
-    }
-    const row = readerRows[pending.index - readerStart];
-    if (!row) return;
-    pendingReaderFocusRef.current = null;
-    setFocusedReaderUserId(row.user_id);
-    readerRowRefs.current.get(row.user_id)?.focus();
-  }, [readerRows, readerStart, readerWindowSequence]);
   useEffect(() => {
     if (!open) return;
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -188,8 +148,6 @@ export function ReceiptReaders({
       appliedReaderRevisionRef.current = null;
       readerSequenceRef.current = 0;
       avatarObservationSequenceRef.current = 0n;
-      pendingReaderFocusRef.current = null;
-      setFocusedReaderUserId(null);
       setReaderRevision(null);
       setReaderInstalledRevision(null);
       setReaderResourceUrls({});
@@ -225,7 +183,6 @@ export function ReceiptReaders({
         setReaderRevision(delivery.revision);
         setReaderStart(delivery.model.start);
         setReaderTotal(delivery.model.total_count);
-        setReaderWindowSequence(delivery.model.window_sequence);
         setReaderRows(delivery.model.rows);
         await receiptApi.ackReceiptReader(readerScope, delivery.revision);
         if (!cancelled) setReaderInstalledRevision(delivery.revision);
@@ -345,18 +302,26 @@ export function ReceiptReaders({
   const readerRemainingCount = source
     ? Math.max(readerTotal - readerStart - readerRows.length, 0)
     : Math.max(overflowCount, 0);
-  const placement = useFloatingPlacement({
-    align: "end",
-    anchorRef,
-    // Every row with receipts owns this hook; only an open popup measures.
-    enabled: open,
-    // #2098: the popup measures itself, so its box is the width its rows need
-    // (capped in CSS) instead of a width chosen here. A pinned 420px box made
-    // the name absorb the slack and pushed the timestamp to the far edge.
-    contentRef: popupRef,
-    placement: "above",
-    resolveBoundaryElement: receiptPopupBoundaryElement
-  });
+  const personRows = useMemo<PersonListRow[]>(
+    () =>
+      readerRows.map((row) => ({
+        user_id: row.user_id,
+        display_name: row.display_label,
+        initials: row.initials,
+        avatar: readerAvatarImage(row.avatar),
+        source_url:
+          readerInstalledRevision && row.avatar?.kind === "ready"
+            ? readerResourceUrls[row.avatar.source_ref] ?? null
+            : undefined,
+        meta: row.timestamp
+          ? formatReceiptTimestamp(Number(row.timestamp.unix_ms), row.timestamp.locale)
+          : null
+      })),
+    [readerInstalledRevision, readerResourceUrls, readerRows]
+  );
+  // Until a committed source exists the bounded summary is all there is; with
+  // one, an empty ready window has nothing to show and stays closed (#2098).
+  const showPopover = open && (readerRows.length > 0 || readerState !== "ready");
 
   return (
     <div
@@ -405,156 +370,38 @@ export function ReceiptReaders({
         ))}
         {overflowCount > 0 ? <span className="receipt-overflow">+{overflowCount}</span> : null}
       </span>
-      {open && (readerRows.length > 0 || readerState !== "ready") ? (
-        <FloatingLayer>
-          <span
-            ref={popupRef}
-            className="receipt-tooltip"
-            role="dialog"
-            aria-label={receiptLabel}
-            aria-busy={readerState === "loading"}
-            style={{
-              // #2098: the popup is sized by its content, so the layer owns only
-              // the position. Writing the measured size back would make the next
-              // measurement read its own pin — the box would never grow with the
-              // rows that arrive after it opened.
-              ...floatingPlacementStyle(placement, false),
-              maxBlockSize: "min(60vh, 420px)",
-              overflowY: "auto"
-            }}
-            onBlur={(event) => {
-              const nextTarget = event.relatedTarget;
-              if (
-                !nextTarget ||
-                (!containsTarget(anchorRef.current, nextTarget) &&
-                  !containsTarget(popupRef.current, nextTarget))
-              ) {
-                setOpen(false);
-              }
-            }}
-            onMouseEnter={() => setOpen(true)}
-            onMouseLeave={() => setOpen(false)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape" && !event.nativeEvent.isComposing && event.keyCode !== 229) {
-                event.preventDefault();
-                event.stopPropagation();
-                setOpen(false);
-                return;
-              }
-              if (
-                !["ArrowDown", "ArrowUp", "Home", "End", "PageDown", "PageUp"].includes(
-                  event.key
-                ) ||
-                readerTotal <= 0
-              ) {
-                return;
-              }
-              const focusedIndex = readerRows.findIndex(
-                (row) => readerRowRefs.current.get(row.user_id) === document.activeElement
-              );
-              const currentIndex =
-                focusedIndex >= 0 ? readerStart + focusedIndex : readerStart;
-              const pageSize = Math.max(readerRows.length, 1);
-              const targetIndex =
-                event.key === "ArrowDown"
-                  ? currentIndex + 1
-                  : event.key === "ArrowUp"
-                    ? currentIndex - 1
-                    : event.key === "Home"
-                      ? 0
-                      : event.key === "End"
-                        ? readerTotal - 1
-                        : event.key === "PageDown"
-                          ? currentIndex + pageSize
-                          : currentIndex - pageSize;
-              event.preventDefault();
-              focusReaderAt(Math.max(0, Math.min(targetIndex, readerTotal - 1)));
-            }}
-            onScroll={(event) => {
-              if (!readerRevision || readerStart + readerRows.length >= readerTotal) return;
-              const element = event.currentTarget;
-              if (element.scrollTop + element.clientHeight < element.scrollHeight - 24) return;
-              requestReaderWindowAt(readerStart + readerRows.length);
-            }}
-          >
-            <Tooltip label={t("shortcut.closeDialogOrMenu")} placement="below" align="end">
-              {(tooltipProps) => (
-                <button
-                  type="button"
-                  className="receipt-reader-close"
-                  aria-label={t("shortcut.closeDialogOrMenu")}
-                  onClick={() => setOpen(false)}
-                  {...tooltipProps}
-                >
-                  ×
-                </button>
-              )}
-            </Tooltip>
-            <span role="list" aria-label={receiptLabel}>
-              {readerState === "loading" && readerRows.length === 0 ? (
-                <span role="status">{t("timeline.loading")}</span>
-              ) : readerState === "failed" ? (
-                <span role="status">{t("timeline.readReceiptFailed")}</span>
-              ) : (
-                <>
-                  {readerRows.map((row, index) => (
-                    <span
-                      ref={(node) => {
-                        if (node) readerRowRefs.current.set(row.user_id, node);
-                        else readerRowRefs.current.delete(row.user_id);
-                      }}
-                      className="receipt-reader-row"
-                      key={row.user_id}
-                      role="listitem"
-                      tabIndex={
-                        focusedReaderUserId === row.user_id ||
-                        (focusedReaderUserId === null && index === 0)
-                          ? 0
-                          : -1
-                      }
-                      aria-setsize={readerTotal}
-                      aria-posinset={readerStart + index + 1}
-                      onFocus={() => setFocusedReaderUserId(row.user_id)}
-                    >
-                      <EntityAvatar
-                        avatar={readerAvatarImage(row.avatar)}
-                        className="receipt-reader-avatar"
-                        colorSeed={row.user_id}
-                        fallback={row.initials}
-                        sourceUrl={
-                          readerInstalledRevision && row.avatar?.kind === "ready"
-                            ? readerResourceUrls[row.avatar.source_ref] ?? null
-                            : undefined
-                        }
-                      />
-                      <span className="receipt-reader-name" dir="auto" title={row.display_label}>
-                        {row.display_label}
-                      </span>
-                      {row.timestamp ? (
-                        <span className="receipt-reader-time">
-                          {formatReceiptTimestamp(Number(row.timestamp.unix_ms), row.timestamp.locale)}
-                        </span>
-                      ) : null}
-                    </span>
-                  ))}
-                  {readerRemainingCount > 0 ? (
-                    <span className="receipt-reader-row" dir="auto">
-                      {t("timeline.readReceiptOverflow", { count: readerRemainingCount })}
-                    </span>
-                  ) : null}
-                </>
-              )}
-            </span>
-          </span>
-        </FloatingLayer>
-      ) : null}
+      <PersonListPopover
+        anchorRef={anchorRef}
+        busy={readerState === "loading"}
+        dismissOnPointerLeave
+        failed={readerState === "failed"}
+        failedText={t("timeline.readReceiptFailed")}
+        label={receiptLabel}
+        loadingText={t("timeline.loading")}
+        open={showPopover}
+        overflowCount={readerRemainingCount}
+        overflowText={t("timeline.readReceiptOverflow", { count: readerRemainingCount })}
+        popupRef={popupRef}
+        resolveBoundaryElement={personListBoundaryElement}
+        rowElements={readerRowRefs.current}
+        rows={personRows}
+        startIndex={readerStart}
+        totalCount={readerTotal}
+        onClose={() => setOpen(false)}
+        onFocusIndex={(index) => {
+          // A row outside the loaded window needs its own bounded request; the
+          // last row asks for the final window so `End` lands on it.
+          const requestStart =
+            index >= readerTotal - 1 ? Math.max(readerTotal - 256, 0) : index;
+          requestReaderWindowAt(requestStart);
+        }}
+        onScrollNearEnd={() => {
+          if (!readerRevision || readerStart + readerRows.length >= readerTotal) return;
+          requestReaderWindowAt(readerStart + readerRows.length);
+        }}
+      />
     </div>
   );
-}
-
-/** Surface the reader popup must stay inside. */
-function receiptPopupBoundaryElement(anchor: Element): Element | null {
-  return anchor.closest(".thread-pane") ?? anchor.closest(".main-pane");
 }
 
 function compactReaderRow(receipt: LiveReadReceipt): ReaderRow {

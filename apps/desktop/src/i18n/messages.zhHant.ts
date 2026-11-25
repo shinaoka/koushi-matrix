@@ -1890,6 +1890,7 @@ export const zhHant: Catalog = {
   "timeline.reactionPicker": "選擇回應",
   "timeline.reactionOption": "以 {emoji} 回應",
   "timeline.reactionTooltip": "{names} 以 {key} 回應",
+  "timeline.reactionSenders": "用 {key} 回應的人",
   "timeline.reactionSenderOverflow": "還有 {count} 人",
   "timeline.reactionSenderUnknown": "{count} 人",
   "timeline.readBy": "{count} 人已讀",

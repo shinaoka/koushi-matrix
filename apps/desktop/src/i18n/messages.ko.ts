@@ -1890,6 +1890,7 @@ export const ko: Catalog = {
   "timeline.reactionPicker": "반응 선택",
   "timeline.reactionOption": "{emoji}(으)로 반응",
   "timeline.reactionTooltip": "{names} 님이 {key}(으)로 반응했습니다",
+  "timeline.reactionSenders": "{key} 반응한 사람",
   "timeline.reactionSenderOverflow": "외 {count}명",
   "timeline.reactionSenderUnknown": "{count}명",
   "timeline.readBy": "{count}명이 읽음",

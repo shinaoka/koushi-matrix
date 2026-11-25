@@ -1890,6 +1890,7 @@ export const zhHans: Catalog = {
   "timeline.reactionPicker": "选择回应",
   "timeline.reactionOption": "用 {emoji} 回应",
   "timeline.reactionTooltip": "{names} 用 {key} 作了回应",
+  "timeline.reactionSenders": "用 {key} 回应的人",
   "timeline.reactionSenderOverflow": "另外 {count} 人",
   "timeline.reactionSenderUnknown": "{count} 人",
   "timeline.readBy": "{count} 人已读",
