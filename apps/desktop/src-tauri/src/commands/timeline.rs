@@ -1558,12 +1558,17 @@ pub async fn read_downloaded_media_text(
         .runtime
         .media_cache_dir_for_tab(&tab_id)
         .ok_or_else(|| "media cache is unavailable".to_owned())?;
-    crate::media_download::read_managed_text(
-        std::slice::from_ref(&cache_root),
-        &source_ref,
-        crate::media_download::MAX_TEXT_PREVIEW_BYTES,
-    )
-    .map_err(|error| error.message().to_owned())
+    // The read is file IO on a local cache; keep it off the async worker.
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::media_download::read_managed_text(
+            &[cache_root],
+            &source_ref,
+            crate::media_download::MAX_TEXT_PREVIEW_BYTES,
+        )
+        .map_err(|error| error.message().to_owned())
+    })
+    .await
+    .map_err(|error| format!("media text read failed: {error}"))?
 }
 
 #[tauri::command]

@@ -5557,9 +5557,29 @@ button.reply-quote-thumbnail:focus-visible {
 }
 
 /* #2096: an inline preview sits in the card's text column, so the type tile
-   keeps its place and a file without a preview keeps the card's geometry. */
+   keeps its place and a file without a preview keeps the card's geometry. The
+   height follows the line count the renderer asks for, not a second literal. */
+.message-media-text-preview-button {
+  display: block;
+  inline-size: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  background: none;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.message-media-text-preview-button:hover,
+.message-media-text-preview-button:focus-visible {
+  background: var(--surface-hover);
+}
+
 .message-media-text-preview {
-  max-block-size: calc(6 * 1.45em);
+  max-block-size: calc(var(--media-preview-lines, 6) * 1.45em);
   margin: 6px 0 0;
   overflow: hidden;
   color: var(--text-muted);

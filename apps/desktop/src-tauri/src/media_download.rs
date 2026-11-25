@@ -67,16 +67,86 @@ pub(crate) fn protocol_response(
     let Ok(bytes) = std::fs::read(&file) else {
         return error_response(StatusCode::NOT_FOUND);
     };
+    let total = bytes.len() as u64;
+    // #2096: a media element expects to seek. Answering only whole bodies makes
+    // AVFoundation and WebView2 refuse to start a <video> or <audio> at all, so
+    // one byte range is honoured here. Anything the parser does not understand
+    // falls back to the whole body, which RFC 9110 allows.
+    let wanted = requested_range(request, total);
+    let (status, body, content_range) = match wanted {
+        None => (StatusCode::OK, bytes, None),
+        Some(Ok((start, end))) => (
+            StatusCode::PARTIAL_CONTENT,
+            bytes[start as usize..=end as usize].to_vec(),
+            Some(format!("bytes {start}-{end}/{total}")),
+        ),
+        Some(Err(())) => {
+            let mut response = error_response(StatusCode::RANGE_NOT_SATISFIABLE);
+            if let Ok(value) = tauri::http::HeaderValue::from_str(&format!("bytes */{total}")) {
+                response
+                    .headers_mut()
+                    .insert(tauri::http::header::CONTENT_RANGE, value);
+            }
+            return response;
+        }
+    };
 
-    Response::builder()
-        .status(StatusCode::OK)
+    let mut response = Response::builder()
+        .status(status)
         .header(tauri::http::header::CONTENT_TYPE, mime_type)
         // Decrypted downloaded bytes stay out of the WebView HTTP cache, like
         // the thumbnail protocol.
         .header(tauri::http::header::CACHE_CONTROL, "no-store")
-        .header("X-Content-Type-Options", "nosniff")
-        .body(bytes)
-        .expect("media download response")
+        .header(tauri::http::header::ACCEPT_RANGES, "bytes")
+        .header("X-Content-Type-Options", "nosniff");
+    if let Some(range) = content_range {
+        response = response.header(tauri::http::header::CONTENT_RANGE, range);
+    }
+    response.body(body).expect("media download response")
+}
+
+/// `None` when the whole body should be sent, `Some(Ok((start, end)))` for a
+/// satisfiable range, `Some(Err(()))` when the range cannot be satisfied.
+fn requested_range(request: &Request<Vec<u8>>, total: u64) -> Option<Result<(u64, u64), ()>> {
+    let header = request
+        .headers()
+        .get(tauri::http::header::RANGE)?
+        .to_str()
+        .ok()?;
+    let spec = header.trim().strip_prefix("bytes=")?.trim();
+    // Multi-range responses would need a multipart body; one range or none.
+    if spec.contains(',') {
+        return None;
+    }
+    let (start, end) = spec.split_once('-')?;
+    if total == 0 {
+        return Some(Err(()));
+    }
+    match (start.trim(), end.trim()) {
+        // `bytes=-n`: the last n bytes.
+        ("", suffix) => {
+            let suffix: u64 = suffix.parse().ok()?;
+            if suffix == 0 {
+                return Some(Err(()));
+            }
+            Some(Ok((total.saturating_sub(suffix), total - 1)))
+        }
+        (from, to) => {
+            let from: u64 = from.parse().ok()?;
+            if from >= total {
+                return Some(Err(()));
+            }
+            let to = if to.is_empty() {
+                total - 1
+            } else {
+                to.parse::<u64>().ok()?.min(total - 1)
+            };
+            if to < from {
+                return Some(Err(()));
+            }
+            Some(Ok((from, to)))
+        }
+    }
 }
 
 fn error_response(status: StatusCode) -> Response<Vec<u8>> {
@@ -196,189 +266,4 @@ pub(crate) fn cache_path_for_tab(cache_root: &Path, source_ref: &str) -> Option<
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn request(path: &str) -> Request<Vec<u8>> {
-        Request::builder()
-            .uri(format!("koushi-media://localhost{path}"))
-            .body(Vec::new())
-            .expect("request")
-    }
-
-    fn cache_with_file(file_name: &str, bytes: &[u8]) -> (tempfile::TempDir, PathBuf) {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().join("media-downloads");
-        std::fs::create_dir_all(root.join("1234567890123456")).expect("room dir");
-        std::fs::write(root.join("1234567890123456").join(file_name), bytes).expect("cache file");
-        (temp, root)
-    }
-
-    #[test]
-    fn serves_an_image_from_the_managed_cache() {
-        let (temp, root) = cache_with_file("6543210987654321.bin", b"\x89PNG\r\n\x1a\nrest");
-        let response = protocol_response(
-            &request("/download/png/1234567890123456/6543210987654321"),
-            std::slice::from_ref(&root),
-        );
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers().get(tauri::http::header::CONTENT_TYPE),
-            Some(&"image/png".parse().expect("header value"))
-        );
-        assert_eq!(
-            response.headers().get("X-Content-Type-Options"),
-            Some(&"nosniff".parse().expect("header value"))
-        );
-        assert!(response.body().starts_with(b"\x89PNG"));
-        drop(temp);
-    }
-
-    #[test]
-    fn rejects_unknown_tokens_and_traversal_refs() {
-        let (temp, root) = cache_with_file("6543210987654321.bin", b"x");
-        for path in [
-            "/download/tiff/1234567890123456/6543210987654321",
-            "/download/png/1234567890123456/6543210987654321/extra",
-            "/download/png/../../etc/passwd",
-            "/download/png/1234567890123456/..",
-            "/asset/png/1234567890123456/6543210987654321",
-        ] {
-            let response = protocol_response(&request(path), std::slice::from_ref(&root));
-            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
-            assert!(response.body().is_empty());
-        }
-        drop(temp);
-    }
-
-    /// #2096: an inline text preview reads a bounded string, never a path, and
-    /// refuses anything it cannot show whole.
-    #[test]
-    fn reads_managed_text_within_the_preview_limit() {
-        let (temp, root) = cache_with_file("6543210987654321.bin", b"fn main() {}\nsecond\n");
-        let text = read_managed_text(
-            std::slice::from_ref(&root),
-            "download/1234567890123456/6543210987654321",
-            MAX_TEXT_PREVIEW_BYTES,
-        )
-        .expect("text");
-        assert_eq!(text, "fn main() {}\nsecond\n");
-        // At the limit is still previewable; one byte under is not.
-        let size = text.len() as u64;
-        assert!(
-            read_managed_text(
-                std::slice::from_ref(&root),
-                "download/1234567890123456/6543210987654321",
-                size,
-            )
-            .is_ok()
-        );
-        assert_eq!(
-            read_managed_text(
-                std::slice::from_ref(&root),
-                "download/1234567890123456/6543210987654321",
-                size - 1,
-            ),
-            Err(TextPreviewError::TooLarge)
-        );
-        drop(temp);
-    }
-
-    #[test]
-    fn refuses_text_previews_it_cannot_show_whole() {
-        let (temp, root) = cache_with_file("6543210987654321.bin", &[0xff, 0xfe, 0x00]);
-        assert_eq!(
-            read_managed_text(
-                std::slice::from_ref(&root),
-                "download/1234567890123456/6543210987654321",
-                MAX_TEXT_PREVIEW_BYTES,
-            ),
-            Err(TextPreviewError::NotText)
-        );
-        for refused in [
-            "download/1234567890123456/9999999999999999",
-            "download/../../etc/passwd",
-            "/etc/passwd",
-        ] {
-            assert_eq!(
-                read_managed_text(std::slice::from_ref(&root), refused, MAX_TEXT_PREVIEW_BYTES,),
-                Err(TextPreviewError::Unavailable),
-                "{refused}",
-            );
-        }
-        assert_eq!(
-            TextPreviewError::TooLarge.message(),
-            "media file is too large to preview"
-        );
-        drop(temp);
-    }
-
-    #[test]
-    fn serves_the_audio_tokens_the_inline_player_needs() {
-        for (token, mime) in [
-            ("mp3", "audio/mpeg"),
-            ("m4a", "audio/mp4"),
-            ("aac", "audio/aac"),
-            ("wav", "audio/wav"),
-            ("flac", "audio/flac"),
-            ("ogg", "audio/ogg"),
-            ("opus", "audio/ogg"),
-            ("m4v", "video/mp4"),
-        ] {
-            assert_eq!(mime_for_token(token), Some(mime), "{token}");
-        }
-        assert_eq!(mime_for_token("txt"), None);
-    }
-
-    /// #1770: a thumbnail ref is its own managed entry, and the save flow
-    /// resolves it through the same rule the writer used.
-    #[test]
-    fn resolves_a_thumbnail_ref_to_its_own_cache_file() {
-        let (temp, root) = cache_with_file("6543210987654321.bin", b"original");
-        let thumbnail = root
-            .join("1234567890123456")
-            .join("6543210987654321-800x800.bin");
-        std::fs::write(&thumbnail, b"thumbnail").expect("thumbnail file");
-
-        assert_eq!(
-            cache_path_for_tab(&root, "download/1234567890123456/6543210987654321/800x800"),
-            Some(thumbnail)
-        );
-        assert_eq!(
-            cache_path_for_tab(&root, "download/1234567890123456/6543210987654321"),
-            Some(root.join("1234567890123456").join("6543210987654321.bin"))
-        );
-        let response = protocol_response(
-            &request("/download/png/1234567890123456/6543210987654321/800x800"),
-            std::slice::from_ref(&root),
-        );
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.body(), b"thumbnail");
-        drop(temp);
-    }
-
-    #[test]
-    fn rejects_a_symlink_that_escapes_the_cache_root() {
-        let (temp, root) = cache_with_file("6543210987654321.bin", b"x");
-        let outside = temp.path().join("outside.bin");
-        std::fs::write(&outside, b"secret").expect("outside file");
-        let link = root.join("1234567890123456").join("1111111111111111.bin");
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(&outside, &link).expect("symlink");
-            let response = protocol_response(
-                &request("/download/png/1234567890123456/1111111111111111"),
-                std::slice::from_ref(&root),
-            );
-            assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        }
-        #[cfg(not(unix))]
-        {
-            // Windows junctions and symlinks need privileges; the hosted
-            // Windows gate covers those assumptions instead.
-            assert!(!link.exists());
-            drop(outside);
-        }
-        drop(temp);
-    }
-}
+mod tests;

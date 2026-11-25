@@ -997,6 +997,9 @@ test("a downloaded audio attachment plays inline from the media cache", async ({
   expect(
     await page.evaluate(() => window.__harness.invocationsOf("save_downloaded_media").length)
   ).toBe(0);
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("default_media_save_path").length)
+  ).toBe(0);
   // The tile is still the save control.
   await expect(
     mediaCard.getByRole("button", { name: t("timeline.downloadMedia", { filename: "voice.mp3" }) })
@@ -1025,5 +1028,8 @@ test("a downloaded video attachment plays inline from the media cache", async ({
   );
   expect(
     await page.evaluate(() => window.__harness.invocationsOf("save_downloaded_media").length)
+  ).toBe(0);
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("default_media_save_path").length)
   ).toBe(0);
 });

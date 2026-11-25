@@ -130,11 +130,19 @@ for (const [label, csp] of [
     "custom managed-download protocol allowed for timeline media images"
   );
   // #2096: the inline player loads the same managed download through a media
-  // element, which `default-src 'none'` would otherwise block.
+  // element, which `default-src 'none'` would otherwise block. Both the scheme
+  // and the Windows `http://<protocol>.localhost` form are required: a CSP that
+  // lists only one of them leaves the player dead on the other platform.
+  const mediaSrc = /(?:^|;\s*)media-src ([^;]*)/.exec(typeof csp === "string" ? csp : "")?.[1] ?? "";
   requireCheck(
-    typeof csp === "string" && /(?:^|;\s*)media-src [^;]*koushi-media:/.test(csp),
+    mediaSrc.includes("koushi-media:"),
     `${label}.media-src`,
     "custom managed-download protocol allowed for inline audio and video"
+  );
+  requireCheck(
+    mediaSrc.includes("http://koushi-media.localhost"),
+    `${label}.media-src.windowsOrigin`,
+    "Windows serves the managed-download protocol as http://koushi-media.localhost"
   );
 }
 

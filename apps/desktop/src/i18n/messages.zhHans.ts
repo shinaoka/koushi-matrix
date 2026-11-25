@@ -2041,8 +2041,6 @@ export const zhHans: Catalog = {
   "timeline.mediaDownloadRetry": "重试",
   "timeline.mediaOpenFile": "打开文件",
   "timeline.mediaTextPreviewOpen": "预览 {filename}",
-  "timeline.mediaTextPreviewTitle": "文件预览",
-  "timeline.mediaTextPreviewTooLarge": "文件太大，无法在此预览。请打开或保存文件。",
   "timeline.mediaTextPreviewFailed": "此文件无法作为文本预览。",
   "timeline.mediaAudioPlayer": "{filename} 的音频播放器",
   "timeline.mediaVideoPlayer": "{filename} 的视频播放器",

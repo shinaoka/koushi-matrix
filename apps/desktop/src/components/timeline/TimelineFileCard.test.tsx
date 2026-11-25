@@ -205,16 +205,14 @@ describe("timeline file card", () => {
 // #2096: the card previews a text file's first lines and plays audio and video
 // inline, both from Core's media cache; nothing here writes to Downloads.
 describe("timeline file card previews (#2096)", () => {
-  it("fetches a small text file itself and shows its first lines", async () => {
-    readDownloadedText.mockResolvedValue("one\ntwo\nthree\n");
+  it("does not fetch or read anything before the bytes are in the cache", () => {
+    // The timeline owns the auto-fetch (`TimelineView`), so a card on its own
+    // never downloads and never reads.
     const onDownload = vi.fn();
-    const card = renderCard({ media: textMedia(2048), onDownload });
+    renderCard({ media: textMedia(2048), onDownload });
 
-    expect(onDownload).toHaveBeenCalledTimes(1);
-    expect(card.getAttribute("data-download-state")).toBe("notRequested");
-    // Nothing is read before the bytes are in the cache.
+    expect(onDownload).not.toHaveBeenCalled();
     expect(readDownloadedText).not.toHaveBeenCalled();
-    void card;
   });
 
   it("reads a downloaded text file once and previews its first lines", async () => {
@@ -259,6 +257,54 @@ describe("timeline file card previews (#2096)", () => {
     ).not.toBeNull();
   });
 
+  it("does not read a downloaded text file above the limit, and shows no failure", async () => {
+    // Saving a large file leaves it downloaded; reading it would only produce a
+    // refusal the card would report as a failure it is not (#2096 review).
+    const card = renderCard({
+      media: textMedia(256 * 1024 + 1),
+      downloadState: readyDownload(TEXT_MIME)
+    });
+
+    expect(readDownloadedText).not.toHaveBeenCalled();
+    expect(card.querySelector(".message-media-text-preview")).toBeNull();
+    expect(card.querySelector(".message-media-preview-note")).toBeNull();
+  });
+
+  it("opens the whole text from a keyboard-reachable control", async () => {
+    readDownloadedText.mockResolvedValue("alpha\nbeta\n");
+    renderCard({ media: textMedia(2048), downloadState: readyDownload(TEXT_MIME) });
+
+    const trigger = await screen.findByRole("button", {
+      name: t("timeline.mediaTextPreviewOpen", { filename: "notes.txt" })
+    });
+    // A <button> is focusable and responds to Enter through its own click.
+    expect(trigger.tagName).toBe("BUTTON");
+    fireEvent.click(trigger);
+    expect(await screen.findByRole("dialog")).not.toBeNull();
+  });
+
+  it("does not save while the text is still being read", async () => {
+    let resolveRead: (text: string) => void = () => undefined;
+    readDownloadedText.mockImplementation(
+      () => new Promise<string>((resolve) => (resolveRead = resolve))
+    );
+    const onDownload = vi.fn();
+    const card = renderCard({
+      media: textMedia(2048),
+      downloadState: readyDownload(TEXT_MIME),
+      onDownload
+    });
+
+    fireEvent.click(card.querySelector(".message-media-title")!);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(onDownload).not.toHaveBeenCalled();
+
+    resolveRead("late text");
+    await waitFor(() => expect(card.querySelector(".message-media-text-preview")).not.toBeNull());
+    fireEvent.click(card.querySelector(".message-media-title")!);
+    expect(await screen.findByRole("dialog")).not.toBeNull();
+  });
+
   it("keeps the plain card when the backend refuses the text", async () => {
     readDownloadedText.mockRejectedValue(new Error("media file is not text"));
     const card = renderCard({ media: textMedia(2048), downloadState: READY_TEXT_DOWNLOAD });
@@ -278,6 +324,7 @@ describe("timeline file card previews (#2096)", () => {
       downloadState: readyDownload("audio/mpeg"),
       onDownload
     });
+
 
     const audio = card.querySelector("audio");
     expect(audio).not.toBeNull();
@@ -305,6 +352,19 @@ describe("timeline file card previews (#2096)", () => {
     expect(video?.getAttribute("aria-label")).toBe(
       t("timeline.mediaVideoPlayer", { filename: "clip.mp4" })
     );
+  });
+
+  it("only fetches an audio file when its tile is clicked, never saving unasked", () => {
+    // #2096 review: the only path to a player used to open a Save dialog first.
+    const onDownload = vi.fn();
+    renderCard({ media: audioMedia(), onDownload });
+
+    const tile = screen.getByRole("button", {
+      name: t("timeline.downloadMedia", { filename: "clip.mp3" })
+    });
+    fireEvent.click(tile);
+    expect(onDownload).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("leaves a player type without a protocol token as a plain card", () => {

@@ -27,7 +27,8 @@ import type { MediaSaveNameFacts } from "../../backend/linkMediaPort";
 import type { TimelineTransport } from "./TimelineTransport";
 import { type FileTypeCategory, fileTypeCategory } from "./fileTypeCategory";
 import {
-  canAutoFetchPreview,
+  TEXT_PREVIEW_LINE_COUNT,
+  TEXT_PREVIEW_MAX_BYTES,
   filePreviewKind,
   textPreviewLines
 } from "./filePreview";
@@ -56,6 +57,7 @@ export function TimelineMediaAttachment({
   onDownload,
   onOpenMediaViewer,
   onSaveMediaFile,
+  onReadMediaText,
   saveName,
   viewerEntry
 }: {
@@ -66,6 +68,8 @@ export function TimelineMediaAttachment({
   onDownload: () => void;
   onOpenMediaViewer: (entry: MediaViewerEntry) => void;
   onSaveMediaFile?: TimelineTransport["saveMediaFile"];
+  /** The timeline's per-account read, so a preview never reads another tab. */
+  onReadMediaText?: TimelineTransport["readMediaText"];
   saveName: MediaSaveNameFacts | null;
   /** The same image as the shared viewer displays it (#1810). */
   viewerEntry: MediaViewerEntry | null;
@@ -108,10 +112,13 @@ export function TimelineMediaAttachment({
     uploadProgressPercentValue ?? downloadProgressPercent;
   // #2096: what this attachment can preview, decided from the category the card
   // already computes. Text and audio/video read Core's media cache; every other
-  // type keeps the plain card until a later stage (PDF needs a renderer).
+  // type keeps the plain card until a later stage (PDF needs a renderer). An
+  // image decides its own branch from the media kind, so it never previews here.
   const fileType = fileTypeCategory(media.filename, media.mimetype, media.kind);
-  const previewKind = filePreviewKind(fileType);
-  const autoFetchPreview = canAutoFetchPreview(previewKind, media.size);
+  const previewKind = media.kind === "Image" ? "none" : filePreviewKind(fileType);
+  const textPreviewAllowed =
+    previewKind === "text" &&
+    (media.size === null || media.size <= TEXT_PREVIEW_MAX_BYTES);
   const readyDownload = downloadState?.kind === "ready" ? downloadState : null;
   const readyDownloadRef = readyDownload?.source_ref ?? null;
   const [previewText, setPreviewText] = useState<
@@ -142,15 +149,18 @@ export function TimelineMediaAttachment({
   }, [downloadState, media.filename, media.mimetype, onSaveMediaFile, saveName]);
   // #2096: one read per downloaded text attachment, kept for the card and the
   // full-text dialog; the backend caps it, so a rejection is the "cannot
-  // preview" answer rather than an error the reader can act on.
+  // preview" answer rather than an error the reader can act on. A file above the
+  // card's limit is not read at all: the reader asked to save it, and a refusal
+  // would be reported as a failure it is not.
+  const readText = onReadMediaText ?? readDownloadedText;
   useEffect(() => {
-    if (previewKind !== "text" || readyDownloadRef === null) {
+    if (!textPreviewAllowed || readyDownloadRef === null) {
       setPreviewText(null);
       return;
     }
     let cancelled = false;
     setPreviewText({ kind: "loading" });
-    readDownloadedText(readyDownloadRef).then(
+    readText(readyDownloadRef).then(
       (text) => {
         if (!cancelled) {
           setPreviewText({ kind: "ready", text });
@@ -165,24 +175,7 @@ export function TimelineMediaAttachment({
     return () => {
       cancelled = true;
     };
-  }, [previewKind, readyDownloadRef]);
-  // #2096: a small text file fetches itself so the card can show its first
-  // lines without the reader asking; anything else waits for a click. The fetch
-  // stays a Core download and never writes to Downloads, so it must not use
-  // `requestDownload`, which remembers a save intent.
-  const autoFetchRef = useRef(false);
-  useEffect(() => {
-    if (!autoFetchPreview || !canDownload || autoFetchRef.current) {
-      return;
-    }
-    if (downloadState?.kind === "pending" || downloadState?.kind === "failed") {
-      return;
-    }
-    autoFetchRef.current = true;
-    if (downloadState?.kind !== "ready") {
-      onDownload();
-    }
-  }, [autoFetchPreview, canDownload, downloadState, onDownload]);
+  }, [readText, textPreviewAllowed, readyDownloadRef]);
   useEffect(() => {
     if (!detailsOpen) {
       return;
@@ -430,22 +423,29 @@ export function TimelineMediaAttachment({
       onSaveMediaFile
     );
   };
+  // #2096: a player is its own target, so its card background does nothing
+  // rather than saving by accident, and its tile's not-ready click only fetches:
+  // the reader who wanted to hear the file is not asked where to write it. A
+  // ready text preview opens what the card would otherwise save; the tile keeps
+  // saving, and nothing happens while the text is still being read (a click
+  // there must not turn into a Save dialog).
+  const playsInline = previewKind === "audio" || previewKind === "video";
   const cardAction: (() => void) | null = !canDownload
     ? null
     : downloadState?.kind === "pending"
       ? null
       : downloadState?.kind === "ready"
         ? () => saveAction(downloadState)
-        : requestDownload;
-  // #2096: a ready text preview opens in place of the save the card would
-  // otherwise perform; the tile keeps saving. A player is its own target, so the
-  // card background does nothing there rather than saving by accident.
-  const hasTextPreview = previewKind === "text" && previewText?.kind === "ready";
-  const playsInline = previewKind === "audio" || previewKind === "video";
+        : playsInline
+          ? onDownload
+          : requestDownload;
+  const textReady = textPreviewAllowed && previewText?.kind === "ready";
   const backgroundAction: (() => void) | null = playsInline
     ? null
-    : hasTextPreview
-      ? () => setTextDialogOpen(true)
+    : textPreviewAllowed
+      ? textReady
+        ? () => setTextDialogOpen(true)
+        : null
       : cardAction;
   // A type the player cannot render has no protocol token, and the empty URL
   // keeps the plain card rather than mounting a <video> that can never load.
@@ -533,12 +533,25 @@ export function TimelineMediaAttachment({
             </Fragment>
           ))}
         </div>
-        {hasTextPreview && previewText?.kind === "ready" ? (
-          <pre className="message-media-text-preview" dir="auto">
-            {textPreviewLines(previewText.text).join("\n")}
-          </pre>
+        {textReady && previewText?.kind === "ready" ? (
+          // The preview is its own control so a keyboard reaches the whole file,
+          // and the card's background click (the same action) covers the rest.
+          <button
+            className="message-media-text-preview-button"
+            type="button"
+            aria-label={t("timeline.mediaTextPreviewOpen", { filename: media.filename })}
+            onClick={() => setTextDialogOpen(true)}
+          >
+            <pre
+              className="message-media-text-preview"
+              dir="auto"
+              style={{ "--media-preview-lines": TEXT_PREVIEW_LINE_COUNT } as CSSProperties}
+            >
+              {textPreviewLines(previewText.text).join("\n")}
+            </pre>
+          </button>
         ) : null}
-        {previewKind === "text" && previewText?.kind === "failed" ? (
+        {textPreviewAllowed && previewText?.kind === "failed" ? (
           <p className="message-media-preview-note">
             {t("timeline.mediaTextPreviewFailed")}
           </p>

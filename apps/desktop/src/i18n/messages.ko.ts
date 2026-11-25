@@ -2041,8 +2041,6 @@ export const ko: Catalog = {
   "timeline.mediaDownloadRetry": "다시 시도",
   "timeline.mediaOpenFile": "파일 열기",
   "timeline.mediaTextPreviewOpen": "{filename} 미리 보기",
-  "timeline.mediaTextPreviewTitle": "파일 미리 보기",
-  "timeline.mediaTextPreviewTooLarge": "너무 커서 여기에서 미리 볼 수 없습니다. 파일을 열거나 저장하세요.",
   "timeline.mediaTextPreviewFailed": "이 파일은 텍스트로 미리 볼 수 없습니다.",
   "timeline.mediaAudioPlayer": "{filename} 오디오 플레이어",
   "timeline.mediaVideoPlayer": "{filename} 동영상 플레이어",
