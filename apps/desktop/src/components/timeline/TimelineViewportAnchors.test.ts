@@ -47,12 +47,19 @@ function view(options: {
   scrollTop?: number;
   clientHeight?: number;
   listOffsetTop?: number;
+  /**
+   * Draws every row this far above the offset its measured height gives it, which
+   * is the disagreement #2101 is about: the model names a row the drawing puts
+   * higher (or lower) than the offsets say.
+   */
+  shift?: number;
 } = {}): { container: HTMLElement; view: TimelineViewportModel; reads: () => number } {
   const heights = options.heights ?? [72, 72];
   const rows = options.rows ?? heights.map((_, index) => row(index));
   const clientHeight = options.clientHeight ?? 200;
   const listOffsetTop = options.listOffsetTop ?? 0;
   const scrollTop = options.scrollTop ?? 0;
+  const shift = options.shift ?? 0;
   const model = buildTimelineHeightModel(
     rows,
     new Map(rows.map((entry, index) => [entry.row_id, heights[index] ?? 72])),
@@ -67,7 +74,7 @@ function view(options: {
   rows.forEach((entry, index) => {
     const node = document.createElement("article");
     node.dataset.itemId = entry.row_id;
-    const top = BOX_TOP + (model.offsets[index] ?? 0) - (scrollTop - listOffsetTop);
+    const top = BOX_TOP + (model.offsets[index] ?? 0) - shift - (scrollTop - listOffsetTop);
     const height = heights[index] ?? 72;
     node.getBoundingClientRect = () => {
       reads += 1;
@@ -105,11 +112,44 @@ describe("viewport anchor capture (#1890 item 5)", () => {
     });
   });
 
-  it("excludes a row that ends exactly at the viewport's top edge", () => {
+  it("leaves the range's first row out when it ends exactly at the top edge", () => {
     const mounted = view({ heights: [62, 72], scrollTop: 62, clientHeight: 60 });
     expect(captureAnchor(mounted.container, mounted.view)).toEqual({
       itemId: "row-1",
       offsetTop: 0
+    });
+  });
+
+  it("skips a row the range names but the drawing puts entirely above the edge (#2101)", () => {
+    // The row the offset 0 names ends at -10: the reader sees nothing of it, so a
+    // height change inside it would move every visible row and its own top would
+    // not budge.
+    const mounted = view({
+      heights: Array.from({ length: 4 }, () => 72),
+      scrollTop: 82,
+      clientHeight: 200,
+      shift: 92
+    });
+    // Row 1 spans -92..-20 and row 2 spans -20..52: the range names row 1, and the
+    // anchor is the first row whose box crosses the edge.
+    expect(captureAnchor(mounted.container, mounted.view)).toEqual({
+      itemId: "row-2",
+      offsetTop: -30
+    });
+  });
+
+  it("keeps the first row as the anchor when the whole window ends above the edge", () => {
+    // A drawing that lags the model by more than the range is the state the old
+    // capture already covered: it names the offset 0 row, so it still does.
+    const mounted = view({
+      heights: [72, 72],
+      scrollTop: 0,
+      clientHeight: 60,
+      shift: 1000
+    });
+    expect(captureAnchor(mounted.container, mounted.view)).toEqual({
+      itemId: "row-0",
+      offsetTop: -1000
     });
   });
 
@@ -121,6 +161,15 @@ describe("viewport anchor capture (#1890 item 5)", () => {
     // One rect for the anchor itself: the visible range comes from the model.
     expect(small.reads()).toBe(1);
     expect(large.reads()).toBe(1);
+    // A candidate that ends above the edge costs the rect it was read with, and
+    // the walk stops at the first row the reader can see.
+    const shifted = view({
+      heights: Array.from({ length: 20 }, () => 72),
+      clientHeight: 400,
+      shift: 80
+    });
+    expect(captureAnchor(shifted.container, shifted.view)).not.toBeNull();
+    expect(shifted.reads()).toBe(2);
   });
 });
 

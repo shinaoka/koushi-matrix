@@ -36,9 +36,16 @@ type ScrollAnchorCaptureOptions = {
 /**
  * Capture the first eligible visible item as the anchor (id + pixel offset).
  *
- * #1890 item 5: the model names the visible rows, so this touches one row's box
- * (the anchor's own, for the offset the transaction will compare against) plus
- * the container's, instead of one rect per probe and per visible row.
+ * #1890 item 5: the model names the visible rows, so this reads the container and
+ * one rect per candidate it probes, instead of one rect per visible row. It is
+ * one candidate on the path where the model's offsets and the drawing agree.
+ *
+ * #2101: a candidate also has to be a row the reader can see, judged by its own
+ * box: a height change inside a row that ends above the container's top edge
+ * never moves that row's own top, so anchoring to it silently drops the
+ * compensation every visible row needs. The top edge here is the container's, the
+ * same edge `timelineVisibleBand` measures from, so a row hidden behind the
+ * sticky navigation bar still counts as visible.
  */
 export function captureAnchor(
   container: HTMLElement,
@@ -47,6 +54,7 @@ export function captureAnchor(
 ): ScrollAnchor | null {
   const { box, metrics } = timelineCaptureMetrics(container, view.metrics.listOffsetTop);
   const range = timelineVisibleItemRange(view.model, metrics, view.rows.length);
+  let fallback: ScrollAnchor | null = null;
   for (let index = range.startIndex; index < range.endIndex; index += 1) {
     const row = view.rows[index];
     if (row === undefined) {
@@ -64,12 +72,21 @@ export function captureAnchor(
       // next visible row is just as good an anchor.
       continue;
     }
+    const rect = node.getBoundingClientRect();
+    if (rect.bottom - box.top <= 0) {
+      // Ends at or above the container's top edge: the reader cannot see it.
+      // Keeping the first such row as a fallback leaves a window whose rows all
+      // end above the edge with the anchor it would have had anyway, instead of
+      // no anchor at all.
+      fallback ??= { itemId: row.row_id, offsetTop: rect.top - box.top };
+      continue;
+    }
     return {
       itemId: row.row_id,
-      offsetTop: node.getBoundingClientRect().top - box.top
+      offsetTop: rect.top - box.top
     };
   }
-  return null;
+  return fallback;
 }
 
 /**

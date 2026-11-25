@@ -24,7 +24,9 @@ function setup(
   count: number,
   roundWrites = false,
   itemFactory: (index: number) => TimelineItem = (index) => message(`$item${index}`, "Synthetic row"),
-  focusedTargetIndex: number | null = null
+  focusedTargetIndex: number | null = null,
+  /** Draws every row this far above the offset its measured height gives it. */
+  rectShift = 0
 ) {
   // A Focused key mounts the anchored main pane an event jump opens (#1675).
   const target = focusedTargetIndex === null ? null : `$item${focusedTargetIndex}`;
@@ -36,7 +38,7 @@ function setup(
   const scheduler = createManualTimelineViewportScheduler();
   let listener: ((event: CoreEventPayload) => void) | null = null;
   const rects: Record<string, { top: number; height: number }> = {};
-  for (let i = 0; i < count; i++) rects[`$item${i}`] = { top: i * 72, height: 72 };
+  for (let i = 0; i < count; i++) rects[`$item${i}`] = { top: i * 72 - rectShift, height: 72 };
   const containerRef: { current: HTMLElement | null } = { current: null };
   mockTimelineRects(rects, { top: 0, height: 600 }, containerRef);
   const diagnostics = vi.fn();
@@ -111,6 +113,8 @@ function setup(
     scrollHeightOverride = () => (committed() ? afterHeight : beforeHeight);
   }
   return { view, emit, rects, writes, diagnostics, anchor, drain,
+    /** Keeps the mock's list extent in step with a grown row, as the browser's would be. */
+    addExtent(amount: number) { scrollHeight += amount; },
     userScroll(delta: number) {
       scrollTop += delta; // Browser-owned input: do not count it as a compensation write.
       fireEvent.wheel(view, { deltaY: delta });
@@ -213,6 +217,42 @@ describe("TimelineView unified viewport transaction", () => {
       expect(latestOffset()).toBe(528);
     }
     expect(writes).toHaveLength(3);
+  });
+  it("keeps the reader's row fixed when the model's first row ends above the viewport and grows (#2101)", () => {
+    // No observer callback is stored, so nothing is ever delivered: the height
+    // commit alone has to place the reader. Which of the two arrives first must
+    // not decide whether the reader moves.
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+    });
+    // Every row is drawn 80 px above the offset its measured height gives it, so
+    // the model's first visible row ends above the container's top edge: the
+    // boundary row #2101 lets the reported range misname by one.
+    const fixture = setup(120, false, undefined, null, 80);
+    fixture.drain();
+    const mounted = [...fixture.view.querySelectorAll<HTMLElement>("[data-item-id]")];
+    // The last row that ends above the edge, exactly what the e2e harness grows.
+    const grown = mounted.filter((node) => node.getBoundingClientRect().bottom <= 0).at(-1)!;
+    expect(grown.dataset.itemId).not.toBe(fixture.anchor.id);
+    // The height is gained below that row's text, so its own top does not move and
+    // only the rows under it carry the change.
+    const grownIndex = mounted.indexOf(grown);
+    fixture.rects[grown.dataset.itemId!].height += 180;
+    for (const node of mounted.slice(grownIndex + 1)) fixture.rects[node.dataset.itemId!].top += 180;
+    // Commit the new height into the model with no observer delivery: an updated
+    // row re-renders the list, and the commit's own measurement pass publishes the
+    // grown height. Nothing here depends on which of the two arrives first.
+    act(() => fixture.emit({ kind: "Timeline", event: { ItemsUpdated: {
+      key: KEY, generation: 1, batch_id: 1,
+      diffs: [{ Set: { index: 0, item: message("$item0", "Updated synthetic row") } }]
+    } } }));
+    fixture.drain();
+    const readerRow = fixture.view.querySelector<HTMLElement>(
+      `[data-item-id="${fixture.anchor.id}"]`
+    )!;
+    expect(readerRow.getBoundingClientRect().top).toBe(fixture.anchor.offset);
   });
   for (const { count, withPrepend } of [{ count: 120, withPrepend: false }, { count: 601, withPrepend: false }, { count: 601, withPrepend: true }]) {
     it(`settles a native resize before its observer returns (${count} rows, prepend=${withPrepend})`, () => {
