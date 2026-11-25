@@ -778,13 +778,15 @@ function TimelineItemRowView({
 
   const submitEditDocument = useCallback(
     (document: ComposerDocument) => {
-      if (!eventId) return;
+      // #2107: while sending is locked the open form keeps its text and
+      // refuses Save (button and Enter); it is usable again when the lock lifts.
+      if (!eventId || !canWrite) return;
       const trimmedDocument = trimDocument(document);
       if (!plainBodyFromDocument(trimmedDocument)) return;
       onEdit(roomId, eventId, trimmedDocument);
       closeEditForm();
     },
-    [closeEditForm, eventId, onEdit, roomId]
+    [canWrite, closeEditForm, eventId, onEdit, roomId]
   );
 
   const submitEdit = useCallback(
@@ -1195,7 +1197,7 @@ function TimelineItemRowView({
         editorOnly
         surface="edit"
         ariaLabel={t("timeline.editBody")}
-        canEdit
+        canEdit={canWrite}
         composerMode={{ kind: "plain" }}
         document={editDocument}
         draftKey={`edit:${eventId ?? "no-event"}`}
@@ -1213,7 +1215,12 @@ function TimelineItemRowView({
         onSend={submitEditDocument}
       />
       <div className="message-edit-actions">
-        <button className="message-edit-button" type="submit" aria-label={t("timeline.saveEdit")}>
+        <button
+          className="message-edit-button"
+          type="submit"
+          aria-label={t("timeline.saveEdit")}
+          disabled={!canWrite}
+        >
           {t("settings.propertySave")}
         </button>
         <button
