@@ -26,6 +26,7 @@ import {
   Search,
   Settings,
   Sparkles,
+  UserRound,
   Users,
   X
 } from "lucide-react";
@@ -53,7 +54,7 @@ import {
 } from "../domain/accessCondition";
 import { RoomAccessGlyphIcon } from "./RoomAccessGlyph";
 import { ContextMenuSurface, onMenuKeyDown } from "./ContextMenuSurface";
-import { accountTabLabel } from "./accountSignOut";
+import { accountTabLabel, isSignedInAccountTab } from "./accountSignOut";
 import { FloatingLayer, floatingPlacementStyle, useFloatingPlacement } from "./floatingLayer";
 import { useOutsidePressDismissal } from "./popupDismissal";
 import { Tooltip, type TooltipTriggerProps } from "./Tooltip";
@@ -551,6 +552,7 @@ export function TopBar({
 
 export function WorkspaceRail({
   snapshot,
+  accountTab = null,
   onCreateSpace,
   onOpenContextMenu,
   onOpenUserSettings,
@@ -559,6 +561,8 @@ export function WorkspaceRail({
   onRequestAvatarThumbnail
 }: {
   snapshot: DesktopSnapshot;
+  /** The selected account tab, whose avatar the Account Settings button shows (#2088). */
+  accountTab?: AccountTabSummary | null;
   onCreateSpace: () => void;
   onOpenContextMenu: OpenContextMenu;
   onOpenUserSettings: () => void;
@@ -572,6 +576,16 @@ export function WorkspaceRail({
   const { listRef, overflow, onListScroll, revealSpace } = useWorkspaceRailOverflow(
     snapshot.sidebar.space_rail
   );
+  // #2088: the button draws the account's avatar by the account tab's own rules.
+  // A tab with no bound account, or a parent that has not published the tab yet,
+  // gets a generic account glyph instead of an avatar that belongs to nobody.
+  const railAccount = accountTab && isSignedInAccountTab(accountTab) ? accountTab : null;
+  const { displaySourceUrl: railAvatarSource, onImageError, onImageLoad } =
+    useRecoverableImageSource(
+      railAccount?.avatarSourceRef
+        ? renderableThumbnailSourceUrl(railAccount.avatarSourceRef)
+        : null
+    );
 
   function dropSpaceOn(targetSpaceId: string, event: DragEvent<HTMLButtonElement>) {
     event.preventDefault();
@@ -769,7 +783,28 @@ export function WorkspaceRail({
                 onOpenContextMenu(event, { kind: "account" }, contextMenuItems({ kind: "account" }))
               }
               {...tooltipProps}
-            />
+            >
+              {railAccount ? (
+                <span
+                  className={`rail-account-avatar ${avatarColorClass(
+                    railAccount.accountKey ?? railAccount.id
+                  )}`}
+                >
+                  {railAvatarSource ? (
+                    <img
+                      src={railAvatarSource}
+                      alt=""
+                      onError={onImageError}
+                      onLoad={onImageLoad}
+                    />
+                  ) : (
+                    avatarInitial(accountTabLabel(railAccount))
+                  )}
+                </span>
+              ) : (
+                <UserRound size={ICON_SIZE.small} aria-hidden="true" />
+              )}
+            </button>
           )}
         </Tooltip>
       </div>

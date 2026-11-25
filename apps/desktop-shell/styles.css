@@ -216,16 +216,24 @@ button {
 }
 
 .user-presence {
+  padding: 0;
   background: #ffffff;
 }
 
-.user-presence::before {
-  width: 24px;
-  height: 24px;
+/* #2088: the real shell draws the selected account's avatar here, so the
+   prototype shows one too instead of a painted "online" circle and dot. The
+   fake session has no account identity, so the initial is the demo's own. */
+.rail-account-avatar {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  overflow: hidden;
   border-radius: 50%;
-  content: "";
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 750;
   background: var(--accent);
-  box-shadow: 15px 13px 0 -8px #64c98e;
 }
 
 .sidebar {
@@ -742,6 +750,12 @@ mark {
   .user-presence {
     width: 38px;
     height: 38px;
+  }
+
+  .rail-account-avatar {
+    width: 30px;
+    height: 30px;
+    font-size: 13px;
   }
 
   .sidebar,

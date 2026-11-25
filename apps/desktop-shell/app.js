@@ -203,7 +203,9 @@ function renderWorkspaceRail() {
       </div>
       <div class="rail-footer">
         <button class="rail-action" type="button" aria-label="Add workspace">+</button>
-        <div class="user-presence" aria-label="Online"></div>
+        <button class="user-presence" type="button" aria-label="Account Settings">
+          <span class="rail-account-avatar" aria-hidden="true">K</span>
+        </button>
       </div>
     </nav>
   `;

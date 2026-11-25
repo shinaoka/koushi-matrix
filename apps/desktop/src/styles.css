@@ -1703,17 +1703,34 @@ button:disabled {
   background: var(--success);
 }
 
+/* #2088: the Account Settings button shows the signed-in account's own avatar
+   (profile image, else its initial on the account's fallback colour). The green
+   circle and dot painted here before were a presence drawing tied to nothing,
+   and they read as a status light because the same green is the ready dot
+   elsewhere on the rail. `user-presence` is the button's historical class name;
+   nothing is drawn as presence any more. */
 .user-presence {
-  background: var(--rail-item);
+  /* The avatar below is sized from this button's content box, so the UA's button
+     padding would turn those percentages into an ellipse. */
+  padding: 0;
 }
 
-.user-presence::before {
-  width: 24px;
-  height: 24px;
+.rail-account-avatar {
+  display: grid;
+  place-items: center;
+  inline-size: calc(100% - 8px);
+  block-size: calc(100% - 8px);
+  overflow: hidden;
   border-radius: 50%;
-  content: "";
-  background: var(--success);
-  box-shadow: 15px 13px 0 -8px var(--success);
+  color: var(--avatar-contrast);
+  font-size: 15px;
+  font-weight: 750;
+}
+
+.rail-account-avatar img {
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
 }
 
 .sidebar {
@@ -10877,6 +10894,10 @@ kbd {
   .user-presence {
     width: var(--workspace-control-size-compact);
     height: var(--workspace-control-size-compact);
+  }
+
+  .rail-account-avatar {
+    font-size: 13px;
   }
 
   .workspace-rail-separator {

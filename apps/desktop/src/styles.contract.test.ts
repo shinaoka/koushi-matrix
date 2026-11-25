@@ -246,6 +246,27 @@ describe("styles.css token system", () => {
     expect(shellSource).toContain('className="account-tab-strip"');
   });
 
+  // #2088: the rail's bottom button is the signed-in account's avatar, not a
+  // painted presence shape. The green circle and its dot reported nothing about
+  // the account or the connection, and they read as a status light because the
+  // same green is the ready dot elsewhere, so they must not come back.
+  test("the Account Settings button draws the account avatar, not a presence dot", () => {
+    expect(css).not.toContain(".user-presence::before");
+    expect(css).not.toMatch(/\.user-presence\s*\{[^}]*var\(--success\)/);
+    expect(css).not.toContain("box-shadow: 15px 13px 0 -8px");
+
+    const avatar = selectorBlock(".rail-account-avatar");
+    expect(avatar).toContain("overflow: hidden;");
+    expect(avatar).toContain("border-radius: 50%;");
+    expect(avatar).toContain("color: var(--avatar-contrast);");
+    expect(selectorBlock(".rail-account-avatar img")).toContain("object-fit: cover;");
+    // The button zeroes its own padding, so the avatar's percentages resolve
+    // against the control size instead of the UA's padding box.
+    expect(css).toMatch(/\.user-presence\s*\{[^}]*padding: 0;/);
+    expect(avatar).toContain("inline-size: calc(100% - 8px);");
+    expect(shellSource).toContain("rail-account-avatar");
+  });
+
   test("narrow account tabs keep their avatar and status badge visible", () => {
     expect(css).toMatch(
       /@media\s+\(max-width:\s*760px\)[\s\S]*?\.account-tab-label\s*\{[^}]*display:\s*none/
