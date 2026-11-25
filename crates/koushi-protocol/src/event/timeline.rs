@@ -1416,9 +1416,16 @@ impl fmt::Debug for TimelineDisplayMetadata {
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReactionGroup {
     pub key: String,
+    /// The true number of senders, never bounded by `sender_preview`.
     pub count: u32,
     pub reacted_by_me: bool,
     pub my_reaction_event_id: Option<String>,
+    /// The first senders of this key, naming order as the SDK reported them.
+    ///
+    /// Never the complete list: Core caps it at
+    /// `koushi_core`'s `REACTION_SENDER_PREVIEW_LIMIT`, so a renderer derives
+    /// "N more" from `count - sender_preview.len()` instead of inferring a
+    /// complete list from the length.
     pub sender_preview: Vec<ReactionSender>,
 }
 impl fmt::Debug for ReactionGroup {

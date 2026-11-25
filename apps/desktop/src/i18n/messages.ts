@@ -1882,6 +1882,7 @@ export type MessageId =
   | "timeline.reactionTooltip"
   | "timeline.reactionSenderOverflow"
   | "timeline.reactionSenderUnknown"
+  | "timeline.reactionSenders"
   | "timeline.readBy"
   | "timeline.readReceiptOverflow"
   | "timeline.readReceiptFailed"
@@ -4418,6 +4419,8 @@ const en: Catalog = {
   "timeline.reactionPicker": "Choose reaction",
   "timeline.reactionOption": "React with {emoji}",
   "timeline.reactionTooltip": "{names} reacted with {key}",
+  // #2111: the dialog that lists everyone who reacted with one key.
+  "timeline.reactionSenders": "Reacted with {key}",
   "timeline.reactionSenderOverflow": "{count} more",
   "timeline.reactionSenderUnknown": "{count} people",
   "timeline.readBy": "Read by {count}",
@@ -6839,6 +6842,7 @@ const ja: Catalog = {
   "timeline.reactionPicker": "リアクションを選択",
   "timeline.reactionOption": "{emoji}でリアクション",
   "timeline.reactionTooltip": "{names} が {key} でリアクションしました",
+  "timeline.reactionSenders": "{key} でリアクションした人",
   "timeline.reactionSenderOverflow": "他 {count} 人",
   "timeline.reactionSenderUnknown": "{count} 人",
   "timeline.readBy": "{count} 人が既読",

@@ -8,6 +8,7 @@ type TimelineAliasTarget,
 type TimelineRowActionHandlers,
 type TimelineThreadAttention
 } from "./timeline/TimelineItemRow";
+import type { ReactionSenderProfile } from "./timeline/ReactionSenders";
 import type { TimelineTransport } from "./timeline/TimelineTransport";
 import { useTimelineEventSubscription } from "./timeline/useTimelineEventSubscription";
 import {
@@ -390,16 +391,23 @@ const EMPTY_SEARCH_HIGHLIGHTS: Record<string, { snippet: string; ranges: TextRan
 const EMPTY_MEDIA_DOWNLOADS: Record<string, TimelineMediaDownloadState> = {};
 const EMPTY_REPLY_QUOTE_THUMBNAILS: Record<string, TimelineMediaDownloadState> = {};
 const EMPTY_MENTION_CANDIDATES: MentionCandidate[] = [];
-function shallowEqualStringRecord(
-  left: Readonly<Record<string, string>>,
-  right: Readonly<Record<string, string>>
+/** #2111: label and avatar identity, so a stable map keeps memoized rows stable. */
+function shallowEqualReactionSenders(
+  left: Readonly<Record<string, ReactionSenderProfile>>,
+  right: Readonly<Record<string, ReactionSenderProfile>>
 ): boolean {
   const leftKeys = Object.keys(left);
   if (leftKeys.length !== Object.keys(right).length) {
     return false;
   }
-  return leftKeys.every((key) => Object.hasOwn(right, key) && left[key] === right[key]);
+  return leftKeys.every((key) => {
+    const other = right[key];
+    return (
+      other !== undefined && left[key].label === other.label && left[key].avatar === other.avatar
+    );
+  });
 }
+
 const ignoreOpenThread: NonNullable<TimelineRowActionHandlers["onOpenThread"]> = () => undefined;
 const TIMELINE_SCROLL_IDLE_FLUSH_MS = 100;
 const TIMELINE_SCROLL_MAX_DEFER_MS = 500;
@@ -1102,31 +1110,33 @@ export const TimelineView = memo(function TimelineView({
   // #1892: every row receives this map, and it is rebuilt whenever `items`
   // changes. Keep the previous object while its contents are equal, so a new
   // message or one row's diff does not re-render every memoized row.
-  const reactionSenderLabelsRef = useRef<Readonly<Record<string, string>>>({});
+  const reactionSendersRef = useRef<Readonly<Record<string, ReactionSenderProfile>>>({});
   // A reaction preview can omit its display label even when the sender is
-  // already represented in this room's timeline. Keep a room-scoped fallback
-  // so the tooltip does not regress to "Unknown user" while profile data
-  // catches up.
-  const reactionSenderLabelsByUserId = useMemo(() => {
-    const labels: Record<string, string> = {};
+  // already represented in this room's timeline. Keep a room-scoped fallback so
+  // the chip's tooltip does not regress to "Unknown user" while profile data
+  // catches up. #2111: the same map feeds the right-click list, which also wants
+  // the person's avatar, so both surfaces read one identity per user.
+  const reactionSendersByUserId = useMemo(() => {
+    const senders: Record<string, ReactionSenderProfile> = {};
     for (const profile of Object.values(profileUsers)) {
-      const label = profile.display_label?.trim();
-      if (label) {
-        labels[profile.user_id] = label;
-      }
+      // A profile without a name still has an avatar, and the list draws one.
+      senders[profile.user_id] = {
+        label: profile.display_label?.trim() || null,
+        avatar: profile.avatar
+      };
     }
     for (const item of items) {
       const label = item.sender_label?.trim();
-      if (item.sender && label && !labels[item.sender]) {
-        labels[item.sender] = label;
+      if (item.sender && label && !senders[item.sender]) {
+        senders[item.sender] = { label, avatar: null };
       }
     }
-    const previous = reactionSenderLabelsRef.current;
-    if (shallowEqualStringRecord(previous, labels)) {
+    const previous = reactionSendersRef.current;
+    if (shallowEqualReactionSenders(previous, senders)) {
       return previous;
     }
-    reactionSenderLabelsRef.current = labels;
-    return labels;
+    reactionSendersRef.current = senders;
+    return senders;
   }, [items, profileUsers]);
   const timelineKeyState = getKeyState(store, timelineKey);
   const generation = timelineKeyState?.generation ?? 0;
@@ -4946,7 +4956,7 @@ export const TimelineView = memo(function TimelineView({
                 presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
                 profile={item.sender ? profileUsers[item.sender] : undefined}
                 ownAvatar={ownAvatar}
-                reactionSenderLabelsByUserId={reactionSenderLabelsByUserId}
+                reactionSendersByUserId={reactionSendersByUserId}
                 currentUserId={currentUserId}
                 ignoredUserIds={ignoredUserIds}
                 onOpenContextMenu={onOpenContextMenu}

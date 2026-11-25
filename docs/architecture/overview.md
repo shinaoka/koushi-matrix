@@ -693,6 +693,13 @@ Each account remains an in-process actor system in `koushi-core`:
   Reaction groups are projected the same way from SDK aggregation data; React
   renders the grouped DTO and dispatches typed reaction commands only, while
   Rust guards current state before delegating to the SDK toggle helper.
+  `ReactionGroup.count` is the full total and `sender_preview` names up to
+  `REACTION_SENDER_PREVIEW_LIMIT` of them — a documented payload bound, so a
+  list is never presented as complete: whatever the preview leaves out is
+  reported as "N more" from `count - sender_preview.len()`. The chip's tooltip
+  shows those names and no surface claims more than the preview carries; a
+  right-click or a hold on the chip opens the reactor list, which reuses the
+  read-receipt popover part (`PersonListPopover`) instead of a second list.
   Reply quote previews are projected into `TimelineItem.reply_quote`; React
   renders the quote state and does not resolve Matrix reply bodies. Each
   `TimelineActor` owns a bounded hydration ledger for quoted originals

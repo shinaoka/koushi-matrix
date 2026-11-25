@@ -5116,6 +5116,34 @@ button.reply-quote-thumbnail:focus-visible {
   font-weight: 400;
 }
 
+/* #2111: a person row that opens that person's profile keeps the same box and
+   height as a receipt row; only the control changes. */
+.receipt-tooltip .receipt-reader-row-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  inline-size: 100%;
+  min-inline-size: 0;
+  block-size: 100%;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.receipt-tooltip .receipt-reader-row-button:focus-visible {
+  outline: var(--receipt-focus-outline-width) solid var(--brand);
+  outline-offset: var(--receipt-focus-outline-offset);
+}
+
+.reaction-sender-self {
+  color: var(--brand);
+  font-weight: 700;
+}
+
 .receipt-tooltip .receipt-reader-row .receipt-reader-avatar {
   flex: 0 0 auto;
   margin-inline-end: 0;
@@ -5238,6 +5266,15 @@ button.reply-quote-thumbnail:focus-visible {
   min-inline-size: 0;
 }
 
+/* #2111: the chip's shell receives the pointer, so a right-click and a hold
+   reach the reaction-sender list. A read-only chip stays `disabled` (#2066) and
+   a disabled control swallows pointer events, which is why the chip hands them
+   to the shell explicitly. */
+.reaction-pill-shell {
+  position: relative;
+  display: inline-flex;
+}
+
 .reaction-pill {
   position: relative;
   display: inline-flex;
@@ -5278,6 +5315,10 @@ button.reply-quote-thumbnail:focus-visible {
   line-height: 1.35;
   opacity: 0;
   pointer-events: none;
+  /* #2111: a group can name up to `REACTION_SENDER_PREVIEW_LIMIT` people. The
+     box wraps and then scrolls instead of growing over the timeline. */
+  max-block-size: min(40vh, 220px);
+  overflow-y: auto;
   transform: translateY(var(--receipt-tooltip-translate-block));
   transition:
     opacity var(--motion-tooltip-duration) ease,
@@ -5296,10 +5337,23 @@ button.reply-quote-thumbnail:focus-visible {
   background: var(--surface-hover);
 }
 
+/* #2111: the pane clips its rows, so a tall tooltip flips below the chip when the
+   space above it cannot hold the box (`placeReactionTooltip`). */
+.reaction-tooltip-below {
+  inset-block-end: auto;
+  inset-block-start: calc(100% + var(--receipt-tooltip-offset-block));
+  transform: translateY(calc(-1 * var(--receipt-tooltip-translate-block)));
+}
+
 .reaction-pill:hover .reaction-tooltip,
 .reaction-pill:focus .reaction-tooltip,
-.reaction-pill:focus-visible .reaction-tooltip {
+.reaction-pill:focus-visible .reaction-tooltip,
+.reaction-pill-shell:hover .reaction-tooltip,
+.reaction-pill-shell:focus-within .reaction-tooltip {
   opacity: 1;
+  /* The visible box takes the wheel so its overflow can be read; a press inside
+     it is stopped by the chip's own handler. */
+  pointer-events: auto;
   transform: translateY(0);
   visibility: visible;
 }
@@ -5307,6 +5361,12 @@ button.reply-quote-thumbnail:focus-visible {
 .reaction-pill:focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
+}
+
+.reaction-pill:disabled {
+  /* #2111: the shell above, not the control, owns the pointer for a read-only
+     chip, so its sender list stays reachable without making it pressable. */
+  pointer-events: none;
 }
 
 .reaction-pill-key {
