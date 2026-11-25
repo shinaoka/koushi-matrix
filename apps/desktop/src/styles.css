@@ -5556,6 +5556,71 @@ button.reply-quote-thumbnail:focus-visible {
   font-weight: 500;
 }
 
+/* #2096: an inline preview sits in the card's text column, so the type tile
+   keeps its place and a file without a preview keeps the card's geometry. The
+   height follows the line count the renderer asks for, not a second literal. */
+.message-media-text-preview-button {
+  display: block;
+  inline-size: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  background: none;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.message-media-text-preview-button:hover,
+.message-media-text-preview-button:focus-visible {
+  background: var(--surface-hover);
+}
+
+.message-media-text-preview {
+  max-block-size: calc(var(--media-preview-lines, 6) * 1.45em);
+  margin: 6px 0 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+}
+
+.message-media-preview-note {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.message-media-audio-player,
+.message-media-video-player {
+  display: block;
+  inline-size: 100%;
+  margin-top: 8px;
+}
+
+.message-media-video-player {
+  max-block-size: 240px;
+  border-radius: 6px;
+  background: #000;
+}
+
+.media-text-preview-dialog {
+  inline-size: min(760px, calc(100vw - 32px));
+}
+
+.media-text-preview-body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  margin: 0;
+  padding: 16px 20px;
+  overflow: auto;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  tab-size: 4;
+  white-space: pre;
+}
+
 .message-media-type-tile {
   --file-type-hue: var(--file-type-gray);
   position: relative;

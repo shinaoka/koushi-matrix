@@ -425,6 +425,7 @@ function TimelineItemRowView({
   onOpenAliasDialog,
   onOpenMediaViewer = () => undefined,
   onSaveMediaFile,
+  onReadMediaText,
   forwardDestinations = [],
   onRetrySend = ignoreSendQueueAction,
   onCancelSend = ignoreSendQueueAction,
@@ -510,6 +511,7 @@ function TimelineItemRowView({
   onOpenAliasDialog?: (target: TimelineAliasTarget) => void;
   onOpenMediaViewer?: (entry: MediaViewerEntry) => void;
   onSaveMediaFile?: TimelineTransport["saveMediaFile"];
+  onReadMediaText?: TimelineTransport["readMediaText"];
   forwardDestinations?: readonly TimelineForwardDestination[];
   onRetrySend?: TimelineRowActionHandlers["onRetrySend"];
   onCancelSend?: TimelineRowActionHandlers["onCancelSend"];
@@ -1264,6 +1266,7 @@ function TimelineItemRowView({
         onDownload={submitDownloadMedia}
         onOpenMediaViewer={onOpenMediaViewer}
         onSaveMediaFile={onSaveMediaFile}
+        onReadMediaText={onReadMediaText}
         saveName={mediaSaveName}
         viewerEntry={
           eventId

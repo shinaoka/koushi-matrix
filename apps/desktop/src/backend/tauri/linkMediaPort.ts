@@ -115,5 +115,11 @@ export const tauriLinkMediaPort: LinkMediaPort = {
       destinationPath: selected,
       ...(accountTabId === undefined ? {} : { accountTabId })
     });
+  },
+  async readDownloadedText(sourceRef, accountTabId) {
+    return invoke<string>("read_downloaded_media_text", {
+      sourceRef,
+      ...(accountTabId === undefined ? {} : { accountTabId })
+    });
   }
 };

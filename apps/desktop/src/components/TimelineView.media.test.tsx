@@ -137,6 +137,54 @@ describe("TimelineView", () => {
     });
   });
 
+  // #2096: the timeline owns the one auto-fetch policy, so a text file small
+  // enough to preview fetches itself, a large one never does, and an audio file
+  // is left for the reader's click.
+  it("auto-fetches only the text attachment a card can preview", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const downloadMedia = vi.fn(async (_roomId: string, _eventId: string) => undefined);
+    const transport = baseTransport({
+      downloadMedia,
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              { ...fileMessage("$small-log"), media: { ...fileMessage("$small-log").media!, filename: "server.log", mimetype: "text/plain", size: 2048 } },
+              { ...fileMessage("$large-log"), media: { ...fileMessage("$large-log").media!, filename: "dump.log", mimetype: "text/plain", size: 256 * 1024 + 1 } },
+              { ...fileMessage("$voice"), media: { ...fileMessage("$voice").media!, filename: "voice.mp3", mimetype: "audio/mpeg", size: 64_000 } }
+            ]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(downloadMedia).toHaveBeenCalledWith("!room:example.invalid", "$small-log");
+    });
+    const requested = downloadMedia.mock.calls.map((call) => call[1]);
+    expect(requested).toEqual(["$small-log"]);
+  });
+
   it("renders ready image with image-first layout and hover download overlay", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({

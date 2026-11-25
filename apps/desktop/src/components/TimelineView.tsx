@@ -274,6 +274,8 @@ renderTimelineMessageText,
 type OpenMatrixTargetHandler
 } from "./timeline/TimelineMessageBody";
 import { MessageSourceDialog } from "./timeline/MessageSourceDialog";
+import { canAutoFetchPreview, filePreviewKind } from "./timeline/filePreview";
+import { fileTypeCategory } from "./timeline/fileTypeCategory";
 import { useTimelineRowTransportActions } from "./timeline/useTimelineRowTransportActions";
 import { TouchpadScrollResampler, nestedScrollerTakesWheel } from "./timeline/touchpadScrollResampler";
 export { MessageSourceDialog };
@@ -959,7 +961,7 @@ export const TimelineView = memo(function TimelineView({
   const autoReturnToLiveIdentityRef = useRef<string | null>(null);
   const autoReturnToLiveKeyRef = useRef<string | null>(null);
   const downloadedEventIdsRef = useRef<Set<string>>(new Set());
-  const requestedImagePreviewEventIdsRef = useRef<Set<string>>(new Set());
+  const requestedPreviewEventIdsRef = useRef<Set<string>>(new Set());
   const requestedReplyQuoteThumbnailIdsRef = useRef<Set<string>>(new Set());
   const seenReplyQuoteThumbnailIdsRef = useRef<Set<string>>(new Set());
   const initialItemsSeenForTimelineKeyRef = useRef<string | null>(null);
@@ -2239,7 +2241,7 @@ export const TimelineView = memo(function TimelineView({
     setViewportAtBottom(false);
     lastViewportObservationRef.current = null;
     downloadedEventIdsRef.current = new Set();
-    requestedImagePreviewEventIdsRef.current = new Set();
+    requestedPreviewEventIdsRef.current = new Set();
     requestedReplyQuoteThumbnailIdsRef.current = new Set();
     seenReplyQuoteThumbnailIdsRef.current = new Set();
     initialItemsSeenForTimelineKeyRef.current = null;
@@ -2736,9 +2738,24 @@ export const TimelineView = memo(function TimelineView({
     timelineKeyHash,
     visibleRows
   ]);
+  // #2096: one auto-fetch policy for every preview that draws itself from the
+  // managed cache — a rendered image, and a text file small enough to show its
+  // first lines. Audio and video are excluded: a video is not fetched while the
+  // reader scrolls past it. The latch is per event id and released on failure so
+  // a retryable download gets another chance.
   useEffect(() => {
     for (const item of sideEffectItems) {
-      if (!item.media || item.media.kind !== "Image" || !("Event" in item.id)) {
+      if (!item.media || !("Event" in item.id)) {
+        continue;
+      }
+      const media = item.media;
+      const wantsPreview =
+        media.kind === "Image" ||
+        canAutoFetchPreview(
+          filePreviewKind(fileTypeCategory(media.filename, media.mimetype, media.kind)),
+          media.size
+        );
+      if (!wantsPreview) {
         continue;
       }
       const eventId = item.id.Event.event_id;
@@ -2746,12 +2763,12 @@ export const TimelineView = memo(function TimelineView({
       if (downloadState?.kind === "ready" || downloadState?.kind === "pending") {
         continue;
       }
-      if (requestedImagePreviewEventIdsRef.current.has(eventId)) {
+      if (requestedPreviewEventIdsRef.current.has(eventId)) {
         continue;
       }
-      requestedImagePreviewEventIdsRef.current.add(eventId);
+      requestedPreviewEventIdsRef.current.add(eventId);
       void transport.downloadMedia(roomId, eventId).catch(() => {
-        requestedImagePreviewEventIdsRef.current.delete(eventId);
+        requestedPreviewEventIdsRef.current.delete(eventId);
       });
     }
   }, [mediaDownloads, roomId, sideEffectItems, transport]);
@@ -4940,6 +4957,7 @@ export const TimelineView = memo(function TimelineView({
                 onOpenAliasDialog={onSetLocalUserAlias ? openAliasDialog : undefined}
                 onOpenMediaViewer={openMediaViewer}
                 onSaveMediaFile={transport.saveMediaFile}
+                onReadMediaText={transport.readMediaText}
                 forwardDestinations={effectiveForwardDestinations}
                 onOpenMatrixTarget={onOpenMatrixTarget}
                 onOpenReplyQuote={onOpenReplyQuote}

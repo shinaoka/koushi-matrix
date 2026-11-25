@@ -29,5 +29,10 @@ export const browserLinkMediaPort: LinkMediaPort = {
       BROWSER_MEDIA_PROTOCOL_BASE
     );
   },
-  async saveMediaFile() {}
+  async saveMediaFile() {},
+  async readDownloadedText() {
+    // The browser QA shell has no media cache to read; the card falls back to
+    // the plain download card (#2096).
+    throw new Error("text preview is unavailable in the browser shell");
+  }
 };

@@ -20,7 +20,19 @@ const MEDIA_DOWNLOAD_MIME_TOKENS: Readonly<Record<string, string>> = {
   "image/webp": "webp",
   "image/avif": "avif",
   "video/mp4": "mp4",
-  "video/webm": "webm"
+  "video/webm": "webm",
+  "video/x-m4v": "m4v",
+  // #2096: the inline player's audio types. The list mirrors the protocol's
+  // `MIME_TOKENS`; a type without a token keeps the plain download card.
+  "audio/mpeg": "mp3",
+  "audio/mp4": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/aac": "aac",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/flac": "flac",
+  "audio/ogg": "ogg",
+  "audio/opus": "opus"
 };
 
 /**
@@ -62,4 +74,10 @@ export interface LinkMediaPort {
     saveName: MediaSaveNameFacts | null,
     accountTabId?: string
   ): Promise<void>;
+  /**
+   * #2096: the text of an already downloaded attachment, for an inline preview.
+   * It reads Core's media cache and never touches the user's Downloads folder;
+   * the backend refuses anything above its own preview limit.
+   */
+  readDownloadedText(sourceRef: string, accountTabId?: string): Promise<string>;
 }

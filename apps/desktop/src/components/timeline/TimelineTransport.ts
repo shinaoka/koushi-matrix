@@ -74,6 +74,12 @@ export interface TimelineTransport {
     filename: string,
     saveName?: MediaSaveNameFacts | null
   ): Promise<void>;
+  /**
+   * #2096: read an already downloaded attachment's text for an inline preview.
+   * It carries the timeline's account tab like `saveMediaFile`, so a read that
+   * lands while the reader switches accounts still resolves that row's cache.
+   */
+  readMediaText?(sourceRef: string): Promise<string>;
   /** Download a Matrix avatar thumbnail and return its cancelable request sequence. */
   downloadAvatarThumbnail?(mxcUri: string): Promise<string | void>;
   /** Cancel a renderer-owned avatar thumbnail demand. */

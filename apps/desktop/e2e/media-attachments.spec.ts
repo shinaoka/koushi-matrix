@@ -830,3 +830,206 @@ test("short encrypted image keeps both controls and encryption badge inside its 
     article.getByRole("button", { name: t("timeline.downloadMedia", { filename: "photo.jpg" }) })
   ).toBeVisible();
 });
+
+// ---------------------------------------------------------------------------
+// #2096: inline previews read Core's media cache, never the Downloads folder.
+// ---------------------------------------------------------------------------
+
+function makeAttachmentItem(
+  eventId: string,
+  attachment: {
+    filename: string;
+    mimetype: string | null;
+    size: number;
+    kind?: string;
+  }
+): Record<string, unknown> {
+  return {
+    id: { Event: { event_id: eventId } },
+    sender: "@harness-user:example.invalid",
+    sender_label: "Harness User",
+    body: null,
+    timestamp_ms: 1_800_000_500_000,
+    in_reply_to_event_id: null,
+    thread_root: null,
+    thread_summary: null,
+    reactions: [],
+    can_react: false,
+    is_redacted: false,
+    is_hidden: false,
+    can_redact: false,
+    is_edited: false,
+    can_edit: false,
+    media: {
+      kind: attachment.kind ?? "File",
+      filename: attachment.filename,
+      source: { mxc_uri: "mxc://example.invalid/preview", encrypted: false, encryption_version: null },
+      mimetype: attachment.mimetype,
+      size: attachment.size,
+      width: null,
+      height: null,
+      thumbnail: null
+    },
+    actions: {
+      can_copy: false,
+      can_reply: true,
+      can_permalink: false,
+      permalink: null,
+      can_view_source: false,
+      can_forward: false
+    }
+  };
+}
+
+const PREVIEW_SOURCE_REF = "download/1234567890123456/6543210987654321";
+
+function readyPreviewState(mimeType: string): unknown {
+  return {
+    kind: "ready",
+    source_ref: PREVIEW_SOURCE_REF,
+    width: null,
+    height: null,
+    mime_type: mimeType
+  };
+}
+
+test("a small text attachment previews its first lines without writing to Downloads", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  const eventId = "$media-text-preview:example.invalid";
+  const fullText = Array.from({ length: 40 }, (_, index) => `line ${index} of the log`).join("\n");
+  await page.evaluate((text) => {
+    window.__harness.setCommandResponse("read_downloaded_media_text", text);
+  }, fullText);
+  await seedTimelineItems(page, [
+    makeAttachmentItem(eventId, { filename: "server.log", mimetype: "text/plain", size: 2048 })
+  ]);
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  const mediaCard = article.locator(".message-media");
+
+  // The card fetches a small text file itself: no click, and no save dialog.
+  await expect
+    .poll(() => page.evaluate(() => window.__harness.invocationsOf("download_media").length))
+    .toBe(1);
+  await expect(mediaCard.locator(".message-media-text-preview")).toHaveCount(0);
+
+  await pushMediaDownloadState(page, eventId, readyPreviewState("text/plain"));
+
+  const preview = mediaCard.locator(".message-media-text-preview");
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText("line 0 of the log");
+  await expect(preview).not.toContainText("line 30 of the log");
+
+  // Clicking the card opens the whole file; the tile keeps saving to Downloads.
+  await mediaCard.locator(".message-media-title").click();
+  // The dialog is named after the file, and its header repeats the name.
+  const dialog = page.getByRole("dialog", { name: "server.log" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "server.log" })).toBeVisible();
+  await expect(dialog.locator(".media-text-preview-body")).toHaveText(fullText);
+
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("read_downloaded_media_text").length)
+  ).toBe(1);
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("save_downloaded_media").length)
+  ).toBe(0);
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("default_media_save_path").length)
+  ).toBe(0);
+});
+
+test("a text attachment above the preview limit is neither fetched nor previewed", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  const eventId = "$media-text-too-large:example.invalid";
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("read_downloaded_media_text", "should not be read");
+  });
+  await seedTimelineItems(page, [
+    makeAttachmentItem(eventId, {
+      filename: "dump.log",
+      mimetype: "text/plain",
+      size: 256 * 1024 + 1
+    })
+  ]);
+  const mediaCard = page.locator(`[data-event-id="${eventId}"]`).locator(".message-media");
+  await expect(mediaCard).toBeVisible();
+  await expect(
+    mediaCard.getByRole("button", { name: t("timeline.downloadMedia", { filename: "dump.log" }) })
+  ).toBeVisible();
+
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => window.__harness.invocationsOf("download_media").length)).toBe(0);
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("read_downloaded_media_text").length)
+  ).toBe(0);
+  await expect(mediaCard.locator(".message-media-text-preview")).toHaveCount(0);
+});
+
+test("a downloaded audio attachment plays inline from the media cache", async ({ page }) => {
+  await gotoReadyShell(page);
+  const eventId = "$media-audio:example.invalid";
+  await seedTimelineItems(page, [
+    makeAttachmentItem(eventId, { filename: "voice.mp3", mimetype: "audio/mpeg", size: 64000 })
+  ]);
+  const mediaCard = page.locator(`[data-event-id="${eventId}"]`).locator(".message-media");
+  await expect(mediaCard).toBeVisible();
+  await expect(mediaCard.locator("audio")).toHaveCount(0);
+
+  await pushMediaDownloadState(page, eventId, readyPreviewState("audio/mpeg"));
+
+  const player = mediaCard.locator("audio");
+  await expect(player).toBeVisible();
+  await expect(player).toHaveAttribute("controls", "");
+  await expect(player).toHaveAttribute(
+    "src",
+    `koushi-media://localhost/download/mp3/1234567890123456/6543210987654321`
+  );
+  await expect(player).toHaveAttribute(
+    "aria-label",
+    t("timeline.mediaAudioPlayer", { filename: "voice.mp3" })
+  );
+  // An audio attachment never fetches itself, and nothing was saved.
+  expect(await page.evaluate(() => window.__harness.invocationsOf("download_media").length)).toBe(0);
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("save_downloaded_media").length)
+  ).toBe(0);
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("default_media_save_path").length)
+  ).toBe(0);
+  // The tile is still the save control.
+  await expect(
+    mediaCard.getByRole("button", { name: t("timeline.downloadMedia", { filename: "voice.mp3" }) })
+  ).toBeVisible();
+});
+
+test("a downloaded video attachment plays inline from the media cache", async ({ page }) => {
+  await gotoReadyShell(page);
+  const eventId = "$media-video:example.invalid";
+  await seedTimelineItems(page, [
+    makeAttachmentItem(eventId, { filename: "clip.mp4", mimetype: "video/mp4", size: 900000 })
+  ]);
+  await pushMediaDownloadState(page, eventId, readyPreviewState("video/mp4"));
+
+  const mediaCard = page.locator(`[data-event-id="${eventId}"]`).locator(".message-media");
+  const player = mediaCard.locator("video");
+  await expect(player).toBeVisible();
+  await expect(player).toHaveAttribute("controls", "");
+  await expect(player).toHaveAttribute(
+    "src",
+    `koushi-media://localhost/download/mp4/1234567890123456/6543210987654321`
+  );
+  await expect(player).toHaveAttribute(
+    "aria-label",
+    t("timeline.mediaVideoPlayer", { filename: "clip.mp4" })
+  );
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("save_downloaded_media").length)
+  ).toBe(0);
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("default_media_save_path").length)
+  ).toBe(0);
+});
