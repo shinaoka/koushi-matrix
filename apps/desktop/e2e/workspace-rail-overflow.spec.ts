@@ -69,6 +69,17 @@ test.beforeEach(async ({ page }) => {
   await gotoReadyShell(page);
 });
 
+test("the footer button shows the selected account's avatar (#2088)", async ({ page }) => {
+  // The single line that feeds the drawing is the app's own prop lookup, so
+  // this asserts the real shell end to end: the harness publishes one ready tab
+  // with no thumbnail, whose display name starts "@harness-user", so the button
+  // draws that account's initial instead of the generic account glyph.
+  const avatar = page.locator(".rail-footer .rail-account-avatar");
+  await expect(avatar).toBeVisible();
+  await expect(avatar).toHaveText("H");
+  await expect(page.locator(".rail-footer svg.lucide-user-round")).toHaveCount(0);
+});
+
 test("selecting an off-screen Space by a non-rail path scrolls it into view", async ({ page }) => {
   await seedRail(page, { active: 0 });
   expect(await railScrollTop(page)).toBe(0);

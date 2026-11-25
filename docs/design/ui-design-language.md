@@ -132,7 +132,7 @@ Mirror Element's left-panel structure; map onto existing components.
    brand indicator reserved for selected-space emphasis.
 2. Space tiles — rounded squares, unread→count badge, mention→red dot.
 3. `+` create space (dashed tile).
-4. Bottom: account avatar (presence ring) + Settings.
+4. Bottom: account avatar + Settings.
 
 **Room list** (`Sidebar`, col 2), top→bottom:
 1. Header: workspace/space name + account avatar (→ account menu/settings).

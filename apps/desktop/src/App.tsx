@@ -7768,6 +7768,7 @@ function AccountContent({
       >
         <WorkspaceRail
           snapshot={snapshot}
+          accountTab={accountTabs?.tabs.find((tab) => tab.id === accountTabId) ?? null}
           onCreateSpace={() => openCreateDialog("space")}
           onOpenContextMenu={openContextMenu}
           onOpenUserSettings={() => {

@@ -2,7 +2,14 @@
 
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AccountTabStrip, EntityAvatar, Sidebar, WorkspaceRail, composerSendingAccount } from "./Shell";
+import {
+  AccountTabStrip,
+  EntityAvatar,
+  Sidebar,
+  WorkspaceRail,
+  avatarColorClass,
+  composerSendingAccount
+} from "./Shell";
 import { readyDesktopSnapshotFixture } from "../test/desktopApiFixture";
 import type { AccountTabSummary, DesktopSnapshot, RoomListItem } from "../domain/types";
 import { setActiveLocaleProfile, t } from "../i18n/messages";
@@ -868,6 +875,95 @@ describe("account tab avatars (#2059)", () => {
 
     expect(avatarOf("Plain: Ready").querySelector("img")).toBeNull();
     expect(avatarOf("Plain: Ready").textContent).toBe("P");
+  });
+});
+
+// #2088: the button at the bottom of the rail used to be a painted green circle
+// with a green dot, so nothing about it said "account" and it read as a status
+// light. It is now the signed-in account's avatar: the profile image when one is
+// ready, the account's initial on its fallback colour otherwise, and the same
+// initial again when the image fails to load.
+describe("rail account avatar (#2088)", () => {
+  function tab(overrides: Partial<AccountTabSummary> & Pick<AccountTabSummary, "id">): AccountTabSummary {
+    return {
+      accountKey: `@${overrides.id}:example.invalid`,
+      homeserver: "https://example.invalid",
+      displayName: overrides.id,
+      avatarMxcUri: `mxc://example.invalid/${overrides.id}`,
+      avatarSourceRef: null,
+      status: "ready",
+      unreadCount: 0,
+      ...overrides
+    };
+  }
+
+  function renderRail(accountTab: AccountTabSummary | null, overrides = {}) {
+    return render(
+      <WorkspaceRail
+        snapshot={readyDesktopSnapshotFixture()}
+        accountTab={accountTab}
+        {...railProps(overrides)}
+      />
+    );
+  }
+
+  function accountButton(): HTMLElement {
+    return screen.getByRole("button", { name: t("workspace.userSettings") });
+  }
+
+  it("draws the account's ready avatar image", () => {
+    // The desktop shell renders Core's thumbnail ref through the Tauri media
+    // protocol; the browser preview port passes such a ref through as null.
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    renderRail(tab({ id: "Member 1", avatarSourceRef: "avatar/0123456789abcdef" }));
+
+    const image = accountButton().querySelector(".rail-account-avatar img");
+    expect(image?.getAttribute("src")).toMatch(/avatar\/0123456789abcdef$/);
+    expect(accountButton().querySelector(".rail-account-avatar")?.textContent).toBe("");
+  });
+
+  it("draws the account's initial on its fallback colour when no avatar is ready", () => {
+    const selected = tab({ id: "Member 1", displayName: "Member One", avatarSourceRef: null });
+    renderRail(selected);
+
+    const avatar = accountButton().querySelector(".rail-account-avatar");
+    expect(avatar?.querySelector("img")).toBeNull();
+    expect(avatar?.textContent).toBe("M");
+    // The same hash as the account tab, so the two avatars agree.
+    expect(avatar?.classList.contains(avatarColorClass(selected.accountKey!))).toBe(true);
+  });
+
+  it("returns to the initial when the avatar image fails to load", () => {
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    renderRail(tab({ id: "Member 1", displayName: "Member One", avatarSourceRef: "avatar/0123456789abcdef" }));
+
+    fireEvent.error(accountButton().querySelector("img")!);
+
+    expect(accountButton().querySelector("img")).toBeNull();
+    expect(accountButton().querySelector(".rail-account-avatar")?.textContent).toBe("M");
+  });
+
+  it("falls back to a generic account glyph for a tab with no bound account", () => {
+    renderRail(tab({ id: "new", accountKey: null, status: "addAccount", displayName: null }));
+
+    expect(accountButton().querySelector(".rail-account-avatar")).toBeNull();
+    expect(accountButton().querySelector("svg.lucide-user-round")).not.toBeNull();
+  });
+
+  it("keeps the click and context menu behaviour", () => {
+    const onOpenUserSettings = vi.fn();
+    const onOpenContextMenu = vi.fn();
+    renderRail(tab({ id: "Member 1" }), { onOpenUserSettings, onOpenContextMenu });
+
+    fireEvent.click(accountButton());
+    expect(onOpenUserSettings).toHaveBeenCalledOnce();
+
+    fireEvent.contextMenu(accountButton());
+    expect(onOpenContextMenu).toHaveBeenCalledWith(
+      expect.anything(),
+      { kind: "account" },
+      expect.anything()
+    );
   });
 });
 
