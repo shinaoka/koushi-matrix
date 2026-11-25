@@ -1539,6 +1539,33 @@ pub async fn save_downloaded_media(
     .map_err(|error| error.to_string())
 }
 
+/// #2096: the bounded text of a downloaded attachment, for an inline preview.
+///
+/// React names the opaque download ref; the adapter resolves it inside the
+/// account's managed cache. Nothing here writes to the user's Downloads folder,
+/// and the file is never sent anywhere: it is read in process and returned as a
+/// string capped by `media_download::MAX_TEXT_PREVIEW_BYTES`.
+#[tauri::command]
+pub async fn read_downloaded_media_text(
+    account_tab_id: Option<String>,
+    source_ref: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<String, String> {
+    let tab_id = account_tab_id
+        .map(koushi_core::account_runtime_manager::AccountTabId::from_string)
+        .unwrap_or_else(|| state.runtime.selected_tab_id());
+    let cache_root = state
+        .runtime
+        .media_cache_dir_for_tab(&tab_id)
+        .ok_or_else(|| "media cache is unavailable".to_owned())?;
+    crate::media_download::read_managed_text(
+        std::slice::from_ref(&cache_root),
+        &source_ref,
+        crate::media_download::MAX_TEXT_PREVIEW_BYTES,
+    )
+    .map_err(|error| error.message().to_owned())
+}
+
 #[tauri::command]
 pub async fn default_media_save_path(
     filename: String,

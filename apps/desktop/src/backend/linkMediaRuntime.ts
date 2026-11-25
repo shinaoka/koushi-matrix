@@ -33,3 +33,16 @@ export async function saveReadyMediaFile(
   const port = activePort();
   await port.saveMediaFile(sourceRef, filename, saveName, accountTabId);
 }
+
+/**
+ * #2096: the bounded text of a downloaded attachment, for an inline preview.
+ *
+ * The backend refuses a file above its own preview limit, so the renderer never
+ * holds a whole large document; a rejection is the "cannot preview" answer.
+ */
+export async function readDownloadedText(
+  sourceRef: string,
+  accountTabId?: string
+): Promise<string> {
+  return activePort().readDownloadedText(sourceRef, accountTabId);
+}

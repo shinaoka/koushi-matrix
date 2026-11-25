@@ -129,6 +129,13 @@ for (const [label, csp] of [
     `${label}.img-src.koushiMedia`,
     "custom managed-download protocol allowed for timeline media images"
   );
+  // #2096: the inline player loads the same managed download through a media
+  // element, which `default-src 'none'` would otherwise block.
+  requireCheck(
+    typeof csp === "string" && /(?:^|;\s*)media-src [^;]*koushi-media:/.test(csp),
+    `${label}.media-src`,
+    "custom managed-download protocol allowed for inline audio and video"
+  );
 }
 
 requireCheck(

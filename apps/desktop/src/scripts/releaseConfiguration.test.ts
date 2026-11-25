@@ -167,6 +167,8 @@ describe("desktop release scripts", () => {
     expect(output).toContain("security.assetProtocol.scope.mediaDownloads");
     expect(output).toContain("security.csp.img-src.koushiThumbnail");
     expect(output).toContain("security.csp.img-src.koushiMedia");
+    expect(output).toContain("security.csp.media-src");
+    expect(output).toContain("security.devCsp.media-src");
   });
 
   test("macOS signing preflight requires Apple credentials without Windows credentials", () => {

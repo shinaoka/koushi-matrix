@@ -2030,6 +2030,12 @@ export type MessageId =
   | "timeline.mediaDownloadFailed"
   | "timeline.mediaDownloadRetry"
   | "timeline.mediaOpenFile"
+  | "timeline.mediaTextPreviewOpen"
+  | "timeline.mediaTextPreviewTitle"
+  | "timeline.mediaTextPreviewTooLarge"
+  | "timeline.mediaTextPreviewFailed"
+  | "timeline.mediaAudioPlayer"
+  | "timeline.mediaVideoPlayer"
   | "timeline.mediaDetails"
   | "timeline.mediaDetailsTitle"
   | "timeline.closeMediaDetails"
@@ -4573,6 +4579,12 @@ const en: Catalog = {
   "timeline.mediaDownloadFailed": "Download failed",
   "timeline.mediaDownloadRetry": "Retry",
   "timeline.mediaOpenFile": "Open file",
+  "timeline.mediaTextPreviewOpen": "Preview {filename}",
+  "timeline.mediaTextPreviewTitle": "File preview",
+  "timeline.mediaTextPreviewTooLarge": "Too large to preview here. Open or save the file instead.",
+  "timeline.mediaTextPreviewFailed": "This file cannot be previewed as text.",
+  "timeline.mediaAudioPlayer": "Audio player for {filename}",
+  "timeline.mediaVideoPlayer": "Video player for {filename}",
   "timeline.mediaDetails": "Show media details for {filename}",
   "timeline.mediaDetailsTitle": "Media details",
   "timeline.closeMediaDetails": "Close media details",
@@ -6991,6 +7003,12 @@ const ja: Catalog = {
   "timeline.mediaDownloadFailed": "ダウンロードに失敗しました",
   "timeline.mediaDownloadRetry": "再試行",
   "timeline.mediaOpenFile": "ファイルを開く",
+  "timeline.mediaTextPreviewOpen": "{filename} をプレビュー",
+  "timeline.mediaTextPreviewTitle": "ファイルのプレビュー",
+  "timeline.mediaTextPreviewTooLarge": "大きすぎるためここではプレビューできません。ファイルを開くか保存してください。",
+  "timeline.mediaTextPreviewFailed": "このファイルはテキストとしてプレビューできません。",
+  "timeline.mediaAudioPlayer": "{filename} の音声プレイヤー",
+  "timeline.mediaVideoPlayer": "{filename} の動画プレイヤー",
   "timeline.mediaDetails": "{filename}のメディア詳細を表示",
   "timeline.mediaDetailsTitle": "メディア詳細",
   "timeline.closeMediaDetails": "メディア詳細を閉じる",

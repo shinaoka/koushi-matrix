@@ -22,10 +22,16 @@ import { Tooltip } from "../Tooltip";
 import { useOutsidePressDismissal } from "../popupDismissal";
 import type { MediaTransferProgress, TimelineItem } from "../../domain/coreEvents";
 import type { TimelineMediaDownloadState } from "../../domain/types";
-import { mediaSourceUrl } from "../../backend/linkMediaRuntime";
+import { mediaSourceUrl, readDownloadedText } from "../../backend/linkMediaRuntime";
 import type { MediaSaveNameFacts } from "../../backend/linkMediaPort";
 import type { TimelineTransport } from "./TimelineTransport";
 import { type FileTypeCategory, fileTypeCategory } from "./fileTypeCategory";
+import {
+  canAutoFetchPreview,
+  filePreviewKind,
+  textPreviewLines
+} from "./filePreview";
+import { MediaTextPreviewDialog } from "./MediaTextPreviewDialog";
 import { formatDimensions } from "../../app/uiShared";
 import { saveMediaSource, type MediaViewerEntry } from "../mediaViewer";
 
@@ -100,6 +106,18 @@ export function TimelineMediaAttachment({
         };
   const progressPercent =
     uploadProgressPercentValue ?? downloadProgressPercent;
+  // #2096: what this attachment can preview, decided from the category the card
+  // already computes. Text and audio/video read Core's media cache; every other
+  // type keeps the plain card until a later stage (PDF needs a renderer).
+  const fileType = fileTypeCategory(media.filename, media.mimetype, media.kind);
+  const previewKind = filePreviewKind(fileType);
+  const autoFetchPreview = canAutoFetchPreview(previewKind, media.size);
+  const readyDownload = downloadState?.kind === "ready" ? downloadState : null;
+  const readyDownloadRef = readyDownload?.source_ref ?? null;
+  const [previewText, setPreviewText] = useState<
+    { kind: "loading" } | { kind: "ready"; text: string } | { kind: "failed" } | null
+  >(null);
+  const [textDialogOpen, setTextDialogOpen] = useState(false);
   const saveIntentRef = useRef(false);
   const requestDownload = useCallback(() => {
     saveIntentRef.current = true;
@@ -122,6 +140,49 @@ export function TimelineMediaAttachment({
       onSaveMediaFile
     );
   }, [downloadState, media.filename, media.mimetype, onSaveMediaFile, saveName]);
+  // #2096: one read per downloaded text attachment, kept for the card and the
+  // full-text dialog; the backend caps it, so a rejection is the "cannot
+  // preview" answer rather than an error the reader can act on.
+  useEffect(() => {
+    if (previewKind !== "text" || readyDownloadRef === null) {
+      setPreviewText(null);
+      return;
+    }
+    let cancelled = false;
+    setPreviewText({ kind: "loading" });
+    readDownloadedText(readyDownloadRef).then(
+      (text) => {
+        if (!cancelled) {
+          setPreviewText({ kind: "ready", text });
+        }
+      },
+      () => {
+        if (!cancelled) {
+          setPreviewText({ kind: "failed" });
+        }
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [previewKind, readyDownloadRef]);
+  // #2096: a small text file fetches itself so the card can show its first
+  // lines without the reader asking; anything else waits for a click. The fetch
+  // stays a Core download and never writes to Downloads, so it must not use
+  // `requestDownload`, which remembers a save intent.
+  const autoFetchRef = useRef(false);
+  useEffect(() => {
+    if (!autoFetchPreview || !canDownload || autoFetchRef.current) {
+      return;
+    }
+    if (downloadState?.kind === "pending" || downloadState?.kind === "failed") {
+      return;
+    }
+    autoFetchRef.current = true;
+    if (downloadState?.kind !== "ready") {
+      onDownload();
+    }
+  }, [autoFetchPreview, canDownload, downloadState, onDownload]);
   useEffect(() => {
     if (!detailsOpen) {
       return;
@@ -342,7 +403,6 @@ export function TimelineMediaAttachment({
   // #1784: WeChat-style file card. The type tile carries the file type, so the
   // card never prints the raw MIME type or a per-file encryption pill; the
   // size line doubles as the transfer status line.
-  const fileType = fileTypeCategory(media.filename, media.mimetype, media.kind);
   const FileTypeIcon = FILE_TYPE_ICONS[fileType];
   const statusParts =
     downloadState?.kind === "failed"
@@ -361,21 +421,40 @@ export function TimelineMediaAttachment({
               : t("timeline.mediaUploadProgress", { percent: uploadProgressPercentValue })
           ];
   const statusText = statusParts.filter((value): value is string => Boolean(value));
+  const saveAction = (ready: Extract<TimelineMediaDownloadState, { kind: "ready" }>) => {
+    void saveMediaSource(
+      ready.source_ref,
+      mediaSourceUrl(ready.source_ref, ready.mime_type ?? media.mimetype),
+      media.filename,
+      saveName,
+      onSaveMediaFile
+    );
+  };
   const cardAction: (() => void) | null = !canDownload
     ? null
     : downloadState?.kind === "pending"
       ? null
       : downloadState?.kind === "ready"
-        ? () => {
-            void saveMediaSource(
-              downloadState.source_ref,
-              mediaSourceUrl(downloadState.source_ref, downloadState.mime_type ?? media.mimetype),
-              media.filename,
-              saveName,
-              onSaveMediaFile
-            );
-          }
+        ? () => saveAction(downloadState)
         : requestDownload;
+  // #2096: a ready text preview opens in place of the save the card would
+  // otherwise perform; the tile keeps saving. A player is its own target, so the
+  // card background does nothing there rather than saving by accident.
+  const hasTextPreview = previewKind === "text" && previewText?.kind === "ready";
+  const playsInline = previewKind === "audio" || previewKind === "video";
+  const backgroundAction: (() => void) | null = playsInline
+    ? null
+    : hasTextPreview
+      ? () => setTextDialogOpen(true)
+      : cardAction;
+  // A type the player cannot render has no protocol token, and the empty URL
+  // keeps the plain card rather than mounting a <video> that can never load.
+  const inlinePlayerUrl = playsInline && readyDownload !== null
+    ? mediaSourceUrl(
+        readyDownload.source_ref,
+        readyDownload.mime_type ?? media.mimetype
+      ) || null
+    : null;
   const failed = downloadState?.kind === "failed";
   const tileLabel = failed
     ? t("timeline.mediaDownloadRetry")
@@ -423,9 +502,9 @@ export function TimelineMediaAttachment({
       data-media-kind={media.kind}
       data-media-encrypted={media.source.encrypted || undefined}
       data-download-state={downloadState?.kind ?? "notRequested"}
-      data-actionable={cardAction ? "true" : undefined}
+      data-actionable={backgroundAction ? "true" : undefined}
       onClick={
-        cardAction
+        backgroundAction
           ? (event) => {
               const target = event.target;
               // The tile is its own button; only the card background acts
@@ -437,7 +516,7 @@ export function TimelineMediaAttachment({
               if (selection && !selection.isCollapsed && event.currentTarget.contains(selection.anchorNode)) {
                 return;
               }
-              cardAction();
+              backgroundAction();
             }
           : undefined
       }
@@ -454,6 +533,34 @@ export function TimelineMediaAttachment({
             </Fragment>
           ))}
         </div>
+        {hasTextPreview && previewText?.kind === "ready" ? (
+          <pre className="message-media-text-preview" dir="auto">
+            {textPreviewLines(previewText.text).join("\n")}
+          </pre>
+        ) : null}
+        {previewKind === "text" && previewText?.kind === "failed" ? (
+          <p className="message-media-preview-note">
+            {t("timeline.mediaTextPreviewFailed")}
+          </p>
+        ) : null}
+        {inlinePlayerUrl && previewKind === "audio" ? (
+          <audio
+            className="message-media-audio-player"
+            src={inlinePlayerUrl}
+            controls
+            preload="metadata"
+            aria-label={t("timeline.mediaAudioPlayer", { filename: media.filename })}
+          />
+        ) : null}
+        {inlinePlayerUrl && previewKind === "video" ? (
+          <video
+            className="message-media-video-player"
+            src={inlinePlayerUrl}
+            controls
+            preload="metadata"
+            aria-label={t("timeline.mediaVideoPlayer", { filename: media.filename })}
+          />
+        ) : null}
       </div>
       {canDownload ? (
         <Tooltip label={tileLabel} placement="above">
@@ -496,6 +603,13 @@ export function TimelineMediaAttachment({
         >
           <span style={{ width: `${uploadProgressPercentValue}%` }} />
         </div>
+      ) : null}
+      {textDialogOpen && previewText?.kind === "ready" ? (
+        <MediaTextPreviewDialog
+          filename={media.filename}
+          text={previewText.text}
+          onClose={() => setTextDialogOpen(false)}
+        />
       ) : null}
     </div>
   );

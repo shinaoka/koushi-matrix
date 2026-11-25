@@ -11,8 +11,10 @@ use std::path::{Path, PathBuf};
 
 use tauri::http::{Request, Response, StatusCode};
 
-/// Image previews go through the protocol; everything else is saved rather
-/// than rendered, so only image types need a token.
+/// Previews go through the protocol; everything else is saved rather than
+/// rendered, so only renderable types need a token. #2096 added the audio types
+/// the inline player needs, and text is not here at all: a text preview reads a
+/// bounded string through a command, never a URL.
 const MIME_TOKENS: &[(&str, &str)] = &[
     ("png", "image/png"),
     ("jpg", "image/jpeg"),
@@ -21,6 +23,14 @@ const MIME_TOKENS: &[(&str, &str)] = &[
     ("avif", "image/avif"),
     ("mp4", "video/mp4"),
     ("webm", "video/webm"),
+    ("m4v", "video/mp4"),
+    ("mp3", "audio/mpeg"),
+    ("m4a", "audio/mp4"),
+    ("aac", "audio/aac"),
+    ("wav", "audio/wav"),
+    ("flac", "audio/flac"),
+    ("ogg", "audio/ogg"),
+    ("opus", "audio/ogg"),
 ];
 
 /// A decoded preview cannot use more than this; refuse to buffer larger files
@@ -127,6 +137,57 @@ fn resolve_managed_file(cache_roots: &[PathBuf], source_ref: &str) -> Option<Pat
     None
 }
 
+/// Largest file an inline text preview will read (#2096).
+///
+/// The card decides from the DTO's byte size, so a file above this is never
+/// previewed and never fetched: the attachment keeps the plain download card.
+/// The command enforces the same limit so a stale size cannot make the renderer
+/// read an unbounded file.
+pub(crate) const MAX_TEXT_PREVIEW_BYTES: u64 = 256 * 1024;
+
+/// Read a downloaded text attachment for an inline preview (#2096).
+///
+/// The bytes never leave Core's managed cache for anything but this bounded
+/// string: no path is returned, and the file is refused rather than truncated so
+/// a preview never shows a document that looks whole but is not.
+pub(crate) fn read_managed_text(
+    cache_roots: &[PathBuf],
+    source_ref: &str,
+    max_bytes: u64,
+) -> Result<String, TextPreviewError> {
+    let Some(file) = resolve_managed_file(cache_roots, source_ref.trim()) else {
+        return Err(TextPreviewError::Unavailable);
+    };
+    let Ok(metadata) = std::fs::metadata(&file) else {
+        return Err(TextPreviewError::Unavailable);
+    };
+    if metadata.len() > max_bytes {
+        return Err(TextPreviewError::TooLarge);
+    }
+    let Ok(bytes) = std::fs::read(&file) else {
+        return Err(TextPreviewError::Unavailable);
+    };
+    String::from_utf8(bytes).map_err(|_| TextPreviewError::NotText)
+}
+
+/// Why a text attachment cannot be previewed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TextPreviewError {
+    Unavailable,
+    TooLarge,
+    NotText,
+}
+
+impl TextPreviewError {
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Self::Unavailable => "media download reference is unavailable",
+            Self::TooLarge => "media file is too large to preview",
+            Self::NotText => "media file is not text",
+        }
+    }
+}
+
 /// Resolve a renderer-supplied ref for the save flow.
 pub(crate) fn cache_path_for_tab(cache_root: &Path, source_ref: &str) -> Option<PathBuf> {
     let path =
@@ -188,6 +249,85 @@ mod tests {
             assert!(response.body().is_empty());
         }
         drop(temp);
+    }
+
+    /// #2096: an inline text preview reads a bounded string, never a path, and
+    /// refuses anything it cannot show whole.
+    #[test]
+    fn reads_managed_text_within_the_preview_limit() {
+        let (temp, root) = cache_with_file("6543210987654321.bin", b"fn main() {}\nsecond\n");
+        let text = read_managed_text(
+            std::slice::from_ref(&root),
+            "download/1234567890123456/6543210987654321",
+            MAX_TEXT_PREVIEW_BYTES,
+        )
+        .expect("text");
+        assert_eq!(text, "fn main() {}\nsecond\n");
+        // At the limit is still previewable; one byte under is not.
+        let size = text.len() as u64;
+        assert!(
+            read_managed_text(
+                std::slice::from_ref(&root),
+                "download/1234567890123456/6543210987654321",
+                size,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            read_managed_text(
+                std::slice::from_ref(&root),
+                "download/1234567890123456/6543210987654321",
+                size - 1,
+            ),
+            Err(TextPreviewError::TooLarge)
+        );
+        drop(temp);
+    }
+
+    #[test]
+    fn refuses_text_previews_it_cannot_show_whole() {
+        let (temp, root) = cache_with_file("6543210987654321.bin", &[0xff, 0xfe, 0x00]);
+        assert_eq!(
+            read_managed_text(
+                std::slice::from_ref(&root),
+                "download/1234567890123456/6543210987654321",
+                MAX_TEXT_PREVIEW_BYTES,
+            ),
+            Err(TextPreviewError::NotText)
+        );
+        for refused in [
+            "download/1234567890123456/9999999999999999",
+            "download/../../etc/passwd",
+            "/etc/passwd",
+        ] {
+            assert_eq!(
+                read_managed_text(std::slice::from_ref(&root), refused, MAX_TEXT_PREVIEW_BYTES,),
+                Err(TextPreviewError::Unavailable),
+                "{refused}",
+            );
+        }
+        assert_eq!(
+            TextPreviewError::TooLarge.message(),
+            "media file is too large to preview"
+        );
+        drop(temp);
+    }
+
+    #[test]
+    fn serves_the_audio_tokens_the_inline_player_needs() {
+        for (token, mime) in [
+            ("mp3", "audio/mpeg"),
+            ("m4a", "audio/mp4"),
+            ("aac", "audio/aac"),
+            ("wav", "audio/wav"),
+            ("flac", "audio/flac"),
+            ("ogg", "audio/ogg"),
+            ("opus", "audio/ogg"),
+            ("m4v", "video/mp4"),
+        ] {
+            assert_eq!(mime_for_token(token), Some(mime), "{token}");
+        }
+        assert_eq!(mime_for_token("txt"), None);
     }
 
     /// #1770: a thumbnail ref is its own managed entry, and the save flow

@@ -199,6 +199,18 @@ size to send the file unchanged.
 
 For a failed send, see [sending troubleshooting](troubleshooting.md#message-will-not-send).
 
+## Preview a file without saving it
+
+Text and source files show their first lines in the timeline card, and audio and
+video files play in the card once they are downloaded. Selecting a text file's
+card opens the whole file in a preview window; the card's download tile still
+saves a copy to your computer. Previews read Koushi's own download cache, never
+your Downloads folder, and nothing is sent to another service.
+
+Previewing never fetches a large file on its own. A text file above 256 KB, and
+every file Koushi cannot display, keeps the plain card and downloads only when
+you ask for it. Documents and PDFs are not previewed yet.
+
 ## View an image
 
 Select an image in the timeline to open it in the media viewer. The viewer also
