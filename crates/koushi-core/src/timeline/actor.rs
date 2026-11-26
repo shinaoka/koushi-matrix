@@ -3349,6 +3349,10 @@ mod issue_1692_tests;
 mod issue_1892_tests;
 
 #[cfg(test)]
+#[path = "actor/issue_2135_tests.rs"]
+mod issue_2135_tests;
+
+#[cfg(test)]
 #[path = "actor/issue_1916_tests.rs"]
 mod issue_1916_tests;
 

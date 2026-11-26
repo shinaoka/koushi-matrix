@@ -2213,6 +2213,14 @@ impl TimelineActor {
                 }
             }
             Ok(false) => {
+                // #2135: `abort` answers `false` only when the request already
+                // left the queue. While sending is locked a row reads "waiting",
+                // so the reader can press Cancel in the instant the request was
+                // sent; the row then flips to Sent by itself through the SDK's
+                // sent update. The refusal stays an `InvalidSendState` failure
+                // (never a silent no-op) and the row is not touched here.
+                // An in-flight request is not this case: the SDK answers `true`
+                // and redacts it once it lands.
                 self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendState);
             }
             Err(_) => {

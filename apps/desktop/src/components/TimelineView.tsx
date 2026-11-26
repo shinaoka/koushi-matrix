@@ -1,3 +1,4 @@
+import { canRetrySend, isUnsentForDisplay } from "./timeline/sendStateNeeds";
 import { NativeModal } from "./ModalDialog";
 import {
 ThreadRootStatusPlaceholder,
@@ -2350,7 +2351,7 @@ export const TimelineView = memo(function TimelineView({
   ]);
   const projectedVisibleRows = noticeGroups.rows;
   const notSentTransactionIds = items.flatMap((item) => {
-    if (item.send_state?.kind !== "notSent" || !("Transaction" in item.id)) return [];
+    if (!isUnsentForDisplay(item.send_state?.kind ?? null, canWrite) || !("Transaction" in item.id)) return [];
     return [item.id.Transaction.transaction_id];
   });
   const backwardState = getPaginationState(store, timelineKey, "Backward");
@@ -4798,14 +4799,16 @@ export const TimelineView = memo(function TimelineView({
             {t("timeline.unsentBar")}
           </span>
           <div className="timeline-send-bar-actions">
-            <button
-              className="timeline-send-bar-action"
-              type="button"
-              onClick={onRetryAllNotSent}
-            >
-              <RefreshCw size={13} aria-hidden="true" />
-              <span>{t("timeline.resendAll")}</span>
-            </button>
+            {canRetrySend(canWrite) ? (
+              <button
+                className="timeline-send-bar-action"
+                type="button"
+                onClick={onRetryAllNotSent}
+              >
+                <RefreshCw size={13} aria-hidden="true" />
+                <span>{t("timeline.resendAll")}</span>
+              </button>
+            ) : null}
             <button
               className="timeline-send-bar-action danger"
               type="button"

@@ -2044,6 +2044,7 @@ export const zhHans: Catalog = {
   "timeline.unsent": "未发送",
   "timeline.sending": "正在发送",
   "timeline.notSent": "未发送",
+  "timeline.sendWaiting": "等待发送",
   "timeline.cancelledSend": "已取消",
   "timeline.sent": "已发送",
   "timeline.resendSend": "重新发送",
