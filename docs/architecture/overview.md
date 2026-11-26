@@ -305,7 +305,9 @@ surfaces, and `docs/upstream/matrix-rust-sdk-feedback.md` is the required ledger
 for every local SDK behavior or API divergence.
 
 GUI, Tauri, CLI, and QA all use the same `koushi-protocol` command/event
-boundary. There is no standalone daemon; the runtime is in-process. The
+boundary. Today the runtime is in-process in the desktop app and there is no standalone
+daemon; the headless Linux daemon (#2109) will host one in-process Core the same
+way, see [Agent Path](#agent-path-local-ipc-profiles-wake-feed). The
 boundary is frontend-neutral: public Rust integration evidence starts
 `CoreRuntime`, attaches independent consumers, submits a connection-scoped
 typed command, observes `CoreEvent` plus versioned-snapshot convergence,
@@ -2508,6 +2510,124 @@ listings.
   existing signing/packaging behavior. Plain Cargo builds require no staged
   sidecars. Installation does not edit shell startup files or PATH.
 
+## Agent Path (local IPC, profiles, wake feed)
+
+Koushi serves two paths. Path A: a person manages agents through the Koushi UI
+and the owner's own account and MCP grants. Path B, this section: an agent acts
+on its own Matrix account through a harness plugin (Claude Code, Codex, Pi,
+DeepSeek Harness). Epic #2124; canon stage #2125. Stage issues are named per
+item as "target"; everything not marked target is shipped.
+
+### Current behaviour (as shipped)
+
+**Durable mention feed** (#2118, `crates/koushi-core/src/mention_feed*`). One
+feed per signed-in account, read through `wait_for_mentions`.
+
+- Kinds: `mention`, `dm`, `invite`.
+- Sources, all from the account's own sync: a message whose push actions include
+  a highlight, or whose `m.mentions.user_ids` names the account, is `mention`;
+  otherwise a message in a room where `room.is_direct()` is true is `dm`; a
+  stripped `m.room.member` invite for the account in a room it is invited to is
+  `invite` (no event id). The account's own events and edits (replacements) are
+  skipped. A mute or do-not-disturb does not hide a row, because `m.mentions` is
+  read from the event itself. History older than the log's creation (minus a
+  5-minute clock slack) is not news and is skipped.
+- The sender allow-list is checked before commit: a sender outside it is never
+  stored, so it never becomes a row.
+- Rows are committed to the account's encrypted store inside sync processing,
+  before the sync response is acknowledged, with a per-account sequence number
+  and the event id as the de-duplication key. A failed persist marks the feed
+  unhealthy.
+- Retention: at most 1000 rows and 30 days. A cursor pointing before a dropped
+  row is `expired_cursor`.
+- Cursors are `mf1`, bound to the account and the log's generation. A malformed,
+  other-account, other-generation, future or expired cursor fails with
+  `resync_required` and a stable reason; it never restarts at the head.
+
+**Agent role** (#2121, `AgentAccounts` in `koushi-state` settings). The owner
+marks an account as an agent account. The role is device-scope app settings
+keyed by Matrix user id, not per-account settings, so it survives a sign-out and
+a later sign-in of the same user. A marked account is out of OS notifications and
+the global badge. As shipped, the role also has a `hide_tab` option that hides
+the account's tab while it is not selected, and the tab shows no counts.
+
+**Default allow-list** (`MentionAllowedSenders`). As shipped it is every
+persisted signed-in account, minus the owner's `removed` entries, plus `added`
+entries; agent accounts are not excluded. It is evaluated per event from the
+settings cache.
+
+### Target (#2124)
+
+Each item names the stage that brings it in.
+
+- **The local IPC is the agent interface**: requests plus a push subscription,
+  newline-delimited JSON over an authenticated local socket (the existing
+  launcher wire, `crates/koushi-mcp/src/wire.rs`). MCP becomes one adapter over
+  it. There is no network listener, and a network-reachable IPC is out of scope.
+  Stage: #2132.
+- **Hosts.** The desktop app on macOS hosts agent accounts next to the owner's
+  own account. A headless daemon on Linux hosts agent accounts only, so the
+  owner's keys never sit on the agent machine. Each host runs one in-process
+  Core and exposes the same IPC. Stage: #2109 (daemon, Release 3).
+- **Agent profiles.** A plugin connection presents a profile. A profile is bound
+  to exactly one account; grants are keyed by (profile, account). Only the owner
+  creates profiles (UI on macOS, CLI on Linux). A profile has at most one
+  subscriber; a second connection gets `profile_busy` for the subscription and
+  may still make requests. Stage: #2132.
+- **Reading and waking are separate.** An agent may read every room its account
+  has joined. By default it is woken by:
+  - a **DM**: every message from an allowed sender, where a DM is a room whose
+    joined members, judged when the event arrives, are the agent and exactly one
+    other user. `m.direct` is not used;
+  - a **mention elsewhere** from an allowed sender, where a mention is only
+    `m.mentions.user_ids` naming the agent. Push-rule highlights do not count.
+
+  The owner can override each room as `all`, `mentions` or `none`. The agent's
+  own events and edits never wake it. Stage: #2131 (Core), #2133 (per-room UI,
+  Release 2).
+- **The wake feed.** The mention feed becomes the wake feed, with kinds
+  `mention`, `dm`, `room_all` (a message in a room overridden to `all`) and
+  `invite`. Stage: #2131.
+- **`invite` rows are information only.** A person accepts invites: in the
+  agent's tab on macOS, with `koushi invite list` / `koushi invite accept` on
+  Linux. There is no auto-accept and no tool lets an agent accept or decline.
+  Stage: #2132 (IPC), #2109 (CLI).
+- **Agent tabs stay visible**, marked as agents, with their own unread and invite
+  counts, and still out of OS notifications and the global badge. This replaces
+  the shipped tab hiding and absent counts. Stage: #2130.
+- **The default allow-list excludes agent accounts**: signed-in accounts that
+  are not agent accounts. A Matrix reply carries the replied-to sender in
+  `m.mentions`, so co-resident agents would wake each other in a loop. The owner
+  can add an agent explicitly. Stage: #2130.
+- **Core owns every decision.** What wakes an agent, the allow-list and profile
+  binding are decided in Core. Plugins forward what they receive and never
+  filter.
+- **Linux sign-in and verification use the CLI**: the password and the recovery
+  key are read from stdin and never travel in argv (see Key Management in the
+  repository rules). Stage: #2109.
+
+Until a stage lands, the shipped behaviour above is what the product does;
+existing MCP tools keep their behaviour until a stage replaces them on purpose.
+
+### Open decisions
+
+These are not decided; do not implement either side before the owner decides.
+
+1. **DM classification.** The epic's rule (agent plus exactly one other joined
+   member, judged on arrival) versus the shipped `room.is_direct()`. Decided
+   with #2131.
+2. **Invite rows.** Whether they stay as information in the wake feed or are
+   removed from it.
+3. **Keyword highlights.** Whether a push-rule keyword or display-name highlight
+   counts as a mention for an agent. The epic proposes no; the shipped feed counts
+   it.
+4. **Cursor acknowledgement for the push subscription.** Waits for the harness
+   verifications (#2126, #2127, #2128, #2129) and is decided in #2132. See the
+   state machine, "Wake-feed row and subscription lifecycle".
+5. **Store-key storage on a host without an OS secret store.** A 0600 key file or
+   systemd credentials. Until decided, such a host fails closed (repository rules,
+   Key Management).
+
 ## External MCP Bridge (local IPC)
 
 Koushi exposes a running instance to external MCP clients (Claude Code, Codex,
@@ -2704,17 +2824,21 @@ Invariants:
   than kept. `get_draft` reports the stored reply target so
   the assistant can see whether the user kept or cancelled it. Attachments are
   still not staged.
-- **Polling, not push.** MCP cannot wake a host that is not calling. Room
-  changes surface through a `wait_for_events` long-poll of at most 50 s over a
-  sampled feed: the host samples each joined room's latest event every 2 s,
-  coalesces bursts into one record per changed room, seeds the first sample
-  silently, reports no invites, and retains at most 500 records in memory.
-  Cursors are opaque and bound to the account and to the feed's random
-  generation, which a bridge start or app restart replaces. A malformed,
-  previous-generation, other-account, future, or expired cursor fails with
-  `resync_required` and a stable reason; it never restarts silently at the
+- **Polling today; push is the target.** As shipped, MCP cannot wake a host
+  that is not calling, so an agent polls. Two feeds exist. `wait_for_events` is
+  a long-poll of at most 50 s over a sampled feed: the host samples each joined
+  room's latest event every 2 s, coalesces bursts into one record per changed
+  room, seeds the first sample silently, reports no invites, and retains at most
+  500 records in memory. Cursors are opaque and bound to the account and to the
+  feed's random generation, which a bridge start or app restart replaces. A
+  malformed, previous-generation, other-account, future, or expired cursor fails
+  with `resync_required` and a stable reason; it never restarts silently at the
   head. Results carry `structuredContent` matching the tool's `outputSchema`,
-  including `coverage: sampled_room_changes`. An approval wait counts against that call's 60 s
+  including `coverage: sampled_room_changes`. `wait_for_mentions` reads the
+  durable mention feed described under [Agent Path](#agent-path-local-ipc-profiles-wake-feed).
+  The target replaces polling as the way an agent is woken: Core pushes wake-feed
+  rows over a subscription on the local IPC (#2132), and MCP stays a pull
+  adapter over the same IPC. An approval wait counts against that call's 60 s
   budget. Other tools do not share the budget: a send may wait 40 s for
   approval and then for delivery, and a retry with the same
   `client_request_id` is deduplicated.
