@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoreEventPayload, TimelineItem } from "../domain/coreEvents";
 import type { OpenContextMenu } from "../app/uiShared";
+import { documentFromText } from "../domain/composerDocument";
 import { setActiveLocaleProfile, t } from "../i18n/messages";
 import { TimelineView, clearTimelineViewportSessionMemoryForTests } from "./TimelineView";
 import { KEY, baseTransport, message } from "./timelineViewTestSupport";
@@ -46,8 +47,10 @@ function renderRow(
 ) {
   let emit: (payload: CoreEventPayload) => void = () => undefined;
   const sendReaction = vi.fn(async () => undefined);
+  const editMessage = vi.fn(async () => undefined);
   const transport = baseTransport({
     sendReaction,
+    editMessage,
     listenCoreEvents(listener) {
       emit = listener;
       return () => undefined;
@@ -74,6 +77,7 @@ function renderRow(
   return {
     ...rendered,
     sendReaction,
+    editMessage,
     rerenderWritable: (writable: boolean) => rendered.rerender(view(writable))
   };
 }
@@ -197,5 +201,42 @@ describe("TimelineView read-only write paths (#2066)", () => {
     const menu = contextMenu(onOpenContextMenu);
     expect(menu.opened).toBe(true);
     expect(menu.ids).toContain("redactMessage");
+  });
+
+  // The editor is read-only while locked, so no keystroke reaches submission;
+  // dispatching submit on the form itself proves the guard in
+  // submitEditDocument, not the disabled controls.
+  describe("edit form submit guard (#2107)", () => {
+    function editableOwnMessage(): TimelineItem {
+      const own = ownMessageWithReaction();
+      return {
+        ...own,
+        can_edit: true,
+        actions: { ...own.actions!, editable_document: documentFromText("old body") }
+      };
+    }
+    const editForm = () => document.querySelector<HTMLFormElement>("form.message-edit-form");
+
+    it("refuses a synthetic submit while locked and keeps the form open", () => {
+      const { editMessage, rerenderWritable } = renderRow(editableOwnMessage(), true);
+      fireEvent.click(screen.getByRole("button", { name: /edit message/i }));
+      expect(editForm()).not.toBeNull();
+
+      rerenderWritable(false);
+      fireEvent.submit(editForm()!);
+
+      expect(editMessage).not.toHaveBeenCalled();
+      expect(editForm()).not.toBeNull();
+    });
+
+    it("submits and closes the form when sending is admitted", () => {
+      const { editMessage } = renderRow(editableOwnMessage(), true);
+      fireEvent.click(screen.getByRole("button", { name: /edit message/i }));
+
+      fireEvent.submit(editForm()!);
+
+      expect(editMessage).toHaveBeenCalledTimes(1);
+      expect(editForm()).toBeNull();
+    });
   });
 });

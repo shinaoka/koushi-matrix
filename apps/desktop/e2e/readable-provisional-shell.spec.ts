@@ -788,3 +788,97 @@ test("a read-only composer refuses paste and cut but still selects and copies (#
   );
   await expect.poll(draftSaves).toBeGreaterThan(0);
 });
+
+const LOCK = {
+  gate: { kind: "checking" },
+  readiness: { kind: "loading", source: "cache", generation: 4 }
+};
+const UNLOCK = {
+  gate: { kind: "ready" },
+  readiness: { kind: "ready", source: "live", generation: 9 }
+};
+
+// #2107: an edit box that is already open takes the same lock as the main box.
+test("an open edit box goes read-only with Save disabled, keeps its text and recovers (#2107)", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.locator('[data-event-id="$seed-event:example.invalid"]').hover();
+  await page.getByRole("button", { name: "Edit message" }).first().click();
+  const editBody = page.getByRole("textbox", { name: "Edit message body" });
+  await expect(editBody).toBeVisible();
+  await editBody.fill("Typed before the lock");
+  const save = page.getByRole("button", { name: "Save edit" });
+  await expect(save).toBeEnabled();
+
+  await pushAdmission(page, LOCK);
+  await expect(composerNotice(page)).toHaveText(SEND_BLOCKED_COPY);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  // Read-only, Save disabled, text kept; typing, Enter and a forced Save change nothing.
+  await expect(editBody).toHaveAttribute("contenteditable", "false");
+  await expect(save).toBeDisabled();
+  await editBody.click({ force: true });
+  await page.keyboard.type(" typed after");
+  await page.keyboard.press("Enter");
+  await save.click({ force: true });
+  await expect(editBody).toHaveText("Typed before the lock");
+  await expect(editBody).toBeVisible();
+  expect(await page.evaluate(() => window.__harness.invocationsOf("edit_message").length)).toBe(0);
+
+  // The lock lifts: the same open box is writable and Save sends.
+  await pushAdmission(page, UNLOCK);
+  await expect(composerNotice(page)).toHaveCount(0);
+  await expect(editBody).toHaveAttribute("contenteditable", "true");
+  await expect(save).toBeEnabled();
+  await editBody.fill("Typed after the lock lifted");
+  await save.click();
+  await expect
+    .poll(() => page.evaluate(() => window.__harness.invocationsOf("edit_message").length))
+    .toBe(1);
+});
+
+test("Cancel still closes an edit box while sending is unavailable (#2107)", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.locator('[data-event-id="$seed-event:example.invalid"]').hover();
+  await page.getByRole("button", { name: "Edit message" }).first().click();
+  const editBody = page.getByRole("textbox", { name: "Edit message body" });
+  await editBody.fill("Will be cancelled");
+  await pushAdmission(page, LOCK);
+  await expect(editBody).toHaveAttribute("contenteditable", "false");
+  await page.getByRole("button", { name: "Cancel edit" }).click();
+  await expect(editBody).toHaveCount(0);
+  expect(await page.evaluate(() => window.__harness.invocationsOf("edit_message").length)).toBe(0);
+});
+
+test("the upload caption box is read-only with Send attachments, and clearing still works (#2107)", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.getByRole("button", { name: "Attach file", exact: true }).click();
+  await page.locator('input[type="file"][aria-label="Attach file input"]').setInputFiles({
+    name: "note.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("synthetic")
+  });
+  const dialog = page.getByRole("dialog", { name: "Upload attachments" });
+  await expect(dialog).toBeVisible();
+  const caption = dialog.getByRole("textbox", { name: "Caption for note.txt" });
+  await caption.fill("caption before lock");
+  await expect(caption).toHaveAttribute("contenteditable", "true");
+
+  await pushAdmission(page, LOCK);
+  await expect(dialog.getByRole("button", { name: "Send attachments" })).toBeDisabled();
+  await expect(caption).toHaveAttribute("contenteditable", "false");
+  await caption.click({ force: true });
+  await page.keyboard.type(" typed after");
+  await expect(caption).toHaveText("caption before lock");
+
+  await pushAdmission(page, UNLOCK);
+  await expect(caption).toHaveAttribute("contenteditable", "true");
+
+  await pushAdmission(page, LOCK);
+  await expect(caption).toHaveAttribute("contenteditable", "false");
+  await dialog.getByRole("button", { name: "Clear upload staging" }).click();
+  await expect(dialog).toHaveCount(0);
+});

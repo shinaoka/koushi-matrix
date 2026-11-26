@@ -1658,6 +1658,7 @@ export function UploadStagingDialog({
                     <Composer
                       editorOnly
                       surface={surface}
+                      canEdit={canEdit}
                       composerMode={{ kind: "plain" }}
                       isSending={false}
                       stagedUploadsReady={canSendAttachments}
