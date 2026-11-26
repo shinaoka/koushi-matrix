@@ -53,6 +53,13 @@ bodies, search queries, reaction keys, and attachment paths enter only through
 bounded non-terminal stdin (`--args-stdin`), never argv or environment
 variables.
 
+Headless hosts (the Linux daemon, #2109): the account password and the
+recovery key enter only through stdin, never argv or environment variables, and
+are never echoed. Store-key storage on a host without an OS secret store is an
+**open decision** (a 0600 key file or systemd credentials); the OS-secret-store
+rule in the repository rules is not relaxed to an option, and until the decision
+is made such a host fails closed.
+
 Allowed only in debug/test contexts: synthetic local QA credentials, local
 homeserver URLs, synthetic room/event IDs. Allowed in UI state: user ID,
 device ID, room ID, event ID, visible message body, attachment filename.

@@ -7987,3 +7987,51 @@ Pending sends record coordinator insertion and actor publication as distinct
 stages with one opaque lifecycle correlation. Actor publication means a
 successful generation-fenced InitialItems/ItemsUpdated containing the pending
 row. It does not mean renderer receipt; no renderer receipt channel is added.
+
+## Wake-feed row and subscription lifecycle (#2125)
+
+Canon for #2118 as shipped and for the #2124 target; stages are named per item.
+
+### Row lifecycle
+
+`received` → `allow-list` → `committed` → `delivered` → `acknowledged` →
+`retained` or `expired`.
+
+- **received**: the sync handler sees a message or a stripped invite. The
+  account's own events and edits end here.
+- **allow-list**: the sender is checked against the effective allow-list before
+  anything is stored. A sender outside it ends here; the event produces no row
+  and is not retained anywhere.
+- **committed**: the row gets the next per-account sequence number and is written
+  to the account's encrypted store before the sync response is acknowledged. The
+  event id de-duplicates a replay. Three failed persists mark the feed unhealthy.
+- **delivered**: as shipped, a `wait_for_mentions` call returns the row (pull).
+  Target (#2132): Core also pushes it to the profile's subscriber.
+- **acknowledged**: as shipped, the cursor the caller presents next is the only
+  acknowledgement; Core keeps no per-reader state. Target semantics: **open
+  decision**, below.
+- **retained or expired**: rows stay until 1000 rows or 30 days are exceeded,
+  oldest first. A cursor before a dropped row is `expired_cursor`, reported as
+  `resync_required`; it never restarts at the head. Acknowledgement does not
+  delete a row.
+
+### Subscription lease (target, #2132)
+
+States: `free` → `held(connection)` → `free`.
+
+- **acquire**: a connection presenting profile P subscribes; if P is `free` it
+  becomes `held` by that connection.
+- **`profile_busy`**: if P is `held`, a second connection's subscription fails
+  with the typed error `profile_busy`. That connection may still make requests.
+  A profile bound to another account never shares the lease.
+- **release**: the lease returns to `free` when the holder disconnects, however
+  it ends (close, crash, host shutdown). Nothing is acknowledged by releasing; a
+  later subscriber resumes from its own cursor.
+
+### Cursor acknowledgement (open decision)
+
+Whether and when Core treats a pushed row as received by the agent, and whether
+a push without a harness-side receipt may advance a cursor, is **undecided**. It
+waits for the four harness verifications (#2126, #2127, #2128, #2129), because a
+harness that cannot tell a plugin that the agent received an event constrains the
+rule. Decided in #2132. Until then, no code may assume a push advances a cursor.
