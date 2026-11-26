@@ -593,6 +593,86 @@ fn account_tab_snapshot_projects_the_per_account_policy_from_every_runtime() {
 }
 
 #[test]
+fn an_agent_account_tab_adds_nothing_to_the_badge_and_asks_to_be_hidden() {
+    use koushi_core::account_runtime_manager::{AccountTabDescriptor, AccountTabId};
+    use koushi_protocol::AccountKey;
+
+    let descriptor = |id: &str, user_id: &str| AccountTabDescriptor {
+        id: AccountTabId::from_string(id.to_owned()),
+        account_key: Some(AccountKey(user_id.to_owned())),
+        homeserver: Some("https://example.invalid".to_owned()),
+    };
+    let mut owner = ready_app_state();
+    owner.native_attention.summary.badge_count = 2;
+    // The agent account has unread conversations; its projection is silenced by
+    // the reducer, so the badge it publishes is zero while its unread state stays.
+    let mut agent = ready_app_state();
+    agent
+        .settings
+        .values
+        .agent_accounts
+        .apply(&koushi_state::AgentAccountPatch {
+            user_id: "@tab:example.invalid".to_owned(),
+            role: Some(koushi_state::AgentAccountRole { hide_tab: true }),
+        });
+    agent
+        .rooms
+        .push(attention_room("!agent-room:example.invalid", true, 3));
+
+    let snapshot = super::account_tabs_snapshot_from_states(
+        "account:@owner:example.invalid".to_owned(),
+        [
+            (
+                descriptor("account:@owner:example.invalid", "@owner:example.invalid"),
+                owner,
+            ),
+            (
+                descriptor("account:@agent:example.invalid", "@agent:example.invalid"),
+                agent,
+            ),
+        ],
+    );
+
+    assert_eq!(snapshot.badge_count, 2);
+    let owner_tab = serde_json::to_value(&snapshot.tabs[0]).unwrap();
+    assert_eq!(owner_tab["showsCounts"], true);
+    assert_eq!(owner_tab["hidden"], false);
+    let agent_tab = serde_json::to_value(&snapshot.tabs[1]).unwrap();
+    assert_eq!(agent_tab["showsCounts"], false);
+    assert_eq!(agent_tab["hidden"], true);
+    // Its unread state is still in the data.
+    assert_eq!(agent_tab["unreadCount"], 3);
+
+    // A hidden agent tab that needs the owner (here: locked) stays visible, so
+    // its warning is not hidden with it.
+    let mut locked = ready_app_state();
+    locked
+        .settings
+        .values
+        .agent_accounts
+        .apply(&koushi_state::AgentAccountPatch {
+            user_id: "@tab:example.invalid".to_owned(),
+            role: Some(koushi_state::AgentAccountRole { hide_tab: true }),
+        });
+    let info = match &locked.session {
+        koushi_state::SessionState::Ready(info) => info.clone(),
+        other => panic!("ready_app_state is not Ready: {other:?}"),
+    };
+    locked.session = koushi_state::SessionState::Locked(info);
+    let snapshot = super::account_tabs_snapshot_from_states(
+        "account:@owner:example.invalid".to_owned(),
+        [(
+            descriptor("account:@locked:example.invalid", "@locked:example.invalid"),
+            locked,
+        )],
+    );
+    let locked_tab = serde_json::to_value(&snapshot.tabs[0]).unwrap();
+    assert_eq!(locked_tab["status"], "error");
+    assert_eq!(locked_tab["hidden"], false);
+    assert_eq!(locked_tab["showsCounts"], false);
+}
+
+#[test]
 fn account_tab_snapshot_carries_the_own_avatar_before_its_thumbnail_is_ready() {
     use koushi_core::account_runtime_manager::{AccountTabDescriptor, AccountTabId};
     use koushi_protocol::AccountKey;

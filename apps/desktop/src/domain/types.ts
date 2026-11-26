@@ -79,6 +79,10 @@ export interface AccountTabSummary {
   status: AccountTabStatus;
   unreadCount: number;
   inviteCount?: number;
+  /** Rust decides whether the unread and invite counts are drawn (false for an agent account, #2110). */
+  showsCounts?: boolean;
+  /** Rust decides the tab is hidden while it is not selected (a Ready agent tab that asked for it). */
+  hidden?: boolean;
 }
 
 export interface AccountTabsSnapshot {
@@ -224,6 +228,8 @@ export interface SettingsValues {
   window: WindowSettings;
   updates: UpdatesSettings;
   mcp: McpSettings;
+  /** Accounts the owner marked as agent accounts, by user id (#2110). */
+  agent_accounts: AgentAccounts;
   media: MediaSettings;
   timeline: TimelineSettings;
   sidebar: SidebarSettings;
@@ -248,6 +254,8 @@ export interface SettingsPatch {
   /** The bridge switch only; the allow-list is edited through `mcp_allowed_senders`. */
   mcp?: Pick<McpSettings, "enabled">;
   mcp_allowed_senders?: MentionAllowedSenders;
+  /** Marks (a role) or unmarks (`null`) one account as an agent account; app scope. */
+  agent_account?: AgentAccountPatch;
   media?: MediaSettings;
   timeline?: TimelineSettings;
   sidebar?: SidebarSettings;
@@ -569,6 +577,19 @@ export interface McpSettings {
   enabled: boolean;
   /** Mention feed allow-list edits (#2110), on top of the other signed-in accounts. */
   allowed_senders: MentionAllowedSenders;
+}
+
+export interface AgentAccountRole {
+  hide_tab: boolean;
+}
+
+export interface AgentAccounts {
+  readonly accounts: Readonly<Record<string, AgentAccountRole>>;
+}
+
+export interface AgentAccountPatch {
+  user_id: string;
+  role: AgentAccountRole | null;
 }
 
 export interface MentionAllowedSenders {

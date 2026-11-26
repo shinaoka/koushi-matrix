@@ -125,18 +125,18 @@ pub use sliding_sync::{
 // ── Re-exports: settings ────────────────────────────────────────────────────
 pub use settings::{
     AccountDisplaySettings, AccountNotificationSettings, AccountSearchCrawlerSettings,
-    AccountSettingsValues, AppDisplaySettings, AppSettingsValues, AppearanceSettings,
-    ComposerSendShortcut, ComposerSettings, DisplayDensity, DisplaySettings, EmojiPreference,
-    FontPreference, ImageUploadCompressionMode, ImageUploadCompressionPolicy, KeyboardSettings,
-    LinkPreviewSettingsState, LocaleSettings, McpSettings, MediaSettings, MentionAllowedSenders,
-    NotificationSettings, RoomNotificationMode, RoomNotificationModeOperation,
-    RoomNotificationSettings, RoomPreference, RoomPreferencesState, RoomUrlPreviews,
-    SIDEBAR_HOME_SCOPE_KEY, SettingsPatch, SettingsPatchScope, SettingsPersistenceState,
-    SettingsState, SettingsValues, SidebarCategory, SidebarCollapsedSections, SidebarScopeSettings,
-    SidebarSectionKind, SidebarSectionPatch, SidebarSectionReveal, SidebarSectionSettings,
-    SidebarSettings, TextDirectionPreference, ThemePreference, ThreadListOrder, TimelineSettings,
-    TimelineThreadRootOrder, TypographySettings, UpdatesSettings, WindowSettings,
-    sidebar_scope_key,
+    AccountSettingsValues, AgentAccountPatch, AgentAccountRole, AgentAccounts, AppDisplaySettings,
+    AppSettingsValues, AppearanceSettings, ComposerSendShortcut, ComposerSettings, DisplayDensity,
+    DisplaySettings, EmojiPreference, FontPreference, ImageUploadCompressionMode,
+    ImageUploadCompressionPolicy, KeyboardSettings, LinkPreviewSettingsState, LocaleSettings,
+    McpSettings, MediaSettings, MentionAllowedSenders, NotificationSettings, RoomNotificationMode,
+    RoomNotificationModeOperation, RoomNotificationSettings, RoomPreference, RoomPreferencesState,
+    RoomUrlPreviews, SIDEBAR_HOME_SCOPE_KEY, SettingsPatch, SettingsPatchScope,
+    SettingsPersistenceState, SettingsState, SettingsValues, SidebarCategory,
+    SidebarCollapsedSections, SidebarScopeSettings, SidebarSectionKind, SidebarSectionPatch,
+    SidebarSectionReveal, SidebarSectionSettings, SidebarSettings, TextDirectionPreference,
+    ThemePreference, ThreadListOrder, TimelineSettings, TimelineThreadRootOrder,
+    TypographySettings, UpdatesSettings, WindowSettings, sidebar_scope_key,
 };
 
 // ── Re-exports: notification delivery ───────────────────────────────────────
@@ -705,6 +705,33 @@ impl std::fmt::Debug for AppState {
 }
 
 impl AppState {
+    /// The agent role of the account this state belongs to (#2110), if any.
+    ///
+    /// The single fact behind every owner-facing interruption: an agent
+    /// account raises no OS notification, no sound and no badge, and its tab may
+    /// be hidden. Its messages and unread state stay in the data. It is derived
+    /// from the device's agent-account list and the session's user id, so it
+    /// survives a sign-out and a sign-in of the same user.
+    pub fn agent_role(&self) -> Option<AgentAccountRole> {
+        let info = match &self.session {
+            SessionState::Ready(info)
+            | SessionState::Provisional { info, .. }
+            | SessionState::AwaitingVerification { info, .. }
+            | SessionState::Verifying { info, .. }
+            | SessionState::AwaitingBootstrapConfirmation { info, .. }
+            | SessionState::Rejecting { info, .. }
+            | SessionState::Locked(info)
+            | SessionState::CapabilityBlocked { info, .. }
+            | SessionState::SwitchingAccount { info } => info,
+            _ => return None,
+        };
+        self.settings.values.agent_accounts.role_for(&info.user_id)
+    }
+
+    pub fn is_agent_account(&self) -> bool {
+        self.agent_role().is_some()
+    }
+
     /// #1737: project the restored session's read and send admission from owned
     /// state. Nothing here is stored, so it can never disagree with the
     /// session, room-list readiness, or Secure Backup gate it reads.

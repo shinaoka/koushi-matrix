@@ -91,6 +91,7 @@ export function UserSettingsPanel({
   initialCategory = "account",
   settingsScope = "account",
   onSettingsScopeChange,
+  onOpenAccountSettings,
   currentSession,
   currentSessionStatus = { status: "idle" },
   displayDensity = "comfortable",
@@ -162,6 +163,8 @@ export function UserSettingsPanel({
   initialCategory?: SettingsCategoryId;
   settingsScope?: "account" | "app";
   onSettingsScopeChange?: (scope: "account" | "app") => void;
+  /** Selects that account's tab and opens its account settings. */
+  onOpenAccountSettings?: (tabId: string) => void;
   currentSession: SavedSessionInfo | null;
   currentSessionStatus?: CurrentSessionStatusState;
   displayDensity?: DisplayDensity;
@@ -1044,9 +1047,11 @@ export function UserSettingsPanel({
             {activeCategory === "assistants" ? (
               <AiAssistantsSection
                 settings={settings.values.mcp}
+                agentAccounts={settings.values.agent_accounts}
                 isSaving={isSaving}
                 accountTabs={accountTabs}
                 onUpdateSettings={onUpdateSettings}
+                onOpenAccountSettings={onOpenAccountSettings}
               />
             ) : null}
           </section>
@@ -1064,6 +1069,7 @@ export function AppSettingsDialog({
   onUpdateSettings,
   accountTabs = [],
   onSettingsScopeChange,
+  onOpenAccountSettings,
   onClose
 }: {
   snapshot: DesktopSnapshot;
@@ -1071,6 +1077,8 @@ export function AppSettingsDialog({
   accountTabs?: readonly AccountTabSummary[];
   /** Same scope transition the account menu uses. */
   onSettingsScopeChange?: (scope: "account" | "app") => void;
+  /** Selects that account's tab and opens its account settings. */
+  onOpenAccountSettings?: (tabId: string) => void;
   onClose: () => void;
 }) {
   const domain = snapshot.state.domain;
@@ -1085,6 +1093,7 @@ export function AppSettingsDialog({
         initialCategory="appearance"
         settingsScope="app"
         onSettingsScopeChange={onSettingsScopeChange}
+        onOpenAccountSettings={onOpenAccountSettings}
         // #1921: the nav cross-link's disabled gate is "app scope and no current
         // session", so a hard-coded null made it inert in every shipped mount.
         currentSession={currentSavedSession(snapshot)}

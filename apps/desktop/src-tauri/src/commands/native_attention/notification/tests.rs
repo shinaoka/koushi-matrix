@@ -70,6 +70,28 @@ fn pending_notification_skips_without_a_payload_or_with_messages_off() {
 }
 
 #[test]
+fn pending_notification_refuses_an_agent_account() {
+    let mut state = ready_state();
+    state.native_attention.notification = Some(payload());
+    let user_id = match &state.session {
+        SessionState::Ready(info) => info.user_id.clone(),
+        _ => unreachable!(),
+    };
+    state
+        .settings
+        .values
+        .agent_accounts
+        .apply(&koushi_state::AgentAccountPatch {
+            user_id,
+            role: Some(koushi_state::AgentAccountRole::default()),
+        });
+    assert_eq!(
+        pending_notification(&state, account_tab_id()).err(),
+        Some("agent_account")
+    );
+}
+
+#[test]
 fn pending_notification_fences_the_ready_account() {
     let mut state = ready_state();
     state.native_attention.notification = Some(payload());

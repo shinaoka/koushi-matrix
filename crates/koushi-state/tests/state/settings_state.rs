@@ -119,6 +119,7 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
         window: WindowSettings::default(),
         updates: Default::default(),
         mcp: Default::default(),
+        agent_accounts: Default::default(),
         legacy_frontend_preferences_imported: false,
     };
 

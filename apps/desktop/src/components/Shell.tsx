@@ -267,10 +267,11 @@ export function AccountTabStrip({
 
   return (
     <nav className="account-tab-strip" aria-label={t("settings.accountSettings")}>
-      {tabs.map((tab) => {
+      {tabs.filter((tab) => !showActivity || !tab.hidden || tab.id === selectedTabId).map((tab) => {
         const label = accountTabLabel(tab);
         const status = statusLabel(tab.status);
         const selected = tab.id === selectedTabId;
+        const counts = tab.showsCounts !== false;
         const avatarSource = tab.avatarSourceRef
           ? renderableThumbnailSourceUrl(tab.avatarSourceRef)
           : null;
@@ -311,12 +312,12 @@ export function AccountTabStrip({
               <span className="account-tab-server">{shortHomeserverName(tab.homeserver)}</span>
               {!showActivity ? null : tab.status === "ready" ? (
                 <>
-                  {tab.unreadCount > 0 ? (
+                  {counts && tab.unreadCount > 0 ? (
                     <span className="account-tab-unread">{tab.unreadCount > 99 ? "99+" : tab.unreadCount}</span>
-                  ) : (tab.inviteCount ?? 0) === 0 ? (
+                  ) : !counts || (tab.inviteCount ?? 0) === 0 ? (
                     <span className="account-tab-ready-dot" role="img" aria-label={status} />
                   ) : null}
-                  {(tab.inviteCount ?? 0) > 0 ? (
+                  {counts && (tab.inviteCount ?? 0) > 0 ? (
                     <span className="account-tab-invite" title={t("accountTabs.inviteCount", { count: tab.inviteCount ?? 0 })}>
                       {tab.inviteCount! > 99 ? "99+" : tab.inviteCount}
                     </span>

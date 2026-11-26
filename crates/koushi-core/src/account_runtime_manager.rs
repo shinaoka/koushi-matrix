@@ -953,6 +953,19 @@ impl AccountRuntimeManager {
         if !removed {
             return Ok(false);
         }
+        // #2110: the agent role is a device setting keyed by user id. Removing
+        // the account from the device drops it, so the same user id added later
+        // as an ordinary account does not silently become an agent. A failed
+        // write must not undo the removal; the role is then cleared by the owner
+        // when the account is next listed.
+        let _ = self.settings.save_patch(&koushi_state::SettingsPatch {
+            scope: Some(koushi_state::SettingsPatchScope::App),
+            agent_account: Some(koushi_state::AgentAccountPatch {
+                user_id: account_key.0.clone(),
+                role: None,
+            }),
+            ..koushi_state::SettingsPatch::default()
+        });
         let (selected_tab_id, pending_selection) = {
             let mut state = self.state.lock().expect("account runtime manager mutex");
             let Some(position) = state.tabs.iter().position(|tab| &tab.descriptor.id == id) else {
