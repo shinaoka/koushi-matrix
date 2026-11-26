@@ -442,11 +442,14 @@ async fn read_hello<R: tokio::io::AsyncRead + Unpin>(
             )));
         }
         // No profile can be verified until the profile store exists, and a
-        // presented profile is never accepted unverified.
+        // presented profile is never accepted unverified. The token is
+        // neutral on purpose: an unknown id and a wrong secret must produce
+        // byte-identical errors, or the host tells a caller which profile ids
+        // exist.
         (_, Some(_)) => {
             return Ok(Hello::Rejected(WireError::with_reason(
                 ErrorCode::Unsupported,
-                "profile_unknown",
+                "profile_rejected",
                 "agent profiles are not available in this Koushi yet",
             )));
         }

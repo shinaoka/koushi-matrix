@@ -1,6 +1,10 @@
-{"app_version":"<masked>","connection_id":"<masked>","protocol":1,"type":"hello_ok"}
-{"id":1,"ok":true,"result":{"content":[{"text":"{\"accounts\":[]}","type":"text"}],"isError":false,"structuredContent":{"accounts":[]}},"type":"response"}
-{"id":2,"ok":true,"result":{"app_version":"<masked>","protocol":1},"type":"response"}
-{"error":{"code":"unsupported","message":"unsupported bridge method: nope"},"id":3,"ok":false,"type":"response"}
-{"error":{"code":"internal","message":"malformed request"},"id":0,"ok":false,"type":"response"}
-{"code":"unauthorized","message":"connection token rejected","type":"error"}
+{"type":"hello_ok","protocol":1,"connection_id":"<masked>","app_version":"<masked>"}
+{"type":"response","id":1,"ok":true,"result":{"content":[{"text":"{\"accounts\":[]}","type":"text"}],"isError":false,"structuredContent":{"accounts":[]}}}
+{"type":"response","id":2,"ok":true,"result":{"app_version":"<masked>","protocol":1}}
+{"type":"response","id":3,"ok":false,"error":{"code":"unsupported","message":"unsupported bridge method: nope"}}
+{"type":"response","id":0,"ok":false,"error":{"code":"internal","message":"malformed request"}}
+<closed>
+{"type":"error","code":"unauthorized","message":"connection token rejected"}
+{"type":"error","code":"unsupported","message":"client name must be 1-64 characters from A-Z a-z 0-9 . _ -"}
+{"type":"error","code":"unsupported","message":"this koushi-mcp launcher is older than the running Koushi; register it again"}
+{"type":"error","code":"unsupported","message":"this koushi-mcp launcher is older than the running Koushi; register it again"}

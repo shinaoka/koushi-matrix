@@ -12,8 +12,10 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-/// Recorded from the commit before the protocol 2 change (HEAD of
-/// `next/agent-core`), with `connection_id` and `app_version` masked.
+/// Raw lines of what the host wrote before the protocol 2 change, with
+/// `connection_id` and `app_version` masked by string replacement. The file is
+/// an oracle: nothing in this test regenerates it, so it can only change by a
+/// reviewed edit. `<closed>` means the host closed without a reply.
 const GOLDEN: &str = include_str!("golden/v1_session.jsonl");
 
 struct NoAccounts;
@@ -77,21 +79,31 @@ fn hello(protocol: u64, token: &str, name: &str, profile: Option<Value>) -> Stri
     value.to_string()
 }
 
-/// Masks the two fields that legitimately differ between runs: the connection
-/// id carries a pid and the app version moves with every release. The mask
-/// lives here, not in the product.
+/// Replaces the value of a string field by string replacement on the raw
+/// line, so key order and whitespace stay exactly what the host wrote.
+fn mask_field(line: &str, key: &str) -> String {
+    let needle = format!("\"{key}\":\"");
+    let Some(start) = line.find(&needle).map(|at| at + needle.len()) else {
+        return line.to_owned();
+    };
+    let end = start + line[start..].find('"').expect("closing quote");
+    format!("{}<masked>{}", &line[..start], &line[end..])
+}
+
+/// The two fields that legitimately differ between runs: the connection id
+/// carries a pid and the app version moves with every release.
 fn mask(line: &str) -> String {
-    let mut value: Value = serde_json::from_str(line).expect("json line");
-    if value["type"] == "hello_ok" {
-        value["connection_id"] = json!("<masked>");
-        value["app_version"] = json!("<masked>");
-    }
-    if let Some(version) = value.pointer_mut("/result/app_version") {
-        *version = json!("<masked>");
-    }
-    // Compact output of a `Value` keeps the keys sorted, so the comparison is
-    // over a canonical form of the very same fields the host wrote.
-    value.to_string()
+    mask_field(&mask_field(line, "connection_id"), "app_version")
+}
+
+/// Splits the keys protocol 2 added (`reason`, `supported`) off the end of a
+/// raw handshake error, so what is left can be compared with the old build.
+fn without_new_keys(line: &str) -> (String, String) {
+    let at = line.find(",\"reason\":").expect("a reason key");
+    (
+        format!("{}}}", &line[..at]),
+        line[at..line.len() - 1].to_owned(),
+    )
 }
 
 async fn start() -> (
@@ -133,6 +145,15 @@ async fn a_protocol_1_session_matches_the_recorded_transcript() {
         peer.send_raw(&request).await;
         transcript.push(mask(&peer.read_raw().await.expect("reply")));
     }
+    // An oversized frame: the host closes without a reply.
+    peer.send_raw(&"x".repeat(koushi_mcp::wire::MAX_FRAME_BYTES + 1))
+        .await;
+    transcript.push(
+        peer.read_raw()
+            .await
+            .unwrap_or_else(|| "<closed>".to_owned()),
+    );
+
     // A wrong token on a fresh connection.
     let (mut other, _) = Peer::open(&data).await;
     other
@@ -140,13 +161,29 @@ async fn a_protocol_1_session_matches_the_recorded_transcript() {
         .await;
     transcript.push(mask(&other.read_raw().await.expect("reply")));
 
-    if std::env::var_os("KOUSHI_RECORD_GOLDEN").is_some() {
-        let path =
-            std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("manifest dir"))
-                .join("tests/bridge/golden/v1_session.jsonl");
-        std::fs::write(path, transcript.join("\n") + "\n").expect("record");
-        return;
+    // Handshake errors: the old line plus exactly the new keys, nothing else.
+    let mut added = Vec::new();
+    for line in [
+        hello(1, &token, "bad name", None),
+        hello(0, &token, "golden", None),
+        hello(3, &token, "golden", None),
+    ] {
+        let (mut peer, _) = Peer::open(&data).await;
+        peer.send_raw(&line).await;
+        let reply = peer.read_raw().await.expect("an error reply");
+        let (old, new_keys) = without_new_keys(&reply);
+        transcript.push(old);
+        added.push(new_keys);
     }
+    assert_eq!(
+        added,
+        [
+            r#","reason":"client_name""#,
+            r#","reason":"protocol_version","supported":[1,2]"#,
+            r#","reason":"protocol_version","supported":[1,2]"#,
+        ]
+    );
+
     let golden: Vec<&str> = GOLDEN.lines().collect();
     assert_eq!(transcript, golden);
 }
@@ -177,8 +214,21 @@ async fn a_v2_hello_needs_a_profile_and_a_profile_cannot_be_verified_yet() {
     let profile = json!({"id": "p1", "secret": "s3cret"});
     let presented = handshake_error(&data, |t| hello(2, t, "codex", Some(profile.clone()))).await;
     assert_eq!(presented["code"], "unsupported");
-    assert_eq!(presented["reason"], "profile_unknown");
+    assert_eq!(presented["reason"], "profile_rejected");
     assert!(!presented.to_string().contains("s3cret"));
+
+    // An unknown id and a wrong secret must be indistinguishable, byte for
+    // byte, or the host becomes an oracle for which profile ids exist.
+    let other = handshake_error(&data, |t| {
+        hello(
+            2,
+            t,
+            "codex",
+            Some(json!({"id": "p2", "secret": "different"})),
+        )
+    })
+    .await;
+    assert_eq!(presented.to_string(), other.to_string());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

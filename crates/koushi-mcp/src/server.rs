@@ -243,7 +243,7 @@ async fn handle_tool_call(id: Value, params: Value, backend: &Arc<dyn Backend>) 
         .await;
     let result = match outcome {
         Ok(value) => value,
-        Err(error) => tool_error(&format!("{}: {}", error.code.as_str(), error.message)),
+        Err(error) => tool_error(&error_text(&error)),
     };
     // A backend result must already be a tool result. If it is not, wrap it so
     // the client never sees a shape it does not understand.
@@ -253,6 +253,37 @@ async fn handle_tool_call(id: Value, params: Value, backend: &Arc<dyn Backend>) 
         json!({ "content": [{ "type": "text", "text": result.to_string() }] })
     };
     tool_result(id, result)
+}
+
+/// What the user can do about a handshake refusal, keyed by the host's stable
+/// reason token. The host's own message stays the primary text; the hint says
+/// how to fix the `--profile` setup. Reasons not listed get no hint.
+fn handshake_hint(reason: &str) -> Option<&'static str> {
+    match reason {
+        "profile_required" => Some(
+            "start koushi-mcp with --profile <id> --profile-secret-file <path>; \
+             this Koushi only serves protocol 2 to a launcher that presents a profile",
+        ),
+        "profile_rejected" => Some(
+            "check that --profile names an existing agent profile and that \
+             --profile-secret-file holds its current secret",
+        ),
+        "profile_requires_protocol_2" => Some(
+            "this launcher sent a profile on protocol 1; update koushi-mcp so it \
+             speaks protocol 2",
+        ),
+        "protocol_version" => Some("update Koushi and koushi-mcp to the same release"),
+        "client_name" => Some("use a client name without spaces or control characters"),
+        _ => None,
+    }
+}
+
+fn error_text(error: &WireError) -> String {
+    let base = format!("{}: {}", error.code.as_str(), error.message);
+    match error.reason.as_deref().and_then(handshake_hint) {
+        Some(hint) => format!("{base} ({hint})"),
+        None => base,
+    }
 }
 
 fn tool_result(id: Value, result: Value) -> Value {
@@ -417,5 +448,19 @@ mod tests {
         let input = concat!(r#"{"jsonrpc":"2.0","id":6,"method":"bogus/method"}"#, "\n");
         let output = run(input, backend(Ok(json!({})))).await;
         assert_eq!(output[0]["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn handshake_reasons_get_a_fix_hint_and_others_do_not() {
+        for reason in ["profile_required", "profile_rejected"] {
+            let text = error_text(&WireError::with_reason(ErrorCode::Unsupported, reason, "m"));
+            assert!(text.contains("--profile"), "{reason}: {text}");
+        }
+        let plain = error_text(&WireError::with_reason(
+            ErrorCode::Unsupported,
+            "other",
+            "m",
+        ));
+        assert_eq!(plain, "unsupported: m");
     }
 }
