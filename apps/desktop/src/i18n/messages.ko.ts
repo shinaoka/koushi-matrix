@@ -2055,6 +2055,7 @@ export const ko: Catalog = {
   "timeline.pdfViewerZoomLevel": "배율 {percent}%",
   "timeline.pdfViewerLoading": "PDF를 불러오는 중…",
   "timeline.pdfViewerThumbnail": "{filename}의 첫 쪽",
+  "timeline.pdfContentPartial": "일부 내용을 표시할 수 없습니다.",
   "timeline.mediaAudioPlayer": "{filename} 오디오 플레이어",
   "timeline.mediaVideoPlayer": "{filename} 동영상 플레이어",
   "timeline.mediaDetails": "{filename}의 미디어 세부 정보 보기",

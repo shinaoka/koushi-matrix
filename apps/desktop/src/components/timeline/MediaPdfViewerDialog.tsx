@@ -32,6 +32,7 @@ export function MediaPdfViewerDialog({
     | { kind: "failed" }
   >({ kind: "loading" });
   const [page, setPage] = useState(1);
+  const [renderNote, setRenderNote] = useState<"none" | "partial" | "failed">("none");
   const [zoomIndex, setZoomIndex] = useState(DEFAULT_ZOOM_INDEX);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -70,11 +71,27 @@ export function MediaPdfViewerDialog({
     if (!document || !canvas) {
       return;
     }
-    const render = document.renderPage(page, canvas, zoom);
-    render.done.catch(() => {
-      // A superseded render rejects; a failed one leaves the previous page.
-    });
-    return () => render.cancel();
+    let stale = false;
+    setRenderNote("none");
+    const render = document.renderPage(page, canvas, { scale: zoom });
+    render.done.then(
+      ({ degraded }) => {
+        if (!stale && degraded) {
+          setRenderNote("partial");
+        }
+      },
+      () => {
+        // A superseded render rejects too; only a current one is a failure the
+        // reader must see instead of a stale page.
+        if (!stale) {
+          setRenderNote("failed");
+        }
+      }
+    );
+    return () => {
+      stale = true;
+      render.cancel();
+    };
   }, [document, page, zoom]);
 
   const pageCount = document?.numPages ?? 0;
@@ -131,6 +148,12 @@ export function MediaPdfViewerDialog({
           <p className="media-pdf-viewer-note">{t("timeline.pdfViewerLoading")}</p>
         ) : null}
         {state.kind === "failed" ? (
+          <p className="media-pdf-viewer-note">{t("timeline.mediaPdfPreviewFailed")}</p>
+        ) : null}
+        {renderNote === "partial" ? (
+          <p className="media-pdf-viewer-note">{t("timeline.pdfContentPartial")}</p>
+        ) : null}
+        {renderNote === "failed" ? (
           <p className="media-pdf-viewer-note">{t("timeline.mediaPdfPreviewFailed")}</p>
         ) : null}
         {document ? <canvas ref={canvasRef} className="media-pdf-viewer-canvas" /> : null}

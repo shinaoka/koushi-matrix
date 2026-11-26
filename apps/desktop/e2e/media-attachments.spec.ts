@@ -976,6 +976,12 @@ const THREE_PAGE_PDF = Array.from(
   readFileSync(fileURLToPath(new URL("../src/test/fixtures/three-pages.pdf", import.meta.url)))
 );
 
+const CJK_UNEMBEDDED_PDF = Array.from(
+  readFileSync(
+    fileURLToPath(new URL("../src/test/fixtures/cjk-unembedded-font.pdf", import.meta.url))
+  )
+);
+
 async function saveCallCount(page: Page): Promise<number> {
   return page.evaluate(
     () =>
@@ -1042,8 +1048,48 @@ test("a downloaded PDF shows page 1, opens in the viewer and pages without savin
   await expect(dialog).toContainText("125%");
   await expect.poll(paintedPixels).toBeGreaterThan(0);
 
+  // Zooming several steps at once must not strand a stale page or an error.
+  const zoomIn = dialog.getByRole("button", { name: t("timeline.pdfViewerZoomIn") });
+  await zoomIn.click();
+  await zoomIn.click();
+  await dialog.getByRole("button", { name: t("timeline.pdfViewerNext") }).click();
+  await expect(dialog.getByText(t("timeline.pdfViewerPage", { page: 3, count: 3 }))).toBeVisible();
+  await expect.poll(paintedPixels).toBeGreaterThan(0);
+  await expect(dialog.getByText(t("timeline.mediaPdfPreviewFailed"))).toHaveCount(0);
+  // A PDF whose fonts are all drawable is not reported as partial.
+  await expect(dialog.getByText(t("timeline.pdfContentPartial"))).toHaveCount(0);
+  await expect(mediaCard.getByText(t("timeline.pdfContentPartial"))).toHaveCount(0);
+
   expect(await saveCallCount(page)).toBe(0);
   expect(mediaRequests).toEqual([]);
+});
+
+test("a PDF with a font that cannot be loaded says some content could not be displayed", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  const eventId = "$media-pdf-partial:example.invalid";
+  await page.evaluate((bytes) => {
+    window.__harness.setCommandResponse("read_downloaded_media_pdf", () => bytes);
+  }, CJK_UNEMBEDDED_PDF);
+  await seedTimelineItems(page, [
+    makeAttachmentItem(eventId, {
+      filename: "japanese.pdf",
+      mimetype: "application/pdf",
+      size: CJK_UNEMBEDDED_PDF.length
+    })
+  ]);
+  const mediaCard = page.locator(`[data-event-id="${eventId}"]`).locator(".message-media");
+  await expect
+    .poll(() => page.evaluate(() => window.__harness.invocationsOf("download_media").length))
+    .toBe(1);
+  await pushMediaDownloadState(page, eventId, readyPreviewState("application/pdf"));
+  await expect(mediaCard.locator(".message-media-pdf-thumbnail")).toBeVisible();
+  await expect(mediaCard.getByText(t("timeline.pdfContentPartial"))).toBeVisible();
+
+  await mediaCard.locator(".message-media-pdf-thumbnail").click();
+  const dialog = page.getByRole("dialog", { name: "japanese.pdf" });
+  await expect(dialog.getByText(t("timeline.pdfContentPartial"))).toBeVisible();
 });
 
 test("a PDF above the byte cap is neither fetched nor previewed", async ({ page }) => {

@@ -7,7 +7,11 @@ import type { TimelineItem } from "../../domain/coreEvents";
 import type { TimelineMediaDownloadState } from "../../domain/types";
 import { t } from "../../i18n/messages";
 import { TimelineMediaAttachment } from "./TimelineMedia";
-import { PDF_PREVIEW_MAX_BYTES, PDF_PREVIEW_MAX_PAGES } from "./filePreview";
+import {
+  PDF_AUTO_THUMBNAIL_MAX_BYTES,
+  PDF_PREVIEW_MAX_BYTES,
+  PDF_PREVIEW_MAX_PAGES
+} from "./filePreview";
 
 const readDownloadedPdf = vi.fn<(sourceRef: string) => Promise<Uint8Array>>();
 vi.mock("../../backend/linkMediaRuntime", async (importOriginal) => ({
@@ -17,7 +21,7 @@ vi.mock("../../backend/linkMediaRuntime", async (importOriginal) => ({
 
 // pdf.js needs a real canvas; the card and viewer logic is what these tests pin.
 // The drawing itself is exercised in the browser by e2e/media-attachments.spec.ts.
-const fakePdf = { numPages: 3 };
+const fakePdf = { numPages: 3, degraded: false };
 const renderedPages: number[] = [];
 const destroyed = vi.fn();
 vi.mock("./pdfRenderer", () => ({
@@ -25,19 +29,23 @@ vi.mock("./pdfRenderer", () => ({
     numPages: fakePdf.numPages,
     renderPage: (page: number) => {
       renderedPages.push(page);
-      return { done: Promise.resolve(), cancel: () => undefined };
+      return { done: Promise.resolve({ degraded: fakePdf.degraded }), cancel: () => undefined };
     },
     destroy: async () => {
       destroyed();
     }
   })),
-  renderPdfThumbnail: vi.fn(async () => "data:image/png;base64,AAAA")
+  renderPdfThumbnail: vi.fn(async () => ({
+    dataUrl: "data:image/png;base64,AAAA",
+    degraded: fakePdf.degraded
+  }))
 }));
 
 const pdfBytes = new TextEncoder().encode("%PDF-1.4\n");
 
 beforeEach(() => {
   fakePdf.numPages = 3;
+  fakePdf.degraded = false;
   renderedPages.length = 0;
   readDownloadedPdf.mockResolvedValue(pdfBytes);
 });
@@ -102,11 +110,12 @@ describe("PDF attachment card (#2096)", () => {
   it("pins the limits the backend enforces", () => {
     // Mirrors `MAX_PDF_PREVIEW_BYTES` in apps/desktop/src-tauri/src/media_download.rs.
     expect(PDF_PREVIEW_MAX_BYTES).toBe(32 * 1024 * 1024);
+    expect(PDF_AUTO_THUMBNAIL_MAX_BYTES).toBe(8 * 1024 * 1024);
     expect(PDF_PREVIEW_MAX_PAGES).toBe(200);
   });
 
   it("shows page 1 as a thumbnail for a downloaded PDF inside the cap", async () => {
-    renderCard(PDF_PREVIEW_MAX_BYTES, READY);
+    renderCard(PDF_AUTO_THUMBNAIL_MAX_BYTES, READY);
     const thumbnail = await screen.findByAltText(
       t("timeline.pdfViewerThumbnail", { filename: "report.pdf" })
     );
@@ -171,5 +180,29 @@ describe("PDF attachment card (#2096)", () => {
   it("does not read anything before the file is downloaded", () => {
     renderCard(2048);
     expect(readDownloadedPdf).not.toHaveBeenCalled();
+  });
+
+  it("leaves a PDF above the thumbnail cap plain, then opens the viewer once fetched", async () => {
+    const size = PDF_AUTO_THUMBNAIL_MAX_BYTES + 1;
+    // Not downloaded: a click on the card fetches (no save intent) and reads nothing.
+    const first = renderCard(size);
+    fireEvent.click(document.querySelector(".message-media-file") as HTMLElement);
+    expect(first.onDownload).toHaveBeenCalledTimes(1);
+    expect(readDownloadedPdf).not.toHaveBeenCalled();
+    cleanup();
+    // Downloaded: no automatic thumbnail, and the card opens the viewer.
+    const second = renderCard(size, READY);
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(readDownloadedPdf).not.toHaveBeenCalled();
+    fireEvent.click(document.querySelector(".message-media-file") as HTMLElement);
+    await screen.findByRole("dialog", { name: "report.pdf" });
+    await screen.findByText(t("timeline.pdfViewerPage", { page: 1, count: 3 }));
+    expect(second.onSaveMediaFile).not.toHaveBeenCalled();
+  });
+
+  it("says some content could not be displayed when the page drew partially", async () => {
+    fakePdf.degraded = true;
+    renderCard(2048, READY);
+    await screen.findByText(t("timeline.pdfContentPartial"));
   });
 });

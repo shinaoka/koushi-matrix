@@ -2045,6 +2045,7 @@ export type MessageId =
   | "timeline.pdfViewerZoomLevel"
   | "timeline.pdfViewerLoading"
   | "timeline.pdfViewerThumbnail"
+  | "timeline.pdfContentPartial"
   | "timeline.mediaAudioPlayer"
   | "timeline.mediaVideoPlayer"
   | "timeline.mediaDetails"
@@ -4605,6 +4606,7 @@ const en: Catalog = {
   "timeline.pdfViewerZoomLevel": "Zoom {percent}%",
   "timeline.pdfViewerLoading": "Loading PDF…",
   "timeline.pdfViewerThumbnail": "First page of {filename}",
+  "timeline.pdfContentPartial": "Some content could not be displayed.",
   "timeline.mediaAudioPlayer": "Audio player for {filename}",
   "timeline.mediaVideoPlayer": "Video player for {filename}",
   "timeline.mediaDetails": "Show media details for {filename}",
@@ -7040,6 +7042,7 @@ const ja: Catalog = {
   "timeline.pdfViewerZoomLevel": "拡大率 {percent}%",
   "timeline.pdfViewerLoading": "PDF を読み込み中…",
   "timeline.pdfViewerThumbnail": "{filename} の1ページ目",
+  "timeline.pdfContentPartial": "一部の内容を表示できませんでした。",
   "timeline.mediaAudioPlayer": "{filename} の音声プレイヤー",
   "timeline.mediaVideoPlayer": "{filename} の動画プレイヤー",
   "timeline.mediaDetails": "{filename}のメディア詳細を表示",

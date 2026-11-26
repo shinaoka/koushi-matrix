@@ -27,6 +27,7 @@ import type { MediaSaveNameFacts } from "../../backend/linkMediaPort";
 import type { TimelineTransport } from "./TimelineTransport";
 import { type FileTypeCategory, fileTypeCategory } from "./fileTypeCategory";
 import {
+  PDF_AUTO_THUMBNAIL_MAX_BYTES,
   PDF_PREVIEW_MAX_BYTES,
   PDF_PREVIEW_MAX_PAGES,
   TEXT_PREVIEW_LINE_COUNT,
@@ -38,6 +39,7 @@ import {
 import { type MarkdownDocument, useMarkdownDocumentOpener } from "./MarkdownDocumentContext";
 import { parseMarkdownDocument, renderMarkdownDocument } from "./TimelineMessageBody";
 import { MediaPdfViewerDialog } from "./MediaPdfViewerDialog";
+import { runPdfThumbnailJob } from "./pdfThumbnailQueue";
 import { MediaTextPreviewDialog } from "./MediaTextPreviewDialog";
 import { formatDimensions } from "../../app/uiShared";
 import { saveMediaSource, type MediaViewerEntry } from "../mediaViewer";
@@ -144,7 +146,14 @@ export function TimelineMediaAttachment({
   // #2096 stage 2: a PDF previews only inside the byte cap; above it (or above
   // the page limit, learned when it opens) the card keeps its icon and says so.
   const pdfPreviewAllowed =
-    previewKind === "pdf" && media.size !== null && media.size <= PDF_PREVIEW_MAX_BYTES;
+    previewKind === "pdf" && media.size !== null && media.size <= PDF_AUTO_THUMBNAIL_MAX_BYTES;
+  // Between the thumbnail cap and the viewer cap the card stays plain and
+  // fetches on click; once downloaded a click opens the viewer.
+  const pdfViewerOnly =
+    previewKind === "pdf" &&
+    media.size !== null &&
+    media.size > PDF_AUTO_THUMBNAIL_MAX_BYTES &&
+    media.size <= PDF_PREVIEW_MAX_BYTES;
   const pdfOverSize =
     previewKind === "pdf" && media.size !== null && media.size > PDF_PREVIEW_MAX_BYTES;
   const readyDownload = downloadState?.kind === "ready" ? downloadState : null;
@@ -158,7 +167,7 @@ export function TimelineMediaAttachment({
   >(null);
   const [pdfPreview, setPdfPreview] = useState<
     | { kind: "loading" }
-    | { kind: "ready"; thumbnail: string }
+    | { kind: "ready"; thumbnail: string; degraded: boolean }
     | { kind: "tooManyPages" }
     | { kind: "failed" }
     | null
@@ -258,31 +267,34 @@ export function TimelineMediaAttachment({
     }
     let cancelled = false;
     setPdfPreview({ kind: "loading" });
-    void (async () => {
-      let opened: { destroy(): Promise<void> } | null = null;
-      try {
-        const [bytes, renderer] = await Promise.all([readPdfBytes(), import("./pdfRenderer")]);
-        const document = await renderer.openPdf(bytes);
-        opened = document;
-        if (cancelled) {
-          return;
+    void runPdfThumbnailJob(
+      async () => {
+        let opened: { destroy(): Promise<void> } | null = null;
+        try {
+          const [bytes, renderer] = await Promise.all([readPdfBytes(), import("./pdfRenderer")]);
+          const document = await renderer.openPdf(bytes);
+          opened = document;
+          if (cancelled) {
+            return;
+          }
+          if (document.numPages > PDF_PREVIEW_MAX_PAGES) {
+            setPdfPreview({ kind: "tooManyPages" });
+            return;
+          }
+          const { dataUrl, degraded } = await renderer.renderPdfThumbnail(document, 320);
+          if (!cancelled) {
+            setPdfPreview({ kind: "ready", thumbnail: dataUrl, degraded });
+          }
+        } catch {
+          if (!cancelled) {
+            setPdfPreview({ kind: "failed" });
+          }
+        } finally {
+          await opened?.destroy().catch(() => undefined);
         }
-        if (document.numPages > PDF_PREVIEW_MAX_PAGES) {
-          setPdfPreview({ kind: "tooManyPages" });
-          return;
-        }
-        const thumbnail = await renderer.renderPdfThumbnail(document, 320);
-        if (!cancelled) {
-          setPdfPreview({ kind: "ready", thumbnail });
-        }
-      } catch {
-        if (!cancelled) {
-          setPdfPreview({ kind: "failed" });
-        }
-      } finally {
-        void opened?.destroy();
-      }
-    })();
+      },
+      () => cancelled
+    );
     return () => {
       cancelled = true;
     };
@@ -565,6 +577,12 @@ export function TimelineMediaAttachment({
   const pdfLoading = pdfPreviewAllowed && (pdfPreview === null || pdfPreview.kind === "loading");
   const backgroundAction: (() => void) | null = playsInline
     ? null
+    : pdfViewerOnly
+      ? readyDownload !== null
+        ? () => setPdfDialogOpen(true)
+        : downloadState?.kind === "pending" || !canDownload
+          ? null
+          : onDownload
     : pdfPreviewAllowed
       ? pdfReady
         ? () => setPdfDialogOpen(true)
@@ -730,6 +748,9 @@ export function TimelineMediaAttachment({
             />
           </button>
         ) : null}
+        {pdfReady && pdfPreview?.kind === "ready" && pdfPreview.degraded ? (
+          <p className="message-media-preview-note">{t("timeline.pdfContentPartial")}</p>
+        ) : null}
         {pdfOverSize || (pdfPreviewAllowed && pdfPreview?.kind === "tooManyPages") ? (
           <p className="message-media-preview-note" title={t("timeline.mediaPdfTooLarge")}>
             {t("timeline.mediaPdfTooLarge")}
@@ -799,7 +820,7 @@ export function TimelineMediaAttachment({
           <span style={{ width: `${uploadProgressPercentValue}%` }} />
         </div>
       ) : null}
-      {pdfDialogOpen && pdfReady ? (
+      {pdfDialogOpen && (pdfReady || (pdfViewerOnly && readyDownload !== null)) ? (
         <MediaPdfViewerDialog
           filename={media.filename}
           readPdf={readPdfBytes}

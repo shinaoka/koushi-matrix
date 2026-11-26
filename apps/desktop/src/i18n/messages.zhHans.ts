@@ -2055,6 +2055,7 @@ export const zhHans: Catalog = {
   "timeline.pdfViewerZoomLevel": "缩放 {percent}%",
   "timeline.pdfViewerLoading": "正在加载 PDF…",
   "timeline.pdfViewerThumbnail": "{filename} 的第一页",
+  "timeline.pdfContentPartial": "部分内容无法显示。",
   "timeline.mediaAudioPlayer": "{filename} 的音频播放器",
   "timeline.mediaVideoPlayer": "{filename} 的视频播放器",
   "timeline.mediaDetails": "显示 {filename} 的媒体详情",

@@ -24,6 +24,14 @@ export const TEXT_PREVIEW_MAX_BYTES = 256 * 1024;
  */
 export const PDF_PREVIEW_MAX_BYTES = 32 * 1024 * 1024;
 
+/**
+ * Largest PDF the card fetches, parses and rasterises on its own for a
+ * thumbnail. A room full of larger PDFs must not download and decode them all
+ * unprompted: above this the card stays plain and fetches on click, and the
+ * viewer (up to `PDF_PREVIEW_MAX_BYTES`) opens once the reader asked for it.
+ */
+export const PDF_AUTO_THUMBNAIL_MAX_BYTES = 8 * 1024 * 1024;
+
 /** Most pages a PDF may have for the card to draw a thumbnail and open the viewer. */
 export const PDF_PREVIEW_MAX_PAGES = 200;
 
@@ -53,7 +61,7 @@ export function filePreviewKind(category: FileTypeCategory): FilePreviewKind {
 export function canAutoFetchPreview(
   kind: FilePreviewKind,
   size: number | null,
-  maxBytes = kind === "pdf" ? PDF_PREVIEW_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES
+  maxBytes = kind === "pdf" ? PDF_AUTO_THUMBNAIL_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES
 ): boolean {
   if (kind !== "text" && kind !== "pdf") {
     return false;

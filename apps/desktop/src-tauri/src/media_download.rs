@@ -295,16 +295,21 @@ pub(crate) fn read_managed_pdf(
     let Some(file) = resolve_managed_file(cache_roots, source_ref.trim()) else {
         return Err(PdfPreviewError::Unavailable);
     };
-    let Ok(metadata) = std::fs::metadata(&file) else {
+    // The cap is enforced where the bytes are read: `take(max + 1)` bounds the
+    // allocation even if the file grows or lies about its length, and one byte
+    // past the cap is the signal to refuse rather than truncate.
+    let Ok(opened) = std::fs::File::open(&file) else {
         return Err(PdfPreviewError::Unavailable);
     };
-    if metadata.len() > max_bytes {
-        return Err(PdfPreviewError::TooLarge);
+    let mut bytes = Vec::new();
+    if std::io::Read::read_to_end(
+        &mut std::io::Read::take(opened, max_bytes.saturating_add(1)),
+        &mut bytes,
+    )
+    .is_err()
+    {
+        return Err(PdfPreviewError::Unavailable);
     }
-    let Ok(bytes) = std::fs::read(&file) else {
-        return Err(PdfPreviewError::Unavailable);
-    };
-    // The file may have grown between the metadata check and the read.
     if bytes.len() as u64 > max_bytes {
         return Err(PdfPreviewError::TooLarge);
     }

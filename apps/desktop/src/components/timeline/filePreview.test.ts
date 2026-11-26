@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  PDF_PREVIEW_MAX_BYTES,
+  PDF_AUTO_THUMBNAIL_MAX_BYTES,
   TEXT_PREVIEW_LINE_COUNT,
   TEXT_PREVIEW_MAX_BYTES,
   canAutoFetchPreview,
@@ -29,8 +29,8 @@ describe("file preview kind (#2096)", () => {
     // reader asks for those files instead of the timeline fetching them.
     expect(canAutoFetchPreview("text", null)).toBe(false);
     // A PDF is fetched on its own up to its own cap, never the text one.
-    expect(canAutoFetchPreview("pdf", PDF_PREVIEW_MAX_BYTES)).toBe(true);
-    expect(canAutoFetchPreview("pdf", PDF_PREVIEW_MAX_BYTES + 1)).toBe(false);
+    expect(canAutoFetchPreview("pdf", PDF_AUTO_THUMBNAIL_MAX_BYTES)).toBe(true);
+    expect(canAutoFetchPreview("pdf", PDF_AUTO_THUMBNAIL_MAX_BYTES + 1)).toBe(false);
     expect(canAutoFetchPreview("pdf", null)).toBe(false);
     expect(canAutoFetchPreview("none", 1024)).toBe(false);
     expect(canAutoFetchPreview("audio", 1024)).toBe(false);
