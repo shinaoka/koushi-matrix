@@ -1,4 +1,4 @@
-import { canRetrySend } from "./timeline/sendStateNeeds";
+import { canRetrySend, isUnsentForDisplay } from "./timeline/sendStateNeeds";
 import { NativeModal } from "./ModalDialog";
 import {
 ThreadRootStatusPlaceholder,
@@ -2351,7 +2351,7 @@ export const TimelineView = memo(function TimelineView({
   ]);
   const projectedVisibleRows = noticeGroups.rows;
   const notSentTransactionIds = items.flatMap((item) => {
-    if (item.send_state?.kind !== "notSent" || !("Transaction" in item.id)) return [];
+    if (!isUnsentForDisplay(item.send_state?.kind ?? null, canWrite) || !("Transaction" in item.id)) return [];
     return [item.id.Transaction.transaction_id];
   });
   const backwardState = getPaginationState(store, timelineKey, "Backward");

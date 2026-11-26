@@ -2044,6 +2044,7 @@ export const ko: Catalog = {
   "timeline.unsent": "보내지 않음",
   "timeline.sending": "보내는 중",
   "timeline.notSent": "전송되지 않음",
+  "timeline.sendWaiting": "전송 대기 중",
   "timeline.cancelledSend": "취소됨",
   "timeline.sent": "전송됨",
   "timeline.resendSend": "다시 보내기",

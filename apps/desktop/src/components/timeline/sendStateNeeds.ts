@@ -15,9 +15,21 @@ export function canCancelSend(): boolean {
 }
 
 /**
- * A message still queued while the send lock is on cannot go anywhere, so it is
- * shown as not sent instead of "Sending".
+ * A message still queued while the send lock is on cannot go anywhere, and it
+ * leaves by itself when the lock lifts. It therefore gets its own display kind,
+ * "locked" ("Waiting to send"), instead of "Sending" (untrue) or "Not sent"
+ * (which a real failure also reads, and which needs a manual Resend).
  */
 export function displaySendStateKind(kind: string | null, canWrite: boolean): string | null {
-  return kind === "sending" && !canWrite ? "notSent" : kind;
+  return kind === "sending" && !canWrite ? "locked" : kind;
+}
+
+/**
+ * Whether a row counts as unsent for the bar. The bar and the row share this
+ * rule so two rows that read as unsent are never split between them: a real
+ * failure, or a message waiting behind the send lock.
+ */
+export function isUnsentForDisplay(kind: string | null, canWrite: boolean): boolean {
+  const shown = displaySendStateKind(kind, canWrite);
+  return shown === "notSent" || shown === "locked";
 }

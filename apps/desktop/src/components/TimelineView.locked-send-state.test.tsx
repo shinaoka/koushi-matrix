@@ -57,7 +57,19 @@ describe("send-state controls while sending is locked (#2135)", () => {
     renderEcho("sending", false);
     expect(has(t("timeline.cancelSend"))).toBe(true);
     expect(screen.queryByText(t("timeline.sending"))).toBeNull();
-    expect(screen.queryByText(t("timeline.notSent"))).not.toBeNull();
+    expect(screen.queryByText(t("timeline.sendWaiting"))).not.toBeNull();
+    expect(screen.queryByText(t("timeline.notSent"))).toBeNull();
+  });
+
+  it("queued row is in the unsent bar, so row and bar agree", () => {
+    renderEcho("sending", false);
+    expect(has(t("timeline.cancelAll"))).toBe(true);
+    expect(has(t("timeline.resendAll"))).toBe(false);
+  });
+
+  it("a queued row is not in the bar while sending is admitted", () => {
+    renderEcho("sending", true);
+    expect(has(t("timeline.cancelAll"))).toBe(false);
   });
 
   it("queued row keeps Sending and Cancel while sending is admitted", () => {

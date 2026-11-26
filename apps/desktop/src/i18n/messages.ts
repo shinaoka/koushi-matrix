@@ -2034,6 +2034,7 @@ export type MessageId =
   | "timeline.unsent"
   | "timeline.sending"
   | "timeline.notSent"
+  | "timeline.sendWaiting"
   | "timeline.cancelledSend"
   | "timeline.sent"
   | "timeline.resendSend"
@@ -4612,6 +4613,7 @@ const en: Catalog = {
   "timeline.unsent": "Unsent",
   "timeline.sending": "Sending",
   "timeline.notSent": "Not sent",
+  "timeline.sendWaiting": "Waiting to send",
   "timeline.cancelledSend": "Cancelled",
   "timeline.sent": "Sent",
   "timeline.resendSend": "Resend",
@@ -7072,6 +7074,7 @@ const ja: Catalog = {
   "timeline.unsent": "未送信",
   "timeline.sending": "送信中",
   "timeline.notSent": "送信されていません",
+  "timeline.sendWaiting": "送信待ち",
   "timeline.cancelledSend": "キャンセル済み",
   "timeline.sent": "送信済み",
   "timeline.resendSend": "再送信",
