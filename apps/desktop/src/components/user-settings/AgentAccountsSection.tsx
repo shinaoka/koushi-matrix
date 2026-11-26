@@ -92,7 +92,7 @@ export function AgentAccountsSection({
               onClick={() =>
                 onUpdateSettings({
                   scope: "app",
-                  agent_account: { user_id: userId, role: role ? null : { hide_tab: false } }
+                  agent_account: { user_id: userId, role: role ? null : {} }
                 })
               }
             >
@@ -107,32 +107,6 @@ export function AgentAccountsSection({
                 <span className="settings-switch-thumb" />
               </span>
             </button>
-            {role ? (
-              <button
-                className="settings-toggle-row"
-                type="button"
-                role="switch"
-                disabled={isSaving}
-                aria-checked={role.hide_tab}
-                aria-label={t("settings.agentAccountHideTab", { account: label })}
-                onClick={() =>
-                  onUpdateSettings({
-                    scope: "app",
-                    agent_account: { user_id: userId, role: { hide_tab: !role.hide_tab } }
-                  })
-                }
-              >
-                <span className="settings-toggle-copy">
-                  <span className="settings-toggle-label">
-                    <span dir="auto">{t("settings.agentAccountHideTab", { account: label })}</span>
-                  </span>
-                  <span className="settings-toggle-description">{t("settings.agentAccountHideTabDescription")}</span>
-                </span>
-                <span className="settings-switch-track" aria-hidden="true">
-                  <span className="settings-switch-thumb" />
-                </span>
-              </button>
-            ) : null}
             {onOpenAccountSettings && tabId ? (
               <button
                 className="trust-action-button secondary"
@@ -163,16 +137,24 @@ export function AllowedSendersSection({
   onUpdateSettings
 }: {
   allowed: MentionAllowedSenders;
+  /** Rust marks agent tabs (`isAgent`); the default leaves those out (#2130), so they are listed apart. */
   accountTabs: readonly AccountTabSummary[];
   isSaving: boolean;
   onUpdateSettings: (patch: SettingsPatch) => void;
 }) {
   const [draft, setDraft] = useState("");
   const [invalid, setInvalid] = useState(false);
-  const accounts = accountsOf(accountTabs, true);
+  const readyAccounts = accountsOf(accountTabs, true);
+  const agentKeys = new Set(accountTabs.filter(tab => tab.isAgent).map(tab => tab.accountKey));
+  const accounts = readyAccounts.filter(([userId]) => !agentKeys.has(userId));
+  const agents = readyAccounts.filter(([userId]) => agentKeys.has(userId));
   const derived = new Set(accounts.map(([userId]) => userId));
+  const agentIds = new Set(agents.map(([userId]) => userId));
   const removed = new Set(allowed.removed);
-  const explicit = allowed.added.filter(userId => !derived.has(userId));
+  const explicit = allowed.added.filter(userId => !derived.has(userId) && !agentIds.has(userId));
+  function includeAgent(userId: string) {
+    save({ added: [...allowed.added, userId], removed: allowed.removed.filter(id => id !== userId) });
+  }
 
   function save(next: MentionAllowedSenders) {
     onUpdateSettings({ scope: "app", mcp_allowed_senders: next });
@@ -226,6 +208,30 @@ export function AllowedSendersSection({
             </button>
           </li>
         ))}
+        {agents.map(([userId, label]) => {
+          const added = allowed.added.includes(userId);
+          return (
+            <li className="settings-allowed-sender" key={userId} data-implicit="false" data-agent="true" data-left-out={!added}>
+              <span className="settings-assistant-identity">
+                <strong dir="auto">{label}</strong>
+                <span className="settings-toggle-description" dir="ltr">{userId}</span>
+                <span className="settings-toggle-description">
+                  {added ? t("settings.allowedSendersAdded") : t("settings.allowedSendersAgentLeftOut")}
+                </span>
+              </span>
+              <button
+                className="trust-action-button secondary"
+                type="button"
+                disabled={isSaving}
+                onClick={() => (added ? dropAdded(userId) : includeAgent(userId))}
+              >
+                {added
+                  ? t("settings.allowedSendersRemove", { user: userId })
+                  : t("settings.allowedSendersAgentInclude", { user: userId })}
+              </button>
+            </li>
+          );
+        })}
         {explicit.map(userId => (
           <li className="settings-allowed-sender" key={userId} data-implicit="false">
             <span className="settings-assistant-identity">
@@ -244,7 +250,7 @@ export function AllowedSendersSection({
         ))}
         {removed.size > 0
           ? [...removed]
-              .filter(userId => !derived.has(userId))
+              .filter(userId => !derived.has(userId) && !agentIds.has(userId))
               .map(userId => (
                 <li className="settings-allowed-sender" key={userId} data-implicit="false" data-excluded="true">
                   <span className="settings-assistant-identity">

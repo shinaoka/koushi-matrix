@@ -2,9 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, next/agent-core]
+  # The agent epic (#2124) integrates on `next/agent-core` before it reaches main,
+  # so its stage PRs must run the same gates as a PR into main (#2132).
   pull_request:
-    branches: [main]
+    branches: [main, next/agent-core]
   workflow_dispatch:
     inputs:
       browser_trace:

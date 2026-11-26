@@ -593,7 +593,7 @@ fn account_tab_snapshot_projects_the_per_account_policy_from_every_runtime() {
 }
 
 #[test]
-fn an_agent_account_tab_adds_nothing_to_the_badge_and_asks_to_be_hidden() {
+fn an_agent_account_tab_shows_its_counts_and_a_marker_but_adds_nothing_to_the_badge() {
     use koushi_core::account_runtime_manager::{AccountTabDescriptor, AccountTabId};
     use koushi_protocol::AccountKey;
 
@@ -613,7 +613,7 @@ fn an_agent_account_tab_adds_nothing_to_the_badge_and_asks_to_be_hidden() {
         .agent_accounts
         .apply(&koushi_state::AgentAccountPatch {
             user_id: "@tab:example.invalid".to_owned(),
-            role: Some(koushi_state::AgentAccountRole { hide_tab: true }),
+            role: Some(koushi_state::AgentAccountRole::default()),
         });
     agent
         .rooms
@@ -635,41 +635,12 @@ fn an_agent_account_tab_adds_nothing_to_the_badge_and_asks_to_be_hidden() {
 
     assert_eq!(snapshot.badge_count, 2);
     let owner_tab = serde_json::to_value(&snapshot.tabs[0]).unwrap();
-    assert_eq!(owner_tab["showsCounts"], true);
-    assert_eq!(owner_tab["hidden"], false);
+    assert_eq!(owner_tab["isAgent"], false);
     let agent_tab = serde_json::to_value(&snapshot.tabs[1]).unwrap();
-    assert_eq!(agent_tab["showsCounts"], false);
-    assert_eq!(agent_tab["hidden"], true);
-    // Its unread state is still in the data.
+    assert_eq!(agent_tab["isAgent"], true);
+    assert!(agent_tab.get("hidden").is_none());
     assert_eq!(agent_tab["unreadCount"], 3);
-
-    // A hidden agent tab that needs the owner (here: locked) stays visible, so
-    // its warning is not hidden with it.
-    let mut locked = ready_app_state();
-    locked
-        .settings
-        .values
-        .agent_accounts
-        .apply(&koushi_state::AgentAccountPatch {
-            user_id: "@tab:example.invalid".to_owned(),
-            role: Some(koushi_state::AgentAccountRole { hide_tab: true }),
-        });
-    let info = match &locked.session {
-        koushi_state::SessionState::Ready(info) => info.clone(),
-        other => panic!("ready_app_state is not Ready: {other:?}"),
-    };
-    locked.session = koushi_state::SessionState::Locked(info);
-    let snapshot = super::account_tabs_snapshot_from_states(
-        "account:@owner:example.invalid".to_owned(),
-        [(
-            descriptor("account:@locked:example.invalid", "@locked:example.invalid"),
-            locked,
-        )],
-    );
-    let locked_tab = serde_json::to_value(&snapshot.tabs[0]).unwrap();
-    assert_eq!(locked_tab["status"], "error");
-    assert_eq!(locked_tab["hidden"], false);
-    assert_eq!(locked_tab["showsCounts"], false);
+    assert_eq!(snapshot.tabs[1].unread_count, 3);
 }
 
 #[test]

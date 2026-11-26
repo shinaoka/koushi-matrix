@@ -79,10 +79,8 @@ export interface AccountTabSummary {
   status: AccountTabStatus;
   unreadCount: number;
   inviteCount?: number;
-  /** Rust decides whether the unread and invite counts are drawn (false for an agent account, #2110). */
-  showsCounts?: boolean;
-  /** Rust decides the tab is hidden while it is not selected (a Ready agent tab that asked for it). */
-  hidden?: boolean;
+  /** Rust says the account has the agent role (#2110); the tab draws a marker. An agent tab is never hidden (#2130). */
+  isAgent?: boolean;
 }
 
 export interface AccountTabsSnapshot {
@@ -579,9 +577,8 @@ export interface McpSettings {
   allowed_senders: MentionAllowedSenders;
 }
 
-export interface AgentAccountRole {
-  hide_tab: boolean;
-}
+/** The role has no options (#2130): its presence marks the account. */
+export type AgentAccountRole = Record<string, never>;
 
 export interface AgentAccounts {
   readonly accounts: Readonly<Record<string, AgentAccountRole>>;

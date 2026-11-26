@@ -107,25 +107,21 @@ afterEach(() => {
 });
 
 describe("Rust-projected workspace shell", () => {
-  it("hides an agent account's tab until it is selected and draws no unread count for it (#2110)", () => {
+  it("keeps an agent account's tab visible with its counts and an agent marker (#2130)", () => {
     const tab = (id: string, extra: object) => ({
       id, accountKey: `@${id}:example.invalid`, homeserver: "https://example.invalid",
       displayName: id, avatarMxcUri: null, avatarSourceRef: null, status: "ready" as const, unreadCount: 4, ...extra
     });
-    const tabs = [tab("owner", {}), tab("agent", { showsCounts: false, hidden: true }), tab("quiet", { showsCounts: false, inviteCount: 2 })];
-    const { rerender } = render(<AccountTabStrip tabs={tabs} selectedTabId="owner" onSelect={vi.fn()} onAdd={vi.fn()} onRemove={vi.fn()} />);
-    expect(screen.queryByRole("button", { name: /agent/ })).toBeNull();
-    expect(screen.getByRole("button", { name: /owner/ })).toBeTruthy();
-    // The agent's own unread count is still in the data, but no badge is drawn.
-    expect(document.querySelectorAll(".account-tab-unread")).toHaveLength(1);
-    expect(document.querySelectorAll(".account-tab-invite")).toHaveLength(0);
-    // Selecting a hidden tab keeps it visible, so the owner can always reach it.
-    rerender(<AccountTabStrip tabs={tabs} selectedTabId="agent" onSelect={vi.fn()} onAdd={vi.fn()} onRemove={vi.fn()} />);
-    expect(screen.getByRole("button", { name: /agent/ })).toBeTruthy();
-    // The account-settings header (no activity) lists every tab, hidden or not,
-    // so a hidden agent tab's own settings are reachable.
-    rerender(<AccountTabStrip tabs={tabs} selectedTabId="owner" showActivity={false} onSelect={vi.fn()} onAdd={vi.fn()} onRemove={vi.fn()} />);
-    expect(screen.getByRole("button", { name: /agent/ })).toBeTruthy();
+    const tabs = [tab("owner", {}), tab("agent", { isAgent: true, inviteCount: 2 })];
+    render(<AccountTabStrip tabs={tabs} selectedTabId="owner" onSelect={vi.fn()} onAdd={vi.fn()} onRemove={vi.fn()} />);
+    const marker = screen.getByRole("img", { name: "Agent account" });
+    const agent = marker.closest("button")!;
+    expect(agent.querySelector(".account-tab-unread")?.textContent).toBe("4");
+    expect(agent.querySelector(".account-tab-invite")?.textContent).toBe("2");
+    expect(marker.className).toContain("account-tab-agent");
+    // The marker is drawn only for the tab Rust flags.
+    expect(screen.getByRole("button", { name: /owner/ }).querySelector(".account-tab-agent")).toBeNull();
+    expect(document.querySelectorAll(".account-tab-agent")).toHaveLength(1);
   });
 
   it("shows verified unread and pending invitations as separate account badges", () => {

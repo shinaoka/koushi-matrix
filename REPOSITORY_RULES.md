@@ -259,6 +259,12 @@ to upstream or revert.
   store it only in the OS secret store: macOS Keychain on macOS, Windows
   Credential Manager on Windows, and the freedesktop Secret Service (for
   example GNOME Keyring or KWallet) on Linux.
+- A headless host (the Linux daemon, #2109) reads the account password and the
+  recovery key from stdin; they never travel in argv or environment variables.
+- **Open decision:** where a host without an OS secret store keeps the unlock
+  secret: a 0600 key file or systemd credentials. This is not yet an allowed
+  option. Until it is decided, such a host fails closed and the rule above
+  stands unchanged.
 - Do not hardcode, derive from user passwords, reuse access tokens, or commit
   local store secrets.
 - Derive independent keys from the unlock secret with domain-separated labels

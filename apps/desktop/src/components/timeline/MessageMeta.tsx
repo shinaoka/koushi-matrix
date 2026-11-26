@@ -56,9 +56,11 @@ export function MessageMeta({
       ? t("timeline.sending")
       : sendStateKind === "notSent"
         ? t("timeline.notSent")
-        : sendStateKind === "cancelled"
-          ? t("timeline.cancelledSend")
-          : null;
+        : sendStateKind === "locked"
+          ? t("timeline.sendWaiting")
+          : sendStateKind === "cancelled"
+            ? t("timeline.cancelledSend")
+            : null;
   const sentStateMark =
     sendStateKind === "sent" ? (
       <span

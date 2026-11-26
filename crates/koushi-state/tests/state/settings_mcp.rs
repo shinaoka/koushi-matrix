@@ -57,19 +57,49 @@ fn the_allow_list_is_derived_from_the_signed_in_accounts_and_editable_both_ways(
     let signed_in = ["@a:x", "@b:x"];
     let default = MentionAllowedSenders::default();
     assert_eq!(
-        default.effective(signed_in),
+        default.effective(signed_in, &Default::default()),
         ["@a:x", "@b:x"].map(str::to_owned).into()
     );
     // An account added later is covered without editing anything.
-    assert!(default.effective(["@a:x", "@b:x", "@c:x"]).contains("@c:x"));
+    assert!(
+        default
+            .effective(["@a:x", "@b:x", "@c:x"], &Default::default())
+            .contains("@c:x")
+    );
     // Additive on top of the derived default, and the derived one can be removed.
     let edited = MentionAllowedSenders {
         added: vec!["@guest:x".to_owned()],
         removed: vec!["@b:x".to_owned()],
     };
     assert_eq!(
-        edited.effective(signed_in),
+        edited.effective(signed_in, &Default::default()),
         ["@a:x", "@guest:x"].map(str::to_owned).into()
+    );
+}
+
+#[test]
+fn agent_accounts_are_out_of_the_derived_default_but_can_be_added() {
+    use koushi_state::{AgentAccountPatch, AgentAccountRole, AgentAccounts, MentionAllowedSenders};
+    let mut agents = AgentAccounts::default();
+    for id in ["@agent-a:x", "@agent-b:x"] {
+        agents.apply(&AgentAccountPatch {
+            user_id: id.to_owned(),
+            role: Some(AgentAccountRole::default()),
+        });
+    }
+    let signed_in = ["@agent-a:x", "@agent-b:x", "@person:x"];
+    let default = MentionAllowedSenders::default();
+    assert_eq!(
+        default.effective(signed_in, &agents),
+        ["@person:x"].map(str::to_owned).into()
+    );
+    let explicit = MentionAllowedSenders {
+        added: vec!["@agent-b:x".to_owned()],
+        removed: Vec::new(),
+    };
+    assert_eq!(
+        explicit.effective(signed_in, &agents),
+        ["@agent-b:x", "@person:x"].map(str::to_owned).into()
     );
 }
 

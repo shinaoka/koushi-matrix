@@ -2682,8 +2682,21 @@ impl TimelineActor {
                     projection_request_id: self.projection_request_id,
                     generation: self.generation,
                 };
-                let mut window = self.receipt_endpoints.read_window(
+                // #2123: the row is the identity, not the event. A moved thread
+                // root stands for its hidden latest reply, so its readers are
+                // the union of both endpoints, as its icons publish.
+                let (row_event_id, row_partner) =
+                    self.display_projection.receipt_row(&source.event_id);
+                let row_partner = row_partner.map(|partner| {
+                    if partner == source.event_id {
+                        row_event_id.to_owned()
+                    } else {
+                        partner.to_owned()
+                    }
+                });
+                let mut window = self.receipt_endpoints.read_row_window(
                     &source,
+                    row_partner.as_deref(),
                     &current,
                     start,
                     limit,
@@ -3334,6 +3347,10 @@ mod issue_1692_tests;
 #[cfg(test)]
 #[path = "actor/issue_1892_tests.rs"]
 mod issue_1892_tests;
+
+#[cfg(test)]
+#[path = "actor/issue_2135_tests.rs"]
+mod issue_2135_tests;
 
 #[cfg(test)]
 #[path = "actor/issue_1916_tests.rs"]

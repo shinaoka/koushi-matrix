@@ -27,10 +27,12 @@ function Harness({ patches }: { patches: SettingsPatch[] }) {
       setAgents({ accounts });
     }
   };
+  // Rust projects the role onto each tab (`isAgent`); mimic that here.
+  const projected = tabs.map(t => ({ ...t, isAgent: agents.accounts[t.accountKey!] !== undefined }) as AccountTabSummary);
   return (
     <>
-      <AgentAccountsSection agentAccounts={agents} accountTabs={tabs} isSaving={false} onUpdateSettings={update} />
-      <AllowedSendersSection allowed={allowed} accountTabs={tabs} isSaving={false} onUpdateSettings={update} />
+      <AgentAccountsSection agentAccounts={agents} accountTabs={projected} isSaving={false} onUpdateSettings={update} />
+      <AllowedSendersSection allowed={allowed} accountTabs={projected} isSaving={false} onUpdateSettings={update} />
     </>
   );
 }
@@ -74,20 +76,23 @@ test("something that is not a Matrix user ID is refused without a patch", () => 
   expect(screen.getByRole("alert").textContent).toMatch(/Matrix user ID/);
 });
 
-test("the agent role is marked per user id and its tab can be hidden", () => {
+test("the agent role is marked per user id, offers no hiding, and leaves the agent out of the default list", () => {
   const patches: SettingsPatch[] = [];
   render(<Harness patches={patches} />);
-  expect(screen.queryByRole("switch", { name: "Hide the tab of Bot" })).toBeNull();
+  expect(screen.getAllByText("Signed-in account, included by default")).toHaveLength(2);
   fireEvent.click(screen.getByRole("switch", { name: "Bot is an agent account" }));
-  expect(patches.at(-1)).toEqual({
-    scope: "app",
-    agent_account: { user_id: "@bot:example.invalid", role: { hide_tab: false } }
-  });
-  fireEvent.click(screen.getByRole("switch", { name: "Hide the tab of Bot" }));
-  expect(patches.at(-1)).toEqual({
-    scope: "app",
-    agent_account: { user_id: "@bot:example.invalid", role: { hide_tab: true } }
-  });
+  expect(patches.at(-1)).toEqual({ scope: "app", agent_account: { user_id: "@bot:example.invalid", role: {} } });
+  // No hide option, and the panel says why the agent is left out.
+  expect(screen.queryByRole("switch", { name: /Hide the tab/ })).toBeNull();
+  expect(screen.getAllByRole("switch")).toHaveLength(2);
+  expect(screen.getAllByText("Signed-in account, included by default")).toHaveLength(1);
+  expect(screen.getByText(/Agent account, left out by default/)).toBeTruthy();
+  // An owner can still add the agent explicitly, and take it out again.
+  fireEvent.click(screen.getByRole("button", { name: "Include @bot:example.invalid" }));
+  expect(patches.at(-1)).toEqual({ scope: "app", mcp_allowed_senders: { added: ["@bot:example.invalid"], removed: [] } });
+  expect(screen.getByText("Added by you")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Remove @bot:example.invalid" }));
+  expect(patches.at(-1)).toEqual({ scope: "app", mcp_allowed_senders: { added: [], removed: [] } });
   fireEvent.click(screen.getByRole("switch", { name: "Bot is an agent account" }));
   expect(patches.at(-1)).toEqual({ scope: "app", agent_account: { user_id: "@bot:example.invalid", role: null } });
 });
@@ -103,7 +108,7 @@ test("a mark no tab covers is listed as not signed in and can be removed", () =>
   const patches: SettingsPatch[] = [];
   render(
     <AgentAccountsSection
-      agentAccounts={{ accounts: { "@gone:example.invalid": { hide_tab: true } } }}
+      agentAccounts={{ accounts: { "@gone:example.invalid": {} } }}
       accountTabs={tabs}
       isSaving={false}
       onUpdateSettings={patch => patches.push(patch)}

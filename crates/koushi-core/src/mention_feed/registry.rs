@@ -95,11 +95,11 @@ impl MentionFeedRegistry {
             .iter()
             .cloned()
             .collect();
-        self.settings
-            .borrow()
-            .mcp
-            .allowed_senders
-            .effective(persisted.iter().map(String::as_str))
+        let settings = self.settings.borrow();
+        settings.mcp.allowed_senders.effective(
+            persisted.iter().map(String::as_str),
+            &settings.agent_accounts,
+        )
     }
 
     pub fn sender_allowed(&self, sender: &str) -> bool {

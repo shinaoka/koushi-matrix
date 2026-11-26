@@ -95,6 +95,7 @@ import { EntityAvatar } from "../Shell";
 import { ImeSafeForm } from "../ImeTextControl";
 import type { TimelineTransport } from "./TimelineTransport";
 import { MessageMeta } from "./MessageMeta";
+import { canCancelSend, canRetrySend, displaySendStateKind } from "./sendStateNeeds";
 import { MessageTimestamp } from "./MessageTimestampLabel";
 import { formatMessageTimestamp } from "./messageTimestamp";
 import { ReceiptReaders } from "./ReceiptReaders";
@@ -598,7 +599,9 @@ function TimelineItemRowView({
     )
   ) ?? [];
   const sendState = item.send_state ?? null;
-  const sendStateKind = sendState?.kind ?? null;
+  // #2135: a queued message cannot go out while sending is locked.
+  const sendStateKind = displaySendStateKind(sendState?.kind ?? null, canWrite);
+  const rawSendStateKind = sendState?.kind ?? null;
   const messageKind = item.message_kind ?? "text";
   // #2041: a notice is an information line, not a message. It has no avatar
   // slot and no separate sender column, and it offers no message actions.
@@ -1865,12 +1868,14 @@ function TimelineItemRowView({
             })}
           </div>
         ) : null}
-        {transactionId && sendStateKind === "notSent" && canWrite ? (
+        {transactionId && rawSendStateKind === "notSent" ? (
           <div className="message-send-actions">
-            <button className="message-send-action" type="button" onClick={submitRetrySend}>
-              <RefreshCw size={13} aria-hidden="true" />
-              <span>{t("timeline.resendSend")}</span>
-            </button>
+            {canRetrySend(canWrite) ? (
+              <button className="message-send-action" type="button" onClick={submitRetrySend}>
+                <RefreshCw size={13} aria-hidden="true" />
+                <span>{t("timeline.resendSend")}</span>
+              </button>
+            ) : null}
             <button
               className="message-send-action danger"
               type="button"
@@ -1881,7 +1886,7 @@ function TimelineItemRowView({
             </button>
           </div>
         ) : null}
-        {transactionId && sendStateKind === "sending" && canWrite ? (
+        {transactionId && rawSendStateKind === "sending" && canCancelSend() ? (
           <div className="message-send-actions">
             <button className="message-send-action" type="button" onClick={submitCancelSend}>
               <XCircle size={13} aria-hidden="true" />

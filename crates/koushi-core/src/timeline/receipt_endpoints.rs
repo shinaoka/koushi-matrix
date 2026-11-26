@@ -4,7 +4,7 @@ use eyeball_im::{Vector, VectorDiff};
 use matrix_sdk_ui::timeline::{ReadReceiptSnapshot, TimelineItem as SdkTimelineItem};
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::receipt_index::{ReceiptEpoch, ReceiptReaderIndex};
+use super::receipt_index::{ReceiptEpoch, ReceiptReaderIndex, sort_timestamp};
 use koushi_protocol::view::{ReaderWindowLimit, ReceiptSourceRef, TimelineViewSource};
 
 #[derive(Clone)]
@@ -324,10 +324,16 @@ pub(super) struct ReceiptEndpointChange {
     pub(super) after: Option<ReadReceiptSnapshot>,
 }
 
+type RowEpochs = BTreeMap<(String, String), Arc<std::sync::Mutex<ReceiptEpoch>>>;
+
 /// SDK-position mirror of receipt endpoints only; never retains message bodies.
 pub(super) struct ReceiptEndpointMirror {
     entries: Vector<Option<ReceiptEndpoint>>,
     readers: BTreeMap<String, ReceiptReaderIndex>,
+    /// Epochs of row-scoped (root + hidden reply) windows, keyed by the row's
+    /// content event id. Any endpoint change retires all of them, so a window
+    /// built from two endpoints is never kept past a change to either.
+    row_epochs: std::sync::Mutex<RowEpochs>,
 }
 
 impl ReceiptEndpointMirror {
@@ -351,9 +357,14 @@ impl ReceiptEndpointMirror {
                 )
             })
             .collect();
-        Self { entries, readers }
+        Self {
+            entries,
+            readers,
+            row_epochs: Default::default(),
+        }
     }
 
+    #[cfg(test)]
     pub(super) fn read_window(
         &self,
         source: &ReceiptSourceRef,
@@ -362,8 +373,27 @@ impl ReceiptEndpointMirror {
         limit: ReaderWindowLimit,
         own: Option<&matrix_sdk::ruma::UserId>,
     ) -> Option<RawReceiptWindow> {
+        self.read_row_window(source, None, current, start, limit, own)
+    }
+
+    /// The readers of one display row. `row_partner` is the other event the row
+    /// stands for (a moved thread root's hidden latest reply); the window then
+    /// lists the union of both endpoints, one line per user with the newest
+    /// receipt, which is the set the row's icons publish (#2123).
+    pub(super) fn read_row_window(
+        &self,
+        source: &ReceiptSourceRef,
+        row_partner: Option<&str>,
+        current: &TimelineViewSource,
+        start: u64,
+        limit: ReaderWindowLimit,
+        own: Option<&matrix_sdk::ruma::UserId>,
+    ) -> Option<RawReceiptWindow> {
         if source.timeline != *current {
             return None;
+        }
+        if let Some(partner) = row_partner.filter(|partner| *partner != source.event_id) {
+            return self.read_union_window(source, partner, start, limit, own);
         }
         let index = self.readers(&source.event_id)?;
         let total_count = index.total(own) as u64;
@@ -385,6 +415,98 @@ impl ReceiptEndpointMirror {
             profiles: Vec::new(),
             owner: None,
             epoch: index.window_epoch(),
+        })
+    }
+
+    fn read_union_window(
+        &self,
+        source: &ReceiptSourceRef,
+        partner: &str,
+        start: u64,
+        limit: ReaderWindowLimit,
+        own: Option<&matrix_sdk::ruma::UserId>,
+    ) -> Option<RawReceiptWindow> {
+        let source_index = self.readers(&source.event_id);
+        let partner_index = self.readers(partner);
+        if source_index.is_none() && partner_index.is_none() {
+            return None;
+        }
+        // One line per user with the newest receipt; a tie favours the partner.
+        let newest_in_source = |user: &matrix_sdk::ruma::OwnedUserId, ts: u64| {
+            source_index
+                .and_then(|index| index.receipt(user))
+                .is_some_and(|other| sort_timestamp(other) > ts)
+        };
+        let newest_in_partner = |user: &matrix_sdk::ruma::OwnedUserId, ts: u64| {
+            partner_index
+                .and_then(|index| index.receipt(user))
+                .is_some_and(|other| sort_timestamp(other) >= ts)
+        };
+        let from_source = source_index
+            .into_iter()
+            .flat_map(|index| index.window(0, usize::MAX, own))
+            .filter(|(user, receipt)| !newest_in_partner(user, sort_timestamp(receipt)));
+        let from_partner = partner_index
+            .into_iter()
+            .flat_map(|index| index.window(0, usize::MAX, own))
+            .filter(|(user, receipt)| !newest_in_source(user, sort_timestamp(receipt)));
+        let mut from_source = from_source.peekable();
+        let mut from_partner = from_partner.peekable();
+        // Both streams are already in (newest first, user) order; merge them
+        // lazily so a page walks only `start + limit` entries.
+        let merged = std::iter::from_fn(|| {
+            let take_source = match (from_source.peek(), from_partner.peek()) {
+                (Some((lu, lr)), Some((ru, rr))) => {
+                    (std::cmp::Reverse(sort_timestamp(lr)), *lu)
+                        <= (std::cmp::Reverse(sort_timestamp(rr)), *ru)
+                }
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => return None,
+            };
+            if take_source {
+                from_source.next()
+            } else {
+                from_partner.next()
+            }
+        });
+        let own_total =
+            |index: Option<&ReceiptReaderIndex>| index.map_or(0, |index| index.total(own) as u64);
+        let overlap = partner_index.map_or(0, |partner_index| {
+            source_index.map_or(0, |index| {
+                index
+                    .window(0, usize::MAX, own)
+                    .filter(|(user, _)| partner_index.receipt(user).is_some())
+                    .count() as u64
+            })
+        });
+        let total_count = own_total(source_index) + own_total(partner_index) - overlap;
+        let start = start.min(total_count);
+        let receipts = merged
+            .skip(start as usize)
+            .take(usize::from(limit.get()))
+            .map(|(user, receipt)| koushi_state::LiveReadReceipt {
+                user_id: user.to_string(),
+                display_name: None,
+                original_display_label: String::new(),
+                avatar: None,
+                timestamp_ms: receipt.ts.map(|timestamp| timestamp.0.into()),
+            })
+            .collect();
+        let epoch = self
+            .row_epochs
+            .lock()
+            .expect("row epochs poisoned")
+            .entry((source.event_id.clone(), partner.to_owned()))
+            .or_insert_with(|| Arc::new(std::sync::Mutex::new(ReceiptEpoch::new())))
+            .clone();
+        Some(RawReceiptWindow {
+            total_count,
+            start,
+            receipts,
+            profiles: Vec::new(),
+            owner: None,
+            epoch: Arc::downgrade(&epoch),
         })
     }
 
@@ -463,6 +585,16 @@ impl ReceiptEndpointMirror {
             (Some(before), Some(after)) => after.changes_since(before).next().is_some(),
             _ => true,
         });
+        if !changes.is_empty() {
+            let mut epochs = self.row_epochs.lock().expect("row epochs poisoned");
+            epochs.retain(|(source, partner), epoch| {
+                let touched = changes.contains_key(source) || changes.contains_key(partner);
+                if touched {
+                    epoch.lock().expect("receipt epoch poisoned").valid = false;
+                }
+                !touched
+            });
+        }
         changes
     }
 }

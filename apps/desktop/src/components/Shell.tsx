@@ -14,6 +14,7 @@ import {
   Activity,
   AlertTriangle,
   Bell,
+  Bot,
   Bug,
   ChevronDown,
   ChevronsDownUp,
@@ -267,11 +268,10 @@ export function AccountTabStrip({
 
   return (
     <nav className="account-tab-strip" aria-label={t("settings.accountSettings")}>
-      {tabs.filter((tab) => !showActivity || !tab.hidden || tab.id === selectedTabId).map((tab) => {
+      {tabs.map((tab) => {
         const label = accountTabLabel(tab);
         const status = statusLabel(tab.status);
         const selected = tab.id === selectedTabId;
-        const counts = tab.showsCounts !== false;
         const avatarSource = tab.avatarSourceRef
           ? renderableThumbnailSourceUrl(tab.avatarSourceRef)
           : null;
@@ -310,14 +310,19 @@ export function AccountTabStrip({
               </span>
               <span className="account-tab-label">{label}</span>
               <span className="account-tab-server">{shortHomeserverName(tab.homeserver)}</span>
+              {tab.isAgent ? (
+                <span className="account-tab-agent" role="img" aria-label={t("accountTabs.agent")} title={t("accountTabs.agent")}>
+                  <Bot size={ICON_SIZE.micro} aria-hidden="true" />
+                </span>
+              ) : null}
               {!showActivity ? null : tab.status === "ready" ? (
                 <>
-                  {counts && tab.unreadCount > 0 ? (
+                  {tab.unreadCount > 0 ? (
                     <span className="account-tab-unread">{tab.unreadCount > 99 ? "99+" : tab.unreadCount}</span>
-                  ) : !counts || (tab.inviteCount ?? 0) === 0 ? (
+                  ) : (tab.inviteCount ?? 0) === 0 ? (
                     <span className="account-tab-ready-dot" role="img" aria-label={status} />
                   ) : null}
-                  {counts && (tab.inviteCount ?? 0) > 0 ? (
+                  {(tab.inviteCount ?? 0) > 0 ? (
                     <span className="account-tab-invite" title={t("accountTabs.inviteCount", { count: tab.inviteCount ?? 0 })}>
                       {tab.inviteCount! > 99 ? "99+" : tab.inviteCount}
                     </span>
