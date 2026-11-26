@@ -568,7 +568,12 @@ function applySettingsPatch(
     display: patch.display ?? values.display,
     window: patch.window ?? values.window,
     updates: patch.updates ?? values.updates,
-    mcp: patch.mcp ?? values.mcp,
+    // `mcp` in a patch carries only the switch; the allow-list has its own field (#2110).
+    mcp: {
+      ...values.mcp,
+      ...(patch.mcp ?? {}),
+      allowed_senders: patch.mcp_allowed_senders ?? values.mcp.allowed_senders
+    },
     media: patch.media ?? values.media,
     timeline: patch.timeline ?? values.timeline,
     search_crawler: patch.search_crawler ?? values.search_crawler,

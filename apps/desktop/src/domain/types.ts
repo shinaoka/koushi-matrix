@@ -572,8 +572,9 @@ export interface McpSettings {
 }
 
 export interface MentionAllowedSenders {
-  added: string[];
-  removed: string[];
+  /** Settings snapshots are readonly, so both lists are too. */
+  readonly added: readonly string[];
+  readonly removed: readonly string[];
 }
 
 export type McpNeed = "read" | "send" | "attachments" | "message_actions" | "draft";
