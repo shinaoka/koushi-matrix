@@ -14,17 +14,31 @@ design follows that text; rebase and re-check it when #2137/#2125 land.
 
 | # | Decision |
 | --- | --- |
-| D1 | Protocol 2 is additive. A `protocol: 1` hello is served exactly as today and answered `hello_ok{protocol:1}`. Profiles, `subscribe`, `ack` exist only on a `protocol: 2` hello. |
-| D2 | Version mismatch is `Unsupported` with `reason: "protocol_version"` plus `supported: [..]`. Host → client and client → host are both typed. |
-| D3 | Profiles live in a new owner-written file `<data_dir>/mcp/profiles.json`, device scope, same fail-closed rules as `connections.json`. The binding to one account is immutable. |
-| D4 | The profile secret is 256 random bits. The host stores only its SHA-256 verifier. The secret itself is written once to a `0600` file the plugin reads. It is not a store unlock key, so Key Management's secret-store rule and the headless open decision do not apply, and macOS and a headless host behave identically. |
-| D5 | Profile grants live in the profile row, flat flags for the one bound account. `connections.json` is not touched: no schema bump, no migration, no downgrade hazard. A profiled connection never reads client-name grants; an unprofiled one never reads profile grants. |
-| D6 | Push is paced by the durable feed, not buffered. Core keeps at most `W = 64` unacknowledged rows in flight per subscription. `resync_required` is raised only for a cursor the feed can no longer serve, or a consumer that stalls. |
-| D7 | Cursor acknowledgement: **explicit `ack`** (option 2). Core persists one acknowledged cursor per profile; a plugin acks at the strongest hand-off its harness can observe. |
+| D1 | Protocol 2 is additive and is **negotiated per connection**. A `protocol: 1` hello is served exactly as today, answered `hello_ok{protocol:1}`, and its `status` reports `1`. Profiles, `subscribe`, `ack` exist only on a `protocol: 2` hello, and a v2 hello must carry a profile (`profile_required`). The launcher sends 2 only when `--profile` is given. |
+| D2 | Every handshake error from a new host carries a `reason`. Version mismatch is `Unsupported/protocol_version` plus `supported: [..]`; a profile on a v1 hello is `Unsupported/profile_requires_protocol_2`; an invalid client name is `Unsupported/client_name`. The launcher validates the name before the handshake and tells the user what to do for each. |
+| D3 | Profiles live in a new owner-written file `<data_dir>/mcp/profiles.json`, device scope, same fail-closed rules as `connections.json`, written only by the low-frequency owner path under a file lock. The binding to one account is immutable. Two profiles may bind the same account; they stay distinct because the grant subject is the profile id. |
+| D4 | The profile secret is 256 random bits. The host stores only its SHA-256 verifier. The secret itself is written once to a `0600` file (`O_EXCL`) the plugin reads. Key Management's secret-store rule does not apply because it governs the at-rest unlock key, not authentication credentials; macOS and a headless host behave identically. |
+| D5 | Every connection carries a `GrantSubject::{Client(name), Profile(id)}`. Every grant, approval, idempotency key, activity-page cursor and draft key is derived from the subject only; `client.name` becomes a display label that is not a key. Profile grants live in the profile row. `connections.json` is not touched. |
+| D6 | Push is paced by the durable feed, not buffered. Core keeps at most `PUSH_WINDOW` (64, see Constants) unacknowledged rows in flight per subscription. `resync_required` is raised only for a cursor the feed can no longer serve, or a consumer that stalls. |
+| D7 | Cursor acknowledgement: **explicit `ack`** (option 2). Core persists one acknowledged cursor per profile in its own file, never in `profiles.json`; a plugin acks at the strongest hand-off its harness can observe. |
 | D8 | Lease: in-memory map, RAII guard owned by the subscription, released on any connection end. Requests are not leased. |
-| D9 | Attachment fields (`message_kind`, `mime_type`, `size_bytes`) are recorded at intake in #2131, never read at push time. Absent fields mean "unknown". |
+| D9 | Attachment fields (`message_kind`, `mime_type`, `size_bytes`) are recorded at intake and are owned by #2131, never read at push time. Absent fields mean "unknown". |
 | D10 | UI: one new "Agent profiles" section on the existing AI assistants page, rendering a Rust `profiles` list. Create, copy snippet, connected, revoke. |
-| D11 | Four PRs into `next/agent-core`. PR 1 carries profiles and isolation only: no subscription, no UI. |
+| D11 | Five PRs into `next/agent-core`: 1a wire and handshake, 1b profiles store and isolation (with an end-to-end create-and-use test), 2 subscription, 3 UI, 4 attachment end-to-end test. No subscription or UI before PR 2/3. |
+
+### Constants
+
+All tunables live in one module (`crates/koushi-mcp-host/src/profile_limits.rs`),
+each with its reason next to it. They are not API and not settings. The other
+sections refer to them by name.
+
+| Constant | Value | Reason |
+| --- | --- | --- |
+| `PUSH_WINDOW` (`W`) | 64 rows | Starting value, not derived. Large enough to cover a burst of mentions in one sync, small enough that a stalled consumer pins little and redelivery after a resync is cheap. |
+| `ACK_STALL` | 60 s | Starting value. Longer than a slow model turn and a harness restart, shorter than the time a missing wake-up would go unnoticed. |
+| `WRITE_STALL` | 15 s | Starting value. A local socket write that blocks this long means the peer is not reading. |
+| `WRITER_CHANNEL` | 128 frames | Twice `PUSH_WINDOW`, so a full window plus responses never blocks the reader loop. |
+| `ACK_FLUSH` | 1 s | Bounds acknowledged-cursor writes; a crash redelivers at most the last second. |
 
 ## 1. The protocol
 
@@ -44,19 +58,30 @@ design follows that text; rebase and re-check it when #2137/#2125 land.
 ### Decision D1: additive protocol 2
 
 - `PROTOCOL_VERSION` becomes the highest supported version, `2`, and the host gets
-  `SUPPORTED_PROTOCOLS = [1, 2]`.
+  `SUPPORTED_PROTOCOLS = [1, 2]`. The constant is **never** echoed on its own:
+  the version is negotiated at `hello` and stored on the connection
+  (`negotiated_protocol`). Both `hello_ok.protocol` and `status`'s `"protocol"`
+  field (`server.rs:493` returns `PROTOCOL_VERSION` today) report the connection's
+  negotiated value, so a v1 connection's `status` still says `1`. A test pins this
+  for `status` as well as `hello_ok`.
 - `ClientMessage::Hello` gains `profile: Option<ProfileHello>` with
   `#[serde(default, skip_serializing_if = "Option::is_none")]`. `ProfileHello` is
   `{ id: String, secret: String }`. `hello` otherwise keeps its fields.
 - A hello with `protocol: 1` is handled by today's path unchanged. If it carries a
-  `profile` it is refused as malformed (a v1 peer cannot know the field), so a
-  profile can never be presented on the legacy path.
+  `profile` it is refused with `Unsupported`, `reason: "profile_requires_protocol_2"`
+  (a v1 peer cannot know the field), so a profile can never be presented on the
+  legacy path and the refusal cannot be mistaken for a token rejection
+  (`Unauthorized`).
 - The host answers `hello_ok` with the protocol the client asked for. A v1 client
   therefore receives the same bytes as today. The v1 launcher compares
   `HelloOk.protocol == 1` and keeps working without a rebuild.
-- A `protocol: 2` hello without `profile` is an unprofiled connection with v2
-  framing: same client-name grants, same tools. It may not `subscribe`
-  (`not_permitted`, reason `profile_required`).
+- A `protocol: 2` hello without `profile` is refused with `Unsupported`, `reason:
+  "profile_required"`. There is no unprofiled v2 connection, which removes a path
+  to test and a way to subscribe without a profile.
+- **The launcher sends `protocol: 1` unless `--profile` is given**, and `2` only
+  with it. A launcher newer than the host therefore keeps working without a
+  profile, as the issue requires ("existing unprofiled MCP connections keep
+  working"); only a profiled launch needs a v2 host.
 - The existing per-launch token from `endpoint.json` is still required on both
   versions. The profile secret is additional proof, not a replacement: a process
   must have read the owner's endpoint file and know the profile secret.
@@ -66,38 +91,53 @@ design follows that text; rebase and re-check it when #2137/#2125 land.
   - host → client `Push{sub, rows, cursor}` and `SubEnd{sub, error}`.
   A v1 peer is never sent either, because it cannot have subscribed.
 - `ServerMessage::Error` gains optional `reason` and `supported` fields
-  (`skip_serializing_if`), so existing decoders still parse it.
+  (`skip_serializing_if`), so existing decoders still parse it. **Every handshake
+  error from a new host carries a `reason`** (token and profile rejections are
+  `Unauthorized` with `reason`; mismatches are `Unsupported` with `reason`).
+  Errors without a `reason` can then only come from an old host.
 
-### Decision D2: the version-mismatch error, both directions
+### Decision D2: handshake errors, both directions
 
 Reuse the closed `ErrorCode` set and the `reason` refinement the wire already uses
 for `resync_required` (`wire.rs:79-85`), rather than add a code an old peer cannot
 decode.
 
-- **Client newer than host.** A host that only supports `[1]` is a build before this
-  stage and cannot be changed. It already answers `Error{unsupported, "this
-  koushi-mcp launcher is older..."}` after the token check. The v2 client treats
-  `unsupported` with no `reason` in reply to its hello as "host older than the
-  protocol I need" and raises its own typed `WireError{Unsupported, reason:
-  "protocol_version"}` naming the version it needed. This is the only direction
-  that has to be inferred.
-- **Client unsupported by the new host** (a number outside `[1,2]`, for example 3,
-  or 0). After the token check the host answers `Error{unsupported, reason:
-  "protocol_version", supported:[1,2], message:...}` and closes. The launcher maps
-  it to the same typed error.
-- **Host replies with a protocol the client did not ask for.** The client fails
-  with `Unsupported`/`protocol_version` (today it fails with the same code but no
-  reason).
+The host already answers `Error{Unsupported, CLIENT_NAME_RULE}` for an invalid
+client name (`read_hello`). That is also `Unsupported`, so without a `reason` it
+would be misread as a protocol mismatch. Hence:
+
+- The launcher validates the client name against the same rule **before** it opens
+  the handshake, so a bad name is reported locally and never reaches the host.
+- A new host answers an invalid name `Unsupported/client_name`.
+
+| Situation | Wire | Launcher tells the user |
+| --- | --- | --- |
+| Profiled launcher (v2) in front of a host that supports only `[1]` | The old host answers its legacy `Unsupported` with no `reason`, after the token check. A reply without `reason` can only come from an old host (all new-host handshake errors carry one), so the client maps it to `Unsupported/protocol_version`. | "This Koushi is too old for agent profiles. Update Koushi." |
+| Unprofiled launcher (v1) in front of any host | Served as today. | n/a |
+| Number outside `[1,2]` (0, 3) | `Unsupported/protocol_version`, `supported:[1,2]`, after the token check; connection closed. | "Koushi and the launcher do not share a protocol. Register the launcher again, or update Koushi." |
+| v1 hello carrying `profile` | `Unsupported/profile_requires_protocol_2` | Internal; a correct launcher cannot produce it. |
+| v2 hello without `profile` | `Unsupported/profile_required` | Internal; same. |
+| New launcher, old host: host replies a protocol the client did not ask for | `Unsupported/protocol_version` on the client side. | "Update Koushi." |
+| Launcher older than the host (host no longer serves its version) | `Unsupported/protocol_version`, `supported:[...]`. | "Register the launcher again" (the old launcher prints the host's message text). |
+| Invalid client name | `Unsupported/client_name` (launcher normally catches it first). | "The assistant name is not allowed: <rule>." |
+| Bad token | `Unauthorized/token` | existing behaviour |
+| Bad profile id or secret | `Unauthorized/profile_secret` (identical for both) | "The profile secret was rejected. Create the profile again." |
+
 - The existing "outdated launcher" note on the settings page
-  (`note_outdated_launcher`, `server.rs:247`) is kept for the second case.
+  (`note_outdated_launcher`, `server.rs:247`) is kept for the protocol-mismatch case.
 - The check stays after the token, so an unauthenticated peer cannot probe the
   supported set and cannot put a name on the settings page.
 
 ### Decision: unprofiled stays byte-for-byte
 
-Test evidence, not argument: PR 1 records golden transcripts of a v1 session
+Test evidence, not argument: PR 1a records golden transcripts of a v1 session
 (hello, `tools/call list_accounts`, `status`, an error) from `HEAD` before the
-change and asserts the new host reproduces them byte for byte (section 10).
+change and asserts the new host reproduces them (section 10).
+
+"Byte for byte" excludes two fields that are not stable between runs:
+`connection_id` (it contains a pid) and `app_version`. The transcript comparator
+masks exactly those two (`hello_ok.connection_id`, `hello_ok.app_version`) and
+nothing else. Every other byte, including `status.protocol == 1`, is compared.
 
 ## 2. Profiles
 
@@ -110,14 +150,28 @@ change and asserts the new host reproduces them byte for byte (section 10).
 - Scope: this device. Profiles are not synced and not part of any account's
   encrypted store. A profile outlives sign-out of its account and is dead until
   that account is signed in again.
+- Writers: only the low-frequency owner path (create, revoke, grant edit), and
+  each write is a read-modify-write under an exclusive file lock
+  (`profiles.json.lock`, `flock`) that re-reads the file inside the lock. Nothing
+  on the request path or the ack path writes this file, which keeps "no IPC method
+  changes the store" literally true and means a stale writer in another process
+  (the Linux CLI of #2109) cannot resurrect a profile the owner revoked: the
+  revoke is a delete under the lock, and any later writer re-reads first.
 - Rules copied from the grant store: schema number, unknown keys preserved, a
   missing/malformed/newer file grants nothing, the app never overwrites a file it
   could not parse, every request re-reads (or checks a generation-stamped
   cache of) the file so a revocation applies to the next request.
 - Row: `profile_id` (`prof_` + 128 random bits, hex), `label` (owner text, sanitised
   with `consent::sanitize`, shown only in the owner's UI), `account_id`, the five
-  grant flags, `secret_verifier`, `created_at_ms`, `feed_generation` and
-  `acked_cursor` (section 6). The secret is not in the row.
+  grant flags, `secret_verifier`, `created_at_ms`. The secret is not in the row.
+  The acknowledged cursor and the creation baseline (`feed_generation`, head
+  cursor) are **not** in this file: they live in the cursor file of section 6.
+- Two profiles may bind the same account (for example a reader and a sender
+  assistant, or two harnesses on one agent account). That is allowed because the
+  grant subject is the profile id, not the account: each has its own grants,
+  approvals, idempotency keys, cursors, lease and cursor file. Neither sees the
+  other, and sending from the same account is the account's, not the profile's,
+  concern (messages are attributed to the account).
 
 ### Binding to exactly one account (D3)
 
@@ -136,17 +190,39 @@ change and asserts the new host reproduces them byte for byte (section 10).
 
 - Generated in the host from the OS CSPRNG: 32 bytes, base64url. Stored as
   `SHA-256(secret)` in the row. A 256-bit uniformly random secret needs no slow
-  KDF. Comparison is constant time (`server.rs:441-452` `constant_time_eq`).
+  KDF. The comparison is constant time over the **hashed** values (hash the
+  presented secret, compare 32 bytes with `constant_time_eq`, `server.rs:441-452`),
+  so length and content do not leak.
+- Unknown id: the host verifies against a fixed dummy verifier and takes the same
+  path, so timing does not disclose which ids exist.
+- Failed authentication: no lockout. A 256-bit secret does not need one, and a
+  lockout would let anyone holding the endpoint token lock the real plugin out.
+  Instead each rejection is logged (id prefix only, never the presented secret)
+  and the row records `last_rejected_ms` in the cursor file (not
+  `profiles.json`, section 6) and surfaces it in the UI as a "last rejected"
+  time, so the owner sees an attacker or a stale launcher.
+- Creation order and file hygiene: the secret file is created with `O_CREAT|O_EXCL`
+  and mode `0600` at open time (not chmod afterwards; the directory is `0700`),
+  written, `fsync`ed, then the verifier row is written under the lock. If the
+  process dies in between, an orphan secret file exists with no row, which
+  authenticates nothing and is removed on the next start. Revoke runs in the
+  reverse order: the row is deleted first (so authentication stops), then the
+  secret file is unlinked. The launcher refuses a secret file whose owner is not
+  the current user or whose mode has any group/other bit, and does not follow
+  symlinks.
 - Delivery: at creation the host writes the secret once to
   `<data_dir>/mcp/profiles/<profile_id>.secret` (`0600`, directory `0700`) and the
   launch snippet carries only the **path**. The secret never goes in argv, the
   clipboard, an environment variable, a log, or a snapshot DTO; it is not shown in
   the UI. This extends the rule the repository already holds for passwords and
   recovery keys.
-- Why not Keychain, and what Key Management says: the rule covers the *local
-  unlock secret per Matrix account and device* (it protects data at rest in the
-  SDK and search stores). A profile secret protects no data. It authorises a
-  connection to a running host that already needs a `0600` socket in a `0700`
+- Why not Keychain, and what Key Management says: the secret **does** authorise
+  returning decrypted message data and sending as the account, so it is not
+  harmless. Key Management still does not apply, for a different reason: that rule
+  governs the *at-rest unlock key* for the SDK and search stores, not authentication
+  credentials to a running host. And an attacker with the same local user already
+  holds the `endpoint.json` token, so a Keychain item would not raise the bar
+  against that attacker. The host needs a `0600` socket in a `0700`
   directory and a per-launch token. The plugin is a separate non-interactive
   process; a Keychain item would need an ACL grant or a prompt per harness and
   would not exist at all on a headless host. A file the plugin reads is also what
@@ -159,22 +235,55 @@ change and asserts the new host reproduces them byte for byte (section 10).
 - Rotation is revoke plus create; there is no rotate-in-place in Release 1.
 - Wrong secret and unknown profile id produce the identical
   `Unauthorized{reason:"profile_secret"}` so ids cannot be enumerated.
+- **Same-user isolation does not exist.** The agent process runs as the owner's OS
+  user and can read every `profiles/*.secret`, `endpoint.json` and the socket.
+  "A profile cannot reach another profile" therefore holds for an honest plugin
+  that only opens its own file, not for a malicious or prompt-injected agent that
+  goes looking. The UI text must say "limits what an assistant is allowed to do",
+  not "prevents an assistant from reaching other profiles".
 
-### What a profiled connection may do
+### The grant subject (D5, resolves the isolation blocker)
 
-After a successful hello the connection carries `ProfileIdentity{id, account_id}`
-in `ClientIdentity` (`crates/koushi-mcp-host/src/consent.rs:85`).
+Today `client.name` is the key for grants and several other things. Seven places
+besides the grant lookup read it: `list_accounts` (`store.account(&client.name,
+…)`, `handlers.rs:112`), `read_recent_activity` (`store().allows(&client.name,
+…)`, `:1647`) and its `activity_pages.read(&client.name, …)` (`:1683`),
+`DirectRetryKey.client` (`:809`, `:943`), `AssistantDraftRequest.client_name`
+(`:1147`), and `consent.rs`'s `pending`, `denied`, `seen` and `remove_client`.
+`required_account_id` takes no client and decides no grant, so it cannot be the
+choke point. A profiled connection that claimed the name "Claude Code" would pass
+the client-name grants of another connection; a differently named one would fail
+`account_unavailable`. The design is therefore changed at the identity:
 
-- `list_accounts` returns exactly one entry, the bound account, with its own
-  permissions. Today it lists every account with a status
-  (`handlers.rs:106-148`). A profiled connection never sees another account id,
-  so it learns neither the owner's nor another agent's.
-- Every account-scoped tool resolves `account_id` through one choke point
-  (`required_account_id`, `handlers.rs:1964`; the connection resolver at
-  `handlers.rs:1950`). For a profiled connection an absent `account_id` defaults to
-  the bound account and any other value is `not_permitted`, reason
-  `profile_account`. This is enforced before authorisation, so another account's
-  existence is not revealed by the error shape.
+- `ClientIdentity` (`consent.rs:85`) is split into `label: String` (display only,
+  the sanitised client name) and `subject: GrantSubject`, where
+  `enum GrantSubject { Client(ClientName), Profile(ProfileId) }`. A profiled
+  connection has `Profile(id)`, an unprofiled one `Client(name)`.
+- `label` is a private field with a `Display`-only accessor. It does not implement
+  `Hash`, `Eq` or `Into<String>`, and no function that takes a key accepts it. The
+  compiler therefore rejects any attempt to key a grant, approval, idempotency
+  key, cursor or draft on the label. `ClientName` and `ProfileId` are distinct
+  newtypes, so a profile id can never be passed where a name is expected either.
+- Every site above takes a `&GrantSubject`:
+
+| Site | Keyed on |
+| --- | --- |
+| Grant lookup and `authorize` (`consent.rs`) | `(subject, account, need)`; `Client` reads `connections.json`, `Profile` reads the profile row |
+| `ConsentBroker` `pending`, `denied`, `seen`, `remove_client` (renamed `remove_subject`) | `subject` |
+| `list_accounts` | `Client`: today's listing. `Profile`: exactly one entry, the bound account, with the profile's permissions. It never sees another account id. |
+| `read_recent_activity` permission check and `activity_pages` cursor | `(subject, account)`. A cursor minted for one subject is rejected for another, so a name collision cannot replay a page. |
+| `DirectRetryKey` (send idempotency) | `(subject, account, key)` |
+| `AssistantDraftRequest` / `get_draft` | `(subject, account)`; the draft row stores the subject |
+| Settings "assistants" list | `Client` rows as today; `Profile` rows from the profile store |
+
+- Profile connections resolve `account_id` through the same subject: the bound
+  account is the only one any profile site can resolve. `required_account_id` stays
+  as the *argument* check (below); it is no longer claimed to decide grants.
+- `account_id` stays **required** in every tool schema. A profile does not make it
+  optional or default it. A value other than the bound account is
+  `not_permitted/profile_account`, never "omitted means the bound account". The
+  check runs before authorisation, so the error shape does not reveal whether
+  another account exists.
 - **No IPC method creates, edits or widens a profile.** There is no `profile/*`
   method. The only writers of `profiles.json` are owner paths: the Tauri commands
   in section 8 (macOS) and the CLI (#2109, Linux). A grant widening by the approval
@@ -192,12 +301,14 @@ in `ClientIdentity` (`crates/koushi-mcp-host/src/consent.rs:85`).
   exposed to the shared-name leak described in the issue. This stage does not close
   it for them; it gives agents a path that is not exposed. The settings page says
   which assistants are profiled.
-- A profiled connection's `client.name` is a label only. It is never used for grant
-  lookup, so a profile can neither inherit nor leak a "Claude Code" grant.
+- A profiled connection's name is a label only (the type split above). It is never a
+  key anywhere, so a profile can neither inherit nor leak a "Claude Code" grant, and
+  a client-name connection can never use a profile grant: the `Client` subject has no
+  path to the profile store.
 - Initial grants are chosen by the owner when creating the profile (checkboxes;
   `read` on, others off by default). A missing permission later goes through the
   existing `ConsentBroker` approval dialog with the key widened from
-  `(client, account, need)` to `(client | profile, account, need)`
+  `(client, account, need)` to `(subject, account, need)`
   (`consent.rs:198-203`, `385-` `authorize`). The dialog names the profile label and
   the bound account. In `FailClosed` mode (a host without a consent surface) it
   answers `consent_required`, as today.
@@ -208,6 +319,12 @@ in `ClientIdentity` (`crates/koushi-mcp-host/src/consent.rs:85`).
   lease is released. Independently, every request and every push batch re-checks
   the row, so a revoke is effective even if the signal is missed. Lowering a single
   flag (for example `read`) ends a live subscription at its next batch.
+- In-flight requests on revoke: a `send_message` that has already started sending
+  **cannot be recalled** and may complete (the revoke stops the next request, not
+  the one on the wire). Long polls (`wait_for_events`, `wait_for_mentions`) and
+  pending approval dialogs stop at their existing post-wait re-check of the row and
+  return `unauthorized`/`profile_revoked` without returning data. The owner-facing
+  text for revoke says this.
 - **An attacker with the profile secret** (and, necessarily, the per-launch token
   and a connection to the `0600` socket as the same OS user) can: act on the bound
   account with the profile's granted flags only; hold the lease and so deny the real
@@ -218,10 +335,12 @@ in `ClientIdentity` (`crates/koushi-mcp-host/src/consent.rs:85`).
   the row; create, widen, rebind or delete any profile or grant (no IPC method);
   read or recover the secret (only the verifier is stored); affect another
   profile's lease or cursor; subscribe twice.
-  **Out of scope, same as today's token:** a malicious process of the same OS user
-  can also read the `0600` secret file and `endpoint.json`. The boundary is
-  accident and least privilege (a plugin only holds its own file), not
-  same-user isolation. The settings text must not claim more.
+  **Out of scope, same as today's token:** a malicious process of the same OS user,
+  including the agent itself, can read every profile's `0600` secret file under
+  `profiles/` and `endpoint.json`, and so can act as any profile. The boundary is
+  accident and least privilege (an honest plugin only opens its own file), not
+  same-user isolation. "Cannot reach another account" above holds for the holder of
+  *one* secret. The settings text must not claim more.
 
 ## 4. The push subscription
 
@@ -229,7 +348,7 @@ in `ClientIdentity` (`crates/koushi-mcp-host/src/consent.rs:85`).
 
 The strict one-request loop (`server.rs:288-340`) cannot interleave pushes. The
 connection becomes: one writer task owning the write half and fed by a bounded
-channel (capacity 128 frames); the reader loop dispatching requests; the
+channel (capacity `WRITER_CHANNEL`); the reader loop dispatching requests; the
 subscription pump, when present, sending into the same channel. Responses stay
 serialised with the existing close/shutdown watches. A v1 connection uses the
 same code with no pump, so its observable behaviour is unchanged (proved by the
@@ -256,7 +375,7 @@ golden transcripts).
 
 - The cursor is the wake feed's `mf1` cursor, bound to the account and the log's
   generation (`mention_feed.rs:47`, `281`). No new cursor space.
-- Window: at most `W = 64` rows sent and not yet acknowledged. When the window is
+- Window: at most `PUSH_WINDOW` (64) rows sent and not yet acknowledged. When the window is
   full the pump stops reading the feed. Nothing is buffered in memory beyond that
   window and the 128-frame channel, because the feed is already a durable log
   (1000 rows or 30 days, `mention_feed.rs:40-43`). Backpressure replaces
@@ -275,8 +394,8 @@ would skip or stall:
 | --- | --- | --- |
 | `expired_cursor` | The unacknowledged position fell out of retention (1000 rows / 30 days) before the consumer acked. Rows were lost to the feed. | Resubscribe with `after:"retained"`, treat history as possibly missed, de-duplicate by event id. |
 | `generation_changed` | The log was recreated. | Same. |
-| `ack_stalled` | The window stayed full with no `ack` for 60 s. | Resubscribe with `after` omitted; unacked rows are redelivered. |
-| `write_stalled` | A frame could not be written for 15 s. | Same. |
+| `ack_stalled` | The window stayed full with no `ack` for `ACK_STALL` (60 s). | Resubscribe with `after` omitted; unacked rows are redelivered. |
+| `write_stalled` | A frame could not be written for `WRITE_STALL` (15 s). | Same. |
 
 For the last two, nothing is lost: Core still holds the acknowledged cursor, so
 resuming redelivers everything after it. Rows are never silently skipped: they
@@ -350,13 +469,22 @@ the existing `resync_required` convention (`wire.rs:79-85`).
   cursor older than the current acknowledged one is a no-op (idempotent). A cursor
   newer than anything sent on this subscription is `Unsupported`, reason
   `ack_ahead`.
-- Core persists one `acked_cursor` per profile, in the profile row, written
-  coalesced (at most one write per second, flushed when the subscription ends).
-  A crash can lose the last second of acks, which causes redelivery, never loss.
-- `subscribe` without `after` resumes after `acked_cursor`. A new profile's baseline
-  is the feed head at creation (`feed_generation`, head cursor), so rows that arrive
-  between creation and the plugin's first start are delivered, and old history is
-  not replayed.
+- Core persists one acknowledged cursor per profile in **its own file**,
+  `<data_dir>/mcp/profile-state/<profile_id>.json` (`0600`), which also holds the
+  creation baseline (`feed_generation`, head cursor) and `last_rejected_ms`. It is
+  not in `profiles.json`: that file is owner-written and low-frequency, and an ack
+  every second would both break "no IPC method changes the store" and open a
+  read-modify-write that could resurrect a profile revoked from another process.
+  Each cursor file is written only by the host that owns that profile's lease, with
+  an atomic temp-and-rename, coalesced (at most one write per second, flushed when
+  the subscription ends). A crash can lose the last second of acks, which causes
+  redelivery, never loss. The file is deleted at revoke; a state file without a
+  profile row is ignored and swept at start, so a late write cannot make a revoked
+  profile reappear (authentication never reads this file).
+- `subscribe` without `after` resumes after the acknowledged cursor. A new profile's
+  baseline is the feed head at creation, stored in the same file, so rows that
+  arrive between creation and the plugin's first start are delivered, and old
+  history is not replayed.
 - The meaning of `ack` in the canon: *"the plugin asserts that the harness has
   accepted this row, by the strongest signal that harness gives it."* Core
   guarantees at-least-once **to** that assertion and nothing past it. The canon text
@@ -391,7 +519,7 @@ the existing `resync_required` convention (`wire.rs:79-85`).
   `audio`, `video`, `location`, `other`), and for media `mime_type` and
   `size_bytes`. All optional on the wire (absent means unknown). No filename, no
   body, no caption, no bytes.
-- **Source (D9): recorded at intake in #2131.** The sync handler that calls
+- **Source (D9): recorded at intake, and owned by #2131, not by this stage.** The sync handler that calls
   `MentionFeed::record` already holds the decoded event and its `info`
   (`crates/koushi-core/src/mention_feed/intake.rs`, `MentionCandidate` at
   `mention_feed.rs:84`). The fields are added to `MentionCandidate` and
@@ -400,8 +528,14 @@ the existing `resync_required` convention (`wire.rs:79-85`).
   push path; it fails for exactly the rows redelivered after a restart or a resync;
   and the event can be redacted or gone from the cache by then. Intake time has the
   content for free and the answer is stable across redelivery.
-- Consequence: if #2131 lands without the fields, PR 4 adds them to intake rather
-  than reading at push time. The issue allows either; this is the choice.
+- Consequence: the intake fields move into #2131 (they change `MentionCandidate`
+  and the persisted entry, which is that issue's surface). This stage does not edit
+  intake. If #2131 lands without them, the fields are absent and rows push with
+  "unknown" until it does; PR 4 is then only the end-to-end test. Reading at push
+  time stays rejected.
+- Encryption at rest: the feed log is committed to the account's encrypted store
+  (`mention_feed.rs:7`), so the new fields inherit that. They are metadata only
+  (kind, MIME type, size); no filename, body or bytes are added.
 - A row whose fields were never recorded (written before #2131, or an `invite`) still
   pushes with them absent. A row whose event is no longer available needs no special
   case: the push never touches the event.
@@ -466,31 +600,45 @@ and no CLI.
 All into `next/agent-core`. Each leaves Koushi working and ships unreachable until
 PR 3 gives the owner a way to create a profile.
 
-**PR 1 — Protocol 2 and profiles; isolation only.** `wire.rs` (v2 hello, `Error`
-fields, `ProfileBusy` code reserved), `server.rs` handshake (`SUPPORTED_PROTOCOLS`,
-version mismatch), `profiles.rs` (store, verifier, secret file, creation and revoke as
-Rust functions only), profile-aware `ClientIdentity`, `list_accounts` and the account
-choke point, profile grants through `ConsentBroker`. Launcher `--profile` options.
-*Proves:* two profiles cannot reach each other's account or the owner's; unprofiled
-behaves byte for byte; version mismatch is typed both ways; revocation. *Out:*
-`subscribe`, `ack`, lease, UI, attachment fields, canon edits beyond the profile
-paragraph.
+**PR 1a — Wire and handshake.** `wire.rs` (v2 hello with `profile`, `Error`
+`reason`/`supported`, `ProfileBusy` reserved), per-connection `negotiated_protocol`
+in `hello_ok` and `status`, `server.rs` handshake (`SUPPORTED_PROTOCOLS`, the error
+table of D2), the launcher's negotiation (1 unless `--profile`, client-name
+validation before the handshake, user messages). *Proves:* golden v1 transcripts
+(with `connection_id` and `app_version` masked), `status.protocol == 1` on v1,
+typed mismatch both ways. *Out:* the profile store, isolation.
+
+**PR 1b — Profiles store and isolation.** `profiles.rs` (store under file lock,
+verifier, secret file with `O_EXCL`, creation and revoke as Rust functions only,
+failed-auth handling), `GrantSubject` and the rewrite of every site in the table of
+section 2, profile grants through `ConsentBroker`, `list_accounts` and the argument
+check, the cursor-file module (baseline only; ack is PR 2). *Proves:* the
+two-directional subject tests, the per-tool table, revocation, and **an integration
+test that creates a profile through the Rust API and then uses it end to end**
+(launcher hello with `--profile`, `list_accounts`, a read), so the profile path is
+exercised before any UI exists. *Out:* `subscribe`, `ack`, lease, UI, canon edits
+beyond the profile paragraph.
 
 **PR 2 — Subscription, lease, ack.** Connection restructuring (writer task), `subscribe`,
-`unsubscribe`, `ack`, `Push`, `SubEnd`, `LeaseGuard`, per-profile `acked_cursor`, window
-and stall handling, Core's `MentionFeed` read-after primitive if `wait` is not enough.
-The canon amendment for acknowledgement and the lease ships here. *Proves:* the lease,
-resume after ack, slow consumer. *Out:* UI, attachments.
+`unsubscribe`, `ack`, `Push`, `SubEnd`, `LeaseGuard`, per-profile acknowledged cursor
+(its own file), window and stall handling, Core's `MentionFeed` read-after primitive
+if `wait` is not enough. The canon amendment for acknowledgement and the lease ships
+here. *Proves:* the lease, resume after ack, slow consumer. *Out:* UI, attachments.
 
 **PR 3 — Settings UI.** `profiles` in `McpAssistantsState`, Tauri commands, DTO mirrors,
-`AgentProfilesSection`, snippets, catalog strings. *Proves:* the headless UI test.
-*Out:* Linux CLI (#2109).
+`AgentProfilesSection`, snippets, catalog strings. The create and revoke commands are
+added to the Tauri **capability allowlist** for the settings window only, with a test
+that remote content (an `http(s)` origin or an iframe/webview of agent output) cannot
+invoke them: the capability file is asserted to scope them to the local window, and a
+test calls them with a remote-origin context and expects refusal. *Proves:* the
+headless UI test. *Out:* Linux CLI (#2109).
 
-**PR 4 — Attachment fields.** Depends on #2131 (intake and the row type). Adds the three
-fields to the pushed row and the end-to-end `get_attachment` test.
+**PR 4 — Attachment end-to-end test.** Depends on #2131, which owns the intake fields
+and the row type. Adds the pushed-row assertion and the `get_attachment` end-to-end
+test. If #2131 has not landed the fields, this PR waits for it; it does not add them.
 
-Why this order: PR 1 contains every authorisation change, so the independent review
-can concentrate there; PR 2 adds concurrency without adding authority; PR 3 and PR 4
+Why this order: PR 1b contains every authorisation change, so the independent review
+can concentrate there (1a is wire only); PR 2 adds concurrency without adding authority; PR 3 and PR 4
 add no new trust.
 
 ## 10. Test strategy
@@ -502,22 +650,76 @@ UI** (vitest in `apps/desktop`, beside `AiAssistantsSection.test.tsx`).
 
 | Acceptance bullet | Level | Test and fixtures |
 | --- | --- | --- |
-| Two profiles bound to different accounts cannot reach each other's account or the owner's | Host integration (PR 1) | Three accounts (owner, agent A, agent B) from `tests/support`. For every account-scoped tool, profile A with an explicit other `account_id` gets `not_permitted/profile_account`; an omitted id resolves to A; `list_accounts` returns one entry; a profile whose secret is wrong or id unknown gets the identical `unauthorized/profile_secret`. |
+| Two profiles bound to different accounts cannot reach each other's account or the owner's | Host integration (PR 1b) | Three accounts (owner, agent A, agent B) from `tests/support`. The per-tool table below; `list_accounts` returns one entry; a profile whose secret is wrong or id unknown gets the identical `unauthorized/profile_secret`. |
 | A second subscriber gets `profile_busy` | Host integration (PR 2) | Two connections with the same profile; the second `subscribe` is `profile_busy` and the same connection can still `read_room_messages`. A third connection for profile B subscribes successfully. |
 | Closing the first connection releases the lease | Host integration (PR 2) | Drop connection 1 (also abort its task, and a variant that closes the transport without a clean shutdown); the second `subscribe` now succeeds. Unit: `LeaseGuard` drops on task abort. |
-| Reconnecting resumes after the acknowledged cursor | Host integration + Core unit (PR 2) | Feed fixture with rows 1-5; subscribe, receive 1-5, ack 3, close; resubscribe delivers 4-5. Restart the bridge with the persisted profile file and repeat. Unit: coalesced `acked_cursor` write and flush at subscription end; `ack_ahead` and stale-ack no-op. |
+| Reconnecting resumes after the acknowledged cursor | Host integration + Core unit (PR 2) | Feed fixture with rows 1-5; subscribe, receive 1-5, ack 3, close; resubscribe delivers 4-5. Restart the bridge with the persisted cursor file and repeat. Unit: coalesced cursor-file write and flush at subscription end; `ack_ahead` and stale-ack no-op. |
 | A slow consumer gets `resync_required` rather than losing rows | Host integration (PR 2) | A fake transport (tokio duplex with a tiny buffer and a reader that stops) and a paused clock. Window: with W+10 rows and no acks the pump stops at W and no row beyond it is lost; after 60 s `SubEnd{resync_required, ack_stalled}`; resubscribe redelivers from the acked cursor with no gap. A feed fixture whose retention evicts the acked position yields `expired_cursor` with no silent restart at head. |
-| An unprofiled MCP connection behaves as before | Host integration (PR 1, kept in CI) | Golden transcripts of a v1 session recorded from the commit before PR 1 (hello, `list_accounts`, a read, `status`, a malformed request, a wrong token). Assert byte equality. Also run the existing `tests/bridge/*` suite unchanged. A v1 hello carrying `profile` is refused. |
-| A pushed row for an image message carries kind, MIME type and size, and `get_attachment` returns a readable file under the attachments grant | Host integration (PR 4) | Local homeserver, send an image to the agent DM; the pushed row has `message_kind:"image"`, `mime_type`, `size_bytes`; `get_attachment` with the profile's `attachments` grant returns a path inside the media cache that exists and is readable; without the grant it is `consent_required`/`not_permitted`. A pre-field row pushes with the fields absent. Core unit: intake records the fields, an old log without them still loads. |
-| A protocol-version mismatch fails with a typed error in both directions | Core unit + host integration (PR 1) | Host: hello with protocol 0 and 3 after a valid token gets `unsupported/protocol_version` with `supported:[1,2]`; with a wrong token still `unauthorized`. Client (`koushi-mcp` unit, fake server over duplex): a server answering the legacy untyped `unsupported`, a server answering another protocol in `hello_ok`, and a typed `Error` each map to `Unsupported/protocol_version`. |
-| Headless UI test for creating, revoking and showing the status of a profile | Headless UI (PR 3) | Fake backend that serves a `McpAssistantsState` with `profiles`. Create with an agent account (and: a non-agent account is not offered); the snippet text is exactly the Rust-built string and the secret never appears in the DOM; status transitions `ready` → `connected` → `subscribed` follow state updates; revoke asks for confirmation and removes the row. A Rust unit test pins the `ProfileView` projection and the snippet builder. |
+| An unprofiled MCP connection behaves as before | Host integration (PR 1a, kept in CI) | Golden transcripts of a v1 session recorded from the commit before PR 1a (hello, `list_accounts`, a read, `status`, a malformed request, a wrong token). Assert byte equality with `connection_id` and `app_version` masked and nothing else; `status.protocol` is `1`. Also run the existing `tests/bridge/*` suite unchanged. A v1 hello carrying `profile` is `Unsupported/profile_requires_protocol_2`; a v2 hello without one is `profile_required`. |
+| A pushed row for an image message carries kind, MIME type and size, and `get_attachment` returns a readable file under the attachments grant | Host integration (PR 4) | Local homeserver, send an image to the agent DM; the pushed row has `message_kind:"image"`, `mime_type`, `size_bytes`; `get_attachment` with the profile's `attachments` grant returns a path inside the media cache that exists and is readable; without the grant it is `consent_required`/`not_permitted`. A pre-field row pushes with the fields absent. (The Core unit test that intake records the fields and an old log still loads belongs to #2131.) |
+| A protocol-version mismatch fails with a typed error in both directions | Core unit + host integration (PR 1a) | Host: hello with protocol 0 and 3 after a valid token gets `unsupported/protocol_version` with `supported:[1,2]`; with a wrong token still `unauthorized`. Client (`koushi-mcp` unit, fake server over duplex): a server answering the legacy untyped `unsupported`, a server answering another protocol in `hello_ok`, and a typed `Error` each map to `Unsupported/protocol_version`. An invalid client name is rejected by the launcher before any socket is opened, and a host answering `Unsupported/client_name` is not reported as a version problem. The launcher sends `1` without `--profile` and `2` with it. |
+| Headless UI test for creating, revoking and showing the status of a profile | Headless UI (PR 3) | Fake backend that serves a `McpAssistantsState` with `profiles`. Create with an agent account (and: a non-agent account is not offered); the snippet text is exactly the Rust-built string and the secret never appears in the DOM; `last_rejected` is shown; the Tauri capability test of PR 3 shows remote content cannot call create/revoke; status transitions `ready` → `connected` → `subscribed` follow state updates; revoke asks for confirmation and removes the row. A Rust unit test pins the `ProfileView` projection and the snippet builder. |
+
+**Subject isolation, two directions (PR 1b).** Fixture: a client-name grant
+`("Claude Code", agent A, read+send)` in `connections.json`, and a profile `P` bound
+to agent A with different grants.
+
+1. *Client grant never lets a profile through.* A profiled connection whose hello
+   `client.name` is `"Claude Code"` and whose profile has **no** grants gets
+   `consent_required`/`not_permitted` for every tool, despite the matching name
+   grant. Specifically: `list_accounts` returns the bound account with **P's**
+   permissions (none), not the name grant's; `read_recent_activity` is refused;
+   a cursor minted for `Client("Claude Code")` by `read_recent_activity` is rejected
+   by `activity_pages` when presented by `Profile(P)` and the reverse; a
+   `send_message` idempotency key used by the client is not replayed for the
+   profile (`DirectRetryKey`); a draft created by the client is invisible to the
+   profile via `get_draft`; a pending or denied approval for the name does not
+   affect the profile, and `remove_client("Claude Code")` does not touch the
+   profile's approvals.
+2. *Profile grant never lets a client-name connection through.* A connection
+   with no profile and the name `"P"` (the profile's label, and also its raw id
+   as a name) gets none of P's grants and sees none of P's account in
+   `list_accounts`; a name-grant for a different name is unaffected by granting P.
+3. *Same-account profiles stay distinct.* Profiles P1 and P2 bind agent A; granting
+   `send` to P1 leaves P2 without it; their approvals, idempotency keys, activity
+   cursors and drafts do not cross.
+4. *Type guard.* A compile-fail (trybuild) test that building any grant,
+   consent, retry, activity-page or draft key from `ClientIdentity.label` does not
+   compile.
+
+**Per-tool foreign `account_id` table (PR 1b).** For profile A (bound to agent A),
+calling each of `search_messages`, `read_recent_activity`, `get_attachment`,
+`draft_message`, `get_draft` and `wait_for_events` with `account_id` = agent B,
+the owner, and a nonexistent id, returns the identical
+`not_permitted/profile_account`, before any authorisation and with no data and no
+difference in shape or timing class between an existing and a missing account. The
+same call with `account_id` omitted is an invalid-params error (the field stays
+required), not a resolution to A. The table is generated from the dispatcher's tool
+list, so a new tool without a row fails the test.
+
+**Authentication (PR 1b).** Wrong secret, unknown id and malformed secret return
+the identical error; the unknown-id path runs the dummy verifier; no lockout after
+many failures and the real plugin still authenticates; `last_rejected_ms` is set
+and shown. Secret-file creation: `O_EXCL` refuses an existing path; created mode is
+`0600` with no window in which it is wider; crash between secret and verifier
+leaves an orphan that authenticates nothing and is swept; revoke deletes the row
+before the file; the launcher refuses a wrong-owner, group-readable or symlinked
+file. Concurrent: an owner revoke racing a second writer that re-reads under the
+lock never resurrects the profile; an ack flush does not rewrite `profiles.json`
+(file mtime and bytes unchanged).
+
+**Revoke in flight (PR 1b/2).** A long poll and a pending approval end with
+`unauthorized/profile_revoked` and return no data; a `send_message` already in
+progress is documented as completing, and the test asserts the next request is
+refused.
 
 Additional tests that carry the security claims:
 
 - `profiles.json` fail-closed: missing, malformed, newer schema grant nothing and are
   never overwritten (copy the `grants_tests.rs` cases).
 - No IPC method writes the store: a table test calls every method name the dispatcher
-  knows with a profiled connection and asserts the store bytes are unchanged.
+  knows with a profiled connection and asserts the bytes of `profiles.json` are
+  unchanged (the cursor file may change on `ack`; it is a different file).
 - The secret never appears in a diagnostic, snapshot DTO, `Debug` output or error
   message (`ProfileHello` and the profile row implement redacting `Debug`).
 - Role removal turns a ready profile into `not_agent_account` and ends its subscription.
@@ -525,15 +727,21 @@ Additional tests that carry the security claims:
 
 ## 11. Open points for the reviewer
 
-1. **Profile secret outside the OS secret store (D4).** The case rests on the secret
-   protecting no data at rest. If the reviewer disagrees, the alternative is to keep
-   the secret in the Keychain on macOS and a file on a headless host, which makes this
-   stage depend on the open headless store-key decision.
+1. **Profile secret outside the OS secret store (D4).** The case rests on Key
+   Management governing the at-rest unlock key, not authentication credentials, and on
+   a same-user attacker already holding the `endpoint.json` token. The secret does
+   authorise decrypted reads and sending, so this is a real credential. If the
+   reviewer disagrees, the alternative is to keep the secret in the Keychain on macOS
+   and a file on a headless host, which makes this stage depend on the open headless
+   store-key decision.
 2. **Unprofiled access to agent accounts.** This design leaves it as today. Closing it
    (for example refusing client-name grants on agent accounts) is a behaviour change to
    existing MCP and is not proposed here.
-3. **`W = 64`, 60 s and 15 s** are starting values, not derived. They are constants in
-   one module and not API.
-4. **Canon edits** land with the implementing PRs (profile paragraph in PR 1; ack and
-   lease in PR 2; Key Management clarification that a profile secret is not an unlock
-   secret in PR 1).
+3. **Limits** (`PUSH_WINDOW`, `ACK_STALL`, `WRITE_STALL`, ...) are starting values, not
+   derived; see "Constants" near the top. They are not API.
+4. **Canon edits** land with the implementing PRs (profile paragraph and the grant-subject
+   rule in PR 1b; the Key Management clarification that a profile secret is an
+   authentication credential, not an unlock secret, in PR 1b; ack and lease in PR 2).
+5. **Same-user isolation** does not exist (section 2). The canon and the UI say
+   "limits what an assistant may do", and a stronger claim would need the agent to
+   run as a different OS user or in a sandbox, which is out of scope.
