@@ -71,6 +71,40 @@ fn wait_for_events_output_schema() -> Value {
     })
 }
 
+/// The structured result of `wait_for_mentions` (#2110).
+fn wait_for_mentions_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "mentions": {
+                "type": "array",
+                "description": "One entry per event that mentions the account after the cursor, oldest first. Never coalesced.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "cursor": { "type": "string", "description": "Opaque position of this entry." },
+                        "account_id": { "type": "string" },
+                        "room_id": { "type": "string" },
+                        "event_id": { "type": ["string", "null"], "description": "Null for an invite." },
+                        "sender_id": { "type": "string" },
+                        "timestamp_ms": { "type": "integer" },
+                        "thread_root_event_id": { "type": ["string", "null"], "description": "Set when the mention is inside a thread." },
+                        "kind": { "type": "string", "enum": ["mention", "dm", "invite"] }
+                    },
+                    "required": ["cursor", "account_id", "room_id", "event_id", "sender_id", "timestamp_ms", "thread_root_event_id", "kind"]
+                }
+            },
+            "cursor": { "type": "string", "description": "Opaque position to pass to the next call; returned even when nothing arrived." },
+            "coverage": {
+                "type": "string",
+                "enum": ["exact_mentions"],
+                "description": "Always exact_mentions: one durable entry per mentioning event from an allowed sender."
+            }
+        },
+        "required": ["mentions", "cursor", "coverage"]
+    })
+}
+
 fn room_event_properties() -> Value {
     json!({
         "account_id": account_id_property(),
@@ -380,6 +414,23 @@ pub fn definitions() -> Vec<ToolDefinition> {
             }),
             read_only: true,
             output_schema: Some(wait_for_events_output_schema()),
+        },
+        ToolDefinition {
+            name: "wait_for_mentions",
+            description: "Wait for events that mention this account, from senders Koushi allows. Unlike wait_for_events this is an exact feed, not a sample: Koushi records one durable entry per event that mentions the account (an m.mentions or keyword highlight, a direct message, or an invite), never coalesced, with room, event, sender, timestamp and thread root when the mention is in a thread. Entries are committed to Koushi's encrypted store before they are visible, so a mention received while no client was connected, or across a Koushi restart, is still delivered. Recording ignores the owner's mute and notification settings. Only senders on the allow-list ever enter the feed (by default the other accounts signed into the same Koushi; the owner edits it in settings); a mention from anyone else is never stored and cannot be requested or widened by a client. Long-polls: returns at once when entries newer than the cursor exist (at most limit), otherwise at timeout_ms with an empty list and the same cursor. Omit cursor to receive everything still retained, then pass the returned cursor to continue; keep it between runs. A cursor is opaque and valid only for this account's mention log: a malformed, future, expired (older than the retained 1000 entries) or foreign cursor fails with resync_required; call again without a cursor and de-duplicate by room and event id.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id_property(),
+                    "cursor": { "type": "string", "description": "Opaque cursor from the previous result. Omit to receive everything still retained." },
+                    "timeout_ms": { "type": "integer", "minimum": 0, "maximum": 50000, "description": "Milliseconds to wait when nothing is pending. Defaults to 25000; an approval wait counts against a 60-second call budget." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum entries to return. Defaults to 50." }
+                },
+                "required": ["account_id"],
+                "additionalProperties": false
+            }),
+            read_only: true,
+            output_schema: Some(wait_for_mentions_output_schema()),
         },
         ToolDefinition {
             name: "get_message",

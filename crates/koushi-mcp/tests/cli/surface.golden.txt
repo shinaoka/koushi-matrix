@@ -8,6 +8,7 @@ get_attachment --account-id* --event-id* --room-id* --thumbnail | stdin-only: (n
 send_message --account-id* --client-request-id* --reply-to-event-id --room-id* | stdin-only: attachments body
 read_recent_activity --account-id* --cursor --from-timestamp-ms --limit --room-ids --to-timestamp-ms | stdin-only: (none)
 wait_for_events --account-id* --cursor --timeout-s | stdin-only: (none)
+wait_for_mentions --account-id* --cursor --limit --timeout-ms | stdin-only: (none)
 get_message --account-id* --event-id* --room-id* | stdin-only: (none)
 react_to_message --account-id* --event-id* --room-id* | stdin-only: key*
 unreact_to_message --account-id* --event-id* --room-id* | stdin-only: key*

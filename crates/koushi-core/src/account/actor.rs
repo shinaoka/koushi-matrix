@@ -1248,6 +1248,8 @@ pub struct AccountActor {
     pub(super) session: Option<Arc<MatrixClientSession>>,
     /// Session key for credential store operations.
     pub(super) session_key_id: Option<SessionKeyId>,
+    /// The user id this actor published a mention feed under (#2110).
+    pub(super) mention_registered_user: Option<String>,
     pub(super) locked_session_record: Option<LockedSessionRecord>,
     pub(super) composer_draft_leases: Arc<ComposerDraftLeaseRegistry>,
     pub(super) provisional_persistable: Option<PersistableMatrixSession>,
@@ -1634,6 +1636,7 @@ impl AccountActor {
         let actor = AccountActor {
             session: None,
             session_key_id: None,
+            mention_registered_user: None,
             locked_session_record: None,
             composer_draft_leases,
             provisional_persistable: None,

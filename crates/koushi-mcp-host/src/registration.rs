@@ -194,7 +194,7 @@ fn shell_word(text: &str, windows: bool) -> String {
 }
 
 /// The tools the bridge offers, as the MCPB manifest lists them.
-const TOOLS: [(&str, &str); 18] = [
+const TOOLS: [(&str, &str); 19] = [
     ("list_accounts", "List the signed-in Koushi accounts"),
     (
         "list_rooms",
@@ -219,6 +219,10 @@ const TOOLS: [(&str, &str); 18] = [
         "Download an attachment into Koushi's media cache",
     ),
     ("wait_for_events", "Wait for new activity"),
+    (
+        "wait_for_mentions",
+        "Wait for mentions from allowed senders",
+    ),
     (
         "read_recent_activity",
         "Read bounded recent account activity",

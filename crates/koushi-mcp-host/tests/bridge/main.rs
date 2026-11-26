@@ -4,6 +4,7 @@ mod bridge_lifecycle;
 mod cli_bridge;
 mod consent_broker;
 mod draft_message;
+mod mentions;
 mod message_actions;
 mod send_attachments;
 mod spaces;

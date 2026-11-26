@@ -39,6 +39,12 @@ pub struct BridgeAccount {
 /// The accounts a host exposes to MCP clients.
 pub trait BridgeAccounts: Send + Sync + 'static {
     fn accounts(&self) -> Vec<BridgeAccount>;
+
+    /// The account's durable mention feed (#2110), by the id `accounts` names
+    /// it with. Hosts without one (the headless QA harness) have none.
+    fn mention_feed(&self, _account_id: &str) -> Option<koushi_core::mention_feed::MentionFeed> {
+        None
+    }
 }
 
 impl BridgeAccounts for AccountRuntimeManager {
@@ -61,5 +67,11 @@ impl BridgeAccounts for AccountRuntimeManager {
                 })
             })
             .collect()
+    }
+
+    fn mention_feed(&self, account_id: &str) -> Option<koushi_core::mention_feed::MentionFeed> {
+        // The stable account id is `account:<matrix user id>`.
+        self.mention_feed_registry()
+            .feed_for_user(account_id.strip_prefix("account:")?)
     }
 }

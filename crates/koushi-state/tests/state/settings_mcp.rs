@@ -18,7 +18,10 @@ fn an_app_patch_turns_it_off_and_survives_the_app_projection() {
     let mut values = SettingsValues::default();
     let patch = SettingsPatch {
         scope: Some(SettingsPatchScope::App),
-        mcp: Some(McpSettings { enabled: false }),
+        mcp: Some(McpSettings {
+            enabled: false,
+            ..McpSettings::default()
+        }),
         ..SettingsPatch::default()
     };
     assert!(!patch.affects_account_settings());
@@ -39,8 +42,45 @@ fn an_account_patch_cannot_change_it() {
     let mut values = SettingsValues::default();
     values.apply_patch(SettingsPatch {
         scope: Some(SettingsPatchScope::Account),
-        mcp: Some(McpSettings { enabled: false }),
+        mcp: Some(McpSettings {
+            enabled: false,
+            ..McpSettings::default()
+        }),
         ..SettingsPatch::default()
     });
     assert!(values.mcp.enabled);
+}
+
+#[test]
+fn the_allow_list_is_derived_from_the_signed_in_accounts_and_editable_both_ways() {
+    use koushi_state::MentionAllowedSenders;
+    let signed_in = ["@a:x", "@b:x"];
+    let default = MentionAllowedSenders::default();
+    assert_eq!(
+        default.effective(signed_in),
+        ["@a:x", "@b:x"].map(str::to_owned).into()
+    );
+    // An account added later is covered without editing anything.
+    assert!(default.effective(["@a:x", "@b:x", "@c:x"]).contains("@c:x"));
+    // Additive on top of the derived default, and the derived one can be removed.
+    let edited = MentionAllowedSenders {
+        added: vec!["@guest:x".to_owned()],
+        removed: vec!["@b:x".to_owned()],
+    };
+    assert_eq!(
+        edited.effective(signed_in),
+        ["@a:x", "@guest:x"].map(str::to_owned).into()
+    );
+}
+
+#[test]
+fn canonicalizing_the_allow_list_trims_dedups_and_lets_added_win() {
+    use koushi_state::MentionAllowedSenders;
+    let mut edited = MentionAllowedSenders {
+        added: vec![" @a:x ".to_owned(), "@a:x".to_owned(), String::new()],
+        removed: vec!["@a:x".to_owned(), "@b:x".to_owned()],
+    };
+    edited.canonicalize();
+    assert_eq!(edited.added, ["@a:x"]);
+    assert_eq!(edited.removed, ["@b:x"]);
 }

@@ -128,14 +128,15 @@ pub use settings::{
     AccountSettingsValues, AppDisplaySettings, AppSettingsValues, AppearanceSettings,
     ComposerSendShortcut, ComposerSettings, DisplayDensity, DisplaySettings, EmojiPreference,
     FontPreference, ImageUploadCompressionMode, ImageUploadCompressionPolicy, KeyboardSettings,
-    LinkPreviewSettingsState, LocaleSettings, McpSettings, MediaSettings, NotificationSettings,
-    RoomNotificationMode, RoomNotificationModeOperation, RoomNotificationSettings, RoomPreference,
-    RoomPreferencesState, RoomUrlPreviews, SIDEBAR_HOME_SCOPE_KEY, SettingsPatch,
-    SettingsPatchScope, SettingsPersistenceState, SettingsState, SettingsValues, SidebarCategory,
-    SidebarCollapsedSections, SidebarScopeSettings, SidebarSectionKind, SidebarSectionPatch,
-    SidebarSectionReveal, SidebarSectionSettings, SidebarSettings, TextDirectionPreference,
-    ThemePreference, ThreadListOrder, TimelineSettings, TimelineThreadRootOrder,
-    TypographySettings, UpdatesSettings, WindowSettings, sidebar_scope_key,
+    LinkPreviewSettingsState, LocaleSettings, McpSettings, MediaSettings, MentionAllowedSenders,
+    NotificationSettings, RoomNotificationMode, RoomNotificationModeOperation,
+    RoomNotificationSettings, RoomPreference, RoomPreferencesState, RoomUrlPreviews,
+    SIDEBAR_HOME_SCOPE_KEY, SettingsPatch, SettingsPatchScope, SettingsPersistenceState,
+    SettingsState, SettingsValues, SidebarCategory, SidebarCollapsedSections, SidebarScopeSettings,
+    SidebarSectionKind, SidebarSectionPatch, SidebarSectionReveal, SidebarSectionSettings,
+    SidebarSettings, TextDirectionPreference, ThemePreference, ThreadListOrder, TimelineSettings,
+    TimelineThreadRootOrder, TypographySettings, UpdatesSettings, WindowSettings,
+    sidebar_scope_key,
 };
 
 // ── Re-exports: notification delivery ───────────────────────────────────────

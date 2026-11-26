@@ -205,6 +205,9 @@ impl AccountWorkKind {
 pub(crate) struct AccountWorkScheduler {
     inner: Arc<SchedulerInner>,
     account_tab_id: Option<String>,
+    /// The manager-wide mention feed directory (#2110); absent for a runtime
+    /// started without the account manager.
+    mention_registry: Option<Arc<crate::mention_feed::MentionFeedRegistry>>,
 }
 
 #[derive(Debug, Default)]
@@ -347,7 +350,20 @@ impl AccountWorkScheduler {
         Self {
             inner: Arc::clone(&self.inner),
             account_tab_id: Some(account_tab_id.to_owned()),
+            mention_registry: self.mention_registry.clone(),
         }
+    }
+
+    pub(crate) fn with_mention_registry(
+        mut self,
+        registry: Arc<crate::mention_feed::MentionFeedRegistry>,
+    ) -> Self {
+        self.mention_registry = Some(registry);
+        self
+    }
+
+    pub(crate) fn mention_registry(&self) -> Option<Arc<crate::mention_feed::MentionFeedRegistry>> {
+        self.mention_registry.clone()
     }
 
     /// Whether this account's tab is the one the app currently shows (#1853).
