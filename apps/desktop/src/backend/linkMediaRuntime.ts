@@ -58,3 +58,15 @@ export async function readDownloadedMarkdown(
 ): Promise<TimelineFormattedBodyDto> {
   return activePort().readDownloadedMarkdown(sourceRef, accountTabId);
 }
+
+/**
+ * #2096: the bytes of a downloaded PDF. The backend refuses a file above its
+ * cap, so a rejection means "do not preview"; the bytes are handed to pdf.js as
+ * data and never fetched by URL.
+ */
+export async function readDownloadedPdf(
+  sourceRef: string,
+  accountTabId?: string
+): Promise<Uint8Array> {
+  return activePort().readDownloadedPdf(sourceRef, accountTabId);
+}

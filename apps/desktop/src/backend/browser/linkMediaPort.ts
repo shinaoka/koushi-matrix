@@ -37,5 +37,8 @@ export const browserLinkMediaPort: LinkMediaPort = {
   },
   async readDownloadedMarkdown() {
     throw new Error("document preview is unavailable in the browser shell");
+  },
+  async readDownloadedPdf() {
+    throw new Error("PDF preview is unavailable in the browser shell");
   }
 };

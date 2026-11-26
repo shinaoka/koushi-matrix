@@ -6,7 +6,7 @@ import type { FileTypeCategory } from "./fileTypeCategory";
  * command, and every path here reads Core's media cache rather than the user's
  * Downloads folder.
  */
-export type FilePreviewKind = "text" | "audio" | "video" | "none";
+export type FilePreviewKind = "text" | "pdf" | "audio" | "video" | "none";
 
 /**
  * Largest file the card fetches to build a preview on its own, matching the
@@ -16,6 +16,17 @@ export type FilePreviewKind = "text" | "audio" | "video" | "none";
  */
 export const TEXT_PREVIEW_MAX_BYTES = 256 * 1024;
 
+/**
+ * Largest PDF the card reads for its thumbnail and the viewer opens, matching
+ * the backend cap (`MAX_PDF_PREVIEW_BYTES`). Above it the card keeps its icon:
+ * the backend refuses such a file rather than truncating it, because a
+ * truncated PDF can draw as a shorter, wrong document.
+ */
+export const PDF_PREVIEW_MAX_BYTES = 32 * 1024 * 1024;
+
+/** Most pages a PDF may have for the card to draw a thumbnail and open the viewer. */
+export const PDF_PREVIEW_MAX_PAGES = 200;
+
 /** Lines the card shows before the reader opens the full text. */
 export const TEXT_PREVIEW_LINE_COUNT = 6;
 
@@ -23,6 +34,8 @@ export function filePreviewKind(category: FileTypeCategory): FilePreviewKind {
   switch (category) {
     case "text":
       return "text";
+    case "pdf":
+      return "pdf";
     case "audio":
       return "audio";
     case "video":
@@ -40,9 +53,9 @@ export function filePreviewKind(category: FileTypeCategory): FilePreviewKind {
 export function canAutoFetchPreview(
   kind: FilePreviewKind,
   size: number | null,
-  maxBytes = TEXT_PREVIEW_MAX_BYTES
+  maxBytes = kind === "pdf" ? PDF_PREVIEW_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES
 ): boolean {
-  if (kind !== "text") {
+  if (kind !== "text" && kind !== "pdf") {
     return false;
   }
   return size !== null && Number.isFinite(size) && size >= 0 && size <= maxBytes;

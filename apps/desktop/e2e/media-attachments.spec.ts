@@ -19,6 +19,9 @@
  *  9. Retry dispatches download_media again after failure.
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { t } from "../src/i18n/messages";
 import { roomTimelineKey, threadTimelineKey } from "../src/domain/coreEvents";
@@ -967,6 +970,104 @@ test("a text attachment above the preview limit is neither fetched nor previewed
     await page.evaluate(() => window.__harness.invocationsOf("read_downloaded_media_text").length)
   ).toBe(0);
   await expect(mediaCard.locator(".message-media-text-preview")).toHaveCount(0);
+});
+
+const THREE_PAGE_PDF = Array.from(
+  readFileSync(fileURLToPath(new URL("../src/test/fixtures/three-pages.pdf", import.meta.url)))
+);
+
+async function saveCallCount(page: Page): Promise<number> {
+  return page.evaluate(
+    () =>
+      window.__harness.invocationsOf("save_downloaded_media").length +
+      window.__harness.invocationsOf("default_media_save_path").length
+  );
+}
+
+test("a downloaded PDF shows page 1, opens in the viewer and pages without saving", async ({
+  page
+}) => {
+  const mediaRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("koushi-media")) {
+      mediaRequests.push(request.url());
+    }
+  });
+  await gotoReadyShell(page);
+  const eventId = "$media-pdf-preview:example.invalid";
+  await page.evaluate((bytes) => {
+    window.__harness.setCommandResponse("read_downloaded_media_pdf", () => bytes);
+  }, THREE_PAGE_PDF);
+  await seedTimelineItems(page, [
+    makeAttachmentItem(eventId, {
+      filename: "report.pdf",
+      mimetype: "application/pdf",
+      size: THREE_PAGE_PDF.length
+    })
+  ]);
+  const mediaCard = page.locator(`[data-event-id="${eventId}"]`).locator(".message-media");
+
+  await expect
+    .poll(() => page.evaluate(() => window.__harness.invocationsOf("download_media").length))
+    .toBe(1);
+  await pushMediaDownloadState(page, eventId, readyPreviewState("application/pdf"));
+
+  // The thumbnail is page 1 drawn by the bundled pdf.js worker (no network).
+  const thumbnail = mediaCard.locator(".message-media-pdf-thumbnail");
+  await expect(thumbnail).toBeVisible();
+  await expect
+    .poll(() => thumbnail.evaluate((image: HTMLImageElement) => image.naturalWidth))
+    .toBeGreaterThan(0);
+
+  await thumbnail.click();
+  const dialog = page.getByRole("dialog", { name: "report.pdf" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText(t("timeline.pdfViewerPage", { page: 1, count: 3 }))).toBeVisible();
+  const canvas = dialog.locator("canvas");
+  await expect(canvas).toBeVisible();
+  const paintedPixels = () =>
+    canvas.evaluate((element: HTMLCanvasElement) => {
+      const data = element.getContext("2d")?.getImageData(0, 0, element.width, element.height).data;
+      let dark = 0;
+      for (let index = 0; data && index < data.length; index += 4) {
+        if (data[index] < 128) dark += 1;
+      }
+      return dark;
+    });
+  await expect.poll(paintedPixels).toBeGreaterThan(0);
+
+  await dialog.getByRole("button", { name: t("timeline.pdfViewerNext") }).click();
+  await expect(dialog.getByText(t("timeline.pdfViewerPage", { page: 2, count: 3 }))).toBeVisible();
+  await dialog.getByRole("button", { name: t("timeline.pdfViewerZoomIn") }).click();
+  await expect(dialog).toContainText("125%");
+  await expect.poll(paintedPixels).toBeGreaterThan(0);
+
+  expect(await saveCallCount(page)).toBe(0);
+  expect(mediaRequests).toEqual([]);
+});
+
+test("a PDF above the byte cap is neither fetched nor previewed", async ({ page }) => {
+  await gotoReadyShell(page);
+  const eventId = "$media-pdf-too-large:example.invalid";
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("read_downloaded_media_pdf", () => []);
+  });
+  await seedTimelineItems(page, [
+    makeAttachmentItem(eventId, {
+      filename: "huge.pdf",
+      mimetype: "application/pdf",
+      size: 32 * 1024 * 1024 + 1
+    })
+  ]);
+  const mediaCard = page.locator(`[data-event-id="${eventId}"]`).locator(".message-media");
+  await expect(mediaCard).toContainText(t("timeline.mediaPdfTooLarge"));
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => window.__harness.invocationsOf("download_media").length)).toBe(0);
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("read_downloaded_media_pdf").length)
+  ).toBe(0);
+  await expect(mediaCard.locator(".message-media-pdf-thumbnail")).toHaveCount(0);
+  expect(await saveCallCount(page)).toBe(0);
 });
 
 test("a downloaded audio attachment plays inline from the media cache", async ({ page }) => {

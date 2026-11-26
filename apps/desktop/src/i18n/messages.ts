@@ -2034,6 +2034,17 @@ export type MessageId =
   | "timeline.mediaTextPreviewFailed"
   | "timeline.mediaDocumentOpen"
   | "timeline.mediaDocumentContents"
+  | "timeline.mediaPdfPreviewOpen"
+  | "timeline.mediaPdfTooLarge"
+  | "timeline.mediaPdfPreviewFailed"
+  | "timeline.pdfViewerPage"
+  | "timeline.pdfViewerPrevious"
+  | "timeline.pdfViewerNext"
+  | "timeline.pdfViewerZoomIn"
+  | "timeline.pdfViewerZoomOut"
+  | "timeline.pdfViewerZoomLevel"
+  | "timeline.pdfViewerLoading"
+  | "timeline.pdfViewerThumbnail"
   | "timeline.mediaAudioPlayer"
   | "timeline.mediaVideoPlayer"
   | "timeline.mediaDetails"
@@ -4583,6 +4594,17 @@ const en: Catalog = {
   "timeline.mediaTextPreviewFailed": "This file cannot be previewed as text.",
   "timeline.mediaDocumentOpen": "Open {filename} as a document",
   "timeline.mediaDocumentContents": "Contents",
+  "timeline.mediaPdfPreviewOpen": "Open {filename}",
+  "timeline.mediaPdfTooLarge": "Too large to preview",
+  "timeline.mediaPdfPreviewFailed": "This PDF cannot be previewed.",
+  "timeline.pdfViewerPage": "Page {page} of {count}",
+  "timeline.pdfViewerPrevious": "Previous page",
+  "timeline.pdfViewerNext": "Next page",
+  "timeline.pdfViewerZoomIn": "Zoom in",
+  "timeline.pdfViewerZoomOut": "Zoom out",
+  "timeline.pdfViewerZoomLevel": "Zoom {percent}%",
+  "timeline.pdfViewerLoading": "Loading PDF…",
+  "timeline.pdfViewerThumbnail": "First page of {filename}",
   "timeline.mediaAudioPlayer": "Audio player for {filename}",
   "timeline.mediaVideoPlayer": "Video player for {filename}",
   "timeline.mediaDetails": "Show media details for {filename}",
@@ -7007,6 +7029,17 @@ const ja: Catalog = {
   "timeline.mediaTextPreviewFailed": "このファイルはテキストとしてプレビューできません。",
   "timeline.mediaDocumentOpen": "{filename} をドキュメントとして開く",
   "timeline.mediaDocumentContents": "目次",
+  "timeline.mediaPdfPreviewOpen": "{filename} を開く",
+  "timeline.mediaPdfTooLarge": "プレビューするには大きすぎます",
+  "timeline.mediaPdfPreviewFailed": "この PDF はプレビューできません。",
+  "timeline.pdfViewerPage": "{count} ページ中 {page} ページ",
+  "timeline.pdfViewerPrevious": "前のページ",
+  "timeline.pdfViewerNext": "次のページ",
+  "timeline.pdfViewerZoomIn": "拡大",
+  "timeline.pdfViewerZoomOut": "縮小",
+  "timeline.pdfViewerZoomLevel": "拡大率 {percent}%",
+  "timeline.pdfViewerLoading": "PDF を読み込み中…",
+  "timeline.pdfViewerThumbnail": "{filename} の1ページ目",
   "timeline.mediaAudioPlayer": "{filename} の音声プレイヤー",
   "timeline.mediaVideoPlayer": "{filename} の動画プレイヤー",
   "timeline.mediaDetails": "{filename}のメディア詳細を表示",

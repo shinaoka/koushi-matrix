@@ -144,6 +144,15 @@ for (const [label, csp] of [
     `${label}.media-src.windowsOrigin`,
     "Windows serves the managed-download protocol as http://koushi-media.localhost"
   );
+  // #2096: the PDF viewer's pdf.js worker is created from a blob: URL, which
+  // `default-src 'none'` blocks. `script-src` must stay as it is; only the
+  // worker directive is widened, and only for same-origin and blob: workers.
+  const workerSrc = /(?:^|;\s*)worker-src ([^;]*)/.exec(typeof csp === "string" ? csp : "")?.[1] ?? "";
+  requireCheck(
+    workerSrc.split(/\s+/).includes("'self'") && workerSrc.split(/\s+/).includes("blob:"),
+    `${label}.worker-src`,
+    "same-origin and blob: workers allowed for the PDF viewer"
+  );
 }
 
 requireCheck(

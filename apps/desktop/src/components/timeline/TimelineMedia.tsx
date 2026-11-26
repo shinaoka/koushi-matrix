@@ -22,11 +22,13 @@ import { Tooltip } from "../Tooltip";
 import { useOutsidePressDismissal } from "../popupDismissal";
 import type { MediaTransferProgress, TimelineItem } from "../../domain/coreEvents";
 import type { TimelineMediaDownloadState } from "../../domain/types";
-import { mediaSourceUrl, readDownloadedMarkdown, readDownloadedText } from "../../backend/linkMediaRuntime";
+import { mediaSourceUrl, readDownloadedMarkdown, readDownloadedPdf, readDownloadedText } from "../../backend/linkMediaRuntime";
 import type { MediaSaveNameFacts } from "../../backend/linkMediaPort";
 import type { TimelineTransport } from "./TimelineTransport";
 import { type FileTypeCategory, fileTypeCategory } from "./fileTypeCategory";
 import {
+  PDF_PREVIEW_MAX_BYTES,
+  PDF_PREVIEW_MAX_PAGES,
   TEXT_PREVIEW_LINE_COUNT,
   TEXT_PREVIEW_MAX_BYTES,
   filePreviewKind,
@@ -35,6 +37,7 @@ import {
 } from "./filePreview";
 import { type MarkdownDocument, useMarkdownDocumentOpener } from "./MarkdownDocumentContext";
 import { parseMarkdownDocument, renderMarkdownDocument } from "./TimelineMessageBody";
+import { MediaPdfViewerDialog } from "./MediaPdfViewerDialog";
 import { MediaTextPreviewDialog } from "./MediaTextPreviewDialog";
 import { formatDimensions } from "../../app/uiShared";
 import { saveMediaSource, type MediaViewerEntry } from "../mediaViewer";
@@ -65,6 +68,7 @@ export function TimelineMediaAttachment({
   onSaveMediaFile,
   onReadMediaText,
   onReadMediaMarkdown,
+  onReadMediaPdf,
   saveName,
   viewerEntry
 }: {
@@ -78,6 +82,7 @@ export function TimelineMediaAttachment({
   /** The timeline's per-account read, so a preview never reads another tab. */
   onReadMediaText?: TimelineTransport["readMediaText"];
   onReadMediaMarkdown?: TimelineTransport["readMediaMarkdown"];
+  onReadMediaPdf?: TimelineTransport["readMediaPdf"];
   saveName: MediaSaveNameFacts | null;
   /** The same image as the shared viewer displays it (#1810). */
   viewerEntry: MediaViewerEntry | null;
@@ -136,6 +141,12 @@ export function TimelineMediaAttachment({
     openMarkdownDocument !== null &&
     isMarkdownAttachment(media.filename, media.mimetype);
   const plainTextPreviewAllowed = textPreviewAllowed && !markdownAllowed;
+  // #2096 stage 2: a PDF previews only inside the byte cap; above it (or above
+  // the page limit, learned when it opens) the card keeps its icon and says so.
+  const pdfPreviewAllowed =
+    previewKind === "pdf" && media.size !== null && media.size <= PDF_PREVIEW_MAX_BYTES;
+  const pdfOverSize =
+    previewKind === "pdf" && media.size !== null && media.size > PDF_PREVIEW_MAX_BYTES;
   const readyDownload = downloadState?.kind === "ready" ? downloadState : null;
   const readyDownloadRef = readyDownload?.source_ref ?? null;
   const [previewText, setPreviewText] = useState<
@@ -145,6 +156,14 @@ export function TimelineMediaAttachment({
   const [previewDocument, setPreviewDocument] = useState<
     { kind: "loading" } | { kind: "ready"; document: MarkdownDocument } | { kind: "failed" } | null
   >(null);
+  const [pdfPreview, setPdfPreview] = useState<
+    | { kind: "loading" }
+    | { kind: "ready"; thumbnail: string }
+    | { kind: "tooManyPages" }
+    | { kind: "failed" }
+    | null
+  >(null);
+  const [pdfDialogOpen, setPdfDialogOpen] = useState(false);
   const saveIntentRef = useRef(false);
   const requestDownload = useCallback(() => {
     saveIntentRef.current = true;
@@ -223,6 +242,51 @@ export function TimelineMediaAttachment({
       cancelled = true;
     };
   }, [readText, plainTextPreviewAllowed, readyDownloadRef]);
+  // #2096 stage 2: page 1 as a thumbnail, drawn offscreen from the bytes the
+  // Rust command returns. pdf.js loads on demand, so a room without a PDF never
+  // pays for it; the document is destroyed as soon as the thumbnail exists, and
+  // the viewer reads it again when the reader opens it.
+  const readPdf = onReadMediaPdf ?? readDownloadedPdf;
+  const readPdfBytes = useCallback(
+    () => readPdf(readyDownloadRef ?? ""),
+    [readPdf, readyDownloadRef]
+  );
+  useEffect(() => {
+    if (!pdfPreviewAllowed || readyDownloadRef === null) {
+      setPdfPreview(null);
+      return;
+    }
+    let cancelled = false;
+    setPdfPreview({ kind: "loading" });
+    void (async () => {
+      let opened: { destroy(): Promise<void> } | null = null;
+      try {
+        const [bytes, renderer] = await Promise.all([readPdfBytes(), import("./pdfRenderer")]);
+        const document = await renderer.openPdf(bytes);
+        opened = document;
+        if (cancelled) {
+          return;
+        }
+        if (document.numPages > PDF_PREVIEW_MAX_PAGES) {
+          setPdfPreview({ kind: "tooManyPages" });
+          return;
+        }
+        const thumbnail = await renderer.renderPdfThumbnail(document, 320);
+        if (!cancelled) {
+          setPdfPreview({ kind: "ready", thumbnail });
+        }
+      } catch {
+        if (!cancelled) {
+          setPdfPreview({ kind: "failed" });
+        }
+      } finally {
+        void opened?.destroy();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pdfPreviewAllowed, readPdfBytes, readyDownloadRef]);
   useEffect(() => {
     if (!detailsOpen) {
       return;
@@ -497,15 +561,23 @@ export function TimelineMediaAttachment({
   const openDocument = readyDocument && openMarkdownDocument
     ? () => openMarkdownDocument(readyDocument)
     : null;
+  const pdfReady = pdfPreviewAllowed && pdfPreview?.kind === "ready";
+  const pdfLoading = pdfPreviewAllowed && (pdfPreview === null || pdfPreview.kind === "loading");
   const backgroundAction: (() => void) | null = playsInline
     ? null
-    : markdownAllowed
-      ? openDocument
-      : plainTextPreviewAllowed
-        ? textReady
-          ? () => setTextDialogOpen(true)
-          : null
-        : cardAction;
+    : pdfPreviewAllowed
+      ? pdfReady
+        ? () => setPdfDialogOpen(true)
+        : pdfLoading
+          ? null
+          : cardAction
+      : markdownAllowed
+        ? openDocument
+        : plainTextPreviewAllowed
+          ? textReady
+            ? () => setTextDialogOpen(true)
+            : null
+          : cardAction;
   // A type the player cannot render has no protocol token, and the empty URL
   // keeps the plain card rather than mounting a <video> that can never load.
   const inlinePlayerUrl = playsInline && readyDownload !== null
@@ -644,6 +716,28 @@ export function TimelineMediaAttachment({
             {t("timeline.mediaTextPreviewFailed")}
           </p>
         ) : null}
+        {pdfReady && pdfPreview?.kind === "ready" ? (
+          <button
+            className="message-media-pdf-preview-button"
+            type="button"
+            aria-label={t("timeline.mediaPdfPreviewOpen", { filename: media.filename })}
+            onClick={() => setPdfDialogOpen(true)}
+          >
+            <img
+              className="message-media-pdf-thumbnail"
+              src={pdfPreview.thumbnail}
+              alt={t("timeline.pdfViewerThumbnail", { filename: media.filename })}
+            />
+          </button>
+        ) : null}
+        {pdfOverSize || (pdfPreviewAllowed && pdfPreview?.kind === "tooManyPages") ? (
+          <p className="message-media-preview-note" title={t("timeline.mediaPdfTooLarge")}>
+            {t("timeline.mediaPdfTooLarge")}
+          </p>
+        ) : null}
+        {pdfPreviewAllowed && pdfPreview?.kind === "failed" ? (
+          <p className="message-media-preview-note">{t("timeline.mediaPdfPreviewFailed")}</p>
+        ) : null}
         {inlinePlayerUrl && previewKind === "audio" ? (
           <audio
             className="message-media-audio-player"
@@ -704,6 +798,13 @@ export function TimelineMediaAttachment({
         >
           <span style={{ width: `${uploadProgressPercentValue}%` }} />
         </div>
+      ) : null}
+      {pdfDialogOpen && pdfReady ? (
+        <MediaPdfViewerDialog
+          filename={media.filename}
+          readPdf={readPdfBytes}
+          onClose={() => setPdfDialogOpen(false)}
+        />
       ) : null}
       {textDialogOpen && previewText?.kind === "ready" ? (
         <MediaTextPreviewDialog

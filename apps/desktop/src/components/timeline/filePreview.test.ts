@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  PDF_PREVIEW_MAX_BYTES,
   TEXT_PREVIEW_LINE_COUNT,
   TEXT_PREVIEW_MAX_BYTES,
   canAutoFetchPreview,
@@ -14,7 +15,8 @@ describe("file preview kind (#2096)", () => {
     expect(filePreviewKind("text")).toBe("text");
     expect(filePreviewKind("audio")).toBe("audio");
     expect(filePreviewKind("video")).toBe("video");
-    for (const category of ["pdf", "document", "spreadsheet", "slides", "archive", "image", "other"] as const) {
+    expect(filePreviewKind("pdf")).toBe("pdf");
+    for (const category of ["document", "spreadsheet", "slides", "archive", "image", "other"] as const) {
       expect(filePreviewKind(category)).toBe("none");
     }
   });
@@ -26,6 +28,10 @@ describe("file preview kind (#2096)", () => {
     // Unknown size, an unknown category, and a player type stay unfetched: the
     // reader asks for those files instead of the timeline fetching them.
     expect(canAutoFetchPreview("text", null)).toBe(false);
+    // A PDF is fetched on its own up to its own cap, never the text one.
+    expect(canAutoFetchPreview("pdf", PDF_PREVIEW_MAX_BYTES)).toBe(true);
+    expect(canAutoFetchPreview("pdf", PDF_PREVIEW_MAX_BYTES + 1)).toBe(false);
+    expect(canAutoFetchPreview("pdf", null)).toBe(false);
     expect(canAutoFetchPreview("none", 1024)).toBe(false);
     expect(canAutoFetchPreview("audio", 1024)).toBe(false);
     expect(canAutoFetchPreview("video", 1024)).toBe(false);

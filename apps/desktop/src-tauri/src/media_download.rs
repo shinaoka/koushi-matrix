@@ -272,6 +272,67 @@ impl TextPreviewError {
     }
 }
 
+/// Largest PDF the viewer will read (#2096 stage 2), and the one place the
+/// number lives on the Rust side; the renderer mirrors it for its card.
+///
+/// The file is refused above this rather than truncated: a truncated PDF can
+/// parse and draw as a shorter, wrong document.
+pub(crate) const MAX_PDF_PREVIEW_BYTES: u64 = 32 * 1024 * 1024;
+
+/// How far into the file `%PDF-` may start; readers tolerate leading junk.
+const PDF_HEADER_SEARCH_BYTES: usize = 1024;
+
+/// Read a downloaded PDF's bytes for the in-app viewer (#2096 stage 2).
+///
+/// Same resolution as [`read_managed_text`]: the opaque ref is resolved inside
+/// the account's managed cache and no path is returned. A body without a PDF
+/// header is refused here so the renderer's parser never sees arbitrary bytes.
+pub(crate) fn read_managed_pdf(
+    cache_roots: &[PathBuf],
+    source_ref: &str,
+    max_bytes: u64,
+) -> Result<Vec<u8>, PdfPreviewError> {
+    let Some(file) = resolve_managed_file(cache_roots, source_ref.trim()) else {
+        return Err(PdfPreviewError::Unavailable);
+    };
+    let Ok(metadata) = std::fs::metadata(&file) else {
+        return Err(PdfPreviewError::Unavailable);
+    };
+    if metadata.len() > max_bytes {
+        return Err(PdfPreviewError::TooLarge);
+    }
+    let Ok(bytes) = std::fs::read(&file) else {
+        return Err(PdfPreviewError::Unavailable);
+    };
+    // The file may have grown between the metadata check and the read.
+    if bytes.len() as u64 > max_bytes {
+        return Err(PdfPreviewError::TooLarge);
+    }
+    let head = &bytes[..bytes.len().min(PDF_HEADER_SEARCH_BYTES)];
+    if !head.windows(5).any(|window| window == b"%PDF-") {
+        return Err(PdfPreviewError::NotPdf);
+    }
+    Ok(bytes)
+}
+
+/// Why a PDF attachment cannot be previewed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PdfPreviewError {
+    Unavailable,
+    TooLarge,
+    NotPdf,
+}
+
+impl PdfPreviewError {
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Self::Unavailable => "media download reference is unavailable",
+            Self::TooLarge => "media file is too large to preview",
+            Self::NotPdf => "media file is not a PDF",
+        }
+    }
+}
+
 /// Resolve a renderer-supplied ref for the save flow.
 pub(crate) fn cache_path_for_tab(cache_root: &Path, source_ref: &str) -> Option<PathBuf> {
     let path =
