@@ -22,7 +22,7 @@ import { Tooltip } from "../Tooltip";
 import { useOutsidePressDismissal } from "../popupDismissal";
 import type { MediaTransferProgress, TimelineItem } from "../../domain/coreEvents";
 import type { TimelineMediaDownloadState } from "../../domain/types";
-import { mediaSourceUrl, readDownloadedText } from "../../backend/linkMediaRuntime";
+import { mediaSourceUrl, readDownloadedMarkdown, readDownloadedText } from "../../backend/linkMediaRuntime";
 import type { MediaSaveNameFacts } from "../../backend/linkMediaPort";
 import type { TimelineTransport } from "./TimelineTransport";
 import { type FileTypeCategory, fileTypeCategory } from "./fileTypeCategory";
@@ -30,11 +30,17 @@ import {
   TEXT_PREVIEW_LINE_COUNT,
   TEXT_PREVIEW_MAX_BYTES,
   filePreviewKind,
+  isMarkdownAttachment,
   textPreviewLines
 } from "./filePreview";
+import { type MarkdownDocument, useMarkdownDocumentOpener } from "./MarkdownDocumentContext";
+import { renderMarkdownDocument } from "./TimelineMessageBody";
 import { MediaTextPreviewDialog } from "./MediaTextPreviewDialog";
 import { formatDimensions } from "../../app/uiShared";
 import { saveMediaSource, type MediaViewerEntry } from "../mediaViewer";
+
+/** Top-level blocks of a document the card draws before the reader opens it. */
+const DOCUMENT_PREVIEW_BLOCKS = 4;
 
 const FILE_TYPE_ICONS: Record<FileTypeCategory, typeof FileText> = {
   spreadsheet: FileSpreadsheet,
@@ -58,6 +64,7 @@ export function TimelineMediaAttachment({
   onOpenMediaViewer,
   onSaveMediaFile,
   onReadMediaText,
+  onReadMediaMarkdown,
   saveName,
   viewerEntry
 }: {
@@ -70,6 +77,7 @@ export function TimelineMediaAttachment({
   onSaveMediaFile?: TimelineTransport["saveMediaFile"];
   /** The timeline's per-account read, so a preview never reads another tab. */
   onReadMediaText?: TimelineTransport["readMediaText"];
+  onReadMediaMarkdown?: TimelineTransport["readMediaMarkdown"];
   saveName: MediaSaveNameFacts | null;
   /** The same image as the shared viewer displays it (#1810). */
   viewerEntry: MediaViewerEntry | null;
@@ -119,12 +127,24 @@ export function TimelineMediaAttachment({
   const textPreviewAllowed =
     previewKind === "text" &&
     (media.size === null || media.size <= TEXT_PREVIEW_MAX_BYTES);
+  // #2097: a `.md` attachment is drawn as a document instead of raw text, when
+  // the shell can show it in the right panel. Every other text type, and a `.md`
+  // with nowhere to open, keeps the stage-1 plain-text preview.
+  const openMarkdownDocument = useMarkdownDocumentOpener();
+  const markdownAllowed =
+    textPreviewAllowed &&
+    openMarkdownDocument !== null &&
+    isMarkdownAttachment(media.filename, media.mimetype);
+  const plainTextPreviewAllowed = textPreviewAllowed && !markdownAllowed;
   const readyDownload = downloadState?.kind === "ready" ? downloadState : null;
   const readyDownloadRef = readyDownload?.source_ref ?? null;
   const [previewText, setPreviewText] = useState<
     { kind: "loading" } | { kind: "ready"; text: string } | { kind: "failed" } | null
   >(null);
   const [textDialogOpen, setTextDialogOpen] = useState(false);
+  const [previewDocument, setPreviewDocument] = useState<
+    { kind: "loading" } | { kind: "ready"; document: MarkdownDocument } | { kind: "failed" } | null
+  >(null);
   const saveIntentRef = useRef(false);
   const requestDownload = useCallback(() => {
     saveIntentRef.current = true;
@@ -153,8 +173,35 @@ export function TimelineMediaAttachment({
   // card's limit is not read at all: the reader asked to save it, and a refusal
   // would be reported as a failure it is not.
   const readText = onReadMediaText ?? readDownloadedText;
+  const readMarkdown = onReadMediaMarkdown ?? readDownloadedMarkdown;
   useEffect(() => {
-    if (!textPreviewAllowed || readyDownloadRef === null) {
+    if (!markdownAllowed || readyDownloadRef === null) {
+      setPreviewDocument(null);
+      return;
+    }
+    let cancelled = false;
+    setPreviewDocument({ kind: "loading" });
+    readMarkdown(readyDownloadRef).then(
+      (formatted) => {
+        if (!cancelled) {
+          setPreviewDocument({
+            kind: "ready",
+            document: { filename: media.filename, formatted }
+          });
+        }
+      },
+      () => {
+        if (!cancelled) {
+          setPreviewDocument({ kind: "failed" });
+        }
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [markdownAllowed, media.filename, readMarkdown, readyDownloadRef]);
+  useEffect(() => {
+    if (!plainTextPreviewAllowed || readyDownloadRef === null) {
       setPreviewText(null);
       return;
     }
@@ -175,7 +222,7 @@ export function TimelineMediaAttachment({
     return () => {
       cancelled = true;
     };
-  }, [readText, textPreviewAllowed, readyDownloadRef]);
+  }, [readText, plainTextPreviewAllowed, readyDownloadRef]);
   useEffect(() => {
     if (!detailsOpen) {
       return;
@@ -439,14 +486,20 @@ export function TimelineMediaAttachment({
         : playsInline
           ? onDownload
           : requestDownload;
-  const textReady = textPreviewAllowed && previewText?.kind === "ready";
+  const textReady = plainTextPreviewAllowed && previewText?.kind === "ready";
+  const readyDocument = markdownAllowed && previewDocument?.kind === "ready" ? previewDocument.document : null;
+  const openDocument = readyDocument && openMarkdownDocument
+    ? () => openMarkdownDocument(readyDocument)
+    : null;
   const backgroundAction: (() => void) | null = playsInline
     ? null
-    : textPreviewAllowed
-      ? textReady
-        ? () => setTextDialogOpen(true)
-        : null
-      : cardAction;
+    : markdownAllowed
+      ? openDocument
+      : plainTextPreviewAllowed
+        ? textReady
+          ? () => setTextDialogOpen(true)
+          : null
+        : cardAction;
   // A type the player cannot render has no protocol token, and the empty URL
   // keeps the plain card rather than mounting a <video> that can never load.
   const inlinePlayerUrl = playsInline && readyDownload !== null
@@ -551,7 +604,33 @@ export function TimelineMediaAttachment({
             </pre>
           </button>
         ) : null}
-        {textPreviewAllowed && previewText?.kind === "failed" ? (
+        {readyDocument && openDocument ? (
+          // #2097: the first blocks, rendered. Its copy buttons are hidden in the
+          // card, so the preview is one control that opens the whole document.
+          <div
+            className="message-media-doc-preview"
+            role="button"
+            tabIndex={0}
+            dir="auto"
+            aria-label={t("timeline.mediaDocumentOpen", { filename: media.filename })}
+            style={{ "--media-preview-lines": TEXT_PREVIEW_LINE_COUNT } as CSSProperties}
+            onClick={openDocument}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                openDocument();
+              }
+            }}
+          >
+            {renderMarkdownDocument(readyDocument.formatted, () => undefined, DOCUMENT_PREVIEW_BLOCKS)}
+          </div>
+        ) : null}
+        {markdownAllowed && previewDocument?.kind === "failed" ? (
+          <p className="message-media-preview-note">
+            {t("timeline.mediaTextPreviewFailed")}
+          </p>
+        ) : null}
+        {plainTextPreviewAllowed && previewText?.kind === "failed" ? (
           <p className="message-media-preview-note">
             {t("timeline.mediaTextPreviewFailed")}
           </p>

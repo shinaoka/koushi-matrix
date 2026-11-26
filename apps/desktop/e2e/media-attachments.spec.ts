@@ -1033,3 +1033,170 @@ test("a downloaded video attachment plays inline from the media cache", async ({
     await page.evaluate(() => window.__harness.invocationsOf("default_media_save_path").length)
   ).toBe(0);
 });
+
+// #2097: what Core's `read_downloaded_media_markdown` answers for the fixture
+// document below. The Rust tests prove the rendering and the sanitizing; these
+// tests prove what the shell draws from that DTO.
+const FILLER = Array.from({ length: 60 }, (_, index) => `<p>Filler paragraph ${index}.</p>`).join("");
+const MARKDOWN_DOCUMENT_DTO = {
+  html:
+    '<h1 id="md-h0">Release plan</h1><p>Intro with <strong>bold</strong> and <code>code</code>.</p>' +
+    '<h2 id="md-h1">Details</h2><table><thead><tr><th>Step</th><th>Owner</th></tr></thead>' +
+    '<tbody><tr><td>Build</td><td>Ana</td></tr></tbody></table>' +
+    '<pre><code class="language-rust">fn main() {}\n</code></pre>' +
+    FILLER +
+    '<h3 id="md-h2">Closing notes</h3><p>&lt;script&gt;alert(1)&lt;/script&gt;</p>',
+  plain_text: "Release plan\nIntro with bold and code.\nDetails\n<script>alert(1)</script>",
+  code_blocks: [{ language: "rust", body: "fn main() {}\n" }]
+};
+
+async function openMarkdownCard(
+  page: Page,
+  eventId: string,
+  dto: unknown,
+  attachment: { filename: string; mimetype: string | null; size: number }
+) {
+  await gotoReadyShell(page);
+  await page.evaluate((response) => {
+    window.__harness.setCommandResponse("read_downloaded_media_markdown", response);
+  }, dto);
+  await seedTimelineItems(page, [makeAttachmentItem(eventId, attachment)]);
+  await expect
+    .poll(() => page.evaluate(() => window.__harness.invocationsOf("download_media").length))
+    .toBe(1);
+  await pushMediaDownloadState(page, eventId, readyPreviewState(attachment.mimetype ?? "text/markdown"));
+  return page.locator(`[data-event-id="${eventId}"]`).locator(".message-media");
+}
+
+test("a .md attachment shows its first blocks rendered, not as raw Markdown (#2097)", async ({
+  page
+}) => {
+  const card = await openMarkdownCard(page, "$md-card:example.invalid", MARKDOWN_DOCUMENT_DTO, {
+    filename: "plan.md",
+    mimetype: "text/markdown",
+    size: 4096
+  });
+  const preview = card.locator(".message-media-doc-preview");
+  await expect(preview.getByRole("heading", { name: "Release plan" })).toBeVisible();
+  await expect(preview.locator("strong")).toHaveText("bold");
+  await expect(preview).not.toContainText("Closing notes");
+  for (const raw of ["# ", "**", "`"]) {
+    expect(await preview.innerText()).not.toContain(raw);
+  }
+  // The plain-text preview is not drawn for a document.
+  await expect(card.locator(".message-media-text-preview")).toHaveCount(0);
+});
+
+test("clicking a .md card opens the whole document in the right panel with a working table of contents (#2097)", async ({
+  page
+}) => {
+  const card = await openMarkdownCard(page, "$md-open:example.invalid", MARKDOWN_DOCUMENT_DTO, {
+    filename: "plan.md",
+    mimetype: "text/markdown",
+    size: 4096
+  });
+  await card.locator(".message-media-doc-preview").click();
+
+  const document = page.getByTestId("markdown-document");
+  await expect(document).toBeVisible();
+  await expect(document.getByRole("heading", { name: "Closing notes" })).toBeAttached();
+  await expect(document.getByRole("cell", { name: "Ana" })).toBeVisible();
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("save_downloaded_media").length)
+  ).toBe(0);
+
+  // (d) A fenced block is drawn as the message body draws it: a code block with
+  // the language class. Messages have no syntax highlighter, so neither does this.
+  await expect(document.locator(".message-code-block-pre code.language-rust")).toHaveText(
+    "fn main() {}"
+  );
+
+  // (c) The table of contents lists h1-h3 and an entry moves to its heading.
+  const toc = document.getByRole("navigation", { name: t("timeline.mediaDocumentContents") });
+  await expect(toc.getByRole("button")).toHaveText(["Release plan", "Details", "Closing notes"]);
+  await expect(document.getByRole("heading", { name: "Closing notes" })).not.toBeInViewport();
+  await toc.getByRole("button", { name: "Closing notes" }).click();
+  await expect(document.getByRole("heading", { name: "Closing notes" })).toBeInViewport();
+});
+
+test("a .md without headings has no table of contents (#2097)", async ({ page }) => {
+  const card = await openMarkdownCard(
+    page,
+    "$md-flat:example.invalid",
+    { html: "<p>Just a paragraph.</p>", plain_text: "Just a paragraph.", code_blocks: [] },
+    { filename: "note.md", mimetype: "text/markdown", size: 64 }
+  );
+  await card.locator(".message-media-doc-preview").click();
+  await expect(page.getByTestId("markdown-document")).toContainText("Just a paragraph.");
+  await expect(page.getByRole("navigation", { name: t("timeline.mediaDocumentContents") })).toHaveCount(0);
+});
+
+test("markup in a document is shown literally and never runs (#2097)", async ({ page }) => {
+  // Core turns raw HTML into text; this also feeds the renderer markup Core would
+  // never send, to prove the shell does not execute or mount it either.
+  const card = await openMarkdownCard(
+    page,
+    "$md-script:example.invalid",
+    {
+      html:
+        "<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>" +
+        "<script>window.__markdownXss = true</script><p>after</p>",
+      plain_text: "<script>alert(1)</script>after",
+      code_blocks: []
+    },
+    { filename: "evil.md", mimetype: "text/markdown", size: 128 }
+  );
+  await card.locator(".message-media-doc-preview").click();
+  const document = page.getByTestId("markdown-document");
+  await expect(document).toContainText("<script>alert(1)</script>");
+  await expect(document.locator("script")).toHaveCount(0);
+  expect(await page.evaluate(() => (window as unknown as { __markdownXss?: boolean }).__markdownXss)).toBeUndefined();
+});
+
+test("a .md above the preview limit keeps the plain card and is not fetched (#2097)", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  const eventId = "$md-too-large:example.invalid";
+  await page.evaluate((response) => {
+    window.__harness.setCommandResponse("read_downloaded_media_markdown", response);
+  }, MARKDOWN_DOCUMENT_DTO);
+  await seedTimelineItems(page, [
+    makeAttachmentItem(eventId, {
+      filename: "huge.md",
+      mimetype: "text/markdown",
+      size: 256 * 1024 + 1
+    })
+  ]);
+  const card = page.locator(`[data-event-id="${eventId}"]`).locator(".message-media");
+  await expect(
+    card.getByRole("button", { name: t("timeline.downloadMedia", { filename: "huge.md" }) })
+  ).toBeVisible();
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => window.__harness.invocationsOf("download_media").length)).toBe(0);
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("read_downloaded_media_markdown").length)
+  ).toBe(0);
+  await expect(card.locator(".message-media-doc-preview")).toHaveCount(0);
+});
+
+test("a .txt attachment keeps the plain-text preview (#2097)", async ({ page }) => {
+  await gotoReadyShell(page);
+  const eventId = "$txt-plain:example.invalid";
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("read_downloaded_media_text", "# not a heading\nsecond");
+  });
+  await seedTimelineItems(page, [
+    makeAttachmentItem(eventId, { filename: "notes.txt", mimetype: "text/plain", size: 64 })
+  ]);
+  await expect
+    .poll(() => page.evaluate(() => window.__harness.invocationsOf("download_media").length))
+    .toBe(1);
+  await pushMediaDownloadState(page, eventId, readyPreviewState("text/plain"));
+  const card = page.locator(`[data-event-id="${eventId}"]`).locator(".message-media");
+  await expect(card.locator(".message-media-text-preview")).toContainText("# not a heading");
+  await expect(card.locator(".message-media-doc-preview")).toHaveCount(0);
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("read_downloaded_media_markdown").length)
+  ).toBe(0);
+});

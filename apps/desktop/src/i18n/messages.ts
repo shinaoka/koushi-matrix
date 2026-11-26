@@ -2032,6 +2032,8 @@ export type MessageId =
   | "timeline.mediaOpenFile"
   | "timeline.mediaTextPreviewOpen"
   | "timeline.mediaTextPreviewFailed"
+  | "timeline.mediaDocumentOpen"
+  | "timeline.mediaDocumentContents"
   | "timeline.mediaAudioPlayer"
   | "timeline.mediaVideoPlayer"
   | "timeline.mediaDetails"
@@ -4579,6 +4581,8 @@ const en: Catalog = {
   "timeline.mediaOpenFile": "Open file",
   "timeline.mediaTextPreviewOpen": "Preview {filename}",
   "timeline.mediaTextPreviewFailed": "This file cannot be previewed as text.",
+  "timeline.mediaDocumentOpen": "Open {filename} as a document",
+  "timeline.mediaDocumentContents": "Contents",
   "timeline.mediaAudioPlayer": "Audio player for {filename}",
   "timeline.mediaVideoPlayer": "Video player for {filename}",
   "timeline.mediaDetails": "Show media details for {filename}",
@@ -7001,6 +7005,8 @@ const ja: Catalog = {
   "timeline.mediaOpenFile": "ファイルを開く",
   "timeline.mediaTextPreviewOpen": "{filename} をプレビュー",
   "timeline.mediaTextPreviewFailed": "このファイルはテキストとしてプレビューできません。",
+  "timeline.mediaDocumentOpen": "{filename} をドキュメントとして開く",
+  "timeline.mediaDocumentContents": "目次",
   "timeline.mediaAudioPlayer": "{filename} の音声プレイヤー",
   "timeline.mediaVideoPlayer": "{filename} の動画プレイヤー",
   "timeline.mediaDetails": "{filename}のメディア詳細を表示",

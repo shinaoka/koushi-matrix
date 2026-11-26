@@ -2042,6 +2042,8 @@ export const zhHans: Catalog = {
   "timeline.mediaOpenFile": "打开文件",
   "timeline.mediaTextPreviewOpen": "预览 {filename}",
   "timeline.mediaTextPreviewFailed": "此文件无法作为文本预览。",
+  "timeline.mediaDocumentOpen": "将 {filename} 作为文档打开",
+  "timeline.mediaDocumentContents": "目录",
   "timeline.mediaAudioPlayer": "{filename} 的音频播放器",
   "timeline.mediaVideoPlayer": "{filename} 的视频播放器",
   "timeline.mediaDetails": "显示 {filename} 的媒体详情",

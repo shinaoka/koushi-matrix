@@ -4,6 +4,7 @@ import {
   TEXT_PREVIEW_LINE_COUNT,
   TEXT_PREVIEW_MAX_BYTES,
   canAutoFetchPreview,
+  isMarkdownAttachment,
   filePreviewKind,
   textPreviewLines
 } from "./filePreview";
@@ -34,6 +35,20 @@ describe("file preview kind (#2096)", () => {
     // Mirrors `MAX_TEXT_PREVIEW_BYTES` in apps/desktop/src-tauri/src/media_download.rs.
     expect(TEXT_PREVIEW_MAX_BYTES).toBe(256 * 1024);
     expect(TEXT_PREVIEW_LINE_COUNT).toBe(6);
+  });
+});
+
+describe("markdown attachments (#2097)", () => {
+  it("recognises .md and .markdown, and the text/markdown type", () => {
+    expect(isMarkdownAttachment("plan.md", null)).toBe(true);
+    expect(isMarkdownAttachment("PLAN.MARKDOWN", "application/octet-stream")).toBe(true);
+    expect(isMarkdownAttachment("plan", "text/markdown; charset=utf-8")).toBe(true);
+  });
+
+  it("leaves other text types to the plain-text preview", () => {
+    expect(isMarkdownAttachment("notes.txt", "text/plain")).toBe(false);
+    expect(isMarkdownAttachment("spec.rst", "text/x-rst")).toBe(false);
+    expect(isMarkdownAttachment("readme.md.bak", null)).toBe(false);
   });
 });
 

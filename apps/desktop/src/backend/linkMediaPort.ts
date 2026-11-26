@@ -1,3 +1,5 @@
+import type { TimelineItem } from "../domain/coreEvents";
+
 /**
  * Facts the save-name policy needs beyond the attachment's own filename (#1135).
  * The renderer resolves them where the platform facts live: the media kind from
@@ -80,4 +82,16 @@ export interface LinkMediaPort {
    * the backend refuses anything above its own preview limit.
    */
   readDownloadedText(sourceRef: string, accountTabId?: string): Promise<string>;
+  /**
+   * #2097: a downloaded Markdown attachment rendered by Core to the sanitized
+   * formatted body a message carries. React never parses Markdown; the backend
+   * enforces the same preview limit as `readDownloadedText`.
+   */
+  readDownloadedMarkdown(
+    sourceRef: string,
+    accountTabId?: string
+  ): Promise<TimelineFormattedBodyDto>;
 }
+
+/** The formatted body Core renders for a Markdown document (#2097). */
+export type TimelineFormattedBodyDto = NonNullable<TimelineItem["formatted"]>;

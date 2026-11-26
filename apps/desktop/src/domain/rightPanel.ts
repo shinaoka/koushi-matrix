@@ -21,7 +21,8 @@ export type RightPanelMode =
   | "scheduledMessages"
   | "pinned"
   | "people"
-  | "profile";
+  | "profile"
+  | "document";
 
 export type RightPanelContextMenuTarget =
   | { kind: "message"; roomId: string; eventId: string }

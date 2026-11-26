@@ -450,6 +450,15 @@ const FORMATTED_TAGS = new Set([
   "s",
   "span",
   "strong",
+  // #2097: table tags and a heading's `id` exist only in a rendered Markdown
+  // document. The message path's sanitizer strips tables and ids, so this widens
+  // what the tokenizer reads, not what a message can show.
+  "table",
+  "tbody",
+  "td",
+  "th",
+  "thead",
+  "tr",
   "ul"
 ]);
 
@@ -1122,7 +1131,7 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     return <em key={key}>{children}</em>;
   },
   h1(
-    _node: Extract<FormattedNode, { kind: "element" }>,
+    node: Extract<FormattedNode, { kind: "element" }>,
     key: string,
     children: ReactNode,
     _formatted: NonNullable<TimelineItem["formatted"]>,
@@ -1130,10 +1139,10 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     _codeBlockIndexRef: { current: number },
     _onCopyText: TimelineRowActionHandlers["onCopyText"]
   ) {
-    return <h1 key={key}>{children}</h1>;
+    return <h1 key={key} id={node.attrs.id || undefined}>{children}</h1>;
   },
   h2(
-    _node: Extract<FormattedNode, { kind: "element" }>,
+    node: Extract<FormattedNode, { kind: "element" }>,
     key: string,
     children: ReactNode,
     _formatted: NonNullable<TimelineItem["formatted"]>,
@@ -1141,10 +1150,10 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     _codeBlockIndexRef: { current: number },
     _onCopyText: TimelineRowActionHandlers["onCopyText"]
   ) {
-    return <h2 key={key}>{children}</h2>;
+    return <h2 key={key} id={node.attrs.id || undefined}>{children}</h2>;
   },
   h3(
-    _node: Extract<FormattedNode, { kind: "element" }>,
+    node: Extract<FormattedNode, { kind: "element" }>,
     key: string,
     children: ReactNode,
     _formatted: NonNullable<TimelineItem["formatted"]>,
@@ -1152,10 +1161,10 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     _codeBlockIndexRef: { current: number },
     _onCopyText: TimelineRowActionHandlers["onCopyText"]
   ) {
-    return <h3 key={key}>{children}</h3>;
+    return <h3 key={key} id={node.attrs.id || undefined}>{children}</h3>;
   },
   h4(
-    _node: Extract<FormattedNode, { kind: "element" }>,
+    node: Extract<FormattedNode, { kind: "element" }>,
     key: string,
     children: ReactNode,
     _formatted: NonNullable<TimelineItem["formatted"]>,
@@ -1163,10 +1172,10 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     _codeBlockIndexRef: { current: number },
     _onCopyText: TimelineRowActionHandlers["onCopyText"]
   ) {
-    return <h4 key={key}>{children}</h4>;
+    return <h4 key={key} id={node.attrs.id || undefined}>{children}</h4>;
   },
   h5(
-    _node: Extract<FormattedNode, { kind: "element" }>,
+    node: Extract<FormattedNode, { kind: "element" }>,
     key: string,
     children: ReactNode,
     _formatted: NonNullable<TimelineItem["formatted"]>,
@@ -1174,10 +1183,10 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     _codeBlockIndexRef: { current: number },
     _onCopyText: TimelineRowActionHandlers["onCopyText"]
   ) {
-    return <h5 key={key}>{children}</h5>;
+    return <h5 key={key} id={node.attrs.id || undefined}>{children}</h5>;
   },
   h6(
-    _node: Extract<FormattedNode, { kind: "element" }>,
+    node: Extract<FormattedNode, { kind: "element" }>,
     key: string,
     children: ReactNode,
     _formatted: NonNullable<TimelineItem["formatted"]>,
@@ -1185,7 +1194,7 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     _codeBlockIndexRef: { current: number },
     _onCopyText: TimelineRowActionHandlers["onCopyText"]
   ) {
-    return <h6 key={key}>{children}</h6>;
+    return <h6 key={key} id={node.attrs.id || undefined}>{children}</h6>;
   },
   i(
     _node: Extract<FormattedNode, { kind: "element" }>,
@@ -1318,6 +1327,48 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
   ) {
     return <strong key={key}>{children}</strong>;
   },
+  table(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode
+  ) {
+    return <table key={key}>{children}</table>;
+  },
+  tbody(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode
+  ) {
+    return <tbody key={key}>{children}</tbody>;
+  },
+  td(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode
+  ) {
+    return <td key={key}>{children}</td>;
+  },
+  th(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode
+  ) {
+    return <th key={key}>{children}</th>;
+  },
+  thead(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode
+  ) {
+    return <thead key={key}>{children}</thead>;
+  },
+  tr(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode
+  ) {
+    return <tr key={key}>{children}</tr>;
+  },
   ul(
     _node: Extract<FormattedNode, { kind: "element" }>,
     key: string,
@@ -1443,3 +1494,36 @@ export async function writeClipboardText(value: string): Promise<void> {
   document.execCommand("copy");
   document.body.removeChild(textarea);
 }
+
+/**
+ * #2097: a rendered Markdown document, drawn by the message body's own
+ * HTML-to-React path from the Rust-sanitized `formatted` DTO. `maxBlocks` keeps
+ * only the first top-level blocks, which is how the file card shows the
+ * beginning of the document without drawing all of it. No links are projected
+ * and no mention or highlight state applies: a document is not a message.
+ */
+export function renderMarkdownDocument(
+  formatted: NonNullable<TimelineItem["formatted"]>,
+  onCopyText: TimelineRowActionHandlers["onCopyText"],
+  maxBlocks?: number
+): ReactNode {
+  let nodes = parseFormattedHtml(formatted.html).filter(
+    (node) => node.kind !== "text" || node.value.trim().length > 0
+  );
+  if (maxBlocks !== undefined) {
+    nodes = nodes.slice(0, maxBlocks);
+  }
+  return renderFormattedNodes(
+    nodes,
+    formatted,
+    false,
+    { current: 0 },
+    onCopyText,
+    [],
+    { current: 0 },
+    NO_SPOILERS,
+    undefined
+  );
+}
+
+const NO_SPOILERS: SpoilerRevealState = { revealed: new Set(), reveal: () => undefined };

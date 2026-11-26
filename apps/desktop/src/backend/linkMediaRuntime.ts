@@ -1,6 +1,6 @@
 import { toExternalHttpUrl } from "../domain/externalLinks";
 import { browserLinkMediaPort } from "./browser/linkMediaPort";
-import type { LinkMediaPort, MediaSaveNameFacts } from "./linkMediaPort";
+import type { LinkMediaPort, MediaSaveNameFacts, TimelineFormattedBodyDto } from "./linkMediaPort";
 import { isTauriRuntime } from "./runtimeEnvironment";
 import { tauriLinkMediaPort } from "./tauri/linkMediaPort";
 
@@ -45,4 +45,16 @@ export async function readDownloadedText(
   accountTabId?: string
 ): Promise<string> {
   return activePort().readDownloadedText(sourceRef, accountTabId);
+}
+
+/**
+ * #2097: a downloaded Markdown attachment, rendered and sanitized by Core. The
+ * backend refuses a file above the preview limit; a rejection keeps the plain
+ * card.
+ */
+export async function readDownloadedMarkdown(
+  sourceRef: string,
+  accountTabId?: string
+): Promise<TimelineFormattedBodyDto> {
+  return activePort().readDownloadedMarkdown(sourceRef, accountTabId);
 }

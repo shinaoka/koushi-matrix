@@ -3411,7 +3411,7 @@ fn project_formatted_body(formatted_body: &FormattedBody) -> Option<FormattedBod
     })
 }
 
-fn plain_text_from_html(html: &Html) -> String {
+pub(super) fn plain_text_from_html(html: &Html) -> String {
     let mut text = String::new();
     collect_plain_text_from_nodes(html.children(), &mut text);
     text
@@ -3477,7 +3477,7 @@ fn collect_spoiler_spans_from_nodes(
     }
 }
 
-fn code_blocks_from_html(html: &Html) -> Vec<koushi_protocol::event::TimelineCodeBlock> {
+pub(super) fn code_blocks_from_html(html: &Html) -> Vec<koushi_protocol::event::TimelineCodeBlock> {
     let mut blocks = Vec::new();
     collect_code_blocks_from_nodes(html.children(), &mut blocks);
     blocks

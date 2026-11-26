@@ -67,3 +67,15 @@ export function textPreviewLines(
   }
   return lines.slice(0, maxLines);
 }
+
+/**
+ * #2097: a shared Markdown document, by extension or MIME type. Only `.md` /
+ * `.markdown` is rendered as a document; `.txt`, `.rst` and other text types
+ * keep the plain-text preview.
+ */
+export function isMarkdownAttachment(filename: string, mimetype: string | null): boolean {
+  if (/\.(md|markdown)$/i.test(filename.trim())) {
+    return true;
+  }
+  return (mimetype ?? "").split(";")[0].trim().toLowerCase() === "text/markdown";
+}

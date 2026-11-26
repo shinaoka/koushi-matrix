@@ -1571,6 +1571,36 @@ pub async fn read_downloaded_media_text(
     .map_err(|error| format!("media text read failed: {error}"))?
 }
 
+/// #2097: a downloaded `.md` attachment rendered for the document view.
+///
+/// Same ref, cache confinement and 256 KB cap as `read_downloaded_media_text`;
+/// the answer is the sanitized formatted DTO a message body carries, so React
+/// draws it with the message renderer and never parses Markdown itself.
+#[tauri::command]
+pub async fn read_downloaded_media_markdown(
+    account_tab_id: Option<String>,
+    source_ref: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<koushi_protocol::event::TimelineFormattedBody, String> {
+    let tab_id = account_tab_id
+        .map(koushi_core::account_runtime_manager::AccountTabId::from_string)
+        .unwrap_or_else(|| state.runtime.selected_tab_id());
+    let cache_root = state
+        .runtime
+        .media_cache_dir_for_tab(&tab_id)
+        .ok_or_else(|| "media cache is unavailable".to_owned())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::media_download::read_managed_markdown(
+            &[cache_root],
+            &source_ref,
+            crate::media_download::MAX_TEXT_PREVIEW_BYTES,
+        )
+        .map_err(|error| error.message().to_owned())
+    })
+    .await
+    .map_err(|error| format!("media markdown read failed: {error}"))?
+}
+
 #[tauri::command]
 pub async fn default_media_save_path(
     filename: String,
