@@ -5120,6 +5120,11 @@ button.reply-quote-thumbnail:focus-visible {
 
 .receipt-reader-time {
   flex: 0 0 auto;
+  /* #2145: the box is content-sized (#2098), so pushing the time to the
+     inline end costs no dead space and lines every time up in one column. The
+     name keeps hugging its text; only the free space after it moves. */
+  margin-inline-start: auto;
+  font-variant-numeric: tabular-nums;
   color: var(--text-muted);
   font-weight: 400;
 }
