@@ -3,7 +3,7 @@ import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { t, tInvariant } from "../../i18n/messages";
-import type { LinkMediaPort } from "../linkMediaPort";
+import type { LinkMediaPort, TimelineFormattedBodyDto } from "../linkMediaPort";
 import { renderableMediaDownloadSourceUrl } from "../linkMediaPort";
 import { isRendererSelectedAccountTabId } from "../client";
 
@@ -118,6 +118,12 @@ export const tauriLinkMediaPort: LinkMediaPort = {
   },
   async readDownloadedText(sourceRef, accountTabId) {
     return invoke<string>("read_downloaded_media_text", {
+      sourceRef,
+      ...(accountTabId === undefined ? {} : { accountTabId })
+    });
+  },
+  async readDownloadedMarkdown(sourceRef, accountTabId) {
+    return invoke<TimelineFormattedBodyDto>("read_downloaded_media_markdown", {
       sourceRef,
       ...(accountTabId === undefined ? {} : { accountTabId })
     });

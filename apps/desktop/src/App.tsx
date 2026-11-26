@@ -131,6 +131,10 @@ import {
   type TimelineStoreState
 } from "./domain/timelineStore";
 import { TimelineStoreContext } from "./components/timelineStoreContext";
+import {
+  MarkdownDocumentOpenerContext,
+  type MarkdownDocument
+} from "./components/timeline/MarkdownDocumentContext";
 import { writeClipboardText } from "./components/timeline/TimelineMessageBody";
 import { SenderDeviceAdvisoryDialog } from "./components/timeline/SenderDeviceAdvisoryDialog";
 import { StartDirectMessageDialog } from "./components/StartDirectMessageDialog";
@@ -435,7 +439,8 @@ const ROOM_BOUND_RIGHT_PANEL_MODES = new Set<RightPanelMode>([
   "pinned",
   "people",
   "profile",
-  "roomInfo"
+  "roomInfo",
+  "document"
 ]);
 
 const DEFAULT_CREATE_ROOM_OPTIONS: CreateRoomDialogOptions = {
@@ -1497,6 +1502,9 @@ function AccountContent({
   // every transition away from its panel closes the Rust projection while this
   // account still owns the bound API. `effectiveRightPanelModeForSnapshot` then
   // drops the items, so a closed projection can never keep rendering them.
+  // #2097: the Markdown attachment the right panel shows. Renderer-only view
+  // state: the rendered body is Core's DTO and nothing here reaches Rust.
+  const [markdownDocument, setMarkdownDocument] = useState<MarkdownDocument | null>(null);
   const rightPanelModeRef = useRef<RightPanelMode>(rightPanelMode);
   rightPanelModeRef.current = rightPanelMode;
   // Renderer-only right-panel transition intent. Every explicit mode change,
@@ -6703,6 +6711,18 @@ function AccountContent({
     setRightPanelMode(nextMode);
   }
 
+  // #2097: a file card opens its rendered Markdown document in the right panel.
+  // The identity is stable so the context does not re-render every card.
+  const showMarkdownDocumentRef = useRef<(document: MarkdownDocument) => void>(() => undefined);
+  showMarkdownDocumentRef.current = (document) => {
+    setMarkdownDocument(document);
+    runInBackground(setRightPanelModeClosingFocusedContext("document"));
+  };
+  const openMarkdownDocument = useCallback(
+    (document: MarkdownDocument) => showMarkdownDocumentRef.current(document),
+    []
+  );
+
   function spaceMemberRequestStillCurrent(
     requestId: number,
     fence: SpaceMemberFence
@@ -7701,6 +7721,7 @@ function AccountContent({
   return (
     <ActiveLocaleContext.Provider value={localeContextKey}>
     <TimelineStoreContext.Provider value={timelineStoreContextValue}>
+    <MarkdownDocumentOpenerContext.Provider value={openMarkdownDocument}>
       <div
         className="desktop"
         data-density={displayDensity}
@@ -8121,6 +8142,7 @@ function AccountContent({
           composerReadOnly={composerReadOnly}
           isRecoveryBusy={isBusy}
           mode={effectiveRightPanelMode}
+          markdownDocument={markdownDocument}
           threadsListScope={openThreadsListScope}
           peoplePanelScope={peoplePanelScope}
           selectedProfileUserId={selectedProfileUserId}
@@ -8780,6 +8802,7 @@ function AccountContent({
         />;
       })() : null}
       </div>
+    </MarkdownDocumentOpenerContext.Provider>
     </TimelineStoreContext.Provider>
     </ActiveLocaleContext.Provider>
   );

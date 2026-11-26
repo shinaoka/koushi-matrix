@@ -12181,3 +12181,74 @@ button.channel-access-pill:focus-visible {
   color: var(--text-faint);
   font-size: 12px;
 }
+
+/* #2097: a rendered Markdown attachment — the card's first blocks and the
+   document view in the right panel. */
+.message-media-doc-preview {
+  max-height: calc(var(--media-preview-lines, 6) * 1.4em);
+  overflow: hidden;
+  margin-top: 6px;
+  cursor: pointer;
+  text-align: start;
+  font-size: 0.9em;
+}
+
+.message-media-doc-preview .message-code-block-actions {
+  display: none;
+}
+
+.message-media-doc-preview :is(h1, h2, h3, h4, h5, h6) {
+  margin: 0 0 4px;
+  font-size: 1em;
+}
+
+.markdown-document {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.markdown-document-toc {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border, currentColor);
+}
+
+.markdown-document-toc ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.markdown-document-toc li[data-level="2"] {
+  padding-inline-start: 12px;
+}
+
+.markdown-document-toc li[data-level="3"] {
+  padding-inline-start: 24px;
+}
+
+.markdown-document-toc button {
+  background: none;
+  border: 0;
+  padding: 2px 0;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.markdown-document-body {
+  padding: 12px;
+  overflow-wrap: anywhere;
+}
+
+.markdown-document-body table {
+  border-collapse: collapse;
+}
+
+.markdown-document-body :is(th, td) {
+  border: 1px solid var(--border, currentColor);
+  padding: 4px 8px;
+}

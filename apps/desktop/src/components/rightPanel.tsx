@@ -68,6 +68,9 @@ import {
   type TimelineTransport
 } from "./TimelineView";
 import { FilesView } from "./FilesView";
+import { writeClipboardText } from "./timeline/TimelineMessageBody";
+import { MarkdownDocumentPanel } from "./timeline/MarkdownDocumentPanel";
+import type { MarkdownDocument } from "./timeline/MarkdownDocumentContext";
 import { ModalDialog } from "./ModalDialog";
 import { RoomInfoPanel, type RoomInfoRevealRequest } from "./RoomInfoPanel";
 import { sidebarRoomAccess } from "../domain/accessCondition";
@@ -126,6 +129,7 @@ export function ContextualRightPanel({
   composerReadOnly,
   isRecoveryBusy,
   mode,
+  markdownDocument = null,
   threadsListScope = { kind: "home" },
   peoplePanelScope = null,
   selectedProfileUserId = null,
@@ -292,6 +296,8 @@ export function ContextualRightPanel({
   composerReadOnly: boolean;
   isRecoveryBusy: boolean;
   mode: RightPanelMode;
+  /** #2097: the Markdown attachment shown when `mode` is `document`. */
+  markdownDocument?: MarkdownDocument | null;
   threadsListScope?: ThreadsListScope;
   peoplePanelScope?: PeoplePanelScope | null;
   roomInfoInitialSection?: "members" | null;
@@ -1058,6 +1064,20 @@ export function ContextualRightPanel({
           onUpdateJoinRule={activeSpace ? onUpdateSpaceJoinRule : undefined}
           onUpdateTopic={activeSpace ? onUpdateSpaceTopic : undefined}
         />
+      </aside>
+    );
+  }
+
+  if (mode === "document") {
+    return (
+      <aside className="thread-pane" aria-label={t("panel.context")}>
+        <PanelHeader title={markdownDocument?.filename ?? ""} onClose={onClosePanel} />
+        {markdownDocument ? (
+          <MarkdownDocumentPanel
+            document={markdownDocument}
+            onCopyText={(text) => void writeClipboardText(text).catch(() => undefined)}
+          />
+        ) : null}
       </aside>
     );
   }

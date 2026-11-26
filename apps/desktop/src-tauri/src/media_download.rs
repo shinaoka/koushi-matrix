@@ -240,6 +240,20 @@ pub(crate) fn read_managed_text(
     String::from_utf8(bytes).map_err(|_| TextPreviewError::NotText)
 }
 
+/// Read a downloaded Markdown attachment and render it for the document view (#2097).
+///
+/// It goes through [`read_managed_text`], so the 256 KB cap, the UTF-8 check and
+/// the confinement to the managed cache are the stage-1 text preview's own; only
+/// the rendering (and its sanitizing) is new, and it lives in Core.
+pub(crate) fn read_managed_markdown(
+    cache_roots: &[PathBuf],
+    source_ref: &str,
+    max_bytes: u64,
+) -> Result<koushi_protocol::event::TimelineFormattedBody, TextPreviewError> {
+    read_managed_text(cache_roots, source_ref, max_bytes)
+        .map(|text| koushi_core::timeline::render_markdown_document(&text))
+}
+
 /// Why a text attachment cannot be previewed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TextPreviewError {

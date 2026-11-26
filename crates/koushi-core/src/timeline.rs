@@ -58,6 +58,8 @@ mod focused_build;
 mod focused_live_tail;
 mod gap_repair;
 pub(crate) mod html_sanitize;
+mod markdown_document;
+pub use markdown_document::render_markdown_document;
 mod item_projection;
 mod manager;
 mod media;

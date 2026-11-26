@@ -3,7 +3,12 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import katex from "katex";
 
 import type { TimelineFormattedBody } from "../../domain/coreEvents";
-import { renderFormattedBody, renderPlainTextBody } from "./TimelineMessageBody";
+import {
+  parseMarkdownDocument,
+  renderFormattedBody,
+  renderMarkdownDocument,
+  renderPlainTextBody
+} from "./TimelineMessageBody";
 
 const NO_SPOILERS = { revealed: new Set<string>(), reveal: () => undefined };
 
@@ -426,5 +431,60 @@ describe("renderFormattedBody linkify beside existing anchors (#1542)", () => {
     expect(markup).toContain(`href="${second}"`);
     expect(anchorCount(markup)).toBe(2);
     expect(markup).not.toMatch(NESTED_ANCHOR);
+  });
+});
+
+describe("#2097 document dialect stays out of the message path", () => {
+  const table = "<table><thead><tr><th>a</th></tr></thead><tbody><tr><td>1</td></tr></tbody></table>";
+  const formatted = (html: string): TimelineFormattedBody => ({
+    html,
+    plain_text: "x",
+    code_blocks: []
+  });
+  const message = (html: string) =>
+    renderToStaticMarkup(
+      renderFormattedBody(
+        formatted(html),
+        [],
+        false,
+        () => undefined,
+        [],
+        NO_SPOILERS,
+        undefined
+      )
+    );
+  const documentMarkup = (html: string, options = {}) => {
+    const f = formatted(html);
+    return renderToStaticMarkup(
+      <>{renderMarkdownDocument(parseMarkdownDocument(f), f, () => undefined, options)}</>
+    );
+  };
+
+  test("a message with a table is still flattened, a document draws it", () => {
+    expect(message(table)).not.toContain("<table");
+    expect(documentMarkup(table)).toContain("<table><thead><tr><th>a</th>");
+  });
+
+  test("a message heading id is not rendered, a document heading id is", () => {
+    expect(message('<h1 id="md-h0">T</h1>')).toBe("<h1>T</h1>");
+    expect(documentMarkup('<h1 id="md-h0">T</h1>')).toBe('<h1 id="md-h0">T</h1>');
+  });
+
+  test("a message img is handled as before (no renderer, flattened)", () => {
+    expect(message('<p>a<img src="mxc://a/b"></p>')).toBe("<p>a</p>");
+  });
+
+  test("the card preview flattens links, the panel keeps them", () => {
+    const html = '<p><a href="https://example.org">go</a></p>';
+    expect(documentMarkup(html, { flattenLinks: true })).toBe("<p>go</p>");
+    expect(documentMarkup(html)).toContain('href="https://example.org/"');
+  });
+
+  test("block quotes nested to the depth Rust allows do not crash the renderer", () => {
+    // Core's sanitizer bounds nesting at 100 (its own test feeds 5000 `>`), so
+    // the renderer is exercised at that bound, not at an unreachable 5000.
+    const depth = 100;
+    const html = `${"<blockquote>".repeat(depth)}deep${"</blockquote>".repeat(depth)}`;
+    expect(() => documentMarkup(html)).not.toThrow();
   });
 });

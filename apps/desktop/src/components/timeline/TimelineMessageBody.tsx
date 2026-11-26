@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, createElement, useEffect, useRef, useState, type ReactNode } from "react";
 import { Copy } from "lucide-react";
 import katex from "katex";
 
@@ -553,7 +553,10 @@ function matrixPermalinkUser(href: string): string | null {
   return target?.kind === "user" ? target.userId : null;
 }
 
-function parseFormattedHtml(html: string): FormattedNode[] {
+function parseFormattedHtml(
+  html: string,
+  dialect: FormattedDialect = MESSAGE_DIALECT
+): FormattedNode[] {
   const root: Extract<FormattedNode, { kind: "element" }> = {
     kind: "element",
     tagName: "fragment",
@@ -583,7 +586,7 @@ function parseFormattedHtml(html: string): FormattedNode[] {
       continue;
     }
     if (token.startsWith("<")) {
-      const parsed = parseFormattedStartTag(token);
+      const parsed = parseFormattedStartTag(token, dialect);
       if (!parsed) {
         continue;
       }
@@ -729,7 +732,8 @@ function linkifyFormattedTextNode(
 }
 
 function parseFormattedStartTag(
-  token: string
+  token: string,
+  dialect: FormattedDialect
 ): { tagName: string; attrs: Record<string, string>; selfClosing: boolean } | null {
   const inner = token.slice(1, -1).trim();
   const selfClosing = inner.endsWith("/");
@@ -740,7 +744,7 @@ function parseFormattedStartTag(
   }
   const tagName = tagMatch[1].toLowerCase();
   const attrs: Record<string, string> = {};
-  if (FORMATTED_TAGS.has(tagName)) {
+  if (dialect.tags.has(tagName)) {
     const attrPattern = /([^\s=/>]+)(?:\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
     for (const match of withoutSlash.slice(tagMatch[0].length).matchAll(attrPattern)) {
       const name = match[1].toLowerCase();
@@ -762,7 +766,8 @@ function renderFormattedNodes(
   spoilerState: SpoilerRevealState,
   onOpenMatrixTarget: OpenMatrixTargetHandler | undefined,
   keyPrefix = "",
-  parentTagName: string | null = null
+  parentTagName: string | null = null,
+  dialect: FormattedDialect = MESSAGE_DIALECT
 ): ReactNode {
   const renderedNodes =
     parentTagName === "ul" || parentTagName === "ol"
@@ -779,7 +784,8 @@ function renderFormattedNodes(
       highlightRanges,
       textOffsetRef,
       spoilerState,
-      onOpenMatrixTarget
+      onOpenMatrixTarget,
+      dialect
     )
   );
 }
@@ -794,7 +800,8 @@ function renderFormattedNode(
   highlightRanges: TextRange[],
   textOffsetRef: { current: number },
   spoilerState: SpoilerRevealState,
-  onOpenMatrixTarget: OpenMatrixTargetHandler | undefined
+  onOpenMatrixTarget: OpenMatrixTargetHandler | undefined,
+  dialect: FormattedDialect
 ): ReactNode {
   if (node.kind === "text") {
     const projectedOffset = formatted.plain_text.indexOf(node.value, textOffsetRef.current);
@@ -815,9 +822,10 @@ function renderFormattedNode(
     spoilerState,
     onOpenMatrixTarget,
     key,
-    node.tagName
+    node.tagName,
+    dialect
   );
-  const renderer = formattedTagRenderers[node.tagName as keyof typeof formattedTagRenderers];
+  const renderer = dialect.renderers[node.tagName];
   if (!renderer) {
     return <Fragment key={key}>{children}</Fragment>;
   }
@@ -1443,3 +1451,101 @@ export async function writeClipboardText(value: string): Promise<void> {
   document.execCommand("copy");
   document.body.removeChild(textarea);
 }
+
+/**
+ * Which tags the tokenizer reads attributes for and how each tag is drawn. The
+ * message path uses `MESSAGE_DIALECT` and never changes; a rendered Markdown
+ * document (#2097) uses `DOCUMENT_DIALECT`, which adds tables and heading ids.
+ * Rust's sanitizer allows tables on the message path too, but only the document
+ * view draws them: a message with a `<table>` keeps being flattened as before.
+ */
+type FormattedDialect = {
+  tags: ReadonlySet<string>;
+  renderers: Record<string, FormattedTagRenderer>;
+};
+
+const MESSAGE_DIALECT: FormattedDialect = {
+  tags: FORMATTED_TAGS,
+  renderers: formattedTagRenderers
+};
+
+const DOCUMENT_TABLE_TAGS = ["table", "thead", "tbody", "tr", "th", "td"] as const;
+const DOCUMENT_HEADING_TAGS = ["h1", "h2", "h3", "h4", "h5", "h6"] as const;
+
+const documentTagRenderers: Record<string, FormattedTagRenderer> = {
+  ...formattedTagRenderers,
+  ...Object.fromEntries(
+    DOCUMENT_TABLE_TAGS.map((tag): [string, FormattedTagRenderer] => [
+      tag,
+      (_node, key, children) => createElement(tag, { key }, children)
+    ])
+  ),
+  ...Object.fromEntries(
+    DOCUMENT_HEADING_TAGS.map((tag): [string, FormattedTagRenderer] => [
+      tag,
+      (node, key, children) =>
+        createElement(tag, { key, id: node.attrs.id || undefined }, children)
+    ])
+  )
+};
+
+const DOCUMENT_DIALECT: FormattedDialect = {
+  tags: new Set([...FORMATTED_TAGS, ...DOCUMENT_TABLE_TAGS]),
+  renderers: documentTagRenderers
+};
+
+/** A parsed Markdown document; parse once per `formatted` (see callers' useMemo). */
+export type ParsedMarkdownDocument = FormattedNode[];
+
+export function parseMarkdownDocument(
+  formatted: NonNullable<TimelineItem["formatted"]>
+): ParsedMarkdownDocument {
+  return parseFormattedHtml(formatted.html, DOCUMENT_DIALECT).filter(
+    (node) => node.kind !== "text" || node.value.trim().length > 0
+  );
+}
+
+/**
+ * #2097: a rendered Markdown document, drawn from the Rust-sanitized `formatted`
+ * DTO. `maxBlocks` keeps only the first top-level blocks; that cut happens
+ * after the parse, so the card relies on `overflow: hidden` for its height.
+ * `flattenLinks` draws links as their text (the card is itself the click target).
+ * No link projection, mention or highlight state: a document is not a message.
+ */
+export function renderMarkdownDocument(
+  nodes: ParsedMarkdownDocument,
+  formatted: NonNullable<TimelineItem["formatted"]>,
+  onCopyText: TimelineRowActionHandlers["onCopyText"],
+  options: { maxBlocks?: number; flattenLinks?: boolean } = {}
+): ReactNode {
+  let visible = nodes;
+  if (options.maxBlocks !== undefined) {
+    visible = visible.slice(0, options.maxBlocks);
+  }
+  const dialect = options.flattenLinks
+    ? {
+        ...DOCUMENT_DIALECT,
+        renderers: {
+          ...documentTagRenderers,
+          a: (_node: unknown, key: string, children: ReactNode) =>
+            createElement(Fragment, { key }, children)
+        } as Record<string, FormattedTagRenderer>
+      }
+    : DOCUMENT_DIALECT;
+  return renderFormattedNodes(
+    visible,
+    formatted,
+    false,
+    { current: 0 },
+    onCopyText,
+    [],
+    { current: 0 },
+    NO_SPOILERS,
+    undefined,
+    "",
+    null,
+    dialect
+  );
+}
+
+const NO_SPOILERS: SpoilerRevealState = { revealed: new Set(), reveal: () => undefined };

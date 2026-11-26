@@ -196,6 +196,42 @@ fn refuses_text_previews_it_cannot_show_whole() {
 }
 
 #[test]
+fn renders_a_managed_markdown_file_and_enforces_the_same_cap() {
+    // #2097: the document path reads through the stage-1 text reader, so the cap,
+    // the UTF-8 check and the managed-cache confinement are shared.
+    let (temp, root) = cache_with_file(
+        "6543210987654321.bin",
+        b"# Plan\n\n<script>alert(1)</script>\n\n```rust\nlet x = 1;\n```\n",
+    );
+    let source = "download/1234567890123456/6543210987654321";
+    let rendered =
+        read_managed_markdown(std::slice::from_ref(&root), source, MAX_TEXT_PREVIEW_BYTES)
+            .expect("rendered");
+    assert!(
+        rendered.html.contains("<h1 id=\"md-h0\">Plan</h1>"),
+        "{}",
+        rendered.html
+    );
+    assert!(!rendered.html.contains("<script"), "{}", rendered.html);
+    assert!(rendered.plain_text.contains("<script>alert(1)</script>"));
+    assert_eq!(rendered.code_blocks[0].language.as_deref(), Some("rust"));
+    assert_eq!(
+        read_managed_markdown(std::slice::from_ref(&root), source, 8).map(|_| ()),
+        Err(TextPreviewError::TooLarge)
+    );
+    assert_eq!(
+        read_managed_markdown(
+            std::slice::from_ref(&root),
+            "download/../../etc/passwd",
+            MAX_TEXT_PREVIEW_BYTES
+        )
+        .map(|_| ()),
+        Err(TextPreviewError::Unavailable)
+    );
+    drop(temp);
+}
+
+#[test]
 fn serves_the_audio_tokens_the_inline_player_needs() {
     for (token, mime) in [
         ("mp3", "audio/mpeg"),

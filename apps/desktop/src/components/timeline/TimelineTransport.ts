@@ -4,6 +4,7 @@ import type {
   TimelineGapId,
   TimelineKey
 } from "../../domain/coreEvents";
+import type { TimelineItem } from "../../domain/coreEvents";
 import type { MediaSaveNameFacts } from "../../backend/linkMediaPort";
 import type { ComposerDocument, TimelineScrollAnchor } from "../../domain/types";
 
@@ -80,6 +81,8 @@ export interface TimelineTransport {
    * lands while the reader switches accounts still resolves that row's cache.
    */
   readMediaText?(sourceRef: string): Promise<string>;
+  /** #2097: read a downloaded Markdown attachment, rendered by Core. */
+  readMediaMarkdown?(sourceRef: string): Promise<NonNullable<TimelineItem["formatted"]>>;
   /** Download a Matrix avatar thumbnail and return its cancelable request sequence. */
   downloadAvatarThumbnail?(mxcUri: string): Promise<string | void>;
   /** Cancel a renderer-owned avatar thumbnail demand. */

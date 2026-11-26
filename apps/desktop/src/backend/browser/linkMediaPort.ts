@@ -34,5 +34,8 @@ export const browserLinkMediaPort: LinkMediaPort = {
     // The browser QA shell has no media cache to read; the card falls back to
     // the plain download card (#2096).
     throw new Error("text preview is unavailable in the browser shell");
+  },
+  async readDownloadedMarkdown() {
+    throw new Error("document preview is unavailable in the browser shell");
   }
 };

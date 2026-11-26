@@ -25,6 +25,10 @@ futures-util = "0.3"
 getrandom = "0.3"
 sha2 = "0.10"
 regex = "1"
+# #2097: renders a shared `.md` attachment for the document view. CommonMark reference
+# implementation (MIT); used only by `timeline::markdown_document`, whose output is then
+# sanitized by the same ruma allow-list as an incoming message.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 matrix-sdk = { workspace = true }
 matrix-sdk-base = { workspace = true }
 matrix-sdk-ui = { workspace = true }
