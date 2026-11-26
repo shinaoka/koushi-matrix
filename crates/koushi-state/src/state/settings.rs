@@ -164,6 +164,8 @@ pub struct SettingsValues {
     #[serde(default)]
     pub mcp: McpSettings,
     #[serde(default)]
+    pub agent_accounts: AgentAccounts,
+    #[serde(default)]
     pub legacy_frontend_preferences_imported: bool,
 }
 
@@ -183,6 +185,7 @@ pub struct AppSettingsValues {
     pub window: WindowSettings,
     pub updates: UpdatesSettings,
     pub mcp: McpSettings,
+    pub agent_accounts: AgentAccounts,
     pub legacy_frontend_preferences_imported: bool,
 }
 
@@ -256,6 +259,7 @@ impl SettingsValues {
             window: self.window,
             updates: self.updates,
             mcp: self.mcp.clone(),
+            agent_accounts: self.agent_accounts.clone(),
             legacy_frontend_preferences_imported: self.legacy_frontend_preferences_imported,
         }
     }
@@ -300,6 +304,7 @@ impl SettingsValues {
         self.window = app.window;
         self.updates = app.updates;
         self.mcp = app.mcp.clone();
+        self.agent_accounts = app.agent_accounts.clone();
         self.legacy_frontend_preferences_imported = app.legacy_frontend_preferences_imported;
     }
 
@@ -362,6 +367,9 @@ impl SettingsValues {
             if let Some(allowed) = &patch.mcp_allowed_senders {
                 self.mcp.allowed_senders = allowed.clone();
                 self.mcp.allowed_senders.canonicalize();
+            }
+            if let Some(change) = &patch.agent_account {
+                self.agent_accounts.apply(change);
             }
             if let Some(imported) = patch.legacy_frontend_preferences_imported {
                 self.legacy_frontend_preferences_imported = imported;
@@ -467,6 +475,9 @@ impl AppSettingsValues {
         if let Some(value) = &patch.mcp_allowed_senders {
             self.mcp.allowed_senders = value.clone();
             self.mcp.allowed_senders.canonicalize();
+        }
+        if let Some(change) = &patch.agent_account {
+            self.agent_accounts.apply(change);
         }
         if let Some(value) = patch.legacy_frontend_preferences_imported {
             self.legacy_frontend_preferences_imported = value;
@@ -1026,6 +1037,55 @@ impl Default for McpSettings {
     }
 }
 
+/// An account's agent role (#2110). Its presence in [`AgentAccounts`] is the
+/// role; a role with `hide_tab` also asks for the account's tab to be hidden
+/// while it is not the selected one.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentAccountRole {
+    pub hide_tab: bool,
+}
+
+/// The accounts the owner marked as agent accounts, keyed by user id.
+///
+/// Device-level and keyed by user id rather than kept in the account's own
+/// settings: signing an account out deletes its per-account store, and the role
+/// has to still be there when the same user signs in again.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AgentAccounts {
+    #[serde(default)]
+    pub accounts: BTreeMap<String, AgentAccountRole>,
+}
+
+impl AgentAccounts {
+    pub fn role_for(&self, user_id: &str) -> Option<AgentAccountRole> {
+        self.accounts.get(user_id).copied()
+    }
+
+    pub fn apply(&mut self, change: &AgentAccountPatch) {
+        let user_id = change.user_id.trim();
+        if user_id.is_empty() {
+            return;
+        }
+        match change.role {
+            Some(role) => {
+                self.accounts.insert(user_id.to_owned(), role);
+            }
+            None => {
+                self.accounts.remove(user_id);
+            }
+        }
+    }
+}
+
+/// Sets (`Some`) or clears (`None`) one account's agent role. One account per
+/// patch, so two edits cannot overwrite each other's accounts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AgentAccountPatch {
+    pub user_id: String,
+    pub role: Option<AgentAccountRole>,
+}
+
 /// The owner's edits to the mention feed's allow-list (#2110). The list is
 /// *derived*: by default it is every account signed into this Koushi, so an
 /// account added later is covered without editing anything. `added` widens it
@@ -1214,6 +1274,9 @@ pub struct SettingsPatch {
     /// never replaces the list.
     #[serde(default)]
     pub mcp_allowed_senders: Option<MentionAllowedSenders>,
+    /// Marks or unmarks one account as an agent account (#2110); app scope.
+    #[serde(default)]
+    pub agent_account: Option<AgentAccountPatch>,
     #[serde(default)]
     pub legacy_frontend_preferences_imported: Option<bool>,
 }

@@ -1128,6 +1128,9 @@
           "kind": "idle"
         },
         "values": {
+          "agent_accounts": {
+            "accounts": {}
+          },
           "appearance": {
             "density": "comfortable",
             "theme": "system"

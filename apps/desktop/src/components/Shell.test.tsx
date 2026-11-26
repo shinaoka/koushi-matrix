@@ -107,6 +107,22 @@ afterEach(() => {
 });
 
 describe("Rust-projected workspace shell", () => {
+  it("hides an agent account's tab until it is selected and draws no unread count for it (#2110)", () => {
+    const tab = (id: string, extra: object) => ({
+      id, accountKey: `@${id}:example.invalid`, homeserver: "https://example.invalid",
+      displayName: id, avatarMxcUri: null, avatarSourceRef: null, status: "ready" as const, unreadCount: 4, ...extra
+    });
+    const tabs = [tab("owner", {}), tab("agent", { agent: true, hidden: true }), tab("quiet", { agent: true })];
+    const { rerender } = render(<AccountTabStrip tabs={tabs} selectedTabId="owner" onSelect={vi.fn()} onAdd={vi.fn()} onRemove={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: /agent/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /owner/ })).toBeTruthy();
+    // The agent's own unread count is still in the data, but no badge is drawn.
+    expect(document.querySelectorAll(".account-tab-unread")).toHaveLength(1);
+    // Selecting a hidden tab keeps it visible, so the owner can always reach it.
+    rerender(<AccountTabStrip tabs={tabs} selectedTabId="agent" onSelect={vi.fn()} onAdd={vi.fn()} onRemove={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /agent/ })).toBeTruthy();
+  });
+
   it("shows verified unread and pending invitations as separate account badges", () => {
     render(<AccountTabStrip
       tabs={[{

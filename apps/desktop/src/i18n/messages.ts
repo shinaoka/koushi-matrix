@@ -951,6 +951,23 @@ export type MessageId =
   | "settings.assistantsEnable"
   | "settings.assistantsEnableDescription"
   | "settings.assistantsKeys"
+  | "settings.agentAccounts"
+  | "settings.agentAccountsDescription"
+  | "settings.agentAccountSwitch"
+  | "settings.agentAccountHideTab"
+  | "settings.agentAccountHideTabDescription"
+  | "settings.allowedSenders"
+  | "settings.allowedSendersGuarantee"
+  | "settings.allowedSendersDefault"
+  | "settings.allowedSendersImplicit"
+  | "settings.allowedSendersExcluded"
+  | "settings.allowedSendersAdded"
+  | "settings.allowedSendersExclude"
+  | "settings.allowedSendersRestore"
+  | "settings.allowedSendersRemove"
+  | "settings.allowedSendersAddLabel"
+  | "settings.allowedSendersAdd"
+  | "settings.allowedSendersInvalid"
   | "settings.assistantsBridgeFailed"
   | "settings.assistantsStoreUnreadable"
   | "settings.assistantsStoreWriteFailed"
@@ -3364,6 +3381,23 @@ const en: Catalog = {
   "settings.assistantsEnable": "Let AI assistants connect",
   "settings.assistantsEnableDescription": "Assistants on this computer, such as Claude Code or Codex, can ask for access. Koushi asks you before each account and each permission.",
   "settings.assistantsKeys": "Assistants talk to this running app, so they never hold your encryption keys. Nothing works while Koushi is closed.",
+  "settings.agentAccounts": "Agent accounts",
+  "settings.agentAccountsDescription": "An agent account raises no notifications and adds nothing to the badge count. Its messages and unread counts stay readable. The mark is kept for the account's user ID, so it is still there after you sign the account out and in again.",
+  "settings.agentAccountSwitch": "{account} is an agent account",
+  "settings.agentAccountHideTab": "Hide the tab of {account}",
+  "settings.agentAccountHideTabDescription": "The tab stays visible while it is selected. Turn this off from another account to bring it back.",
+  "settings.allowedSenders": "Who an agent answers",
+  "settings.allowedSendersGuarantee": "This list keeps mentions from other senders out of wait_for_mentions. It does not stop those senders' messages from being readable by an assistant that has read access to the room.",
+  "settings.allowedSendersDefault": "Your signed-in accounts are included by default, and so is any account you sign in later. Remove one to stop answering it, or add other users.",
+  "settings.allowedSendersImplicit": "Signed-in account, included by default",
+  "settings.allowedSendersExcluded": "Excluded",
+  "settings.allowedSendersAdded": "Added by you",
+  "settings.allowedSendersExclude": "Exclude {user}",
+  "settings.allowedSendersRestore": "Include {user} again",
+  "settings.allowedSendersRemove": "Remove {user}",
+  "settings.allowedSendersAddLabel": "Add a sender",
+  "settings.allowedSendersAdd": "Add sender",
+  "settings.allowedSendersInvalid": "Enter a Matrix user ID such as @name:example.org.",
   "settings.assistantsBridgeFailed": "Koushi could not start the assistant connection. Restart Koushi to try again.",
   "settings.assistantsStoreUnreadable": "Koushi cannot read its assistant permissions file (connections.json), so no assistant has access. Fix or remove the file to approve assistants again.",
   "settings.assistantsStoreWriteFailed": "Koushi could not save the last change to assistant permissions.",
@@ -5815,6 +5849,23 @@ const ja: Catalog = {
   "settings.assistantsEnable": "AI アシスタントの接続を許可",
   "settings.assistantsEnableDescription": "Claude Code や Codex など、このコンピューター上のアシスタントがアクセスを求められます。Koushi はアカウントごと、権限ごとに確認します。",
   "settings.assistantsKeys": "アシスタントは起動中のこのアプリとやり取りするため、暗号鍵を持つことはありません。Koushi を閉じている間は何も動きません。",
+  "settings.agentAccounts": "エージェントアカウント",
+  "settings.agentAccountsDescription": "エージェントアカウントは通知を出さず、バッジの件数にも加わりません。メッセージと未読数は引き続き読めます。この設定はアカウントのユーザー ID に対して保存されるため、サインアウトして同じユーザーで再びサインインしても残ります。",
+  "settings.agentAccountSwitch": "{account} をエージェントアカウントにする",
+  "settings.agentAccountHideTab": "{account} のタブを隠す",
+  "settings.agentAccountHideTabDescription": "選択中はタブが表示されたままになります。元に戻すには別のアカウントからオフにしてください。",
+  "settings.allowedSenders": "エージェントが応答する相手",
+  "settings.allowedSendersGuarantee": "この一覧は、他の送信者からのメンションを wait_for_mentions に入れないためのものです。それらの送信者のメッセージを、ルームの読み取り権限を持つアシスタントが読めなくなるわけではありません。",
+  "settings.allowedSendersDefault": "サインイン中のアカウントは既定で含まれ、あとからサインインしたアカウントも含まれます。応答したくないものは除外し、他のユーザーは追加できます。",
+  "settings.allowedSendersImplicit": "サインイン中のアカウント（既定で含まれます）",
+  "settings.allowedSendersExcluded": "除外中",
+  "settings.allowedSendersAdded": "追加したユーザー",
+  "settings.allowedSendersExclude": "{user} を除外",
+  "settings.allowedSendersRestore": "{user} を再び含める",
+  "settings.allowedSendersRemove": "{user} を削除",
+  "settings.allowedSendersAddLabel": "送信者を追加",
+  "settings.allowedSendersAdd": "送信者を追加",
+  "settings.allowedSendersInvalid": "@name:example.org のような Matrix ユーザー ID を入力してください。",
   "settings.assistantsBridgeFailed": "Koushi はアシスタント接続を開始できませんでした。Koushi を再起動してもう一度お試しください。",
   "settings.assistantsStoreUnreadable": "Koushi はアシスタントの権限ファイル（connections.json）を読み取れないため、どのアシスタントにもアクセス権がありません。ファイルを修正するか削除すると、再び承認できるようになります。",
   "settings.assistantsStoreWriteFailed": "アシスタントの権限に対する直前の変更を保存できませんでした。",

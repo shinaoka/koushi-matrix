@@ -5,6 +5,7 @@ import { uiDateTimeFormat } from "../../domain/intlFormatCache";
 import { ModalDialog } from "../ModalDialog";
 import type {
   AccountTabSummary,
+  AgentAccounts,
   McpExtensionOutcome,
   McpRegisterOutcome,
   McpAssistant,
@@ -17,6 +18,7 @@ import type {
   SettingsPatch
 } from "../../domain/types";
 import { t } from "../../i18n/messages";
+import { AgentAccountsSection, AllowedSendersSection } from "./AgentAccountsSection";
 import { mcpAccountId, mcpAccountLabel, useMcpAssistantsState } from "../useMcpAssistantsState";
 import { MCP_ALLOW_ARMING_DELAY_MS, mcpAllowLabel, mcpWantsText, useArmed } from "../McpApprovalDialog";
 
@@ -41,17 +43,21 @@ function needLabel(need: McpNeed): string {
   }[need];
 }
 
+const NO_AGENT_ACCOUNTS: AgentAccounts = { accounts: {} };
+
 /** App Settings -> AI assistants (#1536). Every decision is the Rust broker's;
  * this page renders its state and forwards the user's changes. */
 export function AiAssistantsSection({
   settings,
   isSaving,
   accountTabs,
+  agentAccounts = NO_AGENT_ACCOUNTS,
   onUpdateSettings
 }: {
   settings: McpSettings;
   isSaving: boolean;
   accountTabs: readonly AccountTabSummary[];
+  agentAccounts?: AgentAccounts;
   onUpdateSettings: (patch: SettingsPatch) => void;
 }) {
   const state = useMcpAssistantsState();
@@ -82,6 +88,18 @@ export function AiAssistantsSection({
       {state && state.pending.length > 0 ? <PendingApprovals pending={state.pending} accountTabs={accountTabs} /> : null}
       {state ? <ConnectedAssistants assistants={state.assistants} accountTabs={accountTabs} /> : null}
       {state && state.registrations.length > 0 ? <ConnectAssistant registrations={state.registrations} /> : null}
+      <AgentAccountsSection
+        agentAccounts={agentAccounts}
+        accountTabs={accountTabs}
+        isSaving={isSaving}
+        onUpdateSettings={onUpdateSettings}
+      />
+      <AllowedSendersSection
+        allowed={settings.allowed_senders}
+        accountTabs={accountTabs}
+        isSaving={isSaving}
+        onUpdateSettings={onUpdateSettings}
+      />
     </>
   );
 }

@@ -109,3 +109,75 @@ fn notification_migration_seeds_only_sound_and_badges_once() {
             .sound
     );
 }
+
+/// #2110: the agent role is the owner's device-level setting for a user id. A
+/// sign-out deletes the account's own store, so a role kept there would be gone
+/// when the same user signs in again; kept with the device's settings it
+/// survives both a restart (a fresh `SettingsStore` on the same directory) and
+/// the account's removal.
+#[test]
+fn the_agent_role_survives_a_restart_and_a_sign_out_of_the_same_user() {
+    use crate::settings::SettingsStore;
+    use koushi_state::{
+        AgentAccountPatch, AgentAccountRole, SettingsPatch, SettingsPatchScope, SettingsValues,
+    };
+
+    let data_dir = tempdir().expect("data dir");
+    let credential_dir = tempdir().expect("credential dir");
+    let key_id = make_key_id();
+    let store = file_store_actor(&data_dir, &credential_dir);
+    store
+        .save_account_settings(&key_id, &AccountSettingsValues::default())
+        .expect("the account has its own store");
+
+    let settings = SettingsStore::new(data_dir.path());
+    settings
+        .save_patch(&SettingsPatch {
+            scope: Some(SettingsPatchScope::App),
+            agent_account: Some(AgentAccountPatch {
+                user_id: "@agent:example.invalid".to_owned(),
+                role: Some(AgentAccountRole { hide_tab: true }),
+            }),
+            ..SettingsPatch::default()
+        })
+        .expect("save the role");
+
+    store
+        .delete_account_credentials(&key_id)
+        .expect("sign the account out");
+    assert!(store.load_account_settings(&key_id).unwrap() == AccountSettingsValues::default());
+
+    let restarted: SettingsValues = SettingsStore::new(data_dir.path())
+        .load()
+        .expect("load after a restart");
+    assert_eq!(
+        restarted.agent_accounts.role_for("@agent:example.invalid"),
+        Some(AgentAccountRole { hide_tab: true })
+    );
+    assert_eq!(
+        restarted
+            .agent_accounts
+            .role_for("@someone-else:example.invalid"),
+        None
+    );
+
+    // Unmarking removes only that account.
+    settings
+        .save_patch(&SettingsPatch {
+            scope: Some(SettingsPatchScope::App),
+            agent_account: Some(AgentAccountPatch {
+                user_id: "@agent:example.invalid".to_owned(),
+                role: None,
+            }),
+            ..SettingsPatch::default()
+        })
+        .expect("clear the role");
+    assert!(
+        SettingsStore::new(data_dir.path())
+            .load()
+            .unwrap()
+            .agent_accounts
+            .accounts
+            .is_empty()
+    );
+}

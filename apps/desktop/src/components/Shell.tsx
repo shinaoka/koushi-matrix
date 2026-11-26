@@ -267,7 +267,7 @@ export function AccountTabStrip({
 
   return (
     <nav className="account-tab-strip" aria-label={t("settings.accountSettings")}>
-      {tabs.map((tab) => {
+      {tabs.filter((tab) => !tab.hidden || tab.id === selectedTabId).map((tab) => {
         const label = accountTabLabel(tab);
         const status = statusLabel(tab.status);
         const selected = tab.id === selectedTabId;
@@ -311,7 +311,7 @@ export function AccountTabStrip({
               <span className="account-tab-server">{shortHomeserverName(tab.homeserver)}</span>
               {!showActivity ? null : tab.status === "ready" ? (
                 <>
-                  {tab.unreadCount > 0 ? (
+                  {tab.unreadCount > 0 && !tab.agent ? (
                     <span className="account-tab-unread">{tab.unreadCount > 99 ? "99+" : tab.unreadCount}</span>
                   ) : (tab.inviteCount ?? 0) === 0 ? (
                     <span className="account-tab-ready-dot" role="img" aria-label={status} />

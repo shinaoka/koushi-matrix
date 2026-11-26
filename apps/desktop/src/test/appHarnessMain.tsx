@@ -58,6 +58,7 @@ import {
   type RoomNotificationMode,
   type RoomNotificationSettings,
   type StageUploadBytesRequestItem,
+  type AgentAccounts,
   type SettingsPatch,
   type SettingsState,
   type SidebarScopeSettings,
@@ -407,6 +408,7 @@ function defaultSettingsState(): DesktopSnapshot["state"]["domain"]["settings"] 
       window: { close_to_tray: true },
           updates: { auto_check: true, include_prereleases: false },
           mcp: { enabled: true, allowed_senders: { added: [], removed: [] } },
+          agent_accounts: { accounts: {} },
       media: {
         image_upload_compression_policy: {
           threshold_bytes: 1048576,
@@ -574,6 +576,7 @@ function applySettingsPatch(
       ...(patch.mcp ?? {}),
       allowed_senders: patch.mcp_allowed_senders ?? values.mcp.allowed_senders
     },
+    agent_accounts: applyAgentAccountPatch(values.agent_accounts, patch.agent_account),
     media: patch.media ?? values.media,
     timeline: patch.timeline ?? values.timeline,
     search_crawler: patch.search_crawler ?? values.search_crawler,
@@ -582,6 +585,17 @@ function applySettingsPatch(
     sidebar: nextSidebar,
     legacy_frontend_preferences_imported: values.legacy_frontend_preferences_imported
   };
+}
+
+function applyAgentAccountPatch(
+  current: AgentAccounts,
+  change: SettingsPatch["agent_account"]
+): AgentAccounts {
+  if (!change) return current;
+  const accounts = { ...current.accounts };
+  if (change.role) accounts[change.user_id] = change.role;
+  else delete accounts[change.user_id];
+  return { accounts };
 }
 
 function defaultLocaleDisplayProfile(): LocaleDisplayProfile {

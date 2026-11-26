@@ -1044,6 +1044,7 @@ export function UserSettingsPanel({
             {activeCategory === "assistants" ? (
               <AiAssistantsSection
                 settings={settings.values.mcp}
+                agentAccounts={settings.values.agent_accounts}
                 isSaving={isSaving}
                 accountTabs={accountTabs}
                 onUpdateSettings={onUpdateSettings}

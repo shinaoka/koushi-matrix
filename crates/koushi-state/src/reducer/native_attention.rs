@@ -102,6 +102,9 @@ pub(crate) fn handle_native_attention_updated(
     if !state.settings.values.notifications.badges {
         attention.summary.badge_count = 0;
     }
+    if state.is_agent_account() {
+        silence_owner_alerts(&mut attention);
+    }
     attention.dispatch = state.native_attention.dispatch.clone();
     if state.native_attention == attention {
         return Vec::new();
@@ -140,7 +143,21 @@ fn projected_native_attention_from_rooms(
     if !state.settings.values.notifications.badges {
         projection.state.summary.badge_count = 0;
     }
+    if state.is_agent_account() {
+        silence_owner_alerts(&mut projection.state);
+    }
     projection
+}
+
+/// #2110: an agent account interrupts nobody. The unread counts stay (the agent
+/// and the owner can still read them); the badge, the notification candidate and
+/// the alert identity that would raise a banner or a sound do not exist.
+fn silence_owner_alerts(attention: &mut crate::state::NativeAttentionState) {
+    attention.summary.badge_count = 0;
+    attention.summary.candidate = None;
+    attention.summary.alert_id = None;
+    attention.summary.alert_room = None;
+    attention.notification = None;
 }
 
 pub(crate) fn recompute_native_attention_from_rooms(
@@ -168,6 +185,9 @@ fn published_candidate(
 /// Answered by the production projection over that one room, so this lifetime rule cannot
 /// drift from the eligibility rules that raise a candidate.
 fn published_room_still_holds_attention(state: &AppState, room_id: &str) -> bool {
+    if state.is_agent_account() {
+        return false;
+    }
     let Some(room) = state.rooms.iter().find(|room| room.room_id == room_id) else {
         return false;
     };
@@ -334,11 +354,18 @@ pub(crate) fn apply_badge_setting(state: &mut AppState) -> bool {
     .state
     .summary
     .badge_count;
-    if state.native_attention.summary.badge_count == next {
-        return false;
-    }
+    let mut changed = state.native_attention.summary.badge_count != next;
     state.native_attention.summary.badge_count = next;
-    true
+    // Turning the agent role on withdraws an alert that was already published.
+    if state.is_agent_account()
+        && (state.native_attention.summary.candidate.is_some()
+            || state.native_attention.notification.is_some()
+            || state.native_attention.summary.alert_id.is_some())
+    {
+        silence_owner_alerts(&mut state.native_attention);
+        changed = true;
+    }
+    changed
 }
 
 pub(crate) fn handle_japanese_catalog_profile_changed(

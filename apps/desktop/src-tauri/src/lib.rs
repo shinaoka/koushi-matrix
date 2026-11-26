@@ -270,6 +270,11 @@ pub(crate) struct AccountTabSummary {
     pub status: AccountTabStatus,
     pub unread_count: u64,
     pub invite_count: u64,
+    /// The account's agent role (#2110): it raises no badge or banner, so the
+    /// strip shows no unread count for it. `unread_count` itself stays accurate.
+    pub agent: bool,
+    /// The agent role asks for the tab to be hidden while it is not selected.
+    pub hidden: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
@@ -571,6 +576,7 @@ fn account_tabs_snapshot_from_states(
                         _ => None,
                     });
             let attention = koushi_state::account_attention_summary_for_state(&state);
+            let agent_role = state.agent_role();
             AccountTabSummary {
                 id: tab.id.as_str().to_owned(),
                 account_key: tab.account_key.map(|key| key.0),
@@ -581,6 +587,8 @@ fn account_tabs_snapshot_from_states(
                 status,
                 unread_count: attention.unread_count,
                 invite_count: attention.invite_count,
+                agent: agent_role.is_some(),
+                hidden: agent_role.is_some_and(|role| role.hide_tab),
             }
         })
         .collect();

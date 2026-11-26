@@ -211,6 +211,9 @@ fn pending_notification(
     if !matches!(state.session, SessionState::Ready(_)) {
         return Err("session_unavailable");
     }
+    if state.is_agent_account() {
+        return Err("agent_account");
+    }
     if !state.settings.values.notifications.desktop_notifications {
         return Err("desktop_notifications_off");
     }
@@ -715,6 +718,7 @@ pub(crate) async fn reconcile_notifications_for_tab(
     {
         let values = &snapshot.settings.values.notifications;
         let immediate = !matches!(snapshot.session, SessionState::Ready(_))
+            || snapshot.is_agent_account()
             || !values.desktop_notifications
             || (!values.message_previews
                 && (preview_disabled || macos::has_previews(tab.as_str())));
