@@ -16,6 +16,26 @@ use tokio::net::UnixStream;
 /// `connection_id` and `app_version` masked by string replacement. The file is
 /// an oracle: nothing in this test regenerates it, so it can only change by a
 /// reviewed edit. `<closed>` means the host closed without a reply.
+///
+/// MEASURED, not reasoned: every line below was printed by a temporary
+/// integration test run against the base build (commit 19e4280a, before PR 1a),
+/// using the same helpers as this file. All ten lines were measured; none is
+/// derived. Compared against this branch on the raw line, the only differences
+/// are the `reason`/`supported` keys appended to the three handshake errors
+/// (`client_name`; `protocol_version` + `"supported":[1,2]` for protocol 0 and 3).
+///
+/// ```text
+/// hello_ok      {"type":"hello_ok","protocol":1,"connection_id":"<masked>","app_version":"<masked>"}
+/// list_accounts {"type":"response","id":1,"ok":true,"result":{"content":[{"text":"{\"accounts\":[]}","type":"text"}],"isError":false,"structuredContent":{"accounts":[]}}}
+/// status        {"type":"response","id":2,"ok":true,"result":{"app_version":"<masked>","protocol":1}}
+/// unknown       {"type":"response","id":3,"ok":false,"error":{"code":"unsupported","message":"unsupported bridge method: nope"}}
+/// not json      {"type":"response","id":0,"ok":false,"error":{"code":"internal","message":"malformed request"}}
+/// frame too big <closed>
+/// wrong token   {"type":"error","code":"unauthorized","message":"connection token rejected"}
+/// bad name      {"type":"error","code":"unsupported","message":"client name must be 1-64 characters from A-Z a-z 0-9 . _ -"}
+/// protocol 0    {"type":"error","code":"unsupported","message":"this koushi-mcp launcher is older than the running Koushi; register it again"}
+/// protocol 3    (same line as protocol 0)
+/// ```
 const GOLDEN: &str = include_str!("golden/v1_session.jsonl");
 
 struct NoAccounts;
