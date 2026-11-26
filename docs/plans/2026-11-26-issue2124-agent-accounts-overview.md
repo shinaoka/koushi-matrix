@@ -1,6 +1,6 @@
 # #2124 - Agents on their own Matrix accounts: illustrated overview
 
-Status: overview of an approved plan, not canon. The canon change is #2125;
+Status: overview of an approved plan, not canon. Umbrella issue: #2140. The canon change is #2125;
 until it lands, the code and `docs/architecture/overview.md` describe today's
 behavior. This page puts the decisions spread across #2124, its child issues
 (#2125–#2133), #2109 and #2110 in one place, starting with how
