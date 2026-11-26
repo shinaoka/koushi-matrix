@@ -4793,33 +4793,6 @@ export const TimelineView = memo(function TimelineView({
           {readStateStatusMessage}
         </div>
       ) : null}
-      {showUnsentBar ? (
-        <div className="timeline-send-bar" data-testid="timeline-send-bar">
-          <span className="timeline-send-bar-label">
-            {t("timeline.unsentBar")}
-          </span>
-          <div className="timeline-send-bar-actions">
-            {canRetrySend(canWrite) ? (
-              <button
-                className="timeline-send-bar-action"
-                type="button"
-                onClick={onRetryAllNotSent}
-              >
-                <RefreshCw size={13} aria-hidden="true" />
-                <span>{t("timeline.resendAll")}</span>
-              </button>
-            ) : null}
-            <button
-              className="timeline-send-bar-action danger"
-              type="button"
-              onClick={onCancelAllNotSent}
-            >
-              <Trash2 size={13} aria-hidden="true" />
-              <span>{t("timeline.cancelAll")}</span>
-            </button>
-          </div>
-        </div>
-      ) : null}
       <div
         className="timeline-item-list"
         ref={(element) => {
@@ -5097,6 +5070,33 @@ export const TimelineView = memo(function TimelineView({
         </NativeModal>
       ) : null}
       </div>
+      {showUnsentBar ? (
+        <div className="timeline-send-bar" data-testid="timeline-send-bar">
+          <span className="timeline-send-bar-label">
+            {t("timeline.unsentBar")}
+          </span>
+          <div className="timeline-send-bar-actions">
+            {canRetrySend(canWrite) ? (
+              <button
+                className="timeline-send-bar-action"
+                type="button"
+                onClick={onRetryAllNotSent}
+              >
+                <RefreshCw size={13} aria-hidden="true" />
+                <span>{t("timeline.resendAll")}</span>
+              </button>
+            ) : null}
+            <button
+              className="timeline-send-bar-action danger"
+              type="button"
+              onClick={onCancelAllNotSent}
+            >
+              <Trash2 size={13} aria-hidden="true" />
+              <span>{t("timeline.cancelAll")}</span>
+            </button>
+          </div>
+        </div>
+      ) : null}
     </ProjectionSnapshotBoundary>
   );
 });
