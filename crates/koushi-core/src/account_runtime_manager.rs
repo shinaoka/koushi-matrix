@@ -290,6 +290,11 @@ impl AccountRuntimeManager {
             .iter()
             .map(|session| session.user_id.clone())
             .collect();
+        // The derived allow-list comes from the persisted account list, set
+        // before any runtime starts so a backlog mention from a sibling account
+        // that has not started yet is still accepted.
+        self.mention_registry
+            .set_persisted_accounts(session_accounts.iter().cloned());
         let selected_key = index.selected_account().cloned();
         if let Some(key) = &selected_key {
             self.account_work

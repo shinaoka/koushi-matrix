@@ -12,8 +12,14 @@ use super::MentionFeed;
 /// both questions that need every account at once: who is signed in (the
 /// derived allow-list) and which feed belongs to which account (the MCP host).
 pub struct MentionFeedRegistry {
-    settings: SettingsStore,
+    settings: tokio::sync::watch::Receiver<koushi_state::AppSettingsValues>,
+    /// Accounts whose feed is running right now. Used only to find a feed.
     accounts: Mutex<BTreeMap<String, MentionFeed>>,
+    /// Accounts the owner has signed in, from the persisted session list. This
+    /// (not the running set) is the derived allow-list, so a mention from an
+    /// account that has not finished starting, is restarting, or failed to open
+    /// its feed is still accepted.
+    persisted: Mutex<BTreeSet<String>>,
 }
 
 impl std::fmt::Debug for MentionFeedRegistry {
@@ -24,10 +30,35 @@ impl std::fmt::Debug for MentionFeedRegistry {
 
 impl MentionFeedRegistry {
     pub fn new(settings: SettingsStore) -> Self {
-        Self {
-            settings,
-            accounts: Mutex::new(BTreeMap::new()),
+        // Prime the settings cache: the watch channel carries the values once
+        // loaded. A read error keeps the derived default (no edits), which still
+        // admits the signed-in accounts, and is reported rather than silent.
+        if settings.load().is_err() {
+            koushi_diagnostics::record(koushi_diagnostics::DiagnosticEvent::new(
+                koushi_diagnostics::DiagnosticLevel::Warn,
+                "core.mention_feed",
+                "allow_list_settings_unreadable",
+            ));
         }
+        Self {
+            settings: settings.subscribe(),
+            accounts: Mutex::new(BTreeMap::new()),
+            persisted: Mutex::new(BTreeSet::new()),
+        }
+    }
+
+    /// Replaces the persisted account list (the saved session index), read
+    /// before any account runtime starts.
+    pub(crate) fn set_persisted_accounts<I, S>(&self, user_ids: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        *self
+            .persisted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) =
+            user_ids.into_iter().map(Into::into).collect();
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, MentionFeed>> {
@@ -35,6 +66,10 @@ impl MentionFeedRegistry {
     }
 
     pub(crate) fn account_started(&self, user_id: &str, feed: MentionFeed) {
+        self.persisted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(user_id.to_owned());
         self.lock().insert(user_id.to_owned(), feed);
     }
 
@@ -47,19 +82,24 @@ impl MentionFeedRegistry {
         self.lock().get(user_id).cloned()
     }
 
-    /// The users whose mentions may enter a feed right now: the signed-in
-    /// accounts, minus what the owner removed, plus what the owner added.
-    /// Evaluated per event, so an account added later is covered at once. An
-    /// unreadable settings file allows nobody.
+    /// The users whose mentions may enter a feed: the persisted accounts, minus
+    /// what the owner removed, plus what the owner added. Evaluated per event
+    /// from the settings cache, so an edit applies at once and no file is read.
+    /// A running-state change (an account stopping or still starting) does not
+    /// change it.
     pub fn allowed_senders(&self) -> BTreeSet<String> {
-        let Ok(values) = self.settings.load() else {
-            return BTreeSet::new();
-        };
-        let signed_in: Vec<String> = self.lock().keys().cloned().collect();
-        values
+        let persisted: Vec<String> = self
+            .persisted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect();
+        self.settings
+            .borrow()
             .mcp
             .allowed_senders
-            .effective(signed_in.iter().map(String::as_str))
+            .effective(persisted.iter().map(String::as_str))
     }
 
     pub fn sender_allowed(&self, sender: &str) -> bool {

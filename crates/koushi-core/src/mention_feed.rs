@@ -18,8 +18,9 @@
 //! and falls back to the event's own `m.mentions` when a mute hides it.
 //!
 //! Who may appear is decided here, before the commit: a mention from a sender
-//! outside the allow-list is never stored, so no MCP or CLI client can read it
-//! or widen the list. See [`koushi_state::MentionAllowedSenders`] for the
+//! outside the allow-list is never stored, so it never becomes a feed row. This
+//! guards the feed only; the room's own content stays readable through the
+//! other read tools. See [`koushi_state::MentionAllowedSenders`] for the
 //! derived default (the other signed-in accounts).
 
 mod intake;
@@ -28,6 +29,7 @@ mod registry;
 pub use intake::MentionIntake;
 pub use registry::MentionFeedRegistry;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -36,6 +38,12 @@ use tokio::sync::Notify;
 
 /// How many rows a feed retains before dropping the oldest.
 pub const MAX_ENTRIES: usize = 1000;
+/// How long a row is retained. A cursor that points before a dropped row (by
+/// count or by age) is `expired_cursor`: the client must resync.
+pub const MAX_AGE_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+/// Persist attempts for one row before the feed is marked unhealthy.
+const PERSIST_ATTEMPTS: usize = 3;
+const PERSIST_RETRY_DELAY: Duration = Duration::from_millis(100);
 const CURSOR_VERSION: &str = "mf1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -99,6 +107,31 @@ pub struct MentionLogData {
 }
 
 impl MentionLogData {
+    /// `evicted_through` including rows that are too old to be served at
+    /// `now_ms`, so a reader never sees a row the retention window dropped.
+    pub fn evicted_at(&self, now_ms: u64) -> u64 {
+        let cutoff = now_ms.saturating_sub(MAX_AGE_MS);
+        self.entries
+            .iter()
+            .filter(|entry| entry.timestamp_ms < cutoff)
+            .map(|entry| entry.seq)
+            .max()
+            .map_or(self.evicted_through, |seq| seq.max(self.evicted_through))
+    }
+
+    /// Drops rows beyond the count cap or the age cap.
+    fn prune(&mut self, now_ms: u64) {
+        let evicted = self.evicted_at(now_ms);
+        self.entries.retain(|entry| entry.seq > evicted);
+        self.evicted_through = evicted;
+        if self.entries.len() > MAX_ENTRIES {
+            let excess = self.entries.len() - MAX_ENTRIES;
+            if let Some(last) = self.entries.drain(..excess).next_back() {
+                self.evicted_through = self.evicted_through.max(last.seq);
+            }
+        }
+    }
+
     pub fn fresh(generation: String, created_at_ms: u64) -> Self {
         Self {
             generation,
@@ -155,9 +188,23 @@ type Persist = dyn Fn(&MentionLogData) -> bool + Send + Sync;
 struct Inner {
     data: Mutex<MentionLogData>,
     notify: Notify,
-    /// Serializes writers so commits land in sequence order.
-    commit: tokio::sync::Mutex<()>,
+    /// Serializes writers so commits land in sequence order. Owned guards move
+    /// into the detached commit task.
+    commit: Arc<tokio::sync::Mutex<()>>,
     persist: Arc<Persist>,
+    /// Cleared when a row could not be committed: the cursor would no longer
+    /// describe what the feed delivered, so readers are refused.
+    healthy: AtomicBool,
+}
+
+/// What `record` did with a candidate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecordOutcome {
+    Recorded,
+    /// The event was already a row.
+    Duplicate,
+    /// The row could not be committed; the feed is now unhealthy.
+    Failed,
 }
 
 #[derive(Clone)]
@@ -171,23 +218,49 @@ impl std::fmt::Debug for MentionFeed {
     }
 }
 
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 impl MentionFeed {
     /// Opens a feed over `loaded` rows (or a fresh log). `persist` commits one
-    /// snapshot and reports success; it runs on a blocking thread.
+    /// snapshot and reports success.
+    ///
+    /// A fresh log is saved before this returns, so its `created_at_ms` (the
+    /// history line) and generation survive a restart even if no mention is
+    /// ever recorded; `None` when that save fails, because a feed whose
+    /// history line moves on every start would drop mentions that arrived while
+    /// the app was down. Blocks on the store: call from a blocking context.
     pub fn open(
         loaded: Option<MentionLogData>,
         now_ms: u64,
         persist: impl Fn(&MentionLogData) -> bool + Send + Sync + 'static,
-    ) -> Self {
-        let data = loaded.unwrap_or_else(|| MentionLogData::fresh(new_generation(), now_ms));
-        Self {
+    ) -> Option<Self> {
+        let data = match loaded {
+            Some(mut data) => {
+                data.prune(now_ms);
+                data
+            }
+            None => {
+                let data = MentionLogData::fresh(new_generation(), now_ms);
+                if !persist(&data) {
+                    return None;
+                }
+                data
+            }
+        };
+        Some(Self {
             inner: Arc::new(Inner {
                 data: Mutex::new(data),
                 notify: Notify::new(),
-                commit: tokio::sync::Mutex::new(()),
+                commit: Arc::new(tokio::sync::Mutex::new(())),
                 persist: Arc::new(persist),
+                healthy: AtomicBool::new(true),
             }),
-        }
+        })
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, MentionLogData> {
@@ -201,20 +274,39 @@ impl MentionFeed {
         self.lock().created_at_ms
     }
 
+    pub fn is_healthy(&self) -> bool {
+        self.inner.healthy.load(Ordering::Acquire)
+    }
+
     pub fn cursor_for(&self, seq: u64) -> String {
         format!("{CURSOR_VERSION}.{}.{seq}", self.lock().generation)
     }
 
     /// Appends one row, committing it before it is visible to a reader.
-    /// Returns `Some(committed)` when a row was appended (`committed` is false
-    /// when the store refused the write: the row is still delivered this run),
-    /// or `None` when it was a duplicate of a row already held.
-    pub async fn record(&self, candidate: MentionCandidate) -> Option<bool> {
-        let _writer = self.inner.commit.lock().await;
+    ///
+    /// The commit runs in a detached task that also advances memory, so a
+    /// caller that is dropped mid-write (an interrupted sync, a shutdown)
+    /// cannot leave the disk ahead of memory and reuse a sequence number. A
+    /// failed write is retried a bounded number of times and then marks the
+    /// feed unhealthy without advancing memory.
+    pub async fn record(&self, candidate: MentionCandidate) -> RecordOutcome {
+        let feed = self.clone();
+        let commit = Arc::clone(&self.inner.commit);
+        let task = crate::executor::spawn(async move {
+            let _writer = commit.lock_owned().await;
+            feed.commit_one(candidate).await
+        });
+        task.await.unwrap_or(RecordOutcome::Failed)
+    }
+
+    async fn commit_one(&self, candidate: MentionCandidate) -> RecordOutcome {
+        if !self.is_healthy() {
+            return RecordOutcome::Failed;
+        }
         let mut next = {
             let data = self.lock();
             if is_duplicate(&data, &candidate) {
-                return None;
+                return RecordOutcome::Duplicate;
             }
             data.clone()
         };
@@ -229,20 +321,45 @@ impl MentionFeed {
             thread_root: candidate.thread_root,
             kind: candidate.kind,
         });
-        if next.entries.len() > MAX_ENTRIES {
-            let excess = next.entries.len() - MAX_ENTRIES;
-            if let Some(last) = next.entries.drain(..excess).next_back() {
-                next.evicted_through = next.evicted_through.max(last.seq);
+        next.prune(now_ms());
+        let mut committed = false;
+        for attempt in 0..PERSIST_ATTEMPTS {
+            let snapshot = next.clone();
+            let persist = Arc::clone(&self.inner.persist);
+            committed = crate::executor::spawn_blocking(move || persist(&snapshot))
+                .await
+                .unwrap_or(false);
+            if committed {
+                break;
+            }
+            koushi_diagnostics::record(
+                koushi_diagnostics::DiagnosticEvent::new(
+                    koushi_diagnostics::DiagnosticLevel::Warn,
+                    "core.mention_feed",
+                    "persist_failed",
+                )
+                .field(koushi_diagnostics::DiagnosticField::count(
+                    "attempt",
+                    attempt as u64 + 1,
+                )),
+            );
+            if attempt + 1 < PERSIST_ATTEMPTS {
+                crate::executor::sleep(PERSIST_RETRY_DELAY).await;
             }
         }
-        let snapshot = next.clone();
-        let persist = Arc::clone(&self.inner.persist);
-        let committed = crate::executor::spawn_blocking(move || persist(&snapshot))
-            .await
-            .unwrap_or(false);
+        if !committed {
+            self.inner.healthy.store(false, Ordering::Release);
+            koushi_diagnostics::record(koushi_diagnostics::DiagnosticEvent::new(
+                koushi_diagnostics::DiagnosticLevel::Error,
+                "core.mention_feed",
+                "feed_unhealthy",
+            ));
+            self.inner.notify.notify_waiters();
+            return RecordOutcome::Failed;
+        }
         *self.lock() = next;
         self.inner.notify.notify_waiters();
-        Some(committed)
+        RecordOutcome::Recorded
     }
 
     fn resolve(&self, cursor: Option<&str>) -> Result<u64, CursorRejection> {
@@ -251,7 +368,7 @@ impl MentionFeed {
             // No cursor: everything still retained, so a client that starts
             // (or restarts) without saved state still receives what arrived
             // while it was away.
-            return Ok(data.evicted_through);
+            return Ok(data.evicted_at(now_ms()));
         };
         let mut parts = cursor.split('.');
         let (Some(version), Some(generation), Some(seq), None) =
@@ -272,17 +389,18 @@ impl MentionFeed {
         if seq >= data.next_seq {
             return Err(CursorRejection::Future);
         }
-        if seq < data.evicted_through {
+        if seq < data.evicted_at(now_ms()) {
             return Err(CursorRejection::Expired);
         }
         Ok(seq)
     }
 
     fn after(&self, seq: u64, limit: usize) -> Vec<MentionEntry> {
-        self.lock()
-            .entries
+        let data = self.lock();
+        let floor = seq.max(data.evicted_at(now_ms()));
+        data.entries
             .iter()
-            .filter(|entry| entry.seq > seq)
+            .filter(|entry| entry.seq > floor)
             .take(limit)
             .cloned()
             .collect()

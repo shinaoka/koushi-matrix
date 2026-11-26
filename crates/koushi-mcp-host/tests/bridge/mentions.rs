@@ -161,14 +161,14 @@ fn candidate(event: &str, thread_root: Option<&str>) -> MentionCandidate {
         room_id: ROOM.to_owned(),
         event_id: Some(event.to_owned()),
         sender: "@member2:example.invalid".to_owned(),
-        timestamp_ms: 7,
+        timestamp_ms: koushi_core::mention_feed::now_ms(),
         thread_root: thread_root.map(str::to_owned),
         kind: MentionKind::Mention,
     }
 }
 
 fn feed() -> MentionFeed {
-    MentionFeed::open(None, 0, |_| true)
+    MentionFeed::open(None, 0, |_| true).expect("open")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -262,5 +262,46 @@ async fn without_a_read_grant_the_feed_is_refused() {
         )
         .await;
     assert_eq!(error_code(&reply), "consent_required", "{reply}");
+    harness.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cursor_that_is_not_a_string_is_rejected_not_treated_as_absent() {
+    let feed = feed();
+    feed.record(candidate("$a", None)).await;
+    let mut harness = Harness::start(Some(Harness::account_grant(true, false, false)), feed).await;
+    for bad in [json!(7), json!({ "seq": 1 }), json!(["x"])] {
+        let reply = harness
+            .call(
+                "wait_for_mentions",
+                json!({ "account_id": ACCOUNT, "timeout_ms": 0, "cursor": bad }),
+            )
+            .await;
+        assert_eq!(error_reason(&reply), "invalid_params", "{reply}");
+        assert!(reply["result"]["structuredContent"]["mentions"].is_null());
+    }
+    harness.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_feed_that_could_not_save_answers_account_unavailable() {
+    let feed = MentionFeed::open(
+        Some(koushi_core::mention_feed::MentionLogData::fresh(
+            "0123456789abcdef".to_owned(),
+            0,
+        )),
+        0,
+        |_| false,
+    )
+    .expect("open");
+    feed.record(candidate("$a", None)).await;
+    let mut harness = Harness::start(Some(Harness::account_grant(true, false, false)), feed).await;
+    let reply = harness
+        .call(
+            "wait_for_mentions",
+            json!({ "account_id": ACCOUNT, "timeout_ms": 0 }),
+        )
+        .await;
+    assert_eq!(error_code(&reply), "account_unavailable", "{reply}");
     harness.stop().await;
 }

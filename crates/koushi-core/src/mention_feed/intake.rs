@@ -11,6 +11,8 @@ use matrix_sdk::{Client, Room, RoomState};
 
 use super::{MentionCandidate, MentionFeed, MentionFeedRegistry, MentionKind};
 
+const HISTORY_CLOCK_SLACK_MS: u64 = 5 * 60 * 1000;
+
 /// The decision for one message, kept free of SDK types so it is testable.
 pub(crate) struct MessageFacts<'a> {
     pub(crate) own_user_id: &'a str,
@@ -94,7 +96,9 @@ impl MentionIntake {
     ) {
         let timestamp_ms: u64 = event.origin_server_ts.0.into();
         // History replayed by a first sync is not news.
-        if timestamp_ms < self.feed.created_at_ms() {
+        // A few minutes of slack so a clock that runs ahead does not discard
+        // real mentions; the event id de-duplicates what this lets through.
+        if timestamp_ms.saturating_add(HISTORY_CLOCK_SLACK_MS) < self.feed.created_at_ms() {
             return;
         }
         let names_account = event

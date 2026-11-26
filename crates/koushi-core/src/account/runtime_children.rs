@@ -504,13 +504,17 @@ impl AccountActor {
             .ok()?
             .ok()?;
         let save_store = self.store.clone();
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_millis() as u64)
-            .unwrap_or(0);
-        let feed = crate::mention_feed::MentionFeed::open(loaded, now_ms, move |log| {
-            save_store.save_mention_log(&key_id, log).is_ok()
-        });
+        // A fresh log is saved inside `open`; if that fails there is no intake,
+        // so a history line that would move on every start is never used.
+        let feed = executor::spawn_blocking(move || {
+            crate::mention_feed::MentionFeed::open(
+                loaded,
+                crate::mention_feed::now_ms(),
+                move |log| save_store.save_mention_log(&key_id, log).is_ok(),
+            )
+        })
+        .await
+        .ok()??;
         registry.account_started(own_user_id.as_str(), feed.clone());
         self.mention_registered_user = Some(own_user_id.to_string());
         Some(crate::mention_feed::MentionIntake::new(

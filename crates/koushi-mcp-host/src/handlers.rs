@@ -1761,7 +1761,25 @@ async fn wait_for_mentions(
         .get("limit")
         .and_then(Value::as_u64)
         .map_or(50, |limit| limit.clamp(1, 100) as usize);
-    let cursor = arguments.get("cursor").and_then(Value::as_str);
+    // A cursor that is present but not a string is a caller bug; treating it
+    // as absent would redeliver the whole log.
+    let cursor = match arguments.get("cursor") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(cursor)) => Some(cursor.as_str()),
+        Some(_) => {
+            return Err(WireError::with_reason(
+                ErrorCode::Unsupported,
+                "invalid_params",
+                "invalid_params: cursor must be a string",
+            ));
+        }
+    };
+    if !feed.is_healthy() {
+        return Err(WireError::new(
+            ErrorCode::AccountUnavailable,
+            "the mention log could not be saved; mentions may have been missed",
+        ));
+    }
 
     let page = feed.wait(cursor, timeout, limit).await.map_err(|rejection| {
         WireError::with_reason(
@@ -1774,8 +1792,23 @@ async fn wait_for_mentions(
             ),
         )
     })?;
-    // The account can be signed out or locked while the wait ran.
+    // The wait can last a minute: the account can be signed out or locked, the
+    // grant revoked, or the feed fail to save while it ran.
     account_connection(&shared.accounts, &account_id)?;
+    authorize(
+        shared,
+        client,
+        &account_id,
+        Need::Read,
+        ConsentContext::default(),
+    )
+    .await?;
+    if !feed.is_healthy() {
+        return Err(WireError::new(
+            ErrorCode::AccountUnavailable,
+            "the mention log could not be saved; mentions may have been missed",
+        ));
+    }
     Ok(json!({
         "mentions": page.entries.iter().map(|entry| json!({
             "cursor": feed.cursor_for(entry.seq),
