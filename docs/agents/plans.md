@@ -19,6 +19,12 @@ feasibility gate. Historical plans below are not the new implementation brief.
 
 ## Runtime and roadmap
 
+[#2124 agents on their own Matrix accounts (illustrated overview)](../plans/2026-11-26-issue2124-agent-accounts-overview.md)
+shows, with diagrams and typical situations, how agents on their own accounts
+are woken through harness plugins over a local IPC: hosts, wake rules,
+profiles, the default allow-list, stages and releases. It summarizes #2124;
+the epic and, once landed, the #2125 canon win.
+
 [#1628 MCP message actions](../plans/2026-10-27-issue1628-mcp-message-actions.md)
 gives an assistant `get_message` plus react, edit, delete, and thread reply as
 direct session-owned operations behind a new `message_actions` grant
