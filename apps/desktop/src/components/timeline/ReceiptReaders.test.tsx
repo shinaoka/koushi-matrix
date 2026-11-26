@@ -147,6 +147,35 @@ describe("ReceiptReaders", () => {
     fireEvent.scroll(popup);
     expect(api.observeReceiptReaderAvatars).toHaveBeenCalledTimes(calls);
   });
+  it("lists every reader of a moved thread root row, and opens when all receipts are on the reply (#2123)", async () => {
+    const root = source("@a:example.org", "3");
+    const reader = (name: string) => ({
+      user_id: `@${name}:example.org`, display_label: name,
+      original_display_label: name, initials: name[0].toUpperCase(), timestamp: null,
+      avatar: { kind: "notRequested" }
+    });
+    // The core answers for the row: the root's reader (Dave), the reader of the
+    // reply (Carol) and the reply's author (Bob), the same set the icons show.
+    const rows = [reader("dave"), reader("carol"), reader("bob")];
+    api.subscribeReceiptReader.mockResolvedValue("scope-row");
+    api.receiveReceiptReader.mockResolvedValueOnce({
+      kind: "model", scope: "scope-row", revision: "1", model: {
+        kind: "readerReady", source: root, total_count: 3, start: 0, rows,
+        window_sequence: "0", source_revision: "1", dependency_revision: "1",
+        resolved_anchor: { kind: "notRequested" }
+      }
+    }).mockImplementation(() => new Promise(() => undefined));
+    const view = renderReaders(root);
+    fireEvent.focus(screen.getByLabelText("Read by 1"));
+    const popup = await screen.findByRole("dialog");
+    await waitFor(() => expect(popup.querySelectorAll(".receipt-reader-row")).toHaveLength(3));
+    for (const name of ["dave", "carol", "bob"]) {
+      expect(popup.textContent).toContain(name);
+    }
+    expect(api.subscribeReceiptReader).toHaveBeenCalledTimes(1);
+    expect(api.subscribeReceiptReader.mock.calls[0][0]).toEqual(root);
+    view.unmount();
+  });
   it("requests the next bounded window from the installed revision", async () => {
     const first = source("@a:example.org", "3");
     const rows = Array.from({ length: 256 }, (_, index) => ({

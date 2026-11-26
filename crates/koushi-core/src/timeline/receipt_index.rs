@@ -29,7 +29,7 @@ pub(crate) struct ReceiptEpoch {
 }
 
 impl ReceiptEpoch {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let revision = next_source_revision(&NEXT_RECEIPT_REVISION);
         Self {
             valid: revision.is_some(),
@@ -194,7 +194,7 @@ impl Drop for ReceiptReaderIndex {
     }
 }
 
-fn sort_timestamp(receipt: &Receipt) -> u64 {
+pub(super) fn sort_timestamp(receipt: &Receipt) -> u64 {
     receipt
         .ts
         .map(|timestamp| timestamp.0.into())

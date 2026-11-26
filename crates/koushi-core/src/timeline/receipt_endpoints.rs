@@ -4,7 +4,7 @@ use eyeball_im::{Vector, VectorDiff};
 use matrix_sdk_ui::timeline::{ReadReceiptSnapshot, TimelineItem as SdkTimelineItem};
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::receipt_index::{ReceiptEpoch, ReceiptReaderIndex};
+use super::receipt_index::{ReceiptEpoch, ReceiptReaderIndex, sort_timestamp};
 use koushi_protocol::view::{ReaderWindowLimit, ReceiptSourceRef, TimelineViewSource};
 
 #[derive(Clone)]
@@ -324,10 +324,16 @@ pub(super) struct ReceiptEndpointChange {
     pub(super) after: Option<ReadReceiptSnapshot>,
 }
 
+type RowEpochs = BTreeMap<(String, String), Arc<std::sync::Mutex<ReceiptEpoch>>>;
+
 /// SDK-position mirror of receipt endpoints only; never retains message bodies.
 pub(super) struct ReceiptEndpointMirror {
     entries: Vector<Option<ReceiptEndpoint>>,
     readers: BTreeMap<String, ReceiptReaderIndex>,
+    /// Epochs of row-scoped (root + hidden reply) windows, keyed by the row's
+    /// content event id. Any endpoint change retires all of them, so a window
+    /// built from two endpoints is never kept past a change to either.
+    row_epochs: std::sync::Mutex<RowEpochs>,
 }
 
 impl ReceiptEndpointMirror {
@@ -351,9 +357,14 @@ impl ReceiptEndpointMirror {
                 )
             })
             .collect();
-        Self { entries, readers }
+        Self {
+            entries,
+            readers,
+            row_epochs: Default::default(),
+        }
     }
 
+    #[cfg(test)]
     pub(super) fn read_window(
         &self,
         source: &ReceiptSourceRef,
@@ -362,8 +373,27 @@ impl ReceiptEndpointMirror {
         limit: ReaderWindowLimit,
         own: Option<&matrix_sdk::ruma::UserId>,
     ) -> Option<RawReceiptWindow> {
+        self.read_row_window(source, None, current, start, limit, own)
+    }
+
+    /// The readers of one display row. `row_partner` is the other event the row
+    /// stands for (a moved thread root's hidden latest reply); the window then
+    /// lists the union of both endpoints, one line per user with the newest
+    /// receipt, which is the set the row's icons publish (#2123).
+    pub(super) fn read_row_window(
+        &self,
+        source: &ReceiptSourceRef,
+        row_partner: Option<&str>,
+        current: &TimelineViewSource,
+        start: u64,
+        limit: ReaderWindowLimit,
+        own: Option<&matrix_sdk::ruma::UserId>,
+    ) -> Option<RawReceiptWindow> {
         if source.timeline != *current {
             return None;
+        }
+        if let Some(partner) = row_partner.filter(|partner| *partner != source.event_id) {
+            return self.read_union_window(source, partner, start, limit, own);
         }
         let index = self.readers(&source.event_id)?;
         let total_count = index.total(own) as u64;
@@ -385,6 +415,72 @@ impl ReceiptEndpointMirror {
             profiles: Vec::new(),
             owner: None,
             epoch: index.window_epoch(),
+        })
+    }
+
+    fn read_union_window(
+        &self,
+        source: &ReceiptSourceRef,
+        partner: &str,
+        start: u64,
+        limit: ReaderWindowLimit,
+        own: Option<&matrix_sdk::ruma::UserId>,
+    ) -> Option<RawReceiptWindow> {
+        let mut by_user = BTreeMap::new();
+        for event_id in [source.event_id.as_str(), partner] {
+            let Some(index) = self.readers(event_id) else {
+                continue;
+            };
+            for (user, receipt) in index.window(0, usize::MAX, own) {
+                by_user
+                    .entry(user.clone())
+                    .and_modify(
+                        |existing: &mut &matrix_sdk::ruma::events::receipt::Receipt| {
+                            if sort_timestamp(receipt) >= sort_timestamp(existing) {
+                                *existing = receipt;
+                            }
+                        },
+                    )
+                    .or_insert(receipt);
+            }
+        }
+        if by_user.is_empty() && self.readers(&source.event_id).is_none() {
+            return None;
+        }
+        let mut rows = by_user.into_iter().collect::<Vec<_>>();
+        rows.sort_by(|(left_user, left), (right_user, right)| {
+            sort_timestamp(right)
+                .cmp(&sort_timestamp(left))
+                .then_with(|| left_user.cmp(right_user))
+        });
+        let total_count = rows.len() as u64;
+        let start = start.min(total_count);
+        let receipts = rows
+            .into_iter()
+            .skip(start as usize)
+            .take(usize::from(limit.get()))
+            .map(|(user, receipt)| koushi_state::LiveReadReceipt {
+                user_id: user.to_string(),
+                display_name: None,
+                original_display_label: String::new(),
+                avatar: None,
+                timestamp_ms: receipt.ts.map(|timestamp| timestamp.0.into()),
+            })
+            .collect();
+        let epoch = self
+            .row_epochs
+            .lock()
+            .expect("row epochs poisoned")
+            .entry((source.event_id.clone(), partner.to_owned()))
+            .or_insert_with(|| Arc::new(std::sync::Mutex::new(ReceiptEpoch::new())))
+            .clone();
+        Some(RawReceiptWindow {
+            total_count,
+            start,
+            receipts,
+            profiles: Vec::new(),
+            owner: None,
+            epoch: Arc::downgrade(&epoch),
         })
     }
 
@@ -463,6 +559,13 @@ impl ReceiptEndpointMirror {
             (Some(before), Some(after)) => after.changes_since(before).next().is_some(),
             _ => true,
         });
+        if !changes.is_empty() {
+            let mut epochs = self.row_epochs.lock().expect("row epochs poisoned");
+            for epoch in epochs.values() {
+                epoch.lock().expect("receipt epoch poisoned").valid = false;
+            }
+            epochs.clear();
+        }
         changes
     }
 }

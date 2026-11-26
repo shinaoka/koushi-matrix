@@ -316,6 +316,47 @@ fn assert_moved_root_row_publishes(
     }
 }
 
+/// #2123: the reader list a row opens, asked for by the row's content event.
+async fn row_reader_window(
+    actor: &super::super::actor::TimelineActorHandle,
+    room_id: &str,
+    owner: &str,
+    event_id: &str,
+) -> (u64, Vec<String>) {
+    let source = koushi_protocol::view::ReceiptSourceRef {
+        timeline: koushi_protocol::view::TimelineViewSource {
+            key: TimelineKey::room(AccountKey(owner.to_owned()), room_id.to_owned()),
+            projection_request_id: fake_rid(1),
+            generation: koushi_protocol::ids::TimelineGeneration(0),
+        },
+        event_id: event_id.to_owned(),
+    };
+    let (response, receiver) = tokio::sync::oneshot::channel();
+    assert!(
+        actor
+            .send(
+                super::super::actor::TimelineActorMessage::ReadReceiptWindow {
+                    source,
+                    start: 0,
+                    limit: koushi_protocol::view::ReaderWindowLimit::try_from(16).unwrap(),
+                    response,
+                }
+            )
+            .await
+    );
+    let window = receiver
+        .await
+        .expect("actor answers")
+        .unwrap_or_else(|_| panic!("#2123: the reader window must be available"));
+    let mut users = window
+        .receipts
+        .iter()
+        .map(|receipt| receipt.user_id.clone())
+        .collect::<Vec<_>>();
+    users.sort();
+    (window.total_count, users)
+}
+
 #[tokio::test]
 async fn a_receipt_on_the_latest_thread_reply_shows_on_the_moved_root_row() {
     let server = MatrixMockServer::new().await;
@@ -395,6 +436,17 @@ async fn a_receipt_on_the_latest_thread_reply_shows_on_the_moved_root_row() {
         reply.as_str(),
         &[carol],
     );
+    // #2123: every receipt is on the reply, yet the row shows an icon, so the
+    // list it opens must name that reader instead of coming up empty.
+    let icons = row_readers(&state, room_id.as_str(), root.as_str());
+    let (total, listed) =
+        row_reader_window(&actor, room_id.as_str(), alice.as_str(), root.as_str()).await;
+    assert!(listed.contains(&carol.to_string()), "#2123: {listed:?}");
+    assert_eq!(
+        (total as usize, listed),
+        (icons.len(), icons),
+        "#2123: the row's reader window must name the readers of the reply"
+    );
 
     // A later receipt on the root itself replaces the one summary the row owns,
     // so the update must carry the readers of the reply it stands for.
@@ -413,6 +465,16 @@ async fn a_receipt_on_the_latest_thread_reply_shows_on_the_moved_root_row() {
         root.as_str(),
         reply.as_str(),
         &[carol, dave],
+    );
+    // #2123: the list names exactly the union the icons show.
+    let icons = row_readers(&state, room_id.as_str(), root.as_str());
+    let (total, listed) =
+        row_reader_window(&actor, room_id.as_str(), alice.as_str(), root.as_str()).await;
+    assert!(listed.contains(&dave.to_string()), "#2123: {listed:?}");
+    assert_eq!(
+        (total as usize, listed),
+        (icons.len(), icons),
+        "#2123: the row's reader window must equal the row's icon readers"
     );
     drop(actor);
 }
