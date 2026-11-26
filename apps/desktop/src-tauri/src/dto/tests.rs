@@ -1715,6 +1715,12 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
     state.settings.values.sidebar.collapsed.low_priority = true;
     // A non-default MCP switch proves the field crosses the wire (#1536).
     state.settings.values.mcp.enabled = false;
+    // A non-empty allow-list edit proves the mention feed's lists cross the wire
+    // too, in both directions (#2110).
+    state.settings.values.mcp.allowed_senders = koushi_state::MentionAllowedSenders {
+        added: vec!["@added:example.invalid".to_owned()],
+        removed: vec!["@removed:example.invalid".to_owned()],
+    };
     state.settings.values.sidebar.apply_section_patch(
         koushi_state::SidebarSectionPatch {
             scope: "!space:example.invalid".to_owned(),

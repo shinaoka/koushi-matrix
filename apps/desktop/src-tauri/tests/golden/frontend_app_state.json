@@ -1256,6 +1256,14 @@
             "text_direction": "auto"
           },
           "mcp": {
+            "allowed_senders": {
+              "added": [
+                "@added:example.invalid"
+              ],
+              "removed": [
+                "@removed:example.invalid"
+              ]
+            },
             "enabled": false
           },
           "media": {
