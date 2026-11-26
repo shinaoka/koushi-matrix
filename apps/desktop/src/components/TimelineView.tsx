@@ -1,3 +1,4 @@
+import { canRetrySend } from "./timeline/sendStateNeeds";
 import { NativeModal } from "./ModalDialog";
 import {
 ThreadRootStatusPlaceholder,
@@ -4798,14 +4799,16 @@ export const TimelineView = memo(function TimelineView({
             {t("timeline.unsentBar")}
           </span>
           <div className="timeline-send-bar-actions">
-            <button
-              className="timeline-send-bar-action"
-              type="button"
-              onClick={onRetryAllNotSent}
-            >
-              <RefreshCw size={13} aria-hidden="true" />
-              <span>{t("timeline.resendAll")}</span>
-            </button>
+            {canRetrySend(canWrite) ? (
+              <button
+                className="timeline-send-bar-action"
+                type="button"
+                onClick={onRetryAllNotSent}
+              >
+                <RefreshCw size={13} aria-hidden="true" />
+                <span>{t("timeline.resendAll")}</span>
+              </button>
+            ) : null}
             <button
               className="timeline-send-bar-action danger"
               type="button"
