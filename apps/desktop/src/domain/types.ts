@@ -79,8 +79,6 @@ export interface AccountTabSummary {
   status: AccountTabStatus;
   unreadCount: number;
   inviteCount?: number;
-  /** Rust decides whether the unread and invite counts are drawn. */
-  showsCounts?: boolean;
   /** Rust says the account has the agent role (#2110); the tab draws a marker. An agent tab is never hidden (#2130). */
   isAgent?: boolean;
 }

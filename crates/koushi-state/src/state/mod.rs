@@ -708,9 +708,8 @@ impl AppState {
     /// The agent role of the account this state belongs to (#2110), if any.
     ///
     /// The single fact behind every owner-facing interruption: an agent
-    /// account raises no OS notification, no sound and no badge, and its tab may
-    /// be hidden. Its messages and unread state stay in the data. It is derived
-    /// from the device's agent-account list and the session's user id, so it
+    /// account raises no OS notification, no sound and no badge. Its messages and unread state stay in the data. It is
+    /// derived from the device's agent-account list and the session's user id, so it
     /// survives a sign-out and a sign-in of the same user.
     pub fn agent_role(&self) -> Option<AgentAccountRole> {
         let info = match &self.session {

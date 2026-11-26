@@ -27,10 +27,12 @@ function Harness({ patches }: { patches: SettingsPatch[] }) {
       setAgents({ accounts });
     }
   };
+  // Rust projects the role onto each tab (`isAgent`); mimic that here.
+  const projected = tabs.map(t => ({ ...t, isAgent: agents.accounts[t.accountKey!] !== undefined }) as AccountTabSummary);
   return (
     <>
-      <AgentAccountsSection agentAccounts={agents} accountTabs={tabs} isSaving={false} onUpdateSettings={update} />
-      <AllowedSendersSection allowed={allowed} agentAccounts={agents} accountTabs={tabs} isSaving={false} onUpdateSettings={update} />
+      <AgentAccountsSection agentAccounts={agents} accountTabs={projected} isSaving={false} onUpdateSettings={update} />
+      <AllowedSendersSection allowed={allowed} accountTabs={projected} isSaving={false} onUpdateSettings={update} />
     </>
   );
 }

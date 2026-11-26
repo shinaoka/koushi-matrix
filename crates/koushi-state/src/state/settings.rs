@@ -1041,6 +1041,10 @@ impl Default for McpSettings {
 /// role. It carries no options: an agent tab is always visible (#2130), and a
 /// `hide_tab` stored by an earlier version is ignored on load and not written
 /// back on the next save.
+///
+/// Ignoring the old field relies on this struct **not** having
+/// `#[serde(deny_unknown_fields)]`; do not add it, or a stored `hide_tab`
+/// would fail the whole settings load.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentAccountRole {}

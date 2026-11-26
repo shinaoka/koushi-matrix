@@ -132,14 +132,12 @@ export function AgentAccountsSection({
  */
 export function AllowedSendersSection({
   allowed,
-  agentAccounts = { accounts: {} },
   accountTabs,
   isSaving,
   onUpdateSettings
 }: {
   allowed: MentionAllowedSenders;
-  /** Agent accounts are left out of the derived default (#2130); they are listed apart, with the reason. */
-  agentAccounts?: AgentAccounts;
+  /** Rust marks agent tabs (`isAgent`); the default leaves those out (#2130), so they are listed apart. */
   accountTabs: readonly AccountTabSummary[];
   isSaving: boolean;
   onUpdateSettings: (patch: SettingsPatch) => void;
@@ -147,8 +145,9 @@ export function AllowedSendersSection({
   const [draft, setDraft] = useState("");
   const [invalid, setInvalid] = useState(false);
   const readyAccounts = accountsOf(accountTabs, true);
-  const accounts = readyAccounts.filter(([userId]) => agentAccounts.accounts[userId] === undefined);
-  const agents = readyAccounts.filter(([userId]) => agentAccounts.accounts[userId] !== undefined);
+  const agentKeys = new Set(accountTabs.filter(tab => tab.isAgent).map(tab => tab.accountKey));
+  const accounts = readyAccounts.filter(([userId]) => !agentKeys.has(userId));
+  const agents = readyAccounts.filter(([userId]) => agentKeys.has(userId));
   const derived = new Set(accounts.map(([userId]) => userId));
   const agentIds = new Set(agents.map(([userId]) => userId));
   const removed = new Set(allowed.removed);

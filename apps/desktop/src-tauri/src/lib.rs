@@ -270,11 +270,6 @@ pub(crate) struct AccountTabSummary {
     pub status: AccountTabStatus,
     pub unread_count: u64,
     pub invite_count: u64,
-    /// Whether the strip draws the unread and invite counts for this tab. Every
-    /// tab does, an agent account's too (#2130): a person accepts an agent's
-    /// invites and watches its unread in that tab. An agent still raises no
-    /// notification and adds nothing to the global badge; the core zeroes those.
-    pub shows_counts: bool,
     /// The account has the agent role (#2110); the strip draws a marker. An agent
     /// tab is never hidden.
     pub is_agent: bool,
@@ -590,7 +585,6 @@ fn account_tabs_snapshot_from_states(
                 status,
                 unread_count: attention.unread_count,
                 invite_count: attention.invite_count,
-                shows_counts: true,
                 is_agent,
             }
         })

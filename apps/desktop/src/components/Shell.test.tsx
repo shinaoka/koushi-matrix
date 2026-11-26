@@ -110,14 +110,15 @@ describe("Rust-projected workspace shell", () => {
   it("keeps an agent account's tab visible with its counts and an agent marker (#2130)", () => {
     const tab = (id: string, extra: object) => ({
       id, accountKey: `@${id}:example.invalid`, homeserver: "https://example.invalid",
-      displayName: id, avatarMxcUri: null, avatarSourceRef: null, status: "ready" as const, unreadCount: 4, showsCounts: true, ...extra
+      displayName: id, avatarMxcUri: null, avatarSourceRef: null, status: "ready" as const, unreadCount: 4, ...extra
     });
     const tabs = [tab("owner", {}), tab("agent", { isAgent: true, inviteCount: 2 })];
     render(<AccountTabStrip tabs={tabs} selectedTabId="owner" onSelect={vi.fn()} onAdd={vi.fn()} onRemove={vi.fn()} />);
-    const agent = screen.getByRole("button", { name: /agent/ });
+    const marker = screen.getByRole("img", { name: "Agent account" });
+    const agent = marker.closest("button")!;
     expect(agent.querySelector(".account-tab-unread")?.textContent).toBe("4");
     expect(agent.querySelector(".account-tab-invite")?.textContent).toBe("2");
-    expect(agent.querySelector(".account-tab-agent")).not.toBeNull();
+    expect(marker.className).toContain("account-tab-agent");
     // The marker is drawn only for the tab Rust flags.
     expect(screen.getByRole("button", { name: /owner/ }).querySelector(".account-tab-agent")).toBeNull();
     expect(document.querySelectorAll(".account-tab-agent")).toHaveLength(1);

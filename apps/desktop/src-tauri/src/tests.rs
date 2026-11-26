@@ -635,10 +635,8 @@ fn an_agent_account_tab_shows_its_counts_and_a_marker_but_adds_nothing_to_the_ba
 
     assert_eq!(snapshot.badge_count, 2);
     let owner_tab = serde_json::to_value(&snapshot.tabs[0]).unwrap();
-    assert_eq!(owner_tab["showsCounts"], true);
     assert_eq!(owner_tab["isAgent"], false);
     let agent_tab = serde_json::to_value(&snapshot.tabs[1]).unwrap();
-    assert_eq!(agent_tab["showsCounts"], true);
     assert_eq!(agent_tab["isAgent"], true);
     assert!(agent_tab.get("hidden").is_none());
     assert_eq!(agent_tab["unreadCount"], 3);

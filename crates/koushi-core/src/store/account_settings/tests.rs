@@ -194,7 +194,7 @@ fn a_stored_hide_tab_is_ignored_and_dropped_on_the_next_save() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(
         &path,
-        r#"{"schema_version":4,"agent_accounts":{"accounts":{"@agent:example.invalid":{"hide_tab":true}}}}"#,
+        r#"{"schema_version":4,"agent_accounts":{"accounts":{"@agent:example.invalid":{"hide_tab":true},"@shown:example.invalid":{"hide_tab":false}}}}"#,
     )
     .unwrap();
 
@@ -202,6 +202,10 @@ fn a_stored_hide_tab_is_ignored_and_dropped_on_the_next_save() {
     let loaded = settings.load().expect("load");
     assert_eq!(
         loaded.agent_accounts.role_for("@agent:example.invalid"),
+        Some(AgentAccountRole::default())
+    );
+    assert_eq!(
+        loaded.agent_accounts.role_for("@shown:example.invalid"),
         Some(AgentAccountRole::default())
     );
     settings
