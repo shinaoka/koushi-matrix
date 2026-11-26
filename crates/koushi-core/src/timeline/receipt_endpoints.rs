@@ -426,37 +426,63 @@ impl ReceiptEndpointMirror {
         limit: ReaderWindowLimit,
         own: Option<&matrix_sdk::ruma::UserId>,
     ) -> Option<RawReceiptWindow> {
-        let mut by_user = BTreeMap::new();
-        for event_id in [source.event_id.as_str(), partner] {
-            let Some(index) = self.readers(event_id) else {
-                continue;
-            };
-            for (user, receipt) in index.window(0, usize::MAX, own) {
-                by_user
-                    .entry(user.clone())
-                    .and_modify(
-                        |existing: &mut &matrix_sdk::ruma::events::receipt::Receipt| {
-                            if sort_timestamp(receipt) >= sort_timestamp(existing) {
-                                *existing = receipt;
-                            }
-                        },
-                    )
-                    .or_insert(receipt);
-            }
-        }
-        if by_user.is_empty() && self.readers(&source.event_id).is_none() {
+        let source_index = self.readers(&source.event_id);
+        let partner_index = self.readers(partner);
+        if source_index.is_none() && partner_index.is_none() {
             return None;
         }
-        let mut rows = by_user.into_iter().collect::<Vec<_>>();
-        rows.sort_by(|(left_user, left), (right_user, right)| {
-            sort_timestamp(right)
-                .cmp(&sort_timestamp(left))
-                .then_with(|| left_user.cmp(right_user))
-        });
-        let total_count = rows.len() as u64;
-        let start = start.min(total_count);
-        let receipts = rows
+        // One line per user with the newest receipt; a tie favours the partner.
+        let newest_in_source = |user: &matrix_sdk::ruma::OwnedUserId, ts: u64| {
+            source_index
+                .and_then(|index| index.receipt(user))
+                .is_some_and(|other| sort_timestamp(other) > ts)
+        };
+        let newest_in_partner = |user: &matrix_sdk::ruma::OwnedUserId, ts: u64| {
+            partner_index
+                .and_then(|index| index.receipt(user))
+                .is_some_and(|other| sort_timestamp(other) >= ts)
+        };
+        let from_source = source_index
             .into_iter()
+            .flat_map(|index| index.window(0, usize::MAX, own))
+            .filter(|(user, receipt)| !newest_in_partner(user, sort_timestamp(receipt)));
+        let from_partner = partner_index
+            .into_iter()
+            .flat_map(|index| index.window(0, usize::MAX, own))
+            .filter(|(user, receipt)| !newest_in_source(user, sort_timestamp(receipt)));
+        let mut from_source = from_source.peekable();
+        let mut from_partner = from_partner.peekable();
+        // Both streams are already in (newest first, user) order; merge them
+        // lazily so a page walks only `start + limit` entries.
+        let merged = std::iter::from_fn(|| {
+            let take_source = match (from_source.peek(), from_partner.peek()) {
+                (Some((lu, lr)), Some((ru, rr))) => {
+                    (std::cmp::Reverse(sort_timestamp(lr)), *lu)
+                        <= (std::cmp::Reverse(sort_timestamp(rr)), *ru)
+                }
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => return None,
+            };
+            if take_source {
+                from_source.next()
+            } else {
+                from_partner.next()
+            }
+        });
+        let own_total =
+            |index: Option<&ReceiptReaderIndex>| index.map_or(0, |index| index.total(own) as u64);
+        let overlap = partner_index.map_or(0, |partner_index| {
+            source_index.map_or(0, |index| {
+                index
+                    .window(0, usize::MAX, own)
+                    .filter(|(user, _)| partner_index.receipt(user).is_some())
+                    .count() as u64
+            })
+        });
+        let total_count = own_total(source_index) + own_total(partner_index) - overlap;
+        let start = start.min(total_count);
+        let receipts = merged
             .skip(start as usize)
             .take(usize::from(limit.get()))
             .map(|(user, receipt)| koushi_state::LiveReadReceipt {
@@ -561,10 +587,13 @@ impl ReceiptEndpointMirror {
         });
         if !changes.is_empty() {
             let mut epochs = self.row_epochs.lock().expect("row epochs poisoned");
-            for epoch in epochs.values() {
-                epoch.lock().expect("receipt epoch poisoned").valid = false;
-            }
-            epochs.clear();
+            epochs.retain(|(source, partner), epoch| {
+                let touched = changes.contains_key(source) || changes.contains_key(partner);
+                if touched {
+                    epoch.lock().expect("receipt epoch poisoned").valid = false;
+                }
+                !touched
+            });
         }
         changes
     }

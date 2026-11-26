@@ -156,6 +156,10 @@ impl ReceiptReaderIndex {
         Some(position - usize::from(own_before))
     }
 
+    pub(super) fn receipt(&self, user: &UserId) -> Option<&Receipt> {
+        self.receipts.get(user)
+    }
+
     pub(super) fn window(
         &self,
         start: usize,

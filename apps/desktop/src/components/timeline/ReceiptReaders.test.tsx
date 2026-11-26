@@ -165,10 +165,19 @@ describe("ReceiptReaders", () => {
         resolved_anchor: { kind: "notRequested" }
       }
     }).mockImplementation(() => new Promise(() => undefined));
-    const view = renderReaders(root);
+    // The row's own icons carry a single compact receipt; only the Core window
+    // knows the other two, so the list must come from it, not from the props.
+    const view = render(
+      <ReceiptReaders overflowCount={0} receipts={[]} source={root} totalCount={1} />
+    );
     fireEvent.focus(screen.getByLabelText("Read by 1"));
     const popup = await screen.findByRole("dialog");
     await waitFor(() => expect(popup.querySelectorAll(".receipt-reader-row")).toHaveLength(3));
+    expect(
+      Array.from(popup.querySelectorAll(".receipt-reader-row")).map((row) =>
+        ["dave", "carol", "bob"].find((name) => row.textContent?.includes(name))
+      )
+    ).toEqual(["dave", "carol", "bob"]);
     for (const name of ["dave", "carol", "bob"]) {
       expect(popup.textContent).toContain(name);
     }
