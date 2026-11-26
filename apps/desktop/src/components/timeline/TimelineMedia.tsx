@@ -15,7 +15,7 @@ import {
   RefreshCw,
   XCircle
 } from "lucide-react";
-import { type CSSProperties, Fragment, type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { type CSSProperties, Fragment, type ReactNode, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { t } from "../../i18n/messages";
 import { Tooltip } from "../Tooltip";
@@ -34,7 +34,7 @@ import {
   textPreviewLines
 } from "./filePreview";
 import { type MarkdownDocument, useMarkdownDocumentOpener } from "./MarkdownDocumentContext";
-import { renderMarkdownDocument } from "./TimelineMessageBody";
+import { parseMarkdownDocument, renderMarkdownDocument } from "./TimelineMessageBody";
 import { MediaTextPreviewDialog } from "./MediaTextPreviewDialog";
 import { formatDimensions } from "../../app/uiShared";
 import { saveMediaSource, type MediaViewerEntry } from "../mediaViewer";
@@ -488,6 +488,12 @@ export function TimelineMediaAttachment({
           : requestDownload;
   const textReady = plainTextPreviewAllowed && previewText?.kind === "ready";
   const readyDocument = markdownAllowed && previewDocument?.kind === "ready" ? previewDocument.document : null;
+  // Parsed once per document; the four-block cut happens after the parse and the
+  // card relies on `overflow: hidden` for its height.
+  const documentNodes = useMemo(
+    () => (readyDocument ? parseMarkdownDocument(readyDocument.formatted) : null),
+    [readyDocument]
+  );
   const openDocument = readyDocument && openMarkdownDocument
     ? () => openMarkdownDocument(readyDocument)
     : null;
@@ -622,7 +628,10 @@ export function TimelineMediaAttachment({
               }
             }}
           >
-            {renderMarkdownDocument(readyDocument.formatted, () => undefined, DOCUMENT_PREVIEW_BLOCKS)}
+            {renderMarkdownDocument(documentNodes ?? [], readyDocument.formatted, () => undefined, {
+              maxBlocks: DOCUMENT_PREVIEW_BLOCKS,
+              flattenLinks: true
+            })}
           </div>
         ) : null}
         {markdownAllowed && previewDocument?.kind === "failed" ? (

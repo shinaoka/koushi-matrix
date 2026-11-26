@@ -25,9 +25,12 @@ const DOCUMENT_HEADING_ELEMENTS: [&str; 6] = ["h1", "h2", "h3", "h4", "h5", "h6"
 /// Sanitize the HTML of a rendered Markdown attachment (#2097).
 ///
 /// This is the message path's allow-list plus exactly one attribute, `id` on
-/// headings, so the table of contents can link to them; the Matrix element list
-/// already covers tables. Images are dropped (an `mxc` image is not the
-/// document's to fetch). The message path above is unchanged.
+/// headings, so the table of contents can link to them. ruma's allow-list
+/// already permits table elements on the message path as well, so a message
+/// with a `<table>` passes the sanitizer too; the renderer, not this function,
+/// decides what is drawn, and the document view is the only one that draws
+/// tables (a message's table is flattened as before). Images are dropped (an
+/// `mxc` image is not the document's to fetch). The message path is unchanged.
 pub(crate) fn sanitize_markdown_document_html(body: &str) -> String {
     let html = Html::parse(body);
     html.sanitize_with(

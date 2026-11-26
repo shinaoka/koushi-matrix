@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { t } from "../../i18n/messages";
-import { renderMarkdownDocument } from "./TimelineMessageBody";
+import { parseMarkdownDocument, renderMarkdownDocument } from "./TimelineMessageBody";
 import type { MarkdownDocument } from "./MarkdownDocumentContext";
 
 interface TocEntry {
@@ -24,6 +24,8 @@ export function MarkdownDocumentPanel({
   document: MarkdownDocument;
   onCopyText: (text: string) => void;
 }) {
+  // Tokenize once per document, not on every re-render of the panel.
+  const nodes = useMemo(() => parseMarkdownDocument(doc.formatted), [doc.formatted]);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [toc, setToc] = useState<TocEntry[]>([]);
   useEffect(() => {
@@ -58,7 +60,7 @@ export function MarkdownDocumentPanel({
         </nav>
       ) : null}
       <div className="markdown-document-body message-body" ref={bodyRef} dir="auto">
-        {renderMarkdownDocument(doc.formatted, onCopyText)}
+        {renderMarkdownDocument(nodes, doc.formatted, onCopyText)}
       </div>
     </div>
   );

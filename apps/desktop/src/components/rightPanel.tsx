@@ -68,6 +68,7 @@ import {
   type TimelineTransport
 } from "./TimelineView";
 import { FilesView } from "./FilesView";
+import { writeClipboardText } from "./timeline/TimelineMessageBody";
 import { MarkdownDocumentPanel } from "./timeline/MarkdownDocumentPanel";
 import type { MarkdownDocument } from "./timeline/MarkdownDocumentContext";
 import { ModalDialog } from "./ModalDialog";
@@ -1074,7 +1075,7 @@ export function ContextualRightPanel({
         {markdownDocument ? (
           <MarkdownDocumentPanel
             document={markdownDocument}
-            onCopyText={(text) => void navigator.clipboard?.writeText(text)}
+            onCopyText={(text) => void writeClipboardText(text).catch(() => undefined)}
           />
         ) : null}
       </aside>

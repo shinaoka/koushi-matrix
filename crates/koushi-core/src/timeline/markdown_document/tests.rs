@@ -75,12 +75,80 @@ fn raw_html_is_text_never_markup() {
 }
 
 #[test]
-fn unsafe_link_schemes_and_ids_are_dropped() {
-    let doc = render_markdown_document("[x](javascript:alert(1)) [y](https://example.org)\n");
-    assert!(!doc.html.contains("javascript:"), "{}", doc.html);
+fn javascript_and_other_unsafe_link_schemes_are_dropped_and_https_kept() {
+    let doc = render_markdown_document(
+        "[x](javascript:alert(1)) [d](data:text/html,<script>alert(1)</script>) [v](vbscript:alert(1)) [y](https://example.org)\n",
+    );
+    for scheme in ["javascript:", "data:", "vbscript:"] {
+        assert!(!doc.html.contains(scheme), "{scheme} in {}", doc.html);
+    }
+    assert!(!doc.html.contains("<script"), "{}", doc.html);
     assert!(
         doc.html.contains("href=\"https://example.org\""),
         "{}",
         doc.html
     );
+}
+
+#[test]
+fn markdown_images_never_produce_an_img() {
+    let doc = render_markdown_document("![x](mxc://a/b) ![y](https://example.org/i.png)\n");
+    assert!(!doc.html.contains("<img"), "{}", doc.html);
+}
+
+#[test]
+fn ids_exist_only_on_headings() {
+    let doc = render_markdown_document(
+        "# H\n\n| a |\n|---|\n| 1 |\n\n- item\n\n> quote\n\n`c`\n\n```\nfence\n```\n",
+    );
+    assert_eq!(doc.html.matches(" id=").count(), 1, "{}", doc.html);
+    assert!(doc.html.contains("<h1 id=\"md-h0\">"), "{}", doc.html);
+}
+
+#[test]
+fn duplicate_headings_get_unique_sequential_ids() {
+    let doc = render_markdown_document("# Same\n\n## Same\n\n# Same\n");
+    for id in ["md-h0", "md-h1", "md-h2"] {
+        assert_eq!(
+            doc.html.matches(&format!("id=\"{id}\"")).count(),
+            1,
+            "{id} in {}",
+            doc.html
+        );
+    }
+}
+
+#[test]
+fn a_document_without_headings_has_no_ids() {
+    let doc = render_markdown_document("just text\n\n- a\n- b\n");
+    assert!(!doc.html.contains(" id="), "{}", doc.html);
+}
+
+#[test]
+fn deeply_nested_block_quotes_do_not_crash() {
+    let markdown = format!("{} deep\n", ">".repeat(5000));
+    let doc = render_markdown_document(&markdown);
+    // The sanitizer bounds the nesting, so the React side never sees 5000 levels.
+    assert!(
+        doc.html.matches("<blockquote>").count() <= 100,
+        "{}",
+        doc.html.len()
+    );
+}
+
+#[test]
+fn message_path_still_drops_heading_ids() {
+    use crate::timeline::html_sanitize::sanitize_matrix_html;
+    let out = sanitize_matrix_html("<h1 id=\"md-h0\">T</h1><p id=\"x\">p</p>", &[]);
+    assert!(!out.contains("id="), "{out}");
+}
+
+#[test]
+fn message_path_keeps_its_image_handling() {
+    use crate::timeline::html_sanitize::sanitize_matrix_html;
+    let body = "<img src=\"mxc://a/b\" alt=\"x\">";
+    let out = sanitize_matrix_html(body, &[]);
+    // Unlike the document sanitizer, the message sanitizer does not remove `img`.
+    assert!(out.contains("<img"), "{out}");
+    assert!(!super::super::html_sanitize::sanitize_markdown_document_html(body).contains("<img"));
 }

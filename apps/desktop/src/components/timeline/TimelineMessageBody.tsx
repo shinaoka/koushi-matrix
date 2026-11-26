@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, createElement, useEffect, useRef, useState, type ReactNode } from "react";
 import { Copy } from "lucide-react";
 import katex from "katex";
 
@@ -450,15 +450,6 @@ const FORMATTED_TAGS = new Set([
   "s",
   "span",
   "strong",
-  // #2097: table tags and a heading's `id` exist only in a rendered Markdown
-  // document. The message path's sanitizer strips tables and ids, so this widens
-  // what the tokenizer reads, not what a message can show.
-  "table",
-  "tbody",
-  "td",
-  "th",
-  "thead",
-  "tr",
   "ul"
 ]);
 
@@ -562,7 +553,10 @@ function matrixPermalinkUser(href: string): string | null {
   return target?.kind === "user" ? target.userId : null;
 }
 
-function parseFormattedHtml(html: string): FormattedNode[] {
+function parseFormattedHtml(
+  html: string,
+  dialect: FormattedDialect = MESSAGE_DIALECT
+): FormattedNode[] {
   const root: Extract<FormattedNode, { kind: "element" }> = {
     kind: "element",
     tagName: "fragment",
@@ -592,7 +586,7 @@ function parseFormattedHtml(html: string): FormattedNode[] {
       continue;
     }
     if (token.startsWith("<")) {
-      const parsed = parseFormattedStartTag(token);
+      const parsed = parseFormattedStartTag(token, dialect);
       if (!parsed) {
         continue;
       }
@@ -738,7 +732,8 @@ function linkifyFormattedTextNode(
 }
 
 function parseFormattedStartTag(
-  token: string
+  token: string,
+  dialect: FormattedDialect
 ): { tagName: string; attrs: Record<string, string>; selfClosing: boolean } | null {
   const inner = token.slice(1, -1).trim();
   const selfClosing = inner.endsWith("/");
@@ -749,7 +744,7 @@ function parseFormattedStartTag(
   }
   const tagName = tagMatch[1].toLowerCase();
   const attrs: Record<string, string> = {};
-  if (FORMATTED_TAGS.has(tagName)) {
+  if (dialect.tags.has(tagName)) {
     const attrPattern = /([^\s=/>]+)(?:\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
     for (const match of withoutSlash.slice(tagMatch[0].length).matchAll(attrPattern)) {
       const name = match[1].toLowerCase();
@@ -771,7 +766,8 @@ function renderFormattedNodes(
   spoilerState: SpoilerRevealState,
   onOpenMatrixTarget: OpenMatrixTargetHandler | undefined,
   keyPrefix = "",
-  parentTagName: string | null = null
+  parentTagName: string | null = null,
+  dialect: FormattedDialect = MESSAGE_DIALECT
 ): ReactNode {
   const renderedNodes =
     parentTagName === "ul" || parentTagName === "ol"
@@ -788,7 +784,8 @@ function renderFormattedNodes(
       highlightRanges,
       textOffsetRef,
       spoilerState,
-      onOpenMatrixTarget
+      onOpenMatrixTarget,
+      dialect
     )
   );
 }
@@ -803,7 +800,8 @@ function renderFormattedNode(
   highlightRanges: TextRange[],
   textOffsetRef: { current: number },
   spoilerState: SpoilerRevealState,
-  onOpenMatrixTarget: OpenMatrixTargetHandler | undefined
+  onOpenMatrixTarget: OpenMatrixTargetHandler | undefined,
+  dialect: FormattedDialect
 ): ReactNode {
   if (node.kind === "text") {
     const projectedOffset = formatted.plain_text.indexOf(node.value, textOffsetRef.current);
@@ -824,9 +822,10 @@ function renderFormattedNode(
     spoilerState,
     onOpenMatrixTarget,
     key,
-    node.tagName
+    node.tagName,
+    dialect
   );
-  const renderer = formattedTagRenderers[node.tagName as keyof typeof formattedTagRenderers];
+  const renderer = dialect.renderers[node.tagName];
   if (!renderer) {
     return <Fragment key={key}>{children}</Fragment>;
   }
@@ -1131,7 +1130,7 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     return <em key={key}>{children}</em>;
   },
   h1(
-    node: Extract<FormattedNode, { kind: "element" }>,
+    _node: Extract<FormattedNode, { kind: "element" }>,
     key: string,
     children: ReactNode,
     _formatted: NonNullable<TimelineItem["formatted"]>,
@@ -1139,10 +1138,10 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     _codeBlockIndexRef: { current: number },
     _onCopyText: TimelineRowActionHandlers["onCopyText"]
   ) {
-    return <h1 key={key} id={node.attrs.id || undefined}>{children}</h1>;
+    return <h1 key={key}>{children}</h1>;
   },
   h2(
-    node: Extract<FormattedNode, { kind: "element" }>,
+    _node: Extract<FormattedNode, { kind: "element" }>,
     key: string,
     children: ReactNode,
     _formatted: NonNullable<TimelineItem["formatted"]>,
@@ -1150,10 +1149,10 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     _codeBlockIndexRef: { current: number },
     _onCopyText: TimelineRowActionHandlers["onCopyText"]
   ) {
-    return <h2 key={key} id={node.attrs.id || undefined}>{children}</h2>;
+    return <h2 key={key}>{children}</h2>;
   },
   h3(
-    node: Extract<FormattedNode, { kind: "element" }>,
+    _node: Extract<FormattedNode, { kind: "element" }>,
     key: string,
     children: ReactNode,
     _formatted: NonNullable<TimelineItem["formatted"]>,
@@ -1161,10 +1160,10 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     _codeBlockIndexRef: { current: number },
     _onCopyText: TimelineRowActionHandlers["onCopyText"]
   ) {
-    return <h3 key={key} id={node.attrs.id || undefined}>{children}</h3>;
+    return <h3 key={key}>{children}</h3>;
   },
   h4(
-    node: Extract<FormattedNode, { kind: "element" }>,
+    _node: Extract<FormattedNode, { kind: "element" }>,
     key: string,
     children: ReactNode,
     _formatted: NonNullable<TimelineItem["formatted"]>,
@@ -1172,10 +1171,10 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     _codeBlockIndexRef: { current: number },
     _onCopyText: TimelineRowActionHandlers["onCopyText"]
   ) {
-    return <h4 key={key} id={node.attrs.id || undefined}>{children}</h4>;
+    return <h4 key={key}>{children}</h4>;
   },
   h5(
-    node: Extract<FormattedNode, { kind: "element" }>,
+    _node: Extract<FormattedNode, { kind: "element" }>,
     key: string,
     children: ReactNode,
     _formatted: NonNullable<TimelineItem["formatted"]>,
@@ -1183,10 +1182,10 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     _codeBlockIndexRef: { current: number },
     _onCopyText: TimelineRowActionHandlers["onCopyText"]
   ) {
-    return <h5 key={key} id={node.attrs.id || undefined}>{children}</h5>;
+    return <h5 key={key}>{children}</h5>;
   },
   h6(
-    node: Extract<FormattedNode, { kind: "element" }>,
+    _node: Extract<FormattedNode, { kind: "element" }>,
     key: string,
     children: ReactNode,
     _formatted: NonNullable<TimelineItem["formatted"]>,
@@ -1194,7 +1193,7 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     _codeBlockIndexRef: { current: number },
     _onCopyText: TimelineRowActionHandlers["onCopyText"]
   ) {
-    return <h6 key={key} id={node.attrs.id || undefined}>{children}</h6>;
+    return <h6 key={key}>{children}</h6>;
   },
   i(
     _node: Extract<FormattedNode, { kind: "element" }>,
@@ -1327,48 +1326,6 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
   ) {
     return <strong key={key}>{children}</strong>;
   },
-  table(
-    _node: Extract<FormattedNode, { kind: "element" }>,
-    key: string,
-    children: ReactNode
-  ) {
-    return <table key={key}>{children}</table>;
-  },
-  tbody(
-    _node: Extract<FormattedNode, { kind: "element" }>,
-    key: string,
-    children: ReactNode
-  ) {
-    return <tbody key={key}>{children}</tbody>;
-  },
-  td(
-    _node: Extract<FormattedNode, { kind: "element" }>,
-    key: string,
-    children: ReactNode
-  ) {
-    return <td key={key}>{children}</td>;
-  },
-  th(
-    _node: Extract<FormattedNode, { kind: "element" }>,
-    key: string,
-    children: ReactNode
-  ) {
-    return <th key={key}>{children}</th>;
-  },
-  thead(
-    _node: Extract<FormattedNode, { kind: "element" }>,
-    key: string,
-    children: ReactNode
-  ) {
-    return <thead key={key}>{children}</thead>;
-  },
-  tr(
-    _node: Extract<FormattedNode, { kind: "element" }>,
-    key: string,
-    children: ReactNode
-  ) {
-    return <tr key={key}>{children}</tr>;
-  },
   ul(
     _node: Extract<FormattedNode, { kind: "element" }>,
     key: string,
@@ -1496,25 +1453,87 @@ export async function writeClipboardText(value: string): Promise<void> {
 }
 
 /**
- * #2097: a rendered Markdown document, drawn by the message body's own
- * HTML-to-React path from the Rust-sanitized `formatted` DTO. `maxBlocks` keeps
- * only the first top-level blocks, which is how the file card shows the
- * beginning of the document without drawing all of it. No links are projected
- * and no mention or highlight state applies: a document is not a message.
+ * Which tags the tokenizer reads attributes for and how each tag is drawn. The
+ * message path uses `MESSAGE_DIALECT` and never changes; a rendered Markdown
+ * document (#2097) uses `DOCUMENT_DIALECT`, which adds tables and heading ids.
+ * Rust's sanitizer allows tables on the message path too, but only the document
+ * view draws them: a message with a `<table>` keeps being flattened as before.
  */
-export function renderMarkdownDocument(
-  formatted: NonNullable<TimelineItem["formatted"]>,
-  onCopyText: TimelineRowActionHandlers["onCopyText"],
-  maxBlocks?: number
-): ReactNode {
-  let nodes = parseFormattedHtml(formatted.html).filter(
+type FormattedDialect = {
+  tags: ReadonlySet<string>;
+  renderers: Record<string, FormattedTagRenderer>;
+};
+
+const MESSAGE_DIALECT: FormattedDialect = {
+  tags: FORMATTED_TAGS,
+  renderers: formattedTagRenderers
+};
+
+const DOCUMENT_TABLE_TAGS = ["table", "thead", "tbody", "tr", "th", "td"] as const;
+const DOCUMENT_HEADING_TAGS = ["h1", "h2", "h3", "h4", "h5", "h6"] as const;
+
+const documentTagRenderers: Record<string, FormattedTagRenderer> = {
+  ...formattedTagRenderers,
+  ...Object.fromEntries(
+    DOCUMENT_TABLE_TAGS.map((tag): [string, FormattedTagRenderer] => [
+      tag,
+      (_node, key, children) => createElement(tag, { key }, children)
+    ])
+  ),
+  ...Object.fromEntries(
+    DOCUMENT_HEADING_TAGS.map((tag): [string, FormattedTagRenderer] => [
+      tag,
+      (node, key, children) =>
+        createElement(tag, { key, id: node.attrs.id || undefined }, children)
+    ])
+  )
+};
+
+const DOCUMENT_DIALECT: FormattedDialect = {
+  tags: new Set([...FORMATTED_TAGS, ...DOCUMENT_TABLE_TAGS]),
+  renderers: documentTagRenderers
+};
+
+/** A parsed Markdown document; parse once per `formatted` (see callers' useMemo). */
+export type ParsedMarkdownDocument = FormattedNode[];
+
+export function parseMarkdownDocument(
+  formatted: NonNullable<TimelineItem["formatted"]>
+): ParsedMarkdownDocument {
+  return parseFormattedHtml(formatted.html, DOCUMENT_DIALECT).filter(
     (node) => node.kind !== "text" || node.value.trim().length > 0
   );
-  if (maxBlocks !== undefined) {
-    nodes = nodes.slice(0, maxBlocks);
+}
+
+/**
+ * #2097: a rendered Markdown document, drawn from the Rust-sanitized `formatted`
+ * DTO. `maxBlocks` keeps only the first top-level blocks; that cut happens
+ * after the parse, so the card relies on `overflow: hidden` for its height.
+ * `flattenLinks` draws links as their text (the card is itself the click target).
+ * No link projection, mention or highlight state: a document is not a message.
+ */
+export function renderMarkdownDocument(
+  nodes: ParsedMarkdownDocument,
+  formatted: NonNullable<TimelineItem["formatted"]>,
+  onCopyText: TimelineRowActionHandlers["onCopyText"],
+  options: { maxBlocks?: number; flattenLinks?: boolean } = {}
+): ReactNode {
+  let visible = nodes;
+  if (options.maxBlocks !== undefined) {
+    visible = visible.slice(0, options.maxBlocks);
   }
+  const dialect = options.flattenLinks
+    ? {
+        ...DOCUMENT_DIALECT,
+        renderers: {
+          ...documentTagRenderers,
+          a: (_node: unknown, key: string, children: ReactNode) =>
+            createElement(Fragment, { key }, children)
+        } as Record<string, FormattedTagRenderer>
+      }
+    : DOCUMENT_DIALECT;
   return renderFormattedNodes(
-    nodes,
+    visible,
     formatted,
     false,
     { current: 0 },
@@ -1522,7 +1541,10 @@ export function renderMarkdownDocument(
     [],
     { current: 0 },
     NO_SPOILERS,
-    undefined
+    undefined,
+    "",
+    null,
+    dialect
   );
 }
 
