@@ -99,6 +99,7 @@ export function AiAssistantsSection({
       />
       <AllowedSendersSection
         allowed={settings.allowed_senders}
+        agentAccounts={agentAccounts}
         accountTabs={accountTabs}
         isSaving={isSaving}
         onUpdateSettings={onUpdateSettings}

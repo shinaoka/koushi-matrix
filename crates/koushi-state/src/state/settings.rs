@@ -1038,13 +1038,12 @@ impl Default for McpSettings {
 }
 
 /// An account's agent role (#2110). Its presence in [`AgentAccounts`] is the
-/// role; a role with `hide_tab` also asks for the account's tab to be hidden
-/// while it is not the selected one.
+/// role. It carries no options: an agent tab is always visible (#2130), and a
+/// `hide_tab` stored by an earlier version is ignored on load and not written
+/// back on the next save.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct AgentAccountRole {
-    pub hide_tab: bool,
-}
+pub struct AgentAccountRole {}
 
 /// The accounts the owner marked as agent accounts, keyed by user id.
 ///
@@ -1087,8 +1086,10 @@ pub struct AgentAccountPatch {
 }
 
 /// The owner's edits to the mention feed's allow-list (#2110). The list is
-/// *derived*: by default it is every account signed into this Koushi, so an
-/// account added later is covered without editing anything. `added` widens it
+/// *derived*: by default it is every account signed into this Koushi that is
+/// not an agent account (#2130; two agents would otherwise wake each other in a
+/// reply loop), so an account added later is covered without editing anything.
+/// `added` widens it, which is how an agent account is allowed explicitly
 /// with other users; `removed` narrows it, which is how the owner stops
 /// answering one of their own accounts. Both are user ids.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -1101,13 +1102,15 @@ pub struct MentionAllowedSenders {
 
 impl MentionAllowedSenders {
     /// The users whose mentions may enter the feed: the signed-in accounts
-    /// minus `removed`, plus `added`.
+    /// that are not agent accounts, minus `removed`, plus `added`.
     pub fn effective<'a>(
         &'a self,
         signed_in_user_ids: impl IntoIterator<Item = &'a str>,
+        agent_accounts: &AgentAccounts,
     ) -> std::collections::BTreeSet<String> {
         signed_in_user_ids
             .into_iter()
+            .filter(|user_id| agent_accounts.role_for(user_id).is_none())
             .filter(|user_id| !self.removed.iter().any(|removed| removed == user_id))
             .map(str::to_owned)
             .chain(self.added.iter().cloned())

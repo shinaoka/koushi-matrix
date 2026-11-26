@@ -795,7 +795,7 @@ async fn removing_an_account_drops_its_agent_role() {
                 scope: Some(SettingsPatchScope::App),
                 agent_account: Some(AgentAccountPatch {
                     user_id: user.to_owned(),
-                    role: Some(AgentAccountRole { hide_tab: true }),
+                    role: Some(AgentAccountRole::default()),
                 }),
                 ..SettingsPatch::default()
             })

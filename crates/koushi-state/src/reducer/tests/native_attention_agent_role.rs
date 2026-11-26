@@ -96,7 +96,7 @@ fn turning_the_role_on_silences_the_account_and_turning_it_off_restores_the_badg
                 scope: Some(crate::state::SettingsPatchScope::App),
                 agent_account: Some(AgentAccountPatch {
                     user_id: user_id.clone(),
-                    role: Some(AgentAccountRole { hide_tab: true }),
+                    role: Some(AgentAccountRole::default()),
                 }),
                 ..SettingsPatch::default()
             },

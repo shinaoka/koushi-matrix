@@ -951,6 +951,12 @@ button:disabled {
   text-align: center;
 }
 
+.account-tab-agent {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-faint);
+}
+
 .account-tab-invite {
   min-inline-size: 18px;
   padding: 1px 5px;

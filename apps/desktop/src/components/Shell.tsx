@@ -14,6 +14,7 @@ import {
   Activity,
   AlertTriangle,
   Bell,
+  Bot,
   Bug,
   ChevronDown,
   ChevronsDownUp,
@@ -267,7 +268,7 @@ export function AccountTabStrip({
 
   return (
     <nav className="account-tab-strip" aria-label={t("settings.accountSettings")}>
-      {tabs.filter((tab) => !showActivity || !tab.hidden || tab.id === selectedTabId).map((tab) => {
+      {tabs.map((tab) => {
         const label = accountTabLabel(tab);
         const status = statusLabel(tab.status);
         const selected = tab.id === selectedTabId;
@@ -310,6 +311,11 @@ export function AccountTabStrip({
               </span>
               <span className="account-tab-label">{label}</span>
               <span className="account-tab-server">{shortHomeserverName(tab.homeserver)}</span>
+              {tab.isAgent ? (
+                <span className="account-tab-agent" role="img" aria-label={t("accountTabs.agent")} title={t("accountTabs.agent")}>
+                  <Bot size={ICON_SIZE.micro} aria-hidden="true" />
+                </span>
+              ) : null}
               {!showActivity ? null : tab.status === "ready" ? (
                 <>
                   {counts && tab.unreadCount > 0 ? (

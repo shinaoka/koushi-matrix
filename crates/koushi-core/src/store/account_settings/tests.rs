@@ -136,7 +136,7 @@ fn the_agent_role_survives_a_restart_and_a_sign_out_of_the_same_user() {
             scope: Some(SettingsPatchScope::App),
             agent_account: Some(AgentAccountPatch {
                 user_id: "@agent:example.invalid".to_owned(),
-                role: Some(AgentAccountRole { hide_tab: true }),
+                role: Some(AgentAccountRole::default()),
             }),
             ..SettingsPatch::default()
         })
@@ -152,7 +152,7 @@ fn the_agent_role_survives_a_restart_and_a_sign_out_of_the_same_user() {
         .expect("load after a restart");
     assert_eq!(
         restarted.agent_accounts.role_for("@agent:example.invalid"),
-        Some(AgentAccountRole { hide_tab: true })
+        Some(AgentAccountRole::default())
     );
     assert_eq!(
         restarted
@@ -180,4 +180,41 @@ fn the_agent_role_survives_a_restart_and_a_sign_out_of_the_same_user() {
             .accounts
             .is_empty()
     );
+}
+
+/// #2130: `hide_tab` was an option of the agent role in #2121. A stored one is
+/// ignored on load (the tab is visible) and gone from the file after a save.
+#[test]
+fn a_stored_hide_tab_is_ignored_and_dropped_on_the_next_save() {
+    use crate::settings::SettingsStore;
+    use koushi_state::{AgentAccountRole, SettingsPatch, SettingsPatchScope};
+
+    let data_dir = tempdir().expect("data dir");
+    let path = data_dir.path().join("settings").join("settings.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        r#"{"schema_version":4,"agent_accounts":{"accounts":{"@agent:example.invalid":{"hide_tab":true}}}}"#,
+    )
+    .unwrap();
+
+    let settings = SettingsStore::new(data_dir.path());
+    let loaded = settings.load().expect("load");
+    assert_eq!(
+        loaded.agent_accounts.role_for("@agent:example.invalid"),
+        Some(AgentAccountRole::default())
+    );
+    settings
+        .save_patch(&SettingsPatch {
+            scope: Some(SettingsPatchScope::App),
+            agent_account: Some(koushi_state::AgentAccountPatch {
+                user_id: "@other:example.invalid".to_owned(),
+                role: Some(AgentAccountRole::default()),
+            }),
+            ..SettingsPatch::default()
+        })
+        .expect("save");
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(!saved.contains("hide_tab"), "{saved}");
+    assert!(saved.contains("@agent:example.invalid"), "{saved}");
 }

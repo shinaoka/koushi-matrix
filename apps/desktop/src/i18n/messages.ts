@@ -50,6 +50,7 @@ export type MessageId =
   | "accountTabs.needsVerification"
   | "accountTabs.ready"
   | "accountTabs.inviteCount"
+  | "accountTabs.agent"
   | "accountTabs.signedOut"
   | "accountTabs.loggingOut"
   | "accountTabs.error"
@@ -954,8 +955,6 @@ export type MessageId =
   | "settings.agentAccounts"
   | "settings.agentAccountsDescription"
   | "settings.agentAccountSwitch"
-  | "settings.agentAccountHideTab"
-  | "settings.agentAccountHideTabDescription"
   | "settings.agentAccountOpenSettings"
   | "settings.agentAccountNotSignedIn"
   | "settings.agentAccountForget"
@@ -963,6 +962,8 @@ export type MessageId =
   | "settings.allowedSendersGuarantee"
   | "settings.allowedSendersDefault"
   | "settings.allowedSendersImplicit"
+  | "settings.allowedSendersAgentLeftOut"
+  | "settings.allowedSendersAgentInclude"
   | "settings.allowedSendersExcluded"
   | "settings.allowedSendersAdded"
   | "settings.allowedSendersExclude"
@@ -2461,6 +2462,7 @@ const en: Catalog = {
   "accountTabs.needsVerification": "Needs verification",
   "accountTabs.ready": "Ready",
   "accountTabs.inviteCount": "{count} pending invitations",
+  "accountTabs.agent": "Agent account",
   "accountTabs.signedOut": "Sign in again",
   "accountTabs.loggingOut": "Signing out",
   "accountTabs.error": "Account error",
@@ -3388,15 +3390,15 @@ const en: Catalog = {
   "settings.agentAccounts": "Agent accounts",
   "settings.agentAccountsDescription": "An agent account raises no notifications and adds nothing to the badge count. Its messages and unread counts stay readable. The mark is kept for the account's user ID, so it is still there after you sign the account out and in again.",
   "settings.agentAccountSwitch": "{account} is an agent account",
-  "settings.agentAccountHideTab": "Hide the tab of {account}",
-  "settings.agentAccountHideTabDescription": "The tab stays visible while it is selected and in account settings. A tab that needs you (verification, an error) is never hidden.",
   "settings.agentAccountOpenSettings": "Open settings for {account}",
   "settings.agentAccountNotSignedIn": "(not signed in)",
   "settings.agentAccountForget": "Remove the agent mark for {user}",
   "settings.allowedSenders": "Who an agent answers",
   "settings.allowedSendersGuarantee": "This list keeps mentions from other senders out of wait_for_mentions. It does not stop those senders' messages from being readable by an assistant that has read access to the room.",
-  "settings.allowedSendersDefault": "Your signed-in accounts are included by default, and so is any account you sign in later. Remove one to stop answering it, or add other users.",
+  "settings.allowedSendersDefault": "Your signed-in accounts are included by default, except agent accounts, and so is any non-agent account you sign in later. Remove one to stop answering it, or add other users, including an agent account.",
   "settings.allowedSendersImplicit": "Signed-in account, included by default",
+  "settings.allowedSendersAgentLeftOut": "Agent account, left out by default: two agents that answer each other would wake each other in a loop",
+  "settings.allowedSendersAgentInclude": "Include {user}",
   "settings.allowedSendersExcluded": "Excluded",
   "settings.allowedSendersAdded": "Added by you",
   "settings.allowedSendersExclude": "Exclude {user}",
@@ -4938,6 +4940,7 @@ const ja: Catalog = {
   "accountTabs.needsVerification": "本人確認が必要",
   "accountTabs.ready": "利用可能",
   "accountTabs.inviteCount": "保留中の招待 {count} 件",
+  "accountTabs.agent": "エージェントアカウント",
   "accountTabs.signedOut": "再サインイン",
   "accountTabs.loggingOut": "サインアウト中",
   "accountTabs.error": "アカウントエラー",
@@ -5860,15 +5863,15 @@ const ja: Catalog = {
   "settings.agentAccounts": "エージェントアカウント",
   "settings.agentAccountsDescription": "エージェントアカウントは通知を出さず、バッジの件数にも加わりません。メッセージと未読数は引き続き読めます。この設定はアカウントのユーザー ID に対して保存されるため、サインアウトして同じユーザーで再びサインインしても残ります。",
   "settings.agentAccountSwitch": "{account} をエージェントアカウントにする",
-  "settings.agentAccountHideTab": "{account} のタブを隠す",
-  "settings.agentAccountHideTabDescription": "選択中とアカウント設定の画面ではタブが表示されたままになります。対応が必要なタブ（認証待ち、エラーなど）は隠れません。",
   "settings.agentAccountOpenSettings": "{account} の設定を開く",
   "settings.agentAccountNotSignedIn": "（サインインしていません）",
   "settings.agentAccountForget": "{user} のエージェント設定を削除",
   "settings.allowedSenders": "エージェントが応答する相手",
   "settings.allowedSendersGuarantee": "この一覧は、他の送信者からのメンションを wait_for_mentions に入れないためのものです。それらの送信者のメッセージを、ルームの読み取り権限を持つアシスタントが読めなくなるわけではありません。",
-  "settings.allowedSendersDefault": "サインイン中のアカウントは既定で含まれ、あとからサインインしたアカウントも含まれます。応答したくないものは除外し、他のユーザーは追加できます。",
+  "settings.allowedSendersDefault": "サインイン中のアカウントは、エージェントアカウントを除いて既定で含まれ、あとからサインインしたエージェント以外のアカウントも含まれます。応答したくないものは除外し、他のユーザー（エージェントアカウントを含む）は追加できます。",
   "settings.allowedSendersImplicit": "サインイン中のアカウント（既定で含まれます）",
+  "settings.allowedSendersAgentLeftOut": "エージェントアカウント（既定では含まれません。エージェント同士が互いに応答すると、際限なく起こし合うためです）",
+  "settings.allowedSendersAgentInclude": "{user} を含める",
   "settings.allowedSendersExcluded": "除外中",
   "settings.allowedSendersAdded": "追加したユーザー",
   "settings.allowedSendersExclude": "{user} を除外",

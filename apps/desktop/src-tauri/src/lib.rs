@@ -270,16 +270,14 @@ pub(crate) struct AccountTabSummary {
     pub status: AccountTabStatus,
     pub unread_count: u64,
     pub invite_count: u64,
-    /// Whether the strip draws the unread and invite counts for this tab. An
-    /// agent account (#2110) raises no badge or banner, so it draws neither: an
-    /// invite is a count of the same owner-facing kind and the core already
-    /// zeroes the badge that includes it. The counts themselves stay accurate
-    /// and the invites remain in the account's own room list.
+    /// Whether the strip draws the unread and invite counts for this tab. Every
+    /// tab does, an agent account's too (#2130): a person accepts an agent's
+    /// invites and watches its unread in that tab. An agent still raises no
+    /// notification and adds nothing to the global badge; the core zeroes those.
     pub shows_counts: bool,
-    /// The strip hides this tab while it is not selected: an agent account that
-    /// asked for it and is `Ready`. A tab that needs the owner (verification,
-    /// error, restoring, signing in or out) stays visible with its signal.
-    pub hidden: bool,
+    /// The account has the agent role (#2110); the strip draws a marker. An agent
+    /// tab is never hidden.
+    pub is_agent: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
@@ -581,7 +579,7 @@ fn account_tabs_snapshot_from_states(
                         _ => None,
                     });
             let attention = koushi_state::account_attention_summary_for_state(&state);
-            let agent_role = state.agent_role();
+            let is_agent = state.is_agent_account();
             AccountTabSummary {
                 id: tab.id.as_str().to_owned(),
                 account_key: tab.account_key.map(|key| key.0),
@@ -592,9 +590,8 @@ fn account_tabs_snapshot_from_states(
                 status,
                 unread_count: attention.unread_count,
                 invite_count: attention.invite_count,
-                shows_counts: agent_role.is_none(),
-                hidden: status == AccountTabStatus::Ready
-                    && agent_role.is_some_and(|role| role.hide_tab),
+                shows_counts: true,
+                is_agent,
             }
         })
         .collect();

@@ -325,6 +325,44 @@ async fn only_allowed_senders_enter_the_feed() {
     assert_eq!(retained(&registry).await, 2);
 }
 
+/// #2130: two agent accounts must not wake each other by default (a reply puts
+/// the replied-to sender in `m.mentions`, so A's reply wakes B and back).
+#[tokio::test]
+async fn a_mention_from_another_agent_is_not_a_wake_row_until_it_is_added() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (registry, intake, settings) = registry_with_two_accounts(&dir);
+    registry.account_started("@agent-b:x", memory_feed());
+    registry.set_persisted_accounts(["@agent:x", "@agent-b:x", "@owner:x"]);
+    for user in ["@agent:x", "@agent-b:x"] {
+        settings
+            .save_patch(&koushi_state::SettingsPatch {
+                scope: Some(koushi_state::SettingsPatchScope::App),
+                agent_account: Some(koushi_state::AgentAccountPatch {
+                    user_id: user.to_owned(),
+                    role: Some(koushi_state::AgentAccountRole::default()),
+                }),
+                ..Default::default()
+            })
+            .expect("mark agent");
+    }
+    intake.offer(candidate("$b1", "@agent-b:x")).await;
+    assert_eq!(retained(&registry).await, 0);
+    intake.offer(candidate("$owner", "@owner:x")).await;
+    assert_eq!(retained(&registry).await, 1);
+
+    settings
+        .save_patch(&koushi_state::SettingsPatch {
+            mcp_allowed_senders: Some(koushi_state::MentionAllowedSenders {
+                added: vec!["@agent-b:x".to_owned()],
+                removed: Vec::new(),
+            }),
+            ..Default::default()
+        })
+        .expect("save");
+    intake.offer(candidate("$b2", "@agent-b:x")).await;
+    assert_eq!(retained(&registry).await, 2);
+}
+
 #[tokio::test]
 async fn an_account_signed_in_later_is_covered_without_editing() {
     let dir = tempfile::tempdir().expect("tempdir");
