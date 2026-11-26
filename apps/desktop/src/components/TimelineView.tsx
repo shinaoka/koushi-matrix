@@ -657,6 +657,11 @@ export const TimelineView = memo(function TimelineView({
   const setStore = setTimelineStore ?? timelineStoreContext?.setStore ?? localSetStore;
   const isAppLevelStore = timelineStore !== undefined || timelineStoreContext !== null;
   const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
+  // #2136: the docked unsent bar's measured footprint (its height plus the gap
+  // to the scroller's bottom edge), kept as an in-flow spacer at the end of the
+  // list so the newest row can scroll clear of the overlay.
+  const [unsentBarClearance, setUnsentBarClearance] = useState(0);
+  const unsentBarRef = useRef<HTMLDivElement | null>(null);
   const [mediaViewer, setMediaViewer] = useState<{
     /** The image the viewer shows, by identity: the sequence stays the DTO's. */
     eventId: string;
@@ -2370,6 +2375,24 @@ export const TimelineView = memo(function TimelineView({
   const showPaginationSpinner = !suppressPaginationUi && isPaginating;
   const showTimelineStart = presentationContext !== "thread" && !suppressPaginationUi && endReached && displayedStartReached;
   const showUnsentBar = notSentTransactionIds.length > 0;
+  useLayoutEffect(() => {
+    const bar = unsentBarRef.current;
+    const scroller = containerRef.current;
+    if (!showUnsentBar || !bar || !scroller) {
+      setUnsentBarClearance(0);
+      return;
+    }
+    const measure = () => {
+      const clearance = Math.max(0, Math.ceil(scroller.getBoundingClientRect().bottom - bar.getBoundingClientRect().top));
+      setUnsentBarClearance((previous) => (previous === clearance ? previous : clearance));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(bar);
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, [showUnsentBar]);
   const anchoredNavigation = isAnchored ? onReturnToLive : undefined;
   const chromeSignature = [
     canRenderRoomNavigation, canJumpToBottom, canJumpToBottom ? navigationSnapshot?.newer_event_count ?? 0 : 0,
@@ -4793,33 +4816,6 @@ export const TimelineView = memo(function TimelineView({
           {readStateStatusMessage}
         </div>
       ) : null}
-      {showUnsentBar ? (
-        <div className="timeline-send-bar" data-testid="timeline-send-bar">
-          <span className="timeline-send-bar-label">
-            {t("timeline.unsentBar")}
-          </span>
-          <div className="timeline-send-bar-actions">
-            {canRetrySend(canWrite) ? (
-              <button
-                className="timeline-send-bar-action"
-                type="button"
-                onClick={onRetryAllNotSent}
-              >
-                <RefreshCw size={13} aria-hidden="true" />
-                <span>{t("timeline.resendAll")}</span>
-              </button>
-            ) : null}
-            <button
-              className="timeline-send-bar-action danger"
-              type="button"
-              onClick={onCancelAllNotSent}
-            >
-              <Trash2 size={13} aria-hidden="true" />
-              <span>{t("timeline.cancelAll")}</span>
-            </button>
-          </div>
-        </div>
-      ) : null}
       <div
         className="timeline-item-list"
         ref={(element) => {
@@ -5026,6 +5022,14 @@ export const TimelineView = memo(function TimelineView({
             style={{ blockSize: virtualWindow.paddingBottom }}
           />
         ) : null}
+        {showUnsentBar && unsentBarClearance > 0 ? (
+          <div
+            className="timeline-unsent-bar-clearance"
+            data-testid="timeline-unsent-bar-clearance"
+            aria-hidden="true"
+            style={{ blockSize: unsentBarClearance }}
+          />
+        ) : null}
       </div>
       <div className="typing-indicator" dir="auto">
         {roomSignals && roomSignals.typing_users.length > 0
@@ -5097,6 +5101,33 @@ export const TimelineView = memo(function TimelineView({
         </NativeModal>
       ) : null}
       </div>
+      {showUnsentBar ? (
+        <div className="timeline-send-bar" data-testid="timeline-send-bar" ref={unsentBarRef}>
+          <span className="timeline-send-bar-label">
+            {t("timeline.unsentBar")}
+          </span>
+          <div className="timeline-send-bar-actions">
+            {canRetrySend(canWrite) ? (
+              <button
+                className="timeline-send-bar-action"
+                type="button"
+                onClick={onRetryAllNotSent}
+              >
+                <RefreshCw size={13} aria-hidden="true" />
+                <span>{t("timeline.resendAll")}</span>
+              </button>
+            ) : null}
+            <button
+              className="timeline-send-bar-action danger"
+              type="button"
+              onClick={onCancelAllNotSent}
+            >
+              <Trash2 size={13} aria-hidden="true" />
+              <span>{t("timeline.cancelAll")}</span>
+            </button>
+          </div>
+        </div>
+      ) : null}
     </ProjectionSnapshotBoundary>
   );
 });

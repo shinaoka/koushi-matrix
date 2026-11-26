@@ -3389,6 +3389,7 @@ button:disabled {
 }
 
 .message-list {
+  position: relative;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   min-height: 0;
@@ -4050,9 +4051,16 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   min-height: 38px;
-  margin: 8px 16px;
+  /* #2136: docked over the bottom of the timeline, outside the scroll content.
+     An overlay leaves the scroller's viewport height, and so the reader's
+     anchor row, untouched when the bar appears or goes. */
+  position: absolute;
+  inset-inline: 16px;
+  inset-block-end: 8px;
+  z-index: 9;
+  box-sizing: border-box;
   padding: 7px 10px;
-  border-block: 1px solid var(--line);
+  border: 1px solid var(--line);
   color: var(--text);
   background: var(--surface);
   font-size: 13px;
@@ -7982,6 +7990,7 @@ dialog.media-viewer-backdrop::backdrop { background: transparent; }
 }
 
 .thread-timeline-panel {
+  position: relative;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
@@ -12328,4 +12337,10 @@ button.channel-access-pill:focus-visible {
 
 .media-pdf-viewer-note {
   color: var(--text-muted);
+}
+
+/* #2136: the unsent bar is absolutely positioned over the timeline, so every
+   host of a TimelineView needs to be its positioned ancestor. */
+.focused-context-panel {
+  position: relative;
 }
