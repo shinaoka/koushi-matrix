@@ -48,6 +48,7 @@ pub(crate) async fn dispatch_tool_call(
         "search_messages" => search_messages(shared, client, &arguments).await,
         "send_message" => send_message(shared, client, &arguments).await,
         "wait_for_events" => wait_for_events(shared, client, &arguments).await,
+        "wait_for_mentions" => wait_for_mentions(shared, client, &arguments).await,
         "read_recent_activity" => read_recent_activity(shared, client, &arguments).await,
         "get_attachment" => get_attachment(shared, client, &arguments).await,
         "read_room_messages" => read_room_messages(shared, client, &arguments).await,
@@ -1722,6 +1723,106 @@ async fn wait_for_events(
     // of an account that is no longer usable is not an empty result (#1580).
     account_connection(&shared.accounts, &account_id)?;
     Ok(waited)
+}
+
+/// `wait_for_mentions` (#2110): the exact, durable mention feed. The feed and
+/// its allow-list live in the core; this only authorizes, long-polls and maps a
+/// rejected cursor to `resync_required`.
+async fn wait_for_mentions(
+    shared: &Shared,
+    client: &ClientIdentity,
+    arguments: &Value,
+) -> Result<Value, WireError> {
+    let started = tokio::time::Instant::now();
+    let account_id = required_account_id(arguments)?;
+    authorize(
+        shared,
+        client,
+        &account_id,
+        Need::Read,
+        ConsentContext::default(),
+    )
+    .await?;
+    let feed = shared
+        .accounts
+        .mention_feed(&account_id)
+        .ok_or_else(|| WireError::new(ErrorCode::AccountUnavailable, "account is not ready"))?;
+    let remaining =
+        std::time::Duration::from_secs(WAIT_CALL_BUDGET_SECS).saturating_sub(started.elapsed());
+    let timeout = std::time::Duration::from_millis(
+        arguments
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(25_000)
+            .min(50_000),
+    )
+    .min(remaining);
+    let limit = arguments
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map_or(50, |limit| limit.clamp(1, 100) as usize);
+    // A cursor that is present but not a string is a caller bug; treating it
+    // as absent would redeliver the whole log.
+    let cursor = match arguments.get("cursor") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(cursor)) => Some(cursor.as_str()),
+        Some(_) => {
+            return Err(WireError::with_reason(
+                ErrorCode::Unsupported,
+                "invalid_params",
+                "invalid_params: cursor must be a string",
+            ));
+        }
+    };
+    if !feed.is_healthy() {
+        return Err(WireError::new(
+            ErrorCode::AccountUnavailable,
+            "the mention log could not be saved; mentions may have been missed",
+        ));
+    }
+
+    let page = feed.wait(cursor, timeout, limit).await.map_err(|rejection| {
+        WireError::with_reason(
+            ErrorCode::ResyncRequired,
+            rejection.reason(),
+            format!(
+                "{}: {}. Mentions may have been missed. Call wait_for_mentions without a cursor to receive everything still retained, and de-duplicate by room and event id.",
+                rejection.reason(),
+                rejection.explanation()
+            ),
+        )
+    })?;
+    // The wait can last a minute: the account can be signed out or locked, the
+    // grant revoked, or the feed fail to save while it ran.
+    account_connection(&shared.accounts, &account_id)?;
+    authorize(
+        shared,
+        client,
+        &account_id,
+        Need::Read,
+        ConsentContext::default(),
+    )
+    .await?;
+    if !feed.is_healthy() {
+        return Err(WireError::new(
+            ErrorCode::AccountUnavailable,
+            "the mention log could not be saved; mentions may have been missed",
+        ));
+    }
+    Ok(json!({
+        "mentions": page.entries.iter().map(|entry| json!({
+            "cursor": feed.cursor_for(entry.seq),
+            "account_id": account_id,
+            "room_id": entry.room_id,
+            "event_id": entry.event_id,
+            "sender_id": entry.sender,
+            "timestamp_ms": entry.timestamp_ms,
+            "thread_root_event_id": entry.thread_root,
+            "kind": entry.kind.as_str(),
+        })).collect::<Vec<_>>(),
+        "cursor": page.cursor,
+        "coverage": "exact_mentions",
+    }))
 }
 
 /// Downloads one file of a message into Koushi's managed media cache and

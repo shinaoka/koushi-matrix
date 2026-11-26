@@ -255,7 +255,7 @@ impl SettingsValues {
             search_crawler_speed: self.search_crawler.speed,
             window: self.window,
             updates: self.updates,
-            mcp: self.mcp,
+            mcp: self.mcp.clone(),
             legacy_frontend_preferences_imported: self.legacy_frontend_preferences_imported,
         }
     }
@@ -299,7 +299,7 @@ impl SettingsValues {
         self.search_crawler.speed = app.search_crawler_speed;
         self.window = app.window;
         self.updates = app.updates;
-        self.mcp = app.mcp;
+        self.mcp = app.mcp.clone();
         self.legacy_frontend_preferences_imported = app.legacy_frontend_preferences_imported;
     }
 
@@ -355,7 +355,13 @@ impl SettingsValues {
                 self.updates = updates;
             }
             if let Some(mcp) = patch.mcp {
-                self.mcp = mcp;
+                // The bridge switch only: the allow-list has its own field, so
+                // flipping the switch never wipes the owner's edits.
+                self.mcp.enabled = mcp.enabled;
+            }
+            if let Some(allowed) = &patch.mcp_allowed_senders {
+                self.mcp.allowed_senders = allowed.clone();
+                self.mcp.allowed_senders.canonicalize();
             }
             if let Some(imported) = patch.legacy_frontend_preferences_imported {
                 self.legacy_frontend_preferences_imported = imported;
@@ -456,7 +462,11 @@ impl AppSettingsValues {
             self.updates = *value;
         }
         if let Some(value) = &patch.mcp {
-            self.mcp = *value;
+            self.mcp.enabled = value.enabled;
+        }
+        if let Some(value) = &patch.mcp_allowed_senders {
+            self.mcp.allowed_senders = value.clone();
+            self.mcp.allowed_senders.canonicalize();
         }
         if let Some(value) = patch.legacy_frontend_preferences_imported {
             self.legacy_frontend_preferences_imported = value;
@@ -998,15 +1008,62 @@ impl Default for UpdatesSettings {
 /// computer may connect and ask for access, which Koushi approves per account
 /// and permission; the grants themselves live in the MCP grant store, never
 /// here, because they name accounts.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct McpSettings {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Who may appear in an account's mention feed (#2110).
+    #[serde(default)]
+    pub allowed_senders: MentionAllowedSenders,
 }
 
 impl Default for McpSettings {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            allowed_senders: MentionAllowedSenders::default(),
+        }
+    }
+}
+
+/// The owner's edits to the mention feed's allow-list (#2110). The list is
+/// *derived*: by default it is every account signed into this Koushi, so an
+/// account added later is covered without editing anything. `added` widens it
+/// with other users; `removed` narrows it, which is how the owner stops
+/// answering one of their own accounts. Both are user ids.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MentionAllowedSenders {
+    #[serde(default)]
+    pub added: Vec<String>,
+    #[serde(default)]
+    pub removed: Vec<String>,
+}
+
+impl MentionAllowedSenders {
+    /// The users whose mentions may enter the feed: the signed-in accounts
+    /// minus `removed`, plus `added`.
+    pub fn effective<'a>(
+        &'a self,
+        signed_in_user_ids: impl IntoIterator<Item = &'a str>,
+    ) -> std::collections::BTreeSet<String> {
+        signed_in_user_ids
+            .into_iter()
+            .filter(|user_id| !self.removed.iter().any(|removed| removed == user_id))
+            .map(str::to_owned)
+            .chain(self.added.iter().cloned())
+            .collect()
+    }
+
+    /// Normalizes a patch: trimmed, de-duplicated, non-empty ids, and a user is
+    /// never both added and removed (the later intent, `added`, wins).
+    pub fn canonicalize(&mut self) {
+        for list in [&mut self.added, &mut self.removed] {
+            let mut seen = std::collections::BTreeSet::new();
+            list.iter_mut().for_each(|id| *id = id.trim().to_owned());
+            list.retain(|id| !id.is_empty() && seen.insert(id.clone()));
+        }
+        let added = self.added.clone();
+        self.removed.retain(|id| !added.contains(id));
     }
 }
 
@@ -1152,6 +1209,11 @@ pub struct SettingsPatch {
     pub updates: Option<UpdatesSettings>,
     #[serde(default)]
     pub mcp: Option<McpSettings>,
+    /// The owner's edits to the mention feed's allow-list (#2110). Separate from
+    /// `mcp` so that flipping the bridge switch, which sends only `enabled`,
+    /// never replaces the list.
+    #[serde(default)]
+    pub mcp_allowed_senders: Option<MentionAllowedSenders>,
     #[serde(default)]
     pub legacy_frontend_preferences_imported: Option<bool>,
 }

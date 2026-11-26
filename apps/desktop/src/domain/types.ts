@@ -245,7 +245,9 @@ export interface SettingsPatch {
   display?: DisplaySettings;
   window?: WindowSettings;
   updates?: UpdatesSettings;
-  mcp?: McpSettings;
+  /** The bridge switch only; the allow-list is edited through `mcp_allowed_senders`. */
+  mcp?: Pick<McpSettings, "enabled">;
+  mcp_allowed_senders?: MentionAllowedSenders;
   media?: MediaSettings;
   timeline?: TimelineSettings;
   sidebar?: SidebarSettings;
@@ -565,6 +567,14 @@ export interface UpdatesSettings {
 /** Local MCP bridge switch (#1536). App scope; grants live in the bridge's store. */
 export interface McpSettings {
   enabled: boolean;
+  /** Mention feed allow-list edits (#2110), on top of the other signed-in accounts. */
+  allowed_senders: MentionAllowedSenders;
+}
+
+export interface MentionAllowedSenders {
+  /** Settings snapshots are readonly, so both lists are too. */
+  readonly added: readonly string[];
+  readonly removed: readonly string[];
 }
 
 export type McpNeed = "read" | "send" | "attachments" | "message_actions" | "draft";

@@ -148,6 +148,7 @@ pub struct AccountRuntimeManager {
     store: StoreActor,
     settings: SettingsStore,
     account_work: AccountWorkScheduler,
+    mention_registry: Arc<crate::mention_feed::MentionFeedRegistry>,
     native_artifact_factory: Arc<dyn Fn() -> Arc<dyn NativeArtifactPort> + Send + Sync>,
     native_image_decoder: Option<Arc<dyn NativeStillImageDecoder>>,
 }
@@ -180,7 +181,11 @@ impl AccountRuntimeManager {
         native_image_decoder: Option<Arc<dyn NativeStillImageDecoder>>,
     ) -> Self {
         let first_add = AccountTabId::add(1);
-        let account_work = AccountWorkScheduler::default();
+        let mention_registry = Arc::new(crate::mention_feed::MentionFeedRegistry::new(
+            settings.clone(),
+        ));
+        let account_work =
+            AccountWorkScheduler::default().with_mention_registry(mention_registry.clone());
         account_work.set_selected_account(Some(first_add.as_str()));
         let runtime = start_runtime(
             &store,
@@ -214,9 +219,15 @@ impl AccountRuntimeManager {
             store,
             settings,
             account_work,
+            mention_registry,
             native_artifact_factory,
             native_image_decoder,
         }
+    }
+
+    /// The directory of per-account durable mention feeds (#2110).
+    pub fn mention_feed_registry(&self) -> Arc<crate::mention_feed::MentionFeedRegistry> {
+        self.mention_registry.clone()
     }
 
     /// Load tab order/selection and restore every saved session concurrently.
@@ -279,6 +290,11 @@ impl AccountRuntimeManager {
             .iter()
             .map(|session| session.user_id.clone())
             .collect();
+        // The derived allow-list comes from the persisted account list, set
+        // before any runtime starts so a backlog mention from a sibling account
+        // that has not started yet is still accepted.
+        self.mention_registry
+            .set_persisted_accounts(session_accounts.iter().cloned());
         let selected_key = index.selected_account().cloned();
         if let Some(key) = &selected_key {
             self.account_work

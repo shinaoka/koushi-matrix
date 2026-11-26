@@ -23,6 +23,7 @@ const SDK_STORE_INFO: &[u8] = b"koushi-desktop:sdk-store";
 const SEARCH_INDEX_INFO: &[u8] = b"koushi-desktop:search-index";
 const COMPOSER_DRAFTS_INFO: &[u8] = b"koushi-desktop:composer-drafts";
 const SCHEDULED_SENDS_INFO: &[u8] = b"koushi-desktop:scheduled-sends";
+const MENTION_LOG_INFO: &[u8] = b"koushi-desktop:mention-log";
 const NAVIGATION_INFO: &[u8] = b"koushi-desktop:navigation";
 const ROOM_PREFERENCES_INFO: &[u8] = b"koushi-desktop:room-preferences";
 const ROOM_ACTIVITY_INFO: &[u8] = b"koushi-desktop:room-activity";
@@ -615,6 +616,17 @@ impl fmt::Debug for ComposerDraftsKey {
     }
 }
 
+/// Key for the durable per-account mention log (#2110).
+pub struct MentionLogKey {
+    key: Zeroizing<[u8; LOCAL_UNLOCK_SECRET_LEN]>,
+}
+
+impl MentionLogKey {
+    pub fn as_bytes(&self) -> &[u8; LOCAL_UNLOCK_SECRET_LEN] {
+        &self.key
+    }
+}
+
 pub struct ScheduledSendsKey {
     key: Zeroizing<[u8; LOCAL_UNLOCK_SECRET_LEN]>,
 }
@@ -896,6 +908,14 @@ impl LocalUnlockSecret {
         ScheduledSendsKey {
             key: self
                 .derive_key(SCHEDULED_SENDS_INFO)
+                .expect("32-byte HKDF output length is valid"),
+        }
+    }
+
+    pub fn derive_mention_log_key(&self) -> MentionLogKey {
+        MentionLogKey {
+            key: self
+                .derive_key(MENTION_LOG_INFO)
                 .expect("32-byte HKDF output length is valid"),
         }
     }

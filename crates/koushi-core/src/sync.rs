@@ -367,6 +367,9 @@ pub struct SyncActor {
     sync_observer_stop: Option<Arc<SyncObserverStop>>,
     active_start_request_id: Option<RequestId>,
     ignored_user_list_forwarder: Option<IgnoredUserListForwarder>,
+    /// #2110: the durable mention feed's handlers, registered per sync run.
+    mention_intake: Option<crate::mention_feed::MentionIntake>,
+    mention_handlers: Vec<matrix_sdk::event_handler::EventHandlerHandle>,
     diagnostics: SlidingSyncDiagnostics,
 }
 
@@ -384,6 +387,7 @@ impl SyncActor {
         sync_generation: Arc<AtomicU64>,
         encryption_sync_permit: koushi_sdk::EncryptionSyncPermitOwner,
         diagnostics: SlidingSyncDiagnostics,
+        mention_intake: Option<crate::mention_feed::MentionIntake>,
     ) -> SyncActorHandle {
         let (tx, command_rx) = mpsc::channel(16);
         let (control_tx, control_rx) = mpsc::channel(4);
@@ -405,6 +409,8 @@ impl SyncActor {
             sync_observer_stop: None,
             active_start_request_id: None,
             ignored_user_list_forwarder: None,
+            mention_intake,
+            mention_handlers: Vec::new(),
             diagnostics,
         };
         let task = executor::spawn(actor.run());
@@ -621,6 +627,9 @@ impl SyncActor {
             self.action_tx.clone(),
             self.timeline_tx.clone(),
         ));
+        if let Some(intake) = &self.mention_intake {
+            self.mention_handlers = intake.register(&client);
+        }
         self.run_generation = self.run_generation.wrapping_add(1).max(1);
         let run_generation = self.run_generation;
         // #1755: the run generation's observation epoch, shared with the
@@ -749,6 +758,10 @@ impl SyncActor {
     }
 
     async fn shutdown_ignored_user_list_forwarder(&mut self) {
+        let client = self.session.client();
+        for handler in self.mention_handlers.drain(..) {
+            client.remove_event_handler(handler);
+        }
         if let Some(forwarder) = self.ignored_user_list_forwarder.take() {
             forwarder.shutdown(&self.session.client()).await;
         }

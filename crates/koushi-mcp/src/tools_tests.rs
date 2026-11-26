@@ -6,7 +6,7 @@ use super::*;
 #[test]
 fn definitions_are_unique_and_valid() {
     let tools = definitions();
-    assert_eq!(tools.len(), 18);
+    assert_eq!(tools.len(), 19);
     let mut names: Vec<&str> = tools.iter().map(|tool| tool.name).collect();
     names.sort_unstable();
     names.dedup();
@@ -130,12 +130,12 @@ fn wait_for_events_publishes_its_coverage_and_cursor_contract() {
     );
     // Typed outputs: read_recent_activity, read_room_messages, wait_for_events,
     // get_message, the five message actions (#1628), draft_message (#1644), and
-    // get_draft (#1809).
+    // get_draft (#1809), and wait_for_mentions (#2110).
     let others_typed = definitions()
         .iter()
         .filter(|tool| tool.output_schema.is_some())
         .count();
-    assert_eq!(others_typed, 11);
+    assert_eq!(others_typed, 12);
 }
 
 #[test]

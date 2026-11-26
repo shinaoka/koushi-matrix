@@ -14,6 +14,7 @@
 
 mod account_settings;
 pub(crate) mod composer_drafts;
+mod mention_log;
 mod navigation;
 pub(crate) mod notification_delivery;
 mod own_session_check;

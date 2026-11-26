@@ -468,6 +468,7 @@ impl AccountActor {
             })
             .await;
 
+        let mention_intake = self.open_mention_intake(&session).await;
         let handle = crate::sync::SyncActor::spawn(
             session.clone(),
             self.action_tx.clone(),
@@ -477,14 +478,60 @@ impl AccountActor {
             self.sync_generation.clone(),
             self.encryption_sync_permit.clone(),
             self.sliding_sync_diagnostics.clone(),
+            mention_intake,
         );
         self.sync_actor = Some(handle);
         trace_restore_simple("spawn_sync_actor", "done");
         self.start_scheduled_send_capability_probe(session);
     }
 
+    /// Opens the account's durable mention feed (#2110) and publishes it in the
+    /// manager's registry. `None` without a manager (the headless QA lane) or
+    /// without a store-backed session: there is nothing to persist to.
+    async fn open_mention_intake(
+        &mut self,
+        session: &Arc<MatrixClientSession>,
+    ) -> Option<crate::mention_feed::MentionIntake> {
+        let registry = self.account_work.mention_registry()?;
+        let key_id = self.session_key_id.clone()?;
+        let own_user_id = session.client().user_id()?.to_owned();
+        let load_store = self.store.clone();
+        let load_key_id = key_id.clone();
+        // An unreadable log is not replaced by an empty one: that would hand
+        // out cursors that silently skip what was lost.
+        let loaded = executor::spawn_blocking(move || load_store.load_mention_log(&load_key_id))
+            .await
+            .ok()?
+            .ok()?;
+        let save_store = self.store.clone();
+        // A fresh log is saved inside `open`; if that fails there is no intake,
+        // so a history line that would move on every start is never used.
+        let feed = executor::spawn_blocking(move || {
+            crate::mention_feed::MentionFeed::open(
+                loaded,
+                crate::mention_feed::now_ms(),
+                move |log| save_store.save_mention_log(&key_id, log).is_ok(),
+            )
+        })
+        .await
+        .ok()??;
+        registry.account_started(own_user_id.as_str(), feed.clone());
+        self.mention_registered_user = Some(own_user_id.to_string());
+        Some(crate::mention_feed::MentionIntake::new(
+            feed,
+            registry,
+            own_user_id,
+        ))
+    }
+
     /// Ordered shutdown of the SyncActor (step 4 of the shutdown sequence).
     pub(super) async fn stop_sync_actor(&mut self) {
+        if let (Some(user_id), Some(registry)) = (
+            self.mention_registered_user.take(),
+            self.account_work.mention_registry(),
+        ) {
+            registry.account_stopped(&user_id);
+        }
         let Some(handle) = self.sync_actor.take() else {
             return;
         };

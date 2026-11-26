@@ -70,7 +70,7 @@ function state(overrides: Partial<McpAssistantsState> = {}): McpAssistantsState 
 
 async function renderSection(initial: McpAssistantsState, onUpdateSettings = vi.fn()) {
   fixture.getState.mockResolvedValue(initial);
-  render(<AiAssistantsSection settings={{ enabled: true }} isSaving={false} accountTabs={tabs} onUpdateSettings={onUpdateSettings} />);
+  render(<AiAssistantsSection settings={{ enabled: true, allowed_senders: { added: [], removed: [] } }} isSaving={false} accountTabs={tabs} onUpdateSettings={onUpdateSettings} />);
   await waitFor(() => expect(screen.queryByText("claude-code") ?? screen.queryByText(/No assistant/)).toBeTruthy());
   return onUpdateSettings;
 }
@@ -176,7 +176,7 @@ test("live updates replace the shown state", async () => {
 test("permissions of an account signed in this run match its tab", async () => {
   fixture.getState.mockResolvedValue(state());
   const signInTabs = [{ ...tabs[0], id: "add:1" } as AccountTabSummary, tabs[1]];
-  render(<AiAssistantsSection settings={{ enabled: true }} isSaving={false} accountTabs={signInTabs} onUpdateSettings={vi.fn()} />);
+  render(<AiAssistantsSection settings={{ enabled: true, allowed_senders: { added: [], removed: [] } }} isSaving={false} accountTabs={signInTabs} onUpdateSettings={vi.fn()} />);
   const card = await screen.findByRole("article", { name: "claude-code" });
   expect(within(card).getByRole("switch", { name: "Read for @member1:example.invalid" })).toBeTruthy();
   expect(within(card).queryByText("Account not open in Koushi")).toBeNull();
@@ -269,7 +269,7 @@ test("full Matrix IDs distinguish equal display names without changing permissio
     client_name: "claude-code", client_version: "2.1.0", last_used_ms: null,
     accounts: ids.map(id => ({ account_id: `account:${id}`, read: true, send: false, attachments: false, message_actions: false, draft: false, denied: [] }))
   }] }));
-  render(<AiAssistantsSection settings={{ enabled: true }} isSaving={false} accountTabs={sameNameTabs} onUpdateSettings={vi.fn()} />);
+  render(<AiAssistantsSection settings={{ enabled: true, allowed_senders: { added: [], removed: [] } }} isSaving={false} accountTabs={sameNameTabs} onUpdateSettings={vi.fn()} />);
   const card = await screen.findByRole("article", { name: "claude-code" });
   for (const id of ids) {
     expect(within(card).getByRole("rowheader", { name: id })).toBeTruthy();

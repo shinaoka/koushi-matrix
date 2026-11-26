@@ -36,6 +36,7 @@ pub mod media_preparation;
 pub mod media_save;
 pub mod media_staging;
 pub(crate) mod mention_candidates;
+pub mod mention_feed;
 pub mod native_artifact;
 pub mod native_image_decoder;
 pub mod notification_delivery;
