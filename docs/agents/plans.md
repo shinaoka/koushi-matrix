@@ -35,6 +35,11 @@ replaces the read-only `koushi` verbs with one command per MCP tool, writes
 included, with options derived from each tool's input schema and the host's
 existing per-capability grants under the `koushi-cli` client name.
 
+[#2132 Agent IPC](../plans/2026-11-27-issue2132-agent-ipc.md) (design, under
+review) adds protocol 2, owner-created profiles bound to one agent account, a
+one-subscriber push subscription with explicit cursor acknowledgement, and the
+profiles settings section.
+
 [One-click MCP registration](../plans/2026-10-19-mcp-one-click-register.md)
 lets the AI assistants page run Claude Code's, Codex's, or pi's own
 registration CLI (resolved with the login `PATH`, bounded and killable) and
