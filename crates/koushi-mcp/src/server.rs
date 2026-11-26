@@ -32,6 +32,7 @@ pub trait Backend: Send + Sync {
 pub struct AppBackend {
     endpoint_path: std::path::PathBuf,
     client_info: ClientInfo,
+    profile: Option<crate::wire::ProfileHello>,
     client: tokio::sync::Mutex<Option<crate::ipc::Client>>,
 }
 
@@ -40,8 +41,18 @@ impl AppBackend {
         Self {
             endpoint_path: endpoint_path.into(),
             client_info,
+            profile: None,
             client: tokio::sync::Mutex::new(None),
         }
+    }
+}
+
+impl AppBackend {
+    /// Connects with a profile, which makes the launcher speak protocol 2.
+    #[must_use]
+    pub fn with_profile(mut self, profile: crate::wire::ProfileHello) -> Self {
+        self.profile = Some(profile);
+        self
     }
 }
 
@@ -54,8 +65,14 @@ impl Backend for AppBackend {
         Box::pin(async move {
             let mut guard = self.client.lock().await;
             if guard.is_none() {
-                *guard =
-                    Some(crate::ipc::connect(&self.endpoint_path, self.client_info.clone()).await?);
+                *guard = Some(
+                    crate::ipc::connect_with_profile(
+                        &self.endpoint_path,
+                        self.client_info.clone(),
+                        self.profile.clone(),
+                    )
+                    .await?,
+                );
             }
             let client = guard.as_mut().expect("client was just connected");
             match client.call(method, params).await {

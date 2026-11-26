@@ -1,0 +1,6 @@
+{"app_version":"<masked>","connection_id":"<masked>","protocol":1,"type":"hello_ok"}
+{"id":1,"ok":true,"result":{"content":[{"text":"{\"accounts\":[]}","type":"text"}],"isError":false,"structuredContent":{"accounts":[]}},"type":"response"}
+{"id":2,"ok":true,"result":{"app_version":"<masked>","protocol":1},"type":"response"}
+{"error":{"code":"unsupported","message":"unsupported bridge method: nope"},"id":3,"ok":false,"type":"response"}
+{"error":{"code":"internal","message":"malformed request"},"id":0,"ok":false,"type":"response"}
+{"code":"unauthorized","message":"connection token rejected","type":"error"}

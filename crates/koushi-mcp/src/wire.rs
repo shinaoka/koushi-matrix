@@ -6,8 +6,15 @@
 //! one crate means a schema or error-code change cannot drift between the two
 //! processes.
 
-/// Protocol version carried by `hello` and `hello_ok`.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Highest protocol version this build speaks.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// The first protocol. A launcher without a profile keeps sending it, so a
+/// newer launcher still works against an older host.
+pub const LEGACY_PROTOCOL: u32 = 1;
+
+/// Every protocol version the host serves.
+pub const SUPPORTED_PROTOCOLS: [u32; 2] = [1, 2];
 
 /// Maximum accepted line length on either side. A longer line is a protocol
 /// violation, not a message: the bridge refuses it rather than buffering
@@ -136,6 +143,22 @@ pub fn valid_client_version(version: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+'))
 }
 
+/// Credentials of an agent profile, presented on a protocol 2 hello only.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProfileHello {
+    pub id: String,
+    pub secret: String,
+}
+
+impl std::fmt::Debug for ProfileHello {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProfileHello")
+            .field("id", &self.id)
+            .field("secret", &"<redacted>")
+            .finish()
+    }
+}
+
 /// Messages sent by the launcher to the app.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -144,6 +167,10 @@ pub enum ClientMessage {
         protocol: u32,
         token: String,
         client: ClientInfo,
+        /// Only meaningful on protocol 2; a protocol 1 hello carrying it is
+        /// refused.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<ProfileHello>,
     },
     Request {
         id: u64,
@@ -171,7 +198,16 @@ pub enum ServerMessage {
         error: Option<WireError>,
     },
     /// Fatal pre-handshake failure; the app closes the socket afterwards.
-    Error { code: ErrorCode, message: String },
+    Error {
+        code: ErrorCode,
+        message: String,
+        /// Stable refinement of `code`; absent where it never existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// Protocol versions the host serves, on a `protocol_version` refusal.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        supported: Option<Vec<u32>>,
+    },
 }
 
 impl ServerMessage {

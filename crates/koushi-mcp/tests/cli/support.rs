@@ -13,7 +13,7 @@ pub use unix::app;
 #[cfg(unix)]
 mod unix {
     use koushi_mcp::wire::{
-        ClientMessage, PROTOCOL_VERSION, ServerMessage, decode_line, encode_line,
+        ClientMessage, LEGACY_PROTOCOL, ServerMessage, decode_line, encode_line,
     };
     use serde_json::{Value, json};
     use std::io::{BufRead, BufReader, Write};
@@ -55,17 +55,18 @@ mod unix {
                 token,
                 client,
                 protocol,
+                ..
             } = decode_line(&line).expect("hello json")
             else {
                 panic!("hello shape")
             };
             assert_eq!(token, "synthetic-token");
             assert_eq!(client.name, "koushi-cli");
-            assert_eq!(protocol, PROTOCOL_VERSION);
+            assert_eq!(protocol, LEGACY_PROTOCOL);
             stream
                 .write_all(
                     encode_line(&ServerMessage::HelloOk {
-                        protocol: PROTOCOL_VERSION,
+                        protocol: LEGACY_PROTOCOL,
                         connection_id: "fixture".into(),
                         app_version: "0".into(),
                     })
