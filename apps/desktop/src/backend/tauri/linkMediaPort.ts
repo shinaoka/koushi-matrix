@@ -127,5 +127,13 @@ export const tauriLinkMediaPort: LinkMediaPort = {
       sourceRef,
       ...(accountTabId === undefined ? {} : { accountTabId })
     });
+  },
+  async readDownloadedPdf(sourceRef, accountTabId) {
+    // A raw IPC response arrives as an ArrayBuffer, not a JSON number array.
+    const bytes = await invoke<ArrayBuffer | number[]>("read_downloaded_media_pdf", {
+      sourceRef,
+      ...(accountTabId === undefined ? {} : { accountTabId })
+    });
+    return new Uint8Array(bytes);
   }
 };

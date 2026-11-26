@@ -427,6 +427,7 @@ function TimelineItemRowView({
   onSaveMediaFile,
   onReadMediaText,
   onReadMediaMarkdown,
+  onReadMediaPdf,
   forwardDestinations = [],
   onRetrySend = ignoreSendQueueAction,
   onCancelSend = ignoreSendQueueAction,
@@ -514,6 +515,7 @@ function TimelineItemRowView({
   onSaveMediaFile?: TimelineTransport["saveMediaFile"];
   onReadMediaText?: TimelineTransport["readMediaText"];
   onReadMediaMarkdown?: TimelineTransport["readMediaMarkdown"];
+  onReadMediaPdf?: TimelineTransport["readMediaPdf"];
   forwardDestinations?: readonly TimelineForwardDestination[];
   onRetrySend?: TimelineRowActionHandlers["onRetrySend"];
   onCancelSend?: TimelineRowActionHandlers["onCancelSend"];
@@ -1277,6 +1279,7 @@ function TimelineItemRowView({
         onSaveMediaFile={onSaveMediaFile}
         onReadMediaText={onReadMediaText}
         onReadMediaMarkdown={onReadMediaMarkdown}
+        onReadMediaPdf={onReadMediaPdf}
         saveName={mediaSaveName}
         viewerEntry={
           eventId

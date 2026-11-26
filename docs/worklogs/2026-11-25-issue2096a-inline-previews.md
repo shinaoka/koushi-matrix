@@ -96,3 +96,19 @@ Core change and no DTO field.
 - `media-attachments.spec.ts` is in the WebKit opt-in, so the new cases run on
   both engines; an engine that refused `koushi-media:` in a media element would
   still only show up as a player that never loads.
+
+## Stage 2: PDF (#2096)
+
+- `read_downloaded_media_pdf` returns the bytes as a raw IPC response (no JSON
+  number array), through the same tab routing as the text reader. Cap
+  `MAX_PDF_PREVIEW_BYTES` = 32 MB, refused rather than truncated; a body without
+  `%PDF-` in its first KB is refused too.
+- `pdfjs-dist` loads lazily (`pdfRenderer.ts`); its worker is a same-origin Vite
+  asset. The card draws page 1 offscreen for files within 32 MB and 200 pages;
+  the viewer is a modal dialog (like the text one) with paging, page count and zoom.
+- CSP: `worker-src 'self' blob:` on `csp` and `devCsp`; the release preflight
+  requires it.
+- Not verified here: the worker under the real Tauri webview CSP (the browser
+  e2e harness does not enforce the CSP). pdf.js fetches CMaps, standard-font data
+  and wasm by URL; `connect-src` stays closed, so non-embedded base-14 fonts and
+  JPX images fall back or fail to draw.

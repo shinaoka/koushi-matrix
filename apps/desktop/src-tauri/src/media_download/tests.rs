@@ -195,6 +195,61 @@ fn refuses_text_previews_it_cannot_show_whole() {
     drop(temp);
 }
 
+/// #2096 stage 2: a PDF preview reads bytes, never a path, and refuses a file
+/// above the cap instead of truncating it (a truncated PDF must never be drawn).
+#[test]
+fn reads_managed_pdf_bytes_up_to_the_cap_and_refuses_one_byte_over() {
+    let body = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n%%EOF\n";
+    let (temp, root) = cache_with_file("6543210987654321.bin", body);
+    let source = "download/1234567890123456/6543210987654321";
+    let size = body.len() as u64;
+    assert_eq!(
+        read_managed_pdf(std::slice::from_ref(&root), source, size).expect("at the cap"),
+        body
+    );
+    assert_eq!(
+        read_managed_pdf(std::slice::from_ref(&root), source, size - 1),
+        Err(PdfPreviewError::TooLarge)
+    );
+    assert_eq!(MAX_PDF_PREVIEW_BYTES, 32 * 1024 * 1024);
+    drop(temp);
+}
+
+#[test]
+fn malformed_pdf_bodies_are_refused_without_panicking() {
+    for body in [
+        &b""[..],
+        &b"%PD"[..],
+        &[0xff, 0x00, 0xfe, 0x25, 0x50][..],
+        &b"not a pdf at all"[..],
+    ] {
+        let (temp, root) = cache_with_file("6543210987654321.bin", body);
+        assert_eq!(
+            read_managed_pdf(
+                std::slice::from_ref(&root),
+                "download/1234567890123456/6543210987654321",
+                MAX_PDF_PREVIEW_BYTES,
+            ),
+            Err(PdfPreviewError::NotPdf),
+            "{body:?}"
+        );
+        drop(temp);
+    }
+    let (temp, root) = cache_with_file("6543210987654321.bin", b"%PDF-1.7");
+    for refused in [
+        "download/1234567890123456/9999999999999999",
+        "download/../../etc/passwd",
+        "/etc/passwd",
+    ] {
+        assert_eq!(
+            read_managed_pdf(std::slice::from_ref(&root), refused, MAX_PDF_PREVIEW_BYTES),
+            Err(PdfPreviewError::Unavailable),
+            "{refused}"
+        );
+    }
+    drop(temp);
+}
+
 #[test]
 fn renders_a_managed_markdown_file_and_enforces_the_same_cap() {
     // #2097: the document path reads through the stage-1 text reader, so the cap,

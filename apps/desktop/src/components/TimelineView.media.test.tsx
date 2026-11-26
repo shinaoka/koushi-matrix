@@ -448,7 +448,14 @@ describe("TimelineView", () => {
             request_id: null,
             key: KEY,
             generation: 1,
-            items: [fileMessage("$retry-file")]
+            // A PDF inside the preview cap now fetches itself (#2096); this test is
+            // about the explicit Download click, so keep the file above the cap.
+            items: [
+              {
+                ...fileMessage("$retry-file"),
+                media: { ...fileMessage("$retry-file").media!, size: 32 * 1024 * 1024 + 1 }
+              }
+            ]
           }
         }
       });

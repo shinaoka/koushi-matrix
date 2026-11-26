@@ -91,6 +91,12 @@ export interface LinkMediaPort {
     sourceRef: string,
     accountTabId?: string
   ): Promise<TimelineFormattedBodyDto>;
+  /**
+   * #2096: the bytes of an already downloaded PDF, for the in-app viewer. Same
+   * routing as `readDownloadedText`; the backend refuses a file above its cap
+   * instead of truncating it, and no path crosses this boundary.
+   */
+  readDownloadedPdf(sourceRef: string, accountTabId?: string): Promise<Uint8Array>;
 }
 
 /** The formatted body Core renders for a Markdown document (#2097). */

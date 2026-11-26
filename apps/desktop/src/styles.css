@@ -12252,3 +12252,80 @@ button.channel-access-pill:focus-visible {
   border: 1px solid var(--border, currentColor);
   padding: 4px 8px;
 }
+
+/* #2096 stage 2: the PDF card thumbnail and the in-app viewer. The thumbnail is
+   a button inside the card's text column, like the text preview. */
+.message-media-pdf-preview-button {
+  display: block;
+  margin: 6px 0 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  background: #fff;
+  cursor: pointer;
+}
+
+.message-media-pdf-preview-button:hover,
+.message-media-pdf-preview-button:focus-visible {
+  border-color: var(--text-muted);
+}
+
+.message-media-pdf-thumbnail {
+  display: block;
+  max-inline-size: 160px;
+  max-block-size: 200px;
+  object-fit: contain;
+  object-position: top;
+}
+
+.media-pdf-viewer-dialog {
+  inline-size: min(900px, calc(100vw - 32px));
+}
+
+.media-pdf-viewer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-block-end: 1px solid var(--border);
+}
+
+.media-pdf-viewer-spacer {
+  flex: 1 1 auto;
+}
+
+.media-pdf-viewer-button {
+  min-inline-size: 28px;
+  block-size: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: inherit;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.media-pdf-viewer-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.media-pdf-viewer-body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  padding: 16px;
+  overflow: auto;
+  background: var(--surface-hover);
+  text-align: center;
+}
+
+.media-pdf-viewer-canvas {
+  margin: 0 auto;
+  background: #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 25%);
+}
+
+.media-pdf-viewer-note {
+  color: var(--text-muted);
+}

@@ -4959,6 +4959,7 @@ export const TimelineView = memo(function TimelineView({
                 onSaveMediaFile={transport.saveMediaFile}
                 onReadMediaText={transport.readMediaText}
                 onReadMediaMarkdown={transport.readMediaMarkdown}
+                onReadMediaPdf={transport.readMediaPdf}
                 forwardDestinations={effectiveForwardDestinations}
                 onOpenMatrixTarget={onOpenMatrixTarget}
                 onOpenReplyQuote={onOpenReplyQuote}

@@ -57,6 +57,15 @@ License: Apache-2.0 for code; Twemoji visual design/artwork under Creative Commo
 Copyright: Copyright 2016-2018, Mozilla Foundation; Twemoji artwork by the Twemoji project
 Notes: Used as the bundled-preferred emoji font when the Rust-owned typography profile selects `emoji = twemojiColr`; platform/system emoji fonts remain fallback. The maintained SableClient package replaces the deprecated `twemoji-colr-font`; its `LICENSE.md` preserves the code and artwork attribution.
 
+Project: PDF.js
+Repository: https://github.com/mozilla/pdf.js
+Upstream commit: npm package `pdfjs-dist@6.5.438`
+Source path: `build/pdf.min.mjs` (library) and `build/pdf.worker.min.mjs` (worker)
+Local path: `apps/desktop/node_modules/pdfjs-dist` during build; Vite bundles the library into a lazily loaded chunk and the worker as a same-origin asset in desktop release artifacts
+License: Apache-2.0
+Copyright: Copyright Mozilla Foundation and the PDF.js contributors
+Notes: Renders the first-page thumbnail on a PDF attachment card and the in-app PDF viewer (#2096). It parses bytes the Rust media command returns; it never fetches a URL, so no document is sent to a third party. The worker runs under `worker-src 'self' blob:` in the Tauri CSP.
+
 Project: KaTeX
 Repository: https://github.com/KaTeX/KaTeX
 Upstream commit: npm package `katex@0.18.10` (the version pinned in `crates/koushi-core/assets/katex/VERSION`)

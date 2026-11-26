@@ -83,6 +83,8 @@ export interface TimelineTransport {
   readMediaText?(sourceRef: string): Promise<string>;
   /** #2097: read a downloaded Markdown attachment, rendered by Core. */
   readMediaMarkdown?(sourceRef: string): Promise<NonNullable<TimelineItem["formatted"]>>;
+  /** #2096: the bytes of a downloaded PDF, routed to the same tab as `readMediaText`. */
+  readMediaPdf?(sourceRef: string): Promise<Uint8Array>;
   /** Download a Matrix avatar thumbnail and return its cancelable request sequence. */
   downloadAvatarThumbnail?(mxcUri: string): Promise<string | void>;
   /** Cancel a renderer-owned avatar thumbnail demand. */

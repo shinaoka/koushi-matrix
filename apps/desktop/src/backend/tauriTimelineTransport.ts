@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { isRendererSelectedAccountTabId } from "./client";
 import { desktopEventPort } from "./desktopEventRuntime";
 import type { MediaSaveNameFacts } from "./linkMediaPort";
-import { readDownloadedMarkdown, readDownloadedText, saveReadyMediaFile } from "./linkMediaRuntime";
+import { readDownloadedMarkdown, readDownloadedPdf, readDownloadedText, saveReadyMediaFile } from "./linkMediaRuntime";
 import { isTauriRuntime } from "./runtimeEnvironment";
 import type { TimelineTransport } from "../components/timeline/TimelineTransport";
 import type {
@@ -158,6 +158,9 @@ export function createTauriTimelineTransport(accountTabId?: string): TimelineTra
     },
     async readMediaMarkdown(sourceRef: string) {
       return readDownloadedMarkdown(sourceRef, accountTabId);
+    },
+    async readMediaPdf(sourceRef: string) {
+      return readDownloadedPdf(sourceRef, accountTabId);
     },
     async downloadAvatarThumbnail(mxcUri: string): Promise<string> {
       return invokeAccount<string>("download_avatar_thumbnail", { mxcUri });

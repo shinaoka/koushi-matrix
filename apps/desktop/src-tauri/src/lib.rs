@@ -1929,6 +1929,7 @@ pub fn run() {
             commands::timeline::save_downloaded_media,
             commands::timeline::read_downloaded_media_text,
             commands::timeline::read_downloaded_media_markdown,
+            commands::timeline::read_downloaded_media_pdf,
             commands::timeline::load_message_source,
             commands::timeline::request_room_key,
             commands::room::request_history_keys,

@@ -1601,6 +1601,37 @@ pub async fn read_downloaded_media_markdown(
     .map_err(|error| format!("media markdown read failed: {error}"))?
 }
 
+/// #2096 stage 2: the bytes of a downloaded PDF, for the in-app viewer.
+///
+/// Same transport and account-tab routing as [`read_downloaded_media_text`]; no
+/// path crosses the boundary. A file above `MAX_PDF_PREVIEW_BYTES` is refused,
+/// never truncated. The bytes travel as a raw IPC response, not JSON numbers.
+#[tauri::command]
+pub async fn read_downloaded_media_pdf(
+    account_tab_id: Option<String>,
+    source_ref: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<tauri::ipc::Response, String> {
+    let tab_id = account_tab_id
+        .map(koushi_core::account_runtime_manager::AccountTabId::from_string)
+        .unwrap_or_else(|| state.runtime.selected_tab_id());
+    let cache_root = state
+        .runtime
+        .media_cache_dir_for_tab(&tab_id)
+        .ok_or_else(|| "media cache is unavailable".to_owned())?;
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        crate::media_download::read_managed_pdf(
+            &[cache_root],
+            &source_ref,
+            crate::media_download::MAX_PDF_PREVIEW_BYTES,
+        )
+        .map_err(|error| error.message().to_owned())
+    })
+    .await
+    .map_err(|error| format!("media pdf read failed: {error}"))??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[tauri::command]
 pub async fn default_media_save_path(
     filename: String,

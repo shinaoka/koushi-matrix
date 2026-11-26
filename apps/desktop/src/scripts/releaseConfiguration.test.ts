@@ -171,7 +171,52 @@ describe("desktop release scripts", () => {
     expect(output).toContain("security.csp.media-src.windowsOrigin");
     expect(output).toContain("security.devCsp.media-src:");
     expect(output).toContain("security.devCsp.media-src.windowsOrigin");
+    expect(output).toContain("security.csp.worker-src:");
+    expect(output).toContain("security.devCsp.worker-src:");
   });
+
+  // #2096 stage 2: the pdf.js worker is a blob: worker, which `default-src 'none'`
+  // blocks. A release must fail if the directive is dropped from either CSP.
+  test.each(["csp", "devCsp"] as const)(
+    "release preflight fails when %s drops worker-src",
+    (key) => {
+      const root = mkdtempSync(join(tmpdir(), "koushi-preflight-csp-"));
+      try {
+        mkdirSync(join(root, "scripts"), { recursive: true });
+        mkdirSync(join(root, "apps/desktop/src-tauri"), { recursive: true });
+        writeFileSync(
+          join(root, "scripts/desktop-release-preflight.mjs"),
+          readFileSync(join(repoRoot, "scripts/desktop-release-preflight.mjs"))
+        );
+        for (const file of [
+          "apps/desktop/package.json",
+          "apps/desktop/src-tauri/tauri.macos.conf.json"
+        ]) {
+          writeFileSync(join(root, file), readFileSync(join(repoRoot, file)));
+        }
+        const config = JSON.parse(
+          readFileSync(join(repoRoot, "apps/desktop/src-tauri/tauri.conf.json"), "utf8")
+        );
+        config.app.security[key] = String(config.app.security[key]).replace(
+          /worker-src [^;]*;\s*/,
+          ""
+        );
+        writeFileSync(
+          join(root, "apps/desktop/src-tauri/tauri.conf.json"),
+          JSON.stringify(config)
+        );
+        const result = spawnSync(
+          process.execPath,
+          [join(root, "scripts/desktop-release-preflight.mjs"), "--check-config"],
+          { cwd: root, encoding: "utf8" }
+        );
+        expect(result.status).not.toBe(0);
+        expect(`${result.stdout}${result.stderr}`).toContain(`security.${key}.worker-src`);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  );
 
   test("macOS signing preflight requires Apple credentials without Windows credentials", () => {
     const script = "scripts/desktop-release-preflight.mjs";
