@@ -131,3 +131,38 @@ test("showing and hiding the unsent bar does not move the reader's row", async (
   expect(await offsetOf(before.id)).toBeCloseTo(before.top, 0);
   expect((await read()).height).toBe(before.height);
 });
+
+test("the failed newest row's own Resend and Delete are not covered by the bar", async ({ page }) => {
+  await seed(page, true);
+  await expect(page.getByTestId("timeline-send-bar")).toBeInViewport({ ratio: 1 });
+  // Live edge: scroll the room fully down. The bar must not sit over the row.
+  await page.evaluate(() => {
+    const c = document.querySelector<HTMLElement>("[data-testid=timeline-view]")!;
+    c.scrollTop = c.scrollHeight;
+  });
+  await page.waitForTimeout(300);
+  const row = page.locator('[data-testid=timeline-view] [data-item-id]').last();
+  for (const name of ["Resend", "Delete"]) {
+    const button = row.getByRole("button", { name, exact: true });
+    await expect(button).toBeVisible();
+    const hit = await button.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return top === el || el.contains(top);
+    });
+    expect(hit, `${name} is hit-testable`).toBe(true);
+  }
+  // The spacer tracks the bar's measured footprint and leaves the pin intact.
+  const m = await page.evaluate(() => {
+    const c = document.querySelector<HTMLElement>("[data-testid=timeline-view]")!;
+    const b = document.querySelector<HTMLElement>("[data-testid=timeline-send-bar]")!;
+    const sp = document.querySelector<HTMLElement>("[data-testid=timeline-unsent-bar-clearance]")!;
+    return {
+      spacer: sp.getBoundingClientRect().height,
+      footprint: c.getBoundingClientRect().bottom - b.getBoundingClientRect().top,
+      gap: c.scrollHeight - c.clientHeight - c.scrollTop
+    };
+  });
+  expect(m.spacer).toBeGreaterThanOrEqual(m.footprint);
+  expect(m.gap).toBeLessThanOrEqual(1);
+});

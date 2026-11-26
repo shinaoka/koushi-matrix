@@ -12338,3 +12338,9 @@ button.channel-access-pill:focus-visible {
 .media-pdf-viewer-note {
   color: var(--text-muted);
 }
+
+/* #2136: the unsent bar is absolutely positioned over the timeline, so every
+   host of a TimelineView needs to be its positioned ancestor. */
+.focused-context-panel {
+  position: relative;
+}
