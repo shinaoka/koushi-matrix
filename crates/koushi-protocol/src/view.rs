@@ -67,6 +67,10 @@ impl std::fmt::Debug for TimelineViewSource {
 
 /// An event in one observed timeline source, not an independently authorized locator.
 ///
+/// The event names a display row (its content event). The core answers with the
+/// readers of the whole row: for a thread root drawn at its latest reply, the
+/// root's and that reply's readers (#2123).
+///
 /// ```
 /// use koushi_protocol::view::ReceiptSourceRef;
 /// let source: ReceiptSourceRef = serde_json::from_value(serde_json::json!({

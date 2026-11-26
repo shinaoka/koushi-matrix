@@ -314,3 +314,184 @@ fn reset_captures_removed_added_and_surviving_events() {
     assert!(mirror.entries.is_empty());
     assert!(mirror.readers.is_empty());
 }
+
+fn reader_endpoint(event: &str, readers: &[(&str, u32)]) -> Option<ReceiptEndpoint> {
+    Some(ReceiptEndpoint {
+        event_id: event.to_owned(),
+        receipts: ReadReceiptSnapshot::from_iter(readers.iter().map(|(user, timestamp)| {
+            (
+                matrix_sdk::ruma::UserId::parse(*user).unwrap(),
+                Receipt::new(MilliSecondsSinceUnixEpoch((*timestamp).into())),
+            )
+        })),
+    })
+}
+
+fn row_fixture() -> (
+    koushi_protocol::view::TimelineViewSource,
+    koushi_protocol::view::ReceiptSourceRef,
+) {
+    use koushi_protocol::view::{ReceiptSourceRef, TimelineViewSource};
+    use koushi_protocol::{
+        AccountKey, RequestId, RuntimeConnectionId, TimelineGeneration, TimelineKey,
+    };
+    let current = TimelineViewSource {
+        key: TimelineKey::room(AccountKey("account".into()), "!room:example.org"),
+        projection_request_id: RequestId {
+            connection_id: RuntimeConnectionId(1),
+            sequence: 2,
+        },
+        generation: TimelineGeneration(3),
+    };
+    let source = ReceiptSourceRef {
+        timeline: current.clone(),
+        event_id: "$root".into(),
+    };
+    (current, source)
+}
+
+#[test]
+fn row_window_epoch_survives_unrelated_changes_and_dies_with_its_endpoints() {
+    use koushi_protocol::view::ReaderWindowLimit;
+    let (current, source) = row_fixture();
+    let limit = ReaderWindowLimit::try_from(16).unwrap();
+    let mut mirror = ReceiptEndpointMirror::from_entries(
+        [
+            reader_endpoint("$root", &[("@a:example.org", 10)]),
+            reader_endpoint("$reply", &[("@b:example.org", 20)]),
+            reader_endpoint("$other", &[("@c:example.org", 30)]),
+        ]
+        .into(),
+    );
+    let window = |mirror: &ReceiptEndpointMirror| {
+        mirror
+            .read_row_window(&source, Some("$reply"), &current, 0, limit, None)
+            .unwrap()
+    };
+    let open = window(&mirror);
+    assert!(open.source_is_current());
+    // A new message and another endpoint's change leave the open row alone.
+    mirror.apply_endpoint_batch([VectorDiff::PushBack {
+        value: reader_endpoint("$new", &[]),
+    }]);
+    mirror.apply_endpoint_batch([VectorDiff::Set {
+        index: 2,
+        value: reader_endpoint("$other", &[("@c:example.org", 31)]),
+    }]);
+    assert!(
+        open.source_is_current(),
+        "unrelated changes must not kill it"
+    );
+    // The row's own endpoint, then its partner, retire the window.
+    mirror.apply_endpoint_batch([VectorDiff::Set {
+        index: 0,
+        value: reader_endpoint("$root", &[("@a:example.org", 11)]),
+    }]);
+    assert!(!open.source_is_current());
+    let again = window(&mirror);
+    assert!(again.source_is_current());
+    mirror.apply_endpoint_batch([VectorDiff::Set {
+        index: 1,
+        value: reader_endpoint("$reply", &[("@b:example.org", 21)]),
+    }]);
+    assert!(!again.source_is_current());
+}
+
+#[test]
+fn row_window_merges_both_endpoints_in_order_and_pages_them() {
+    use koushi_protocol::view::ReaderWindowLimit;
+    let (current, source) = row_fixture();
+    let mirror = ReceiptEndpointMirror::from_entries(
+        [
+            reader_endpoint("$root", &[("@a:example.org", 10), ("@s:example.org", 50)]),
+            reader_endpoint("$reply", &[("@b:example.org", 20), ("@s:example.org", 40)]),
+        ]
+        .into(),
+    );
+    let page = |start, limit: u16| {
+        let window = mirror
+            .read_row_window(
+                &source,
+                Some("$reply"),
+                &current,
+                start,
+                ReaderWindowLimit::try_from(limit).unwrap(),
+                None,
+            )
+            .unwrap();
+        (
+            window.total_count,
+            window
+                .receipts
+                .into_iter()
+                .map(|receipt| receipt.user_id)
+                .collect::<Vec<_>>(),
+        )
+    };
+    // "@s" appears once, with its newest receipt.
+    assert_eq!(
+        page(0, 16),
+        (
+            3,
+            vec![
+                "@s:example.org".into(),
+                "@b:example.org".into(),
+                "@a:example.org".into()
+            ]
+        )
+    );
+    assert_eq!(page(1, 1), (3, vec!["@b:example.org".into()]));
+    assert_eq!(page(2, 5), (3, vec!["@a:example.org".into()]));
+}
+
+#[test]
+fn row_window_follows_a_partner_that_changes_after_a_new_reply() {
+    use koushi_protocol::view::ReaderWindowLimit;
+    let (current, source) = row_fixture();
+    let limit = ReaderWindowLimit::try_from(16).unwrap();
+    let mut mirror = ReceiptEndpointMirror::from_entries(
+        [
+            reader_endpoint("$root", &[("@a:example.org", 10)]),
+            reader_endpoint("$reply", &[("@b:example.org", 20)]),
+        ]
+        .into(),
+    );
+    let users = |mirror: &ReceiptEndpointMirror, partner: &str| {
+        let window = mirror
+            .read_row_window(&source, Some(partner), &current, 0, limit, None)
+            .unwrap();
+        (
+            window.total_count,
+            window
+                .receipts
+                .iter()
+                .map(|receipt| receipt.user_id.clone())
+                .collect::<Vec<_>>(),
+            window,
+        )
+    };
+    let (_, before, old_window) = users(&mirror, "$reply");
+    assert_eq!(before, ["@b:example.org", "@a:example.org"]);
+    // A new reply is inserted: no receipt on any existing endpoint changes, the
+    // row's partner does. The insertion is itself an endpoint change.
+    let changes = mirror.apply_endpoint_batch([VectorDiff::PushBack {
+        value: reader_endpoint("$newer", &[("@d:example.org", 40)]),
+    }]);
+    assert!(changes.contains_key("$newer"));
+    assert!(
+        old_window.source_is_current(),
+        "the old pair is untouched by the insertion"
+    );
+    let (total, after, new_window) = users(&mirror, "$newer");
+    assert_eq!(
+        (total, after),
+        (2, vec!["@d:example.org".into(), "@a:example.org".into()])
+    );
+    // The new pair has its own epoch, retired by its own partner only.
+    mirror.apply_endpoint_batch([VectorDiff::Set {
+        index: 2,
+        value: reader_endpoint("$newer", &[("@d:example.org", 41)]),
+    }]);
+    assert!(!new_window.source_is_current());
+    assert!(old_window.source_is_current());
+}
