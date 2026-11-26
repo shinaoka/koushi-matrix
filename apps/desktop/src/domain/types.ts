@@ -79,9 +79,9 @@ export interface AccountTabSummary {
   status: AccountTabStatus;
   unreadCount: number;
   inviteCount?: number;
-  /** The account is an agent account (#2110): no unread badge is drawn for it. */
-  agent?: boolean;
-  /** The agent role asks for this tab to be hidden while it is not selected. */
+  /** Rust decides whether the unread and invite counts are drawn (false for an agent account, #2110). */
+  showsCounts?: boolean;
+  /** Rust decides the tab is hidden while it is not selected (a Ready agent tab that asked for it). */
   hidden?: boolean;
 }
 

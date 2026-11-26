@@ -52,13 +52,15 @@ export function AiAssistantsSection({
   isSaving,
   accountTabs,
   agentAccounts = NO_AGENT_ACCOUNTS,
-  onUpdateSettings
+  onUpdateSettings,
+  onOpenAccountSettings
 }: {
   settings: McpSettings;
   isSaving: boolean;
   accountTabs: readonly AccountTabSummary[];
   agentAccounts?: AgentAccounts;
   onUpdateSettings: (patch: SettingsPatch) => void;
+  onOpenAccountSettings?: (tabId: string) => void;
 }) {
   const state = useMcpAssistantsState();
   return (
@@ -93,6 +95,7 @@ export function AiAssistantsSection({
         accountTabs={accountTabs}
         isSaving={isSaving}
         onUpdateSettings={onUpdateSettings}
+        onOpenAccountSettings={onOpenAccountSettings}
       />
       <AllowedSendersSection
         allowed={settings.allowed_senders}

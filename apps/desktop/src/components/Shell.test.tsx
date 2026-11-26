@@ -112,14 +112,19 @@ describe("Rust-projected workspace shell", () => {
       id, accountKey: `@${id}:example.invalid`, homeserver: "https://example.invalid",
       displayName: id, avatarMxcUri: null, avatarSourceRef: null, status: "ready" as const, unreadCount: 4, ...extra
     });
-    const tabs = [tab("owner", {}), tab("agent", { agent: true, hidden: true }), tab("quiet", { agent: true })];
+    const tabs = [tab("owner", {}), tab("agent", { showsCounts: false, hidden: true }), tab("quiet", { showsCounts: false, inviteCount: 2 })];
     const { rerender } = render(<AccountTabStrip tabs={tabs} selectedTabId="owner" onSelect={vi.fn()} onAdd={vi.fn()} onRemove={vi.fn()} />);
     expect(screen.queryByRole("button", { name: /agent/ })).toBeNull();
     expect(screen.getByRole("button", { name: /owner/ })).toBeTruthy();
     // The agent's own unread count is still in the data, but no badge is drawn.
     expect(document.querySelectorAll(".account-tab-unread")).toHaveLength(1);
+    expect(document.querySelectorAll(".account-tab-invite")).toHaveLength(0);
     // Selecting a hidden tab keeps it visible, so the owner can always reach it.
     rerender(<AccountTabStrip tabs={tabs} selectedTabId="agent" onSelect={vi.fn()} onAdd={vi.fn()} onRemove={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /agent/ })).toBeTruthy();
+    // The account-settings header (no activity) lists every tab, hidden or not,
+    // so a hidden agent tab's own settings are reachable.
+    rerender(<AccountTabStrip tabs={tabs} selectedTabId="owner" showActivity={false} onSelect={vi.fn()} onAdd={vi.fn()} onRemove={vi.fn()} />);
     expect(screen.getByRole("button", { name: /agent/ })).toBeTruthy();
   });
 

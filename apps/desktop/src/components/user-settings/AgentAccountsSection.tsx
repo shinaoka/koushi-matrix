@@ -12,12 +12,18 @@ import { ImeSafeForm, ImeTextField } from "../ImeTextControl";
 
 const MATRIX_USER_ID = /^@[^\s:@]+:[^\s:@]+$/;
 
-/** Signed-in accounts as `[user id, label]`; the derived default of the allow-list. */
-function signedInAccounts(tabs: readonly AccountTabSummary[]): [string, string][] {
+/**
+ * Accounts with a user id as `[user id, label]`, deduplicated. With `readyOnly`
+ * it is the derived default of the allow-list: the core derives that from the
+ * persisted session list, so a signed-out or failed tab is not promised as a
+ * sender here either.
+ */
+function accountsOf(tabs: readonly AccountTabSummary[], readyOnly: boolean): [string, string][] {
   const seen = new Set<string>();
   const accounts: [string, string][] = [];
   for (const tab of tabs) {
     if (!tab.accountKey || seen.has(tab.accountKey)) continue;
+    if (readyOnly && tab.status !== "ready") continue;
     seen.add(tab.accountKey);
     accounts.push([tab.accountKey, accountTabLabel(tab)]);
   }
@@ -34,21 +40,46 @@ export function AgentAccountsSection({
   agentAccounts,
   accountTabs,
   isSaving,
-  onUpdateSettings
+  onUpdateSettings,
+  onOpenAccountSettings
 }: {
   agentAccounts: AgentAccounts;
   accountTabs: readonly AccountTabSummary[];
   isSaving: boolean;
   onUpdateSettings: (patch: SettingsPatch) => void;
+  /** Selects that account's tab and opens its account settings. */
+  onOpenAccountSettings?: (tabId: string) => void;
 }) {
-  const accounts = signedInAccounts(accountTabs);
-  if (accounts.length === 0) return null;
+  // Every account with a tab, whatever its state, so a locked or failed agent
+  // account can still be unmarked; then marks no tab covers (the account was
+  // removed from this device) so they can be cleared too.
+  const accounts = accountsOf(accountTabs, false);
+  const covered = new Set(accounts.map(([userId]) => userId));
+  const orphans = Object.keys(agentAccounts.accounts).filter(userId => !covered.has(userId));
+  if (accounts.length === 0 && orphans.length === 0) return null;
   return (
     <section className="settings-assistants-group" aria-label={t("settings.agentAccounts")}>
       <h4>{t("settings.agentAccounts")}</h4>
       <p className="settings-assistants-note">{t("settings.agentAccountsDescription")}</p>
+      {orphans.map(userId => (
+        <div className="settings-agent-account" key={userId} data-orphan="true">
+          <span className="settings-assistant-identity">
+            <strong dir="ltr">{userId}</strong>
+            <span className="settings-toggle-description">{t("settings.agentAccountNotSignedIn")}</span>
+          </span>
+          <button
+            className="trust-action-button secondary"
+            type="button"
+            disabled={isSaving}
+            onClick={() => onUpdateSettings({ scope: "app", agent_account: { user_id: userId, role: null } })}
+          >
+            {t("settings.agentAccountForget", { user: userId })}
+          </button>
+        </div>
+      ))}
       {accounts.map(([userId, label]) => {
         const role = agentAccounts.accounts[userId];
+        const tabId = accountTabs.find(tab => tab.accountKey === userId)?.id;
         return (
           <div className="settings-agent-account" key={userId}>
             <button
@@ -102,6 +133,15 @@ export function AgentAccountsSection({
                 </span>
               </button>
             ) : null}
+            {onOpenAccountSettings && tabId ? (
+              <button
+                className="trust-action-button secondary"
+                type="button"
+                onClick={() => onOpenAccountSettings(tabId)}
+              >
+                {t("settings.agentAccountOpenSettings", { account: label })}
+              </button>
+            ) : null}
           </div>
         );
       })}
@@ -129,7 +169,7 @@ export function AllowedSendersSection({
 }) {
   const [draft, setDraft] = useState("");
   const [invalid, setInvalid] = useState(false);
-  const accounts = signedInAccounts(accountTabs);
+  const accounts = accountsOf(accountTabs, true);
   const derived = new Set(accounts.map(([userId]) => userId));
   const removed = new Set(allowed.removed);
   const explicit = allowed.added.filter(userId => !derived.has(userId));

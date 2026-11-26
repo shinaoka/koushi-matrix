@@ -1158,6 +1158,9 @@ function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
             snapshot={selectedSnapshot}
             accountTabs={accountTabs?.tabs ?? []}
             onSettingsScopeChange={(scope) => setSettingsScope(scope)}
+            onOpenAccountSettings={(tabId) => {
+              void selectAccountTabFromUser(tabId).then(() => setSettingsScope("account"));
+            }}
             onUpdateSettings={(patch) => {
               void appSettingsUpdateRef.current(patch).catch(() => undefined);
             }}

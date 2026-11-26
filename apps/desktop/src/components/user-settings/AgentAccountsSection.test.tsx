@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import type { AccountTabSummary, AgentAccounts, MentionAllowedSenders, SettingsPatch } from "../../domain/types";
 import { AgentAccountsSection, AllowedSendersSection } from "./AgentAccountsSection";
 
@@ -90,4 +90,39 @@ test("the agent role is marked per user id and its tab can be hidden", () => {
   });
   fireEvent.click(screen.getByRole("switch", { name: "Bot is an agent account" }));
   expect(patches.at(-1)).toEqual({ scope: "app", agent_account: { user_id: "@bot:example.invalid", role: null } });
+});
+
+test("each agent-account row opens that account's settings", () => {
+  const open = vi.fn();
+  render(<AgentAccountsSection agentAccounts={{ accounts: {} }} accountTabs={tabs} isSaving={false} onUpdateSettings={vi.fn()} onOpenAccountSettings={open} />);
+  fireEvent.click(screen.getByRole("button", { name: "Open settings for Bot" }));
+  expect(open).toHaveBeenCalledWith("account:@bot:example.invalid");
+});
+
+test("a mark no tab covers is listed as not signed in and can be removed", () => {
+  const patches: SettingsPatch[] = [];
+  render(
+    <AgentAccountsSection
+      agentAccounts={{ accounts: { "@gone:example.invalid": { hide_tab: true } } }}
+      accountTabs={tabs}
+      isSaving={false}
+      onUpdateSettings={patch => patches.push(patch)}
+    />
+  );
+  expect(screen.getByText("(not signed in)")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Remove the agent mark for @gone:example.invalid" }));
+  expect(patches).toEqual([{ scope: "app", agent_account: { user_id: "@gone:example.invalid", role: null } }]);
+});
+
+test("the derived default lists only ready accounts, but a failed one can still be unmarked", () => {
+  const failed = { ...tab("@locked:example.invalid", "Locked"), status: "error" } as AccountTabSummary;
+  const all = [...tabs, failed];
+  render(
+    <>
+      <AgentAccountsSection agentAccounts={{ accounts: {} }} accountTabs={all} isSaving={false} onUpdateSettings={vi.fn()} />
+      <AllowedSendersSection allowed={{ added: [], removed: [] }} accountTabs={all} isSaving={false} onUpdateSettings={vi.fn()} />
+    </>
+  );
+  expect(screen.getAllByText("Signed-in account, included by default")).toHaveLength(2);
+  expect(screen.getByRole("switch", { name: "Locked is an agent account" })).toBeTruthy();
 });

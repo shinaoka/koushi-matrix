@@ -956,6 +956,9 @@ export type MessageId =
   | "settings.agentAccountSwitch"
   | "settings.agentAccountHideTab"
   | "settings.agentAccountHideTabDescription"
+  | "settings.agentAccountOpenSettings"
+  | "settings.agentAccountNotSignedIn"
+  | "settings.agentAccountForget"
   | "settings.allowedSenders"
   | "settings.allowedSendersGuarantee"
   | "settings.allowedSendersDefault"
@@ -3385,7 +3388,10 @@ const en: Catalog = {
   "settings.agentAccountsDescription": "An agent account raises no notifications and adds nothing to the badge count. Its messages and unread counts stay readable. The mark is kept for the account's user ID, so it is still there after you sign the account out and in again.",
   "settings.agentAccountSwitch": "{account} is an agent account",
   "settings.agentAccountHideTab": "Hide the tab of {account}",
-  "settings.agentAccountHideTabDescription": "The tab stays visible while it is selected. Turn this off from another account to bring it back.",
+  "settings.agentAccountHideTabDescription": "The tab stays visible while it is selected and in account settings. A tab that needs you (verification, an error) is never hidden.",
+  "settings.agentAccountOpenSettings": "Open settings for {account}",
+  "settings.agentAccountNotSignedIn": "(not signed in)",
+  "settings.agentAccountForget": "Remove the agent mark for {user}",
   "settings.allowedSenders": "Who an agent answers",
   "settings.allowedSendersGuarantee": "This list keeps mentions from other senders out of wait_for_mentions. It does not stop those senders' messages from being readable by an assistant that has read access to the room.",
   "settings.allowedSendersDefault": "Your signed-in accounts are included by default, and so is any account you sign in later. Remove one to stop answering it, or add other users.",
@@ -5853,7 +5859,10 @@ const ja: Catalog = {
   "settings.agentAccountsDescription": "エージェントアカウントは通知を出さず、バッジの件数にも加わりません。メッセージと未読数は引き続き読めます。この設定はアカウントのユーザー ID に対して保存されるため、サインアウトして同じユーザーで再びサインインしても残ります。",
   "settings.agentAccountSwitch": "{account} をエージェントアカウントにする",
   "settings.agentAccountHideTab": "{account} のタブを隠す",
-  "settings.agentAccountHideTabDescription": "選択中はタブが表示されたままになります。元に戻すには別のアカウントからオフにしてください。",
+  "settings.agentAccountHideTabDescription": "選択中とアカウント設定の画面ではタブが表示されたままになります。対応が必要なタブ（認証待ち、エラーなど）は隠れません。",
+  "settings.agentAccountOpenSettings": "{account} の設定を開く",
+  "settings.agentAccountNotSignedIn": "（サインインしていません）",
+  "settings.agentAccountForget": "{user} のエージェント設定を削除",
   "settings.allowedSenders": "エージェントが応答する相手",
   "settings.allowedSendersGuarantee": "この一覧は、他の送信者からのメンションを wait_for_mentions に入れないためのものです。それらの送信者のメッセージを、ルームの読み取り権限を持つアシスタントが読めなくなるわけではありません。",
   "settings.allowedSendersDefault": "サインイン中のアカウントは既定で含まれ、あとからサインインしたアカウントも含まれます。応答したくないものは除外し、他のユーザーは追加できます。",

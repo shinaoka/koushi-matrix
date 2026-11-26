@@ -760,3 +760,53 @@ async fn account_selection_diagnostics_cover_add_cancel_and_removal_fallbacks() 
     );
     manager.shutdown_all().await;
 }
+
+/// #2110: removing an account from the device drops its agent role, so the same
+/// user id added later as an ordinary account does not silently become an agent;
+/// another account's role stays.
+#[tokio::test]
+async fn removing_an_account_drops_its_agent_role() {
+    use koushi_state::{AgentAccountPatch, AgentAccountRole, SettingsPatch, SettingsPatchScope};
+    let data = tempfile::tempdir().unwrap();
+    let credentials = tempfile::tempdir().unwrap();
+    let store = StoreActor::with_backend(
+        CredentialStoreBackend::FileDir(FileCredentialStore::new(credentials.path())),
+        data.path().to_path_buf(),
+    );
+    let settings = SettingsStore::new(data.path());
+    let manager = AccountRuntimeManager::new(
+        store,
+        settings.clone(),
+        Arc::new(|| Arc::new(crate::native_artifact::NativeArtifactRegistry::new())),
+    );
+    let original = manager.selected_tab_id();
+    manager
+        .bind_authenticated_session(&original, &session("@keep:example.invalid"))
+        .await
+        .unwrap();
+    let removed_tab = manager.add_account_tab().await.unwrap();
+    manager
+        .bind_authenticated_session(&removed_tab, &session("@gone:example.invalid"))
+        .await
+        .unwrap();
+    for user in ["@keep:example.invalid", "@gone:example.invalid"] {
+        settings
+            .save_patch(&SettingsPatch {
+                scope: Some(SettingsPatchScope::App),
+                agent_account: Some(AgentAccountPatch {
+                    user_id: user.to_owned(),
+                    role: Some(AgentAccountRole { hide_tab: true }),
+                }),
+                ..SettingsPatch::default()
+            })
+            .unwrap();
+    }
+    assert!(manager.remove_signed_out_tab(&removed_tab).await.unwrap());
+    let roles = SettingsStore::new(data.path())
+        .load()
+        .unwrap()
+        .agent_accounts;
+    assert_eq!(roles.role_for("@gone:example.invalid"), None);
+    assert!(roles.role_for("@keep:example.invalid").is_some());
+    manager.shutdown_all().await;
+}

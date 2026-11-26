@@ -270,10 +270,15 @@ pub(crate) struct AccountTabSummary {
     pub status: AccountTabStatus,
     pub unread_count: u64,
     pub invite_count: u64,
-    /// The account's agent role (#2110): it raises no badge or banner, so the
-    /// strip shows no unread count for it. `unread_count` itself stays accurate.
-    pub agent: bool,
-    /// The agent role asks for the tab to be hidden while it is not selected.
+    /// Whether the strip draws the unread and invite counts for this tab. An
+    /// agent account (#2110) raises no badge or banner, so it draws neither: an
+    /// invite is a count of the same owner-facing kind and the core already
+    /// zeroes the badge that includes it. The counts themselves stay accurate
+    /// and the invites remain in the account's own room list.
+    pub shows_counts: bool,
+    /// The strip hides this tab while it is not selected: an agent account that
+    /// asked for it and is `Ready`. A tab that needs the owner (verification,
+    /// error, restoring, signing in or out) stays visible with its signal.
     pub hidden: bool,
 }
 
@@ -587,8 +592,9 @@ fn account_tabs_snapshot_from_states(
                 status,
                 unread_count: attention.unread_count,
                 invite_count: attention.invite_count,
-                agent: agent_role.is_some(),
-                hidden: agent_role.is_some_and(|role| role.hide_tab),
+                shows_counts: agent_role.is_none(),
+                hidden: status == AccountTabStatus::Ready
+                    && agent_role.is_some_and(|role| role.hide_tab),
             }
         })
         .collect();
