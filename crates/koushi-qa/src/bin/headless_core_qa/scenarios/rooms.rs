@@ -541,6 +541,7 @@ pub(super) async fn run_room_people_projection_stage(
     let send_id = conn_a.next_request_id();
     conn_a
         .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id: send_id,
             key: key.clone(),
             transaction_id: transaction_id.to_owned(),

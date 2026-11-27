@@ -691,6 +691,7 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
     let send1_id = conn_a.next_request_id();
     conn_a
         .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id: send1_id,
             key: key_a.clone(),
             transaction_id: txn1.clone(),
@@ -720,6 +721,7 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
     let send2_id = conn_a.next_request_id();
     conn_a
         .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id: send2_id,
             key: key_a.clone(),
             transaction_id: txn2.clone(),
@@ -917,6 +919,7 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         let send_b_reply_id = conn_b.next_request_id();
         conn_b
             .command(CoreCommand::Timeline(TimelineCommand::SendReply {
+                explicit_mentions: None,
                 request_id: send_b_reply_id,
                 key: key_b.clone(),
                 transaction_id: txn_b_reply.clone(),
@@ -1196,6 +1199,7 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         let send_b_thread_reply_id = conn_b.next_request_id();
         conn_b
             .command(CoreCommand::Timeline(TimelineCommand::SendReply {
+                explicit_mentions: None,
                 request_id: send_b_thread_reply_id,
                 key: thread_key_b.clone(),
                 transaction_id: txn_b_thread_reply.clone(),
@@ -1440,6 +1444,7 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
             let live_send_id = conn_b.next_request_id();
             conn_b
                 .command(CoreCommand::Timeline(TimelineCommand::SendReply {
+                    explicit_mentions: None,
                     request_id: live_send_id,
                     key: thread_key_b.clone(),
                     transaction_id: "qa-thread-summary-live-b".to_owned(),
@@ -1691,6 +1696,7 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
     let send_search_id = conn_a.next_request_id();
     conn_a
         .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id: send_search_id,
             key: key_a_search.clone(),
             transaction_id: txn_search.clone(),

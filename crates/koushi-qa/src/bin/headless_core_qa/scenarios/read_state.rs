@@ -414,6 +414,7 @@ pub(super) async fn send_text_and_wait_event(
 ) -> Result<String, String> {
     let request_id = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        explicit_mentions: None,
         request_id,
         key: key.clone(),
         transaction_id: transaction_id.to_owned(),

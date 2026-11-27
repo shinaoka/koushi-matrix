@@ -591,6 +591,7 @@ pub(super) async fn run_timeline_stress_room_messages(
         let send_id = sender_conn.next_request_id();
         sender_conn
             .command_with_admission(CoreCommand::Timeline(TimelineCommand::SendText {
+                explicit_mentions: None,
                 request_id: send_id,
                 key: sender_key.clone(),
                 transaction_id: transaction_id.clone(),
@@ -885,6 +886,7 @@ pub(super) async fn run_scheduled_send_stage(
     // relation the scheduled reply has to carry.
     let root_request_id = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        explicit_mentions: None,
         request_id: root_request_id,
         key: key.clone(),
         transaction_id: "qa-scheduled-thread-root".to_owned(),
@@ -1697,6 +1699,7 @@ pub(super) async fn run_timeline_reconnect_scenario_impl(config: &QaConfig) -> R
     let seed_send_id = conn_b.next_request_id();
     conn_b
         .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id: seed_send_id,
             key: key_b.clone(),
             transaction_id: seed_txn.to_owned(),
@@ -1738,6 +1741,7 @@ pub(super) async fn run_timeline_reconnect_scenario_impl(config: &QaConfig) -> R
         let send_b_id = conn_b.next_request_id();
         conn_b
             .command(CoreCommand::Timeline(TimelineCommand::SendText {
+                explicit_mentions: None,
                 request_id: send_b_id,
                 key: key_b.clone(),
                 transaction_id: txn.clone(),
@@ -1768,6 +1772,7 @@ pub(super) async fn run_timeline_reconnect_scenario_impl(config: &QaConfig) -> R
             let send_b_id = conn_b.next_request_id();
             conn_b
                 .command(CoreCommand::Timeline(TimelineCommand::SendText {
+                    explicit_mentions: None,
                     request_id: send_b_id,
                     key: key_b.clone(),
                     transaction_id: txn.clone(),
@@ -2690,6 +2695,7 @@ pub(super) async fn run_activity_stage(
     let send_id = conn_b.next_request_id();
     conn_b
         .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id: send_id,
             key: key_b.clone(),
             transaction_id: txn.clone(),
@@ -3238,6 +3244,7 @@ pub(super) async fn run_composer_stage(
     let mention_body = mention_document.plain_body();
     let mention_id = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        explicit_mentions: None,
         request_id: mention_id,
         key: key.clone(),
         transaction_id: mention_txn.to_owned(),
@@ -3260,6 +3267,7 @@ pub(super) async fn run_composer_stage(
     let markdown_body = "Composer **markdown** QA";
     let markdown_id = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        explicit_mentions: None,
         request_id: markdown_id,
         key: key.clone(),
         transaction_id: markdown_txn.to_owned(),
@@ -3281,6 +3289,7 @@ pub(super) async fn run_composer_stage(
     let slash_txn = "qa-composer-slash-txn";
     let slash_id = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        explicit_mentions: None,
         request_id: slash_id,
         key: key.clone(),
         transaction_id: slash_txn.to_owned(),
@@ -3569,6 +3578,7 @@ pub(super) async fn run_link_preview_stage(
     let send_id = conn_a.next_request_id();
     conn_a
         .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id: send_id,
             key: key_a.clone(),
             transaction_id: txn.clone(),
@@ -3795,6 +3805,7 @@ pub(super) async fn run_link_preview_stage(
     let enc_send_id = conn_a.next_request_id();
     conn_a
         .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id: enc_send_id,
             key: enc_key_a.clone(),
             transaction_id: enc_txn.clone(),

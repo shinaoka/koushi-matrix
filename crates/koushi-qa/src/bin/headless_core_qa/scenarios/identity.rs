@@ -131,6 +131,7 @@ async fn send_after_rotation(
     tokio::time::timeout_at(
         deadline,
         conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id: send_id,
             key: key.clone(),
             transaction_id: transaction_id.to_owned(),
@@ -2213,6 +2214,7 @@ pub(super) async fn seed_encrypted_room_key_for_qa(
     let transaction_id = "qa-e2ee-key-backup-seed".to_owned();
     let send_id = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        explicit_mentions: None,
         request_id: send_id,
         key: key.clone(),
         transaction_id: transaction_id.clone(),
@@ -2729,6 +2731,7 @@ pub(super) async fn verify_second_device_room_key_delivery_for_qa(
     let send_id = conn_a.next_request_id();
     conn_a
         .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id: send_id,
             key: key_a.clone(),
             transaction_id: transaction_id.clone(),
@@ -2956,6 +2959,7 @@ pub(super) async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
         let send_id = conn_a.next_request_id();
         conn_a
             .command(CoreCommand::Timeline(TimelineCommand::SendText {
+                explicit_mentions: None,
                 request_id: send_id,
                 key: key_a.clone(),
                 transaction_id: transaction_id.clone(),
@@ -3033,6 +3037,7 @@ pub(super) async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
         let blocked_send = conn_a.next_request_id();
         conn_a
             .command(CoreCommand::Timeline(TimelineCommand::SendText {
+                explicit_mentions: None,
                 request_id: blocked_send,
                 key: key_a.clone(),
                 transaction_id: blocked_txn.clone(),

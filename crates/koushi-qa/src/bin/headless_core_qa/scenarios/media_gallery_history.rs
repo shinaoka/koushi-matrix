@@ -130,6 +130,7 @@ async fn seed_room(
     for index in 0..FILLER_COUNT {
         let request_id = conn.next_request_id();
         conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id,
             key: key.clone(),
             transaction_id: format!("qa-media-gallery-history-filler-{index}"),
