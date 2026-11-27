@@ -1457,7 +1457,11 @@ normal QA-title mode and cannot change product title semantics.
   the state machine canon. The desktop adapter forwards its
   `McpAssistantsState` on `koushi-desktop://mcp` with a
   `get_mcp_assistants_state` getter, and the user's answers through
-  `answer_mcp_approval`, `set_mcp_permission`, and `remove_mcp_assistant`;
+  `answer_mcp_approval`, `set_mcp_permission`, and `remove_mcp_assistant`, and the
+  owner's agent-profile actions through `create_agent_profile` and
+  `revoke_agent_profile` (the state carries `profiles` and `agent_accounts`, so
+  React neither re-derives the agent-role check nor builds a launch snippet; no
+  capability names these commands, so remote content cannot call them);
   `register_mcp_client` and `create_claude_desktop_extension` return closed
   outcome DTOs (`McpRegisterOutcome`, `McpExtensionOutcome`).
   React renders that state; it never decides a grant, retries an answer, or

@@ -874,3 +874,174 @@ async fn the_secret_reaches_no_diagnostic_or_debug_output() {
     assert!(!diagnostics.contains("0xC0FFEE"));
     world.shutdown().await;
 }
+
+// ---- the settings page's host API (PR 3) -----------------------------------
+
+use koushi_mcp_host::consent::LauncherStatus;
+use koushi_mcp_host::profile_view::{ProfileStatus, ProfileView};
+
+const LAUNCHER: &str = "/Applications/Koushi.app/Contents/MacOS/koushi-mcp";
+
+fn rows(world: &World) -> Vec<ProfileView> {
+    world.broker.subscribe().borrow().profiles.clone()
+}
+
+/// Waits until the published state has the profile row satisfying `check`.
+async fn row_where(
+    world: &World,
+    id: &ProfileId,
+    check: impl Fn(&ProfileView) -> bool,
+) -> ProfileView {
+    for _ in 0..200 {
+        if let Some(row) = rows(world)
+            .into_iter()
+            .find(|row| row.profile_id == id.as_str())
+            && check(&row)
+        {
+            return row;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!(
+        "the profile row never reached the expected state: {:?}",
+        rows(world)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn creating_a_profile_publishes_its_facts_and_never_the_secret() {
+    let world = World::start(ConsentMode::FailClosed).await;
+    world.broker.set_launcher(LauncherStatus::Available {
+        path: LAUNCHER.to_owned(),
+    });
+    let (id, secret) = world.create("Reader", AGENT_A, read_only()).await;
+
+    let state = world.broker.subscribe().borrow().clone();
+    let row = state.profiles.first().expect("the new row").clone();
+    assert_eq!(state.profiles.len(), 1);
+    assert_eq!(row.profile_id, id.as_str());
+    assert_eq!(row.label, "Reader");
+    assert_eq!(row.account_id, AGENT_A);
+    assert!(row.read && !row.send && !row.attachments && !row.message_actions && !row.draft);
+    assert_eq!(row.status, ProfileStatus::Ready);
+    assert!(!row.connected && !row.subscribed);
+    assert_eq!(row.last_seen_ms, None);
+
+    // The launch snippet names the profile and the secret file's path, and
+    // the file it names is the one that holds the secret.
+    let path = world
+        .data
+        .join(format!("mcp/profiles/{}.secret", id.as_str()));
+    let claude = row
+        .snippets
+        .iter()
+        .find(|snippet| snippet.client_name == "claude-code")
+        .expect("a Claude Code snippet");
+    assert!(
+        claude.text.starts_with("claude mcp add --scope user "),
+        "{}",
+        claude.text
+    );
+    assert!(claude.text.contains(&format!("--profile {}", id.as_str())));
+    assert!(
+        claude
+            .text
+            .contains(&format!("--profile-secret-file {}", path.display()))
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), secret);
+
+    // Neither the serialized state nor its Debug output carries the secret.
+    let serialized = serde_json::to_string(&state).expect("serializes");
+    assert!(!serialized.contains(&secret));
+    assert!(!format!("{state:?}").contains(&secret));
+    world.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_agent_accounts_are_offered_for_a_profile() {
+    let world = World::start(ConsentMode::FailClosed).await;
+    world.broker.refresh_profiles(&*world.accounts).await;
+    let offered = world.broker.subscribe().borrow().agent_accounts.clone();
+    assert_eq!(offered, [AGENT_A, AGENT_B]);
+
+    // A role removed after the page was drawn leaves the list on refresh.
+    support::apply_actions(
+        world.core(AGENT_A),
+        vec![koushi_state::AppAction::AppSettingsSynchronized {
+            values: koushi_state::AppSettingsValues::default(),
+        }],
+    )
+    .await;
+    let mut offered = Vec::new();
+    for _ in 0..100 {
+        world.broker.refresh_profiles(&*world.accounts).await;
+        offered = world.broker.subscribe().borrow().agent_accounts.clone();
+        if offered == [AGENT_B] {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(offered, [AGENT_B]);
+    world.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn revoking_removes_the_row_and_the_secret_stops_authenticating() {
+    let world = World::start(ConsentMode::FailClosed).await;
+    let (id, secret) = world.create("Reader", AGENT_A, read_only()).await;
+    assert_eq!(rows(&world).len(), 1);
+
+    assert_eq!(world.broker.revoke_profile(&id).await, Ok(true));
+    assert!(rows(&world).is_empty(), "the row is gone from the state");
+    assert!(
+        !world
+            .data
+            .join(format!("mcp/profiles/{}.secret", id.as_str()))
+            .exists()
+    );
+    let refused = Conn::profiled(&world, "codex", id.as_str(), &secret)
+        .await
+        .err()
+        .expect("the old secret no longer authenticates");
+    assert!(refused.contains("profile_secret"), "{refused}");
+
+    // A refresh does not bring it back.
+    world.broker.refresh_profiles(&*world.accounts).await;
+    assert!(rows(&world).is_empty());
+    world.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_missing_secret_file_is_reported_as_secret_missing() {
+    let world = World::start(ConsentMode::FailClosed).await;
+    let (id, _secret) = world.create("Reader", AGENT_A, read_only()).await;
+    std::fs::remove_file(
+        world
+            .data
+            .join(format!("mcp/profiles/{}.secret", id.as_str())),
+    )
+    .expect("remove the secret file");
+    world.broker.refresh_profiles(&*world.accounts).await;
+    let row = row_where(&world, &id, |row| {
+        row.status == ProfileStatus::SecretMissing
+    })
+    .await;
+    assert_eq!(row.status, ProfileStatus::SecretMissing);
+    world.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn connected_follows_a_live_profiled_connection() {
+    let world = World::start(ConsentMode::FailClosed).await;
+    let (id, secret) = world.create("Reader", AGENT_A, read_only()).await;
+    let conn = Conn::profiled(&world, "codex", id.as_str(), &secret)
+        .await
+        .expect("connects");
+    let row = row_where(&world, &id, |row| row.connected).await;
+    assert!(!row.subscribed);
+    assert!(row.last_seen_ms.is_some());
+
+    drop(conn);
+    row_where(&world, &id, |row| !row.connected).await;
+    world.shutdown().await;
+}

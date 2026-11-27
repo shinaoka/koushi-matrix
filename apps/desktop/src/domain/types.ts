@@ -666,6 +666,39 @@ export type McpExtensionOutcome =
   | { outcome: "launcher_unavailable" }
   | { outcome: "write_failed" };
 
+export type McpProfileStatus = "ready" | "account_unavailable" | "not_agent_account" | "secret_missing";
+
+/** One agent profile (#2132). Rust decides every field; the secret is never here, only its file's path inside `snippets`. */
+export interface McpProfile {
+  profile_id: string;
+  label: string;
+  account_id: string;
+  read: boolean;
+  send: boolean;
+  attachments: boolean;
+  message_actions: boolean;
+  draft: boolean;
+  status: McpProfileStatus;
+  /** At least one live connection of this profile. */
+  connected: boolean;
+  /** The profile's push-subscription lease is held. */
+  subscribed: boolean;
+  last_seen_ms: number | null;
+  /** When a connection last presented the wrong secret. */
+  last_rejected_ms: number | null;
+  /** Launch snippets per client, built in Rust and copied verbatim. */
+  snippets: McpRegistration[];
+}
+
+export type McpProfileGrants = Record<McpNeed, boolean>;
+
+/** Result of `create_agent_profile`: the id and the secret file's path, never the secret. */
+export type McpCreateProfileOutcome =
+  | { kind: "created"; profile_id: string }
+  | { kind: "failed"; reason: "invalid_label" | "not_agent_account" | "account_unavailable" | "store_unusable" | "io" };
+
+export type McpRevokeProfileOutcome = "revoked" | "not_found" | "failed";
+
 /** Process-wide state of the MCP consent broker, pushed on `koushi-desktop://mcp`. */
 export interface McpAssistantsState {
   bridge: "disabled" | "running" | "start_failed";
@@ -678,6 +711,9 @@ export interface McpAssistantsState {
   registrations: McpRegistration[];
   /** Client names whose launcher is from an older Koushi. */
   outdated_launchers: string[];
+  profiles: McpProfile[];
+  /** The accounts a profile may be bound to: agent accounts only, decided by Rust. */
+  agent_accounts: string[];
 }
 
 export type DesktopUpdateState =

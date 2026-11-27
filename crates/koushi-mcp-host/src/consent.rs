@@ -22,6 +22,7 @@ use tokio::sync::{oneshot, watch};
 use tokio::time::Instant;
 
 use crate::grants::{self, Need, Store, StoreStatus};
+use crate::profile_view::{Live, ProfileFacts, ProfileStatus, ProfileView};
 use crate::profiles::{self, CreatedProfile, ProfileError, ProfileGrants};
 use crate::registration::{self, Registration};
 
@@ -150,6 +151,11 @@ pub struct McpAssistantsState {
     /// Client names whose launcher speaks an older bridge protocol, so they
     /// must be registered again (or the Claude Desktop extension recreated).
     pub outdated_launchers: Vec<String>,
+    /// The owner's agent profiles with their live status (#2132).
+    pub profiles: Vec<ProfileView>,
+    /// The accounts a profile may be bound to: agent accounts only. Rust owns
+    /// the role check.
+    pub agent_accounts: Vec<String>,
 }
 
 impl std::fmt::Debug for McpAssistantsState {
@@ -165,6 +171,7 @@ impl std::fmt::Debug for McpAssistantsState {
             )
             .field("pending", &self.pending.len())
             .field("assistants", &self.assistants.len())
+            .field("profiles", &self.profiles.len())
             .finish()
     }
 }
@@ -240,6 +247,11 @@ struct Inner {
     /// must not replace what that write installed (a revocation would briefly
     /// come undone).
     store_generation: u64,
+    /// Profile rows as the last refresh read them.
+    profiles: Vec<ProfileFacts>,
+    agent_accounts: Vec<String>,
+    /// Live connections and leases by profile.
+    live: HashMap<ProfileId, Live>,
 }
 
 impl Inner {
@@ -291,6 +303,9 @@ impl ConsentBroker {
             store_status: loaded.status,
             store: loaded.store,
             store_generation: 0,
+            profiles: Vec::new(),
+            agent_accounts: Vec::new(),
+            live: HashMap::new(),
         };
         let (state, _) = watch::channel(view(&inner));
         Arc::new(Self {
@@ -739,7 +754,7 @@ impl ConsentBroker {
         let data_dir = self.data_dir.clone();
         let label = label.to_owned();
         let account_id = account_id.to_owned();
-        tokio::task::spawn_blocking(move || {
+        let created = tokio::task::spawn_blocking(move || {
             profiles::create(
                 &data_dir,
                 &label,
@@ -750,7 +765,86 @@ impl ConsentBroker {
             )
         })
         .await
-        .map_err(|_| ProfileError::Io)?
+        .map_err(|_| ProfileError::Io)??;
+        drop(_writer);
+        self.refresh_profiles(accounts).await;
+        Ok(created)
+    }
+
+    /// Re-reads the profile store, the secret files and the accounts' roles and
+    /// publishes the profile rows and the choosable agent accounts. The disk is
+    /// read off the async worker and never under the state lock.
+    ///
+    /// The read and the update both run under the writer lock, so a revoke or
+    /// create cannot land between them and be overwritten by the stale read.
+    pub async fn refresh_profiles(&self, accounts: &dyn crate::BridgeAccounts) {
+        self.refresh_profiles_between(accounts, async {}).await;
+    }
+
+    /// `refresh_profiles`, with `between` run after the disk read and before
+    /// the update, so a test can put a writer in that window.
+    async fn refresh_profiles_between(
+        &self,
+        accounts: &dyn crate::BridgeAccounts,
+        between: impl std::future::Future<Output = ()>,
+    ) {
+        let _writer = self.writer.lock().await;
+        let roles: HashMap<String, bool> = accounts
+            .accounts()
+            .into_iter()
+            .map(|account| {
+                let agent = account.connection.snapshot().is_agent_account();
+                (account.id, agent)
+            })
+            .collect();
+        let data_dir = self.data_dir.clone();
+        let Ok(rows) =
+            tokio::task::spawn_blocking(move || read_profile_facts(&data_dir, &roles)).await
+        else {
+            return;
+        };
+        let mut agent_accounts: Vec<String> = accounts
+            .accounts()
+            .into_iter()
+            .filter(|account| account.connection.snapshot().is_agent_account())
+            .map(|account| account.id)
+            .collect();
+        agent_accounts.sort();
+        between.await;
+        self.update(|inner| {
+            inner.profiles = rows;
+            inner.agent_accounts = agent_accounts;
+        });
+    }
+
+    /// A live connection of `id` has authenticated. The returned guard marks it
+    /// gone when dropped, however the connection ends.
+    pub(crate) fn profile_connected(self: &Arc<Self>, id: &ProfileId) -> ProfileConnection {
+        self.update(|inner| {
+            let live = inner.live.entry(id.clone()).or_default();
+            live.connections += 1;
+            live.last_seen_ms = Some(profiles::now_ms());
+        });
+        ProfileConnection {
+            broker: Arc::clone(self),
+            id: id.clone(),
+        }
+    }
+
+    /// The profile's lease was taken or released.
+    pub(crate) fn profile_subscribed(&self, id: &ProfileId, subscribed: bool) {
+        self.update(|inner| {
+            // A release after a revoke must not recreate the removed entry.
+            let live = if subscribed {
+                Some(inner.live.entry(id.clone()).or_default())
+            } else {
+                inner.live.get_mut(id)
+            };
+            if let Some(live) = live {
+                live.subscribed = subscribed;
+                live.last_seen_ms = Some(profiles::now_ms());
+            }
+        });
     }
 
     /// Revokes a profile (owner path): the row goes first, the secret file
@@ -785,6 +879,10 @@ impl ConsentBroker {
             keep
         });
         inner.seen.remove(&subject);
+        inner.live.remove(id);
+        inner
+            .profiles
+            .retain(|profile| profile.profile_id != id.as_str());
         self.publish(&inner);
         Ok(removed)
     }
@@ -1072,6 +1170,61 @@ pub fn sanitize(text: &str, max_chars: usize) -> String {
     out
 }
 
+/// Marks one profiled connection gone when dropped.
+pub(crate) struct ProfileConnection {
+    broker: Arc<ConsentBroker>,
+    id: ProfileId,
+}
+
+impl Drop for ProfileConnection {
+    fn drop(&mut self) {
+        self.broker.update(|inner| {
+            if let Some(live) = inner.live.get_mut(&self.id) {
+                live.connections = live.connections.saturating_sub(1);
+                live.last_seen_ms = Some(profiles::now_ms());
+            }
+        });
+    }
+}
+
+/// The profile rows with their status, from disk. A store that cannot be read
+/// lists nothing: it authorises nothing either.
+fn read_profile_facts(
+    data_dir: &std::path::Path,
+    roles: &HashMap<String, bool>,
+) -> Vec<ProfileFacts> {
+    let loaded = profiles::load(data_dir);
+    if loaded.status != StoreStatus::Ok {
+        return Vec::new();
+    }
+    loaded
+        .store
+        .profiles()
+        .map(|profile| {
+            let secret = profiles::secret_path(data_dir, &profile.id);
+            let status = if !secret.is_file() {
+                ProfileStatus::SecretMissing
+            } else {
+                match roles.get(&profile.account_id) {
+                    None => ProfileStatus::AccountUnavailable,
+                    Some(false) => ProfileStatus::NotAgentAccount,
+                    Some(true) => ProfileStatus::Ready,
+                }
+            };
+            ProfileFacts {
+                profile_id: profile.id.as_str().to_owned(),
+                label: profile.label.clone(),
+                account_id: profile.account_id.clone(),
+                grants: profile.grants,
+                status,
+                secret_path: secret.to_string_lossy().into_owned(),
+                last_rejected_ms: crate::profile_state::load(data_dir, &profile.id)
+                    .last_rejected_ms,
+            }
+        })
+        .collect()
+}
+
 fn view(inner: &Inner) -> McpAssistantsState {
     let pending = inner
         .pending
@@ -1172,7 +1325,48 @@ fn view(inner: &Inner) -> McpAssistantsState {
         LauncherStatus::Unavailable { .. } => Vec::new(),
     };
 
+    let launcher_path = match &inner.launcher {
+        LauncherStatus::Available { path } => Some(path.as_str()),
+        LauncherStatus::Unavailable { .. } => None,
+    };
+    let profiles = inner
+        .profiles
+        .iter()
+        .map(|facts| {
+            let live = ProfileId::parse(&facts.profile_id)
+                .and_then(|id| inner.live.get(&id).copied())
+                .unwrap_or_default();
+            ProfileView {
+                profile_id: facts.profile_id.clone(),
+                label: facts.label.clone(),
+                account_id: facts.account_id.clone(),
+                read: facts.grants.read,
+                send: facts.grants.send,
+                attachments: facts.grants.attachments,
+                message_actions: facts.grants.message_actions,
+                draft: facts.grants.draft,
+                status: facts.status,
+                connected: live.connections > 0,
+                subscribed: live.subscribed,
+                last_seen_ms: live.last_seen_ms,
+                last_rejected_ms: facts.last_rejected_ms,
+                snippets: launcher_path
+                    .map(|launcher| {
+                        registration::profile_registrations(
+                            launcher,
+                            registration::Platform::current(),
+                            &facts.profile_id,
+                            &facts.secret_path,
+                        )
+                    })
+                    .unwrap_or_default(),
+            }
+        })
+        .collect();
+
     McpAssistantsState {
+        profiles,
+        agent_accounts: inner.agent_accounts.clone(),
         bridge: inner.bridge,
         store: inner.store_status,
         launcher: inner.launcher.clone(),
@@ -1201,6 +1395,9 @@ mod tests {
             store_status: StoreStatus::Ok,
             store: Store::default(),
             store_generation: generation,
+            profiles: Vec::new(),
+            agent_accounts: Vec::new(),
+            live: HashMap::new(),
         }
     }
 
@@ -1228,6 +1425,58 @@ mod tests {
             state
                 .store
                 .allows("pi", "account:@alice:example.invalid", Need::Read)
+        );
+    }
+
+    struct NoAccounts;
+
+    impl crate::BridgeAccounts for NoAccounts {
+        fn accounts(&self) -> Vec<crate::BridgeAccount> {
+            Vec::new()
+        }
+    }
+
+    /// A revoke that lands between a refresh's disk read and its update must
+    /// not be overwritten by the stale read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_revoke_between_a_refresh_read_and_its_update_does_not_resurrect_the_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let broker = ConsentBroker::new(dir.path().to_path_buf(), ConsentMode::FailClosed);
+        let created = profiles::create(
+            dir.path(),
+            "Reader",
+            "account:@agent:example.invalid",
+            ProfileGrants::default(),
+            None,
+            1,
+        )
+        .expect("created");
+        broker.refresh_profiles(&NoAccounts).await;
+        assert_eq!(broker.subscribe().borrow().profiles.len(), 1);
+
+        let (read_done, read_done_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let refresher = Arc::clone(&broker);
+        let refresh = tokio::spawn(async move {
+            refresher
+                .refresh_profiles_between(&NoAccounts, async {
+                    let _ = read_done.send(());
+                    let _ = release_rx.await;
+                })
+                .await;
+        });
+        // The stale read has the row; the revoke starts in the window.
+        read_done_rx.await.expect("read finished");
+        let revoker = Arc::clone(&broker);
+        let id = created.profile_id.clone();
+        let revoke = tokio::spawn(async move { revoker.revoke_profile(&id).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        release.send(()).expect("release");
+        refresh.await.expect("refresh");
+        assert_eq!(revoke.await.expect("revoke"), Ok(true));
+        assert!(
+            broker.subscribe().borrow().profiles.is_empty(),
+            "the revoked row came back"
         );
     }
 }

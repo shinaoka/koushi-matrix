@@ -19,6 +19,7 @@ import type {
 } from "../../domain/types";
 import { t } from "../../i18n/messages";
 import { AgentAccountsSection, AllowedSendersSection } from "./AgentAccountsSection";
+import { AgentProfilesSection } from "./AgentProfilesSection";
 import { mcpAccountId, mcpAccountLabel, useMcpAssistantsState } from "../useMcpAssistantsState";
 import { MCP_ALLOW_ARMING_DELAY_MS, mcpAllowLabel, mcpWantsText, useArmed } from "../McpApprovalDialog";
 
@@ -97,6 +98,13 @@ export function AiAssistantsSection({
         onUpdateSettings={onUpdateSettings}
         onOpenAccountSettings={onOpenAccountSettings}
       />
+      {state ? (
+        <AgentProfilesSection
+          profiles={state.profiles}
+          agentAccounts={state.agent_accounts}
+          accountTabs={accountTabs}
+        />
+      ) : null}
       <AllowedSendersSection
         allowed={settings.allowed_senders}
         accountTabs={accountTabs}

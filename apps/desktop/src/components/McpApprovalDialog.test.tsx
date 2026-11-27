@@ -56,7 +56,9 @@ function state(pending: McpPendingApproval[]): McpAssistantsState {
     pending,
     assistants: [],
     registrations: [],
-    outdated_launchers: []
+    outdated_launchers: [],
+    profiles: [],
+    agent_accounts: []
   };
 }
 

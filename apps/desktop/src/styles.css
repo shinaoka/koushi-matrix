@@ -12350,3 +12350,51 @@ button.channel-access-pill:focus-visible {
 .focused-context-panel {
   position: relative;
 }
+
+/* Agent profiles (#2132). */
+.settings-profile-grants {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.settings-profile-grants legend {
+  padding: 0;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--text-muted, inherit);
+}
+
+.settings-profile-grant {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-profile-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  margin: 6px 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.settings-profile-launch {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.settings-profile-launch pre {
+  max-width: 100%;
+  margin: 0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

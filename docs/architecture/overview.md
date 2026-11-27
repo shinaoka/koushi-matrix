@@ -2685,10 +2685,11 @@ until the settings UI lands, so the path is reachable only through the Rust API.
 - **Draft text.** `get_draft` returns the draft body only when the draft is the
   caller's own, empty, or edited by the user; another subject's untouched
   staged draft has an empty body.
-- **Deferred to the settings stage (PR 3).** `ProfileView.status` needs a
-  `secret_missing` value, since a row whose secret file is gone is otherwise
-  undetectable; `PendingApproval` needs a `subject_kind`, since a profile label
-  can be made to look like a client name in an approval dialog.
+- **Settings stage (PR 3).** `ProfileView.status` has a `secret_missing` value,
+  since a row whose secret file is gone is otherwise undetectable. Still
+  deferred, and a release requirement tracked in #2153: `PendingApproval` needs
+  a `subject_kind`, since a profile label can be made to look like a client
+  name in an approval dialog.
 - **No IPC writer.** No IPC method creates, edits, rebinds or widens a profile.
   The only writers are the owner paths; an approval that widens a grant is
   answered by the owner.

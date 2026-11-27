@@ -39,6 +39,9 @@ import type {
   DesktopSnapshot,
   DesktopUpdateState,
   McpAssistantsState,
+  McpCreateProfileOutcome,
+  McpProfileGrants,
+  McpRevokeProfileOutcome,
   McpExtensionOutcome,
   McpNeed,
   McpRegisterOutcome,
@@ -164,6 +167,8 @@ export interface DesktopApi {
   removeMcpAssistant(clientName: string): Promise<void>;
   registerMcpClient(client: McpRegistrationClient): Promise<McpRegisterOutcome>;
   createClaudeDesktopExtension(): Promise<McpExtensionOutcome>;
+  createAgentProfile(label: string, accountId: string, grants: McpProfileGrants): Promise<McpCreateProfileOutcome>;
+  revokeAgentProfile(profileId: string): Promise<McpRevokeProfileOutcome>;
   settlementSnapshot(accountTabId?: string): Promise<DesktopSnapshot>;
   resyncSnapshot(accountTabId?: string): Promise<DesktopSnapshot>;
   getDiagnosticSnapshot(): Promise<DiagnosticLogSnapshot>;

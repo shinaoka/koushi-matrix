@@ -36,6 +36,8 @@ function mcpState(overrides: Partial<McpAssistantsState> = {}): McpAssistantsSta
       action: "run_command"
     }],
     outdated_launchers: [],
+    profiles: [],
+    agent_accounts: [],
     ...overrides
   };
 }

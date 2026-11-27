@@ -870,3 +870,44 @@ async fn a_cursor_that_cannot_be_saved_is_reported_and_ends_the_stream() {
     );
     world.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_settings_state_follows_the_lease_and_the_connection() {
+    async fn row_where(
+        world: &World,
+        id: &ProfileId,
+        check: impl Fn(&koushi_mcp_host::profile_view::ProfileView) -> bool,
+    ) {
+        for _ in 0..200 {
+            let found = world
+                .broker
+                .subscribe()
+                .borrow()
+                .profiles
+                .iter()
+                .any(|row| row.profile_id == id.as_str() && check(row));
+            if found {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the profile row never reached the expected state");
+    }
+    let world = World::start().await;
+    let (id, secret) = world.profile(AGENT_A).await;
+    let mut conn = Conn::profiled(&world, &id, &secret).await;
+    row_where(&world, &id, |row| row.connected && !row.subscribed).await;
+
+    let sub = sub_of(&conn.subscribe(None).await);
+    row_where(&world, &id, |row| row.connected && row.subscribed).await;
+
+    let ended = conn.request("unsubscribe", json!({"sub": sub})).await;
+    assert_eq!(ended["ok"], true, "{ended}");
+    row_where(&world, &id, |row| row.connected && !row.subscribed).await;
+
+    sub_of(&conn.subscribe(None).await);
+    row_where(&world, &id, |row| row.subscribed).await;
+    drop(conn);
+    row_where(&world, &id, |row| !row.connected && !row.subscribed).await;
+    world.shutdown().await;
+}

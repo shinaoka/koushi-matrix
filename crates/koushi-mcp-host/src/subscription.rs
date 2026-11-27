@@ -35,9 +35,18 @@ use koushi_mcp::wire::{ErrorCode, ServerMessage, WireError};
 pub(crate) struct Leases {
     held: Mutex<HashMap<ProfileId, u64>>,
     next: AtomicU64,
+    /// Told when a lease is taken or freed, for the settings page.
+    broker: Option<Arc<crate::consent::ConsentBroker>>,
 }
 
 impl Leases {
+    pub(crate) fn with_broker(broker: Arc<crate::consent::ConsentBroker>) -> Self {
+        Self {
+            broker: Some(broker),
+            ..Self::default()
+        }
+    }
+
     fn acquire(self: &Arc<Self>, profile: &ProfileId) -> Result<LeaseGuard, WireError> {
         let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
         if held.contains_key(profile) {
@@ -49,6 +58,10 @@ impl Leases {
         }
         let token = self.next.fetch_add(1, Ordering::Relaxed);
         held.insert(profile.clone(), token);
+        drop(held);
+        if let Some(broker) = &self.broker {
+            broker.profile_subscribed(profile, true);
+        }
         Ok(LeaseGuard(Lease {
             leases: Arc::clone(self),
             profile: profile.clone(),
@@ -76,6 +89,10 @@ impl Lease {
             .unwrap_or_else(PoisonError::into_inner);
         if held.get(&self.profile) == Some(&self.token) {
             held.remove(&self.profile);
+            drop(held);
+            if let Some(broker) = &self.leases.broker {
+                broker.profile_subscribed(&self.profile, false);
+            }
         }
     }
 }
