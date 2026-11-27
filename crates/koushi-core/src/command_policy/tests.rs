@@ -121,12 +121,14 @@ fn send_admission_covers_every_composer_surface() {
     };
     for command in [
         CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id: id,
             key: key.clone(),
             transaction_id: "transaction".to_owned(),
             document: koushi_state::ComposerDocument::default(),
         }),
         CoreCommand::Timeline(TimelineCommand::SendReply {
+            explicit_mentions: None,
             request_id: id,
             key: key.clone(),
             transaction_id: "transaction".to_owned(),

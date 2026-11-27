@@ -48,6 +48,7 @@ fn shown_room_state() -> AppState {
 
 fn thread_reply_request() -> DirectMessageRequest {
     DirectMessageRequest::ThreadReply {
+        mentions: None,
         room_id: ROOM.to_owned(),
         root_event_id: ROOT.to_owned(),
         reply_to_event_id: None,
@@ -278,6 +279,7 @@ async fn drive_thread_reply_with(
 
 fn thread_reply_request_to(room_id: &str, root_event_id: &str) -> DirectMessageRequest {
     DirectMessageRequest::ThreadReply {
+        mentions: None,
         room_id: room_id.to_owned(),
         root_event_id: root_event_id.to_owned(),
         reply_to_event_id: None,

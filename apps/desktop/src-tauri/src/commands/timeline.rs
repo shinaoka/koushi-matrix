@@ -208,6 +208,7 @@ pub(super) fn build_send_text_command(
         return None;
     }
     Some(CoreCommand::Timeline(TimelineCommand::SendText {
+        explicit_mentions: None,
         request_id,
         key: build_timeline_key(account_key, room_id),
         transaction_id,
@@ -2375,6 +2376,7 @@ pub(super) fn build_send_reply_command(
         return None;
     }
     Some(CoreCommand::Timeline(TimelineCommand::SendReply {
+        explicit_mentions: None,
         request_id,
         key: build_timeline_key(account_key, room_id),
         transaction_id,
@@ -2396,6 +2398,7 @@ pub(super) fn build_send_thread_reply_command(
         return None;
     }
     Some(CoreCommand::Timeline(TimelineCommand::SendReply {
+        explicit_mentions: None,
         request_id,
         key: TimelineKey {
             account_key,

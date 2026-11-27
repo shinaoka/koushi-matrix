@@ -60,7 +60,7 @@ use super::{
     SubmissionAdmissionLedger, SyntheticSendEnqueueRequest, TimelineSendCompletionDelivery,
     TimelineSendEnqueueContext, TimelineSendEnqueuePayload, TimelineSendFailureDelivery,
     TimelineSendTerminalAdmission, TimelineSendTerminalHandoff, TimelineSendTerminalIngress,
-    apply_send_completion_observation_and_handoff,
+    apply_explicit_mentions, apply_send_completion_observation_and_handoff,
     apply_send_completion_observation_loss_and_handoff, await_submission_admission,
     classify_send_queue_error, make_offline_reply_content, make_offline_thread_content,
     media_upload_progress_identity, pending_send_item, reply_source_from_raw,
@@ -116,6 +116,58 @@ fn thread_reply_to_a_cached_event_mentions_its_sender_within_the_thread() {
             .mentions
             .is_some_and(|mentions| mentions.user_ids.contains(&sender))
     );
+}
+
+/// #2154: a thread reply to Bob, built the way the send path builds it, then
+/// given the caller's explicit `mentions`.
+fn thread_reply_to_bob(
+    explicit: Option<&[&str]>,
+) -> Result<serde_json::Value, super::TimelineFailureKind> {
+    use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation;
+    let mut content = make_offline_reply_content(
+        RoomMessageEventContentWithoutRelation::text_plain("answer"),
+        matrix_sdk::ruma::event_id!("$reply-to:test").to_owned(),
+        &thread_key(),
+        Some((
+            matrix_sdk::ruma::user_id!("@bob:test").to_owned(),
+            Some(matrix_sdk::ruma::event_id!("$root:test").to_owned()),
+        )),
+        None,
+    )?;
+    let explicit = explicit.map(|ids| ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>());
+    apply_explicit_mentions(&mut content, explicit.as_deref())?;
+    Ok(serde_json::to_value(&content).unwrap())
+}
+
+#[test]
+fn empty_explicit_mentions_send_an_empty_m_mentions_that_wakes_nobody() {
+    let content = thread_reply_to_bob(Some(&[])).unwrap();
+    assert_eq!(content["m.mentions"], serde_json::json!({}), "{content}");
+}
+
+#[test]
+fn explicit_mentions_are_exactly_the_event_mentions_without_the_replied_to_sender() {
+    let content = thread_reply_to_bob(Some(&["@carol:test"])).unwrap();
+    assert_eq!(
+        content["m.mentions"],
+        serde_json::json!({ "user_ids": ["@carol:test"] }),
+        "{content}"
+    );
+}
+
+#[test]
+fn absent_explicit_mentions_still_mention_the_replied_to_sender() {
+    let content = thread_reply_to_bob(None).unwrap();
+    assert_eq!(
+        content["m.mentions"],
+        serde_json::json!({ "user_ids": ["@bob:test"] }),
+        "{content}"
+    );
+}
+
+#[test]
+fn an_invalid_explicit_mention_fails_before_anything_is_sent() {
+    assert!(thread_reply_to_bob(Some(&["not-a-user"])).is_err());
 }
 
 #[test]
@@ -1668,6 +1720,7 @@ async fn send_without_authoritative_account_session_fails_closed() {
 
     let rid = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        explicit_mentions: None,
         request_id: rid,
         key: room_key(),
         transaction_id: "txn-unsubscribed".to_owned(),
@@ -1726,6 +1779,7 @@ async fn a_ready_session_reads_but_refuses_sends_before_secure_backup_admission(
 
     let rid = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        explicit_mentions: None,
         request_id: rid,
         key: room_key(),
         transaction_id: "txn-read-only".to_owned(),

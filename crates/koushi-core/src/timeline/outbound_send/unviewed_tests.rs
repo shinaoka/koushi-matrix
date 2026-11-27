@@ -71,6 +71,7 @@ async fn direct_send_completes_in_unviewed_room_without_composer_actions() {
         let document = ComposerDocument::from_plain_text("Synthetic background message");
         let command = if reply {
             TimelineCommand::SendReply {
+                explicit_mentions: None,
                 request_id,
                 key: key.clone(),
                 transaction_id: "background-reply".into(),
@@ -79,6 +80,7 @@ async fn direct_send_completes_in_unviewed_room_without_composer_actions() {
             }
         } else {
             TimelineCommand::SendText {
+                explicit_mentions: None,
                 request_id,
                 key: key.clone(),
                 transaction_id: "background-text".into(),
@@ -244,6 +246,7 @@ async fn direct_reply_to_in_thread_event_stays_in_the_thread() {
         &server,
         request_id,
         TimelineCommand::SendReply {
+            explicit_mentions: None,
             request_id,
             key,
             transaction_id: "background-thread-reply".into(),
@@ -358,6 +361,7 @@ async fn direct_reply_in_a_viewed_room_stays_in_the_thread_outside_the_loaded_wi
         &server,
         request_id,
         TimelineCommand::SendReply {
+            explicit_mentions: None,
             request_id,
             key,
             transaction_id: "viewed-thread-reply".into(),
@@ -441,6 +445,7 @@ async fn direct_reply_outside_any_thread_stays_a_plain_reply() {
         &server,
         request_id,
         TimelineCommand::SendReply {
+            explicit_mentions: None,
             request_id,
             key,
             transaction_id: "plain-reply".into(),
@@ -510,6 +515,7 @@ async fn direct_reply_to_an_unresolvable_event_is_unchanged() {
         &server,
         request_id,
         TimelineCommand::SendReply {
+            explicit_mentions: None,
             request_id,
             key,
             transaction_id: "unknown-target-reply".into(),
@@ -588,6 +594,7 @@ async fn direct_send_rejects_foreign_missing_left_and_leaving_rooms() {
     ] {
         manager
             .handle_command(TimelineCommand::SendText {
+                explicit_mentions: None,
                 request_id: fake_rid(9200),
                 key,
                 transaction_id: "rejected-send".into(),

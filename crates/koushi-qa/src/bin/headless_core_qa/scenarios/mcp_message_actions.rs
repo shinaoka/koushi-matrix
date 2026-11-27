@@ -730,6 +730,7 @@ async fn thread_reply(
             reply_to_event_id: None,
             body: body.to_owned(),
             formatting,
+            mentions: None,
             retry: Some(qa_retry_key(client_request_id)),
         },
         label,

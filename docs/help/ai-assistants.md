@@ -21,7 +21,7 @@ account and each permission.
 | `search_messages` | Searches decrypted history and returns room, event id, sender, timestamp, and a snippet. | read |
 | `get_attachment` | Downloads one attachment into Koushi's media cache and returns its path. | attachments |
 | `send_message` | Sends a message, optionally as a reply, or sends local files with an optional caption. | send; also attachments when sending files |
-| `send_thread_reply` | Posts a plain-text reply in a thread, optionally quoting and mentioning one message of that thread. | send |
+| `send_thread_reply` | Posts a plain-text reply in a thread, optionally quoting and mentioning one message of that thread. `send_message` and `send_thread_reply` take an optional `mentions` list of user ids that is exactly the event's `m.mentions.user_ids`: a reply then does not add the replied-to sender, and an empty list mentions nobody. Omit it to keep the default. | send |
 | `draft_message` | Puts plain text into a room's or a thread's composer as a draft for you to review, edit, and send. Replaces, with `replace`, a draft an assistant staged that you have not touched. Never sends. | draft |
 | `get_draft` | Reads back what a room's or a thread's composer currently holds, and whether it is the assistant's untouched draft, your own text, or empty. Changes nothing. | draft |
 | `get_message` | Fetches one message by its event id, with sender, time, the body after its latest edit, reactions, and its thread or reply relation. | read |

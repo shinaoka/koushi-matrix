@@ -479,9 +479,17 @@ async fn a_plain_thread_reply_targets_the_root() {
     );
     mock.expect(1).mount().await;
 
-    let outcome = thread_reply_direct(session, &room_id, "$root", None, "answer", formatting())
-        .await
-        .expect("a thread root is a valid target");
+    let outcome = thread_reply_direct(
+        session,
+        &room_id,
+        "$root",
+        None,
+        "answer",
+        formatting(),
+        None,
+    )
+    .await
+    .expect("a thread root is a valid target");
     assert_eq!(outcome.event_id, "$sent");
     // #1853: the reveal opens the thread the send resolved, so the outcome names
     // it and starts without a pane the account layer cannot know about.
@@ -534,6 +542,7 @@ async fn an_in_thread_event_names_its_thread_root() {
         None,
         "another answer",
         formatting(),
+        None,
     )
     .await
     .expect("an in-thread event resolves to its thread's root");
@@ -591,6 +600,7 @@ async fn a_reply_target_in_the_thread_is_quoted_and_its_sender_mentioned() {
         Some("$thread-reply"),
         "disagree",
         formatting(),
+        None,
     )
     .await
     .expect("a message in the same thread can be quoted");
@@ -634,6 +644,7 @@ async fn a_reply_target_naming_the_root_quotes_the_root() {
         Some("$root"),
         "about the root",
         formatting(),
+        None,
     )
     .await
     .expect("the root is in its own thread");
@@ -692,6 +703,7 @@ async fn an_in_thread_root_argument_combines_with_a_quote_target() {
         Some("$later"),
         "both",
         formatting(),
+        None,
     )
     .await
     .expect("both events are in the same thread");
@@ -752,6 +764,7 @@ async fn a_redacted_quote_target_is_refused_and_nothing_is_sent() {
         Some("$thread-reply"),
         "about a deleted message",
         formatting(),
+        None,
     )
     .await
     .expect_err("a deleted message cannot be quoted");
@@ -794,6 +807,7 @@ async fn a_reply_target_in_another_thread_is_refused_and_nothing_is_sent() {
         Some("$elsewhere"),
         "off topic",
         formatting(),
+        None,
     )
     .await
     .expect_err("a message of another thread cannot be quoted here");
@@ -840,6 +854,7 @@ async fn a_reply_target_outside_any_thread_is_refused_and_nothing_is_sent() {
         Some("$main"),
         "wrong target",
         formatting(),
+        None,
     )
     .await
     .expect_err("a main-timeline message is not in the thread");
@@ -884,6 +899,7 @@ async fn an_unknown_reply_target_is_refused_and_nothing_is_sent() {
         Some("$missing"),
         "nobody",
         formatting(),
+        None,
     )
     .await
     .expect_err("an unknown event cannot be quoted");
@@ -905,9 +921,17 @@ async fn a_redacted_thread_root_is_refused() {
     }));
     server.mock_room_event().ok(redacted).mount().await;
 
-    let failure = thread_reply_direct(session, &room_id, "$root", None, "answer", formatting())
-        .await
-        .expect_err("a deleted root cannot be answered");
+    let failure = thread_reply_direct(
+        session,
+        &room_id,
+        "$root",
+        None,
+        "answer",
+        formatting(),
+        None,
+    )
+    .await
+    .expect_err("a deleted root cannot be answered");
     assert_eq!(failure, DirectMessageFailure::Redacted);
 }
 
@@ -924,9 +948,17 @@ async fn a_redacted_encrypted_thread_root_is_refused() {
         .mount()
         .await;
 
-    let failure = thread_reply_direct(session, &room_id, "$root", None, "answer", formatting())
-        .await
-        .expect_err("a deleted root cannot be answered");
+    let failure = thread_reply_direct(
+        session,
+        &room_id,
+        "$root",
+        None,
+        "answer",
+        formatting(),
+        None,
+    )
+    .await
+    .expect_err("a deleted root cannot be answered");
     assert_eq!(failure, DirectMessageFailure::Redacted);
 }
 

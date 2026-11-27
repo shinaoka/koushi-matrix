@@ -322,6 +322,7 @@ fn tauri_command_routes_build_expected_core_commands() {
             key,
             transaction_id: route_transaction_id,
             document,
+            ..
         }) => {
             assert_eq!(request_id, fake_request_id(11));
             assert_eq!(key.account_key, active_account_key);
@@ -1666,6 +1667,7 @@ fn tauri_command_routes_build_expected_core_commands() {
             transaction_id,
             in_reply_to_event_id,
             document,
+            ..
         }) => {
             assert_eq!(request_id, fake_request_id(23));
             assert_eq!(key.account_key, active_account_key);
@@ -1698,6 +1700,7 @@ fn tauri_command_routes_build_expected_core_commands() {
             transaction_id,
             in_reply_to_event_id,
             document,
+            ..
         }) => {
             assert_eq!(request_id, fake_request_id(24));
             assert_eq!(key.account_key, active_account_key);

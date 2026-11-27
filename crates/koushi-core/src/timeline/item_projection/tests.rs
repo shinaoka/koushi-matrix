@@ -1670,6 +1670,7 @@ fn timeline_send_command_bodies_are_not_visible_in_debug() {
     // Manager-owned enqueue payloads originate from the public command, so
     // its Debug implementation is the privacy boundary for the send body.
     let cmd = TimelineCommand::SendText {
+        explicit_mentions: None,
         request_id: fake_rid(1),
         key: room_key(),
         transaction_id: "txn-vis".to_owned(),

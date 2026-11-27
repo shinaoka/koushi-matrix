@@ -273,6 +273,9 @@ pub enum TimelineCommand {
         key: TimelineKey,
         transaction_id: String,
         document: ComposerDocument,
+        /// Exactly the event's `m.mentions.user_ids` when given (#2154); `None`
+        /// keeps the default (the replied-to sender is mentioned).
+        explicit_mentions: Option<Vec<String>>,
     },
     SubmitText {
         request_id: RequestId,
@@ -289,6 +292,9 @@ pub enum TimelineCommand {
         transaction_id: String,
         in_reply_to_event_id: String,
         document: ComposerDocument,
+        /// Exactly the event's `m.mentions.user_ids` when given (#2154); `None`
+        /// keeps the default (the replied-to sender is mentioned).
+        explicit_mentions: Option<Vec<String>>,
     },
     SubmitReply {
         request_id: RequestId,
