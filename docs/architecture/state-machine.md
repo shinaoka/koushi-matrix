@@ -8006,32 +8006,101 @@ Canon for #2118 as shipped and for the #2124 target; stages are named per item.
   to the account's encrypted store before the sync response is acknowledged. The
   event id de-duplicates a replay. Three failed persists mark the feed unhealthy.
 - **delivered**: as shipped, a `wait_for_mentions` call returns the row (pull).
-  Target (#2132): Core also pushes it to the profile's subscriber.
-- **acknowledged**: as shipped, the cursor the caller presents next is the only
-  acknowledgement; Core keeps no per-reader state. Target semantics: **open
-  decision**, below.
+  A protocol 2 profile connection that subscribed (#2132) is also pushed it,
+  in per-account sequence order, at most `PUSH_WINDOW` rows sent and not
+  acknowledged; a full window stops the pump reading the feed, so a slow
+  consumer is paced, never overflowed.
+- **acknowledged**: the plugin sends `ack {sub, cursor}` and Core stores one
+  acknowledged cursor per profile (see "Cursor acknowledgement"). `wait_for_mentions`
+  keeps no per-reader state: the cursor its caller presents next is its only
+  acknowledgement.
 - **retained or expired**: rows stay until 1000 rows or 30 days are exceeded,
   oldest first. A cursor before a dropped row is `expired_cursor`, reported as
   `resync_required`; it never restarts at the head. Acknowledgement does not
   delete a row.
 
-### Subscription lease (target, #2132)
+### Subscription lease (#2132)
 
-States: `free` → `held(connection)` → `free`.
+States: `free` → `held(connection)` → `free`. The map is in memory only: a
+restarted Koushi has no holders, so no stale lock survives.
 
 - **acquire**: a connection presenting profile P subscribes; if P is `free` it
   becomes `held` by that connection.
 - **`profile_busy`**: if P is `held`, a second connection's subscription fails
-  with the typed error `profile_busy`. That connection may still make requests.
-  A profile bound to another account never shares the lease.
-- **release**: the lease returns to `free` when the holder disconnects, however
-  it ends (close, crash, host shutdown). Nothing is acknowledged by releasing; a
-  later subscriber resumes from its own cursor.
+  with the typed error `profile_busy`. That connection may still make requests
+  (requests are not leased). A profile bound to another account never shares the
+  lease.
+- **release**: the lease returns to `free` on `unsubscribe`, on any `SubEnd`, and
+  when the holder's connection ends however it ends (close, crash, host
+  shutdown). The acknowledged cursor is made durable before the lease is freed.
+  Releasing acknowledges nothing; a later subscriber resumes after the stored
+  cursor.
 
-### Cursor acknowledgement (open decision)
+### Subscription end
 
-Whether and when Core treats a pushed row as received by the agent, and whether
-a push without a harness-side receipt may advance a cursor, is **undecided**. It
-waits for the four harness verifications (#2126, #2127, #2128, #2129), because a
-harness that cannot tell a plugin that the agent received an event constrains the
-rule. Decided in #2132. Until then, no code may assume a push advances a cursor.
+A stream ends with `SubEnd{sub, error}` and releases the lease; the connection
+stays open unless the end is a revocation. The `SubEnd` is queued through one
+writer-queue slot reserved for it when the subscription starts, so a full queue
+cannot swallow it and it is queued exactly once. The lease is released, and the
+acknowledged cursor made durable, before the `SubEnd` is queued; the
+subscription counts as ended (so that `subscribe` may replace it) only after the
+`SubEnd` is queued, so a resubscribe never erases an end. `resync_required`
+carries a reason: `expired_cursor` (the position fell out of retention),
+`generation_changed` (the live feed's log is not the one the stream started on:
+checked before every page and on every idle re-check), `ack_stalled` (the
+window stayed full without an `ack` for `ACK_STALL`), `write_stalled` (the
+writer queue stayed full for `WRITE_STALL`). The first two name lost rows; for
+the last two nothing is lost, because resuming redelivers everything after the
+acknowledged cursor. Other ends are `unauthorized` (profile revoked: the
+`SubEnd` is queued before the connection closes, whether the revocation is
+noticed idle, mid-stream or during a request), `not_permitted` (read removed),
+`account_unavailable` (signed out, locked, agent role removed, feed unhealthy)
+and `internal/ack_unsaved` (the acknowledged cursor could not be written five
+times in a row, once per `ACK_FLUSH`; a diagnostic token `mcp.subscription
+ack_flush reason=write_failed` is recorded at the first failure). `write_stalled`
+is best-effort at the peer: the `SubEnd` waits behind the frames the peer is not
+reading, so it arrives only if the peer resumes reading before the writer's own
+`WRITE_STALL` closes the connection, which is then the signal. The write
+timeout applies only to a connection that has subscribed; a protocol 1
+connection never has one. Rows are never skipped silently: a row is delivered,
+redelivered, or the loss is named.
+
+### Requests while subscribed
+
+Frames are read by their own task. While a request runs (a `send_message`
+waiting minutes for approval), an `ack` that arrives is applied and answered at
+once, so a busy request never fills the window; any other frame waits for the
+running request. `subscribe` and `unsubscribe` run alone.
+
+### Cursor acknowledgement (decided in #2132)
+
+`ack {sub, cursor}` means: *the plugin asserts that the harness has accepted this
+row, by the strongest signal that harness gives it.* Core guarantees
+at-least-once delivery **to** that assertion and nothing past it. Per-harness ack
+points are not normative.
+
+- **Cumulative.** It acknowledges every row up to and including the cursor, which
+  is sound because sequence numbers are monotonic per account. A cursor older
+  than the acknowledged one is a no-op. A cursor newer than anything sent on the
+  subscription is `unsupported/ack_ahead`. That bound is "sent", not
+  "written to the peer": a plugin that knows the cursor format can acknowledge
+  rows it has not received. This is accepted, because an ack is the plugin's
+  assertion and Core guarantees delivery only up to it.
+- **Persisted per profile** in `<data_dir>/mcp/profile-state/<profile_id>.json`,
+  never in `profiles.json`, by the host that holds the lease, coalesced to one
+  write per `ACK_FLUSH` and flushed when the subscription ends (a cancelled
+  `unsubscribe` keeps the subscription and its lease until that flush ran). It never moves
+  backwards and is not written for a profile that no longer has a row. A crash
+  can lose the last second of acknowledgements, which redelivers rows and never
+  loses one.
+- **Resume.** `subscribe` without `after` continues after the acknowledged
+  cursor, or after the profile's creation baseline before its first ack;
+  `"retained"` starts at the oldest retained row; an `mf1` cursor replays after
+  that row, validated by the feed's own `CursorRejection`.
+- **Claude Code** has no delivery receipt, so its adapter acks when the channel
+  notification is written. That is at-most-once at the harness boundary: Core
+  cannot see a notification Claude Code drops. Nothing is deleted on ack, so
+  `wait_for_mentions` with a cursor still returns the retained rows.
+
+Acknowledgement never deletes a row; retention (1000 rows or 30 days) alone
+does.

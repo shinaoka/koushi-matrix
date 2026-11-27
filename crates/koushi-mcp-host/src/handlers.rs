@@ -240,7 +240,7 @@ fn list_accounts(shared: &Shared, client: &ClientIdentity) -> Result<Value, Wire
 
 /// Resolves the account, then checks or asks for `need`. An unknown account
 /// fails before any approval is shown.
-async fn authorize(
+pub(crate) async fn authorize(
     shared: &Shared,
     client: &ClientIdentity,
     account_id: &str,
@@ -1910,19 +1910,29 @@ async fn wait_for_mentions(
         ));
     }
     Ok(json!({
-        "mentions": page.entries.iter().map(|entry| json!({
-            "cursor": feed.cursor_for(entry.seq),
-            "account_id": account_id,
-            "room_id": entry.room_id,
-            "event_id": entry.event_id,
-            "sender_id": entry.sender,
-            "timestamp_ms": entry.timestamp_ms,
-            "thread_root_event_id": entry.thread_root,
-            "kind": entry.kind.as_str(),
-        })).collect::<Vec<_>>(),
+        "mentions": page.entries.iter().map(|entry| mention_row(&feed, &account_id, entry)).collect::<Vec<_>>(),
         "cursor": page.cursor,
         "coverage": "exact_mentions",
     }))
+}
+
+/// One wake-feed row as `wait_for_mentions` and the push subscription send it.
+/// Carries no message body: the agent reads it with the tools its grant allows.
+pub(crate) fn mention_row(
+    feed: &koushi_core::mention_feed::MentionFeed,
+    account_id: &str,
+    entry: &koushi_core::mention_feed::MentionEntry,
+) -> Value {
+    json!({
+        "cursor": feed.cursor_for(entry.seq),
+        "account_id": account_id,
+        "room_id": entry.room_id,
+        "event_id": entry.event_id,
+        "sender_id": entry.sender,
+        "timestamp_ms": entry.timestamp_ms,
+        "thread_root_event_id": entry.thread_root,
+        "kind": entry.kind.as_str(),
+    })
 }
 
 /// Downloads one file of a message into Koushi's managed media cache and
@@ -2047,7 +2057,7 @@ fn joined_room_label(connection: &koushi_core::CoreConnection, room_id: &str) ->
 /// The account's live connection. A missing, signed-out, locked, or
 /// still-restoring account fails the request before any approval exists, so an
 /// unavailable account never reads as one with no rooms or no activity.
-fn account_connection(
+pub(crate) fn account_connection(
     accounts: &Arc<dyn BridgeAccounts>,
     account_id: &str,
 ) -> Result<koushi_core::CoreConnection, WireError> {
@@ -2073,7 +2083,7 @@ fn required_account_id(arguments: &Value) -> Result<String, WireError> {
 /// The signed-in account key. Only a ready session is a usable account: a
 /// signed-out, locked, restoring, or still-verifying one answers
 /// `account_unavailable`.
-fn ready_account_key(
+pub(crate) fn ready_account_key(
     session: &SessionState,
 ) -> Result<koushi_protocol::ids::AccountKey, WireError> {
     match session {

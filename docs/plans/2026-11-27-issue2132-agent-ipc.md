@@ -393,9 +393,9 @@ would skip or stall:
 | reason | Trigger | Consumer action |
 | --- | --- | --- |
 | `expired_cursor` | The unacknowledged position fell out of retention (1000 rows / 30 days) before the consumer acked. Rows were lost to the feed. | Resubscribe with `after:"retained"`, treat history as possibly missed, de-duplicate by event id. |
-| `generation_changed` | The log was recreated. | Same. |
+| `generation_changed` | The live feed's log is not the one the stream started on (re-checked before every page and while idle). | Same. |
 | `ack_stalled` | The window stayed full with no `ack` for `ACK_STALL` (60 s). | Resubscribe with `after` omitted; unacked rows are redelivered. |
-| `write_stalled` | A frame could not be written for `WRITE_STALL` (15 s). | Same. |
+| `write_stalled` | A frame could not be written for `WRITE_STALL` (15 s). Best-effort at the peer: the `SubEnd` is queued through a reserved slot but waits behind the unread frames; if the peer does not resume reading, the connection closing is the signal. | Same. |
 
 For the last two, nothing is lost: Core still holds the acknowledged cursor, so
 resuming redelivers everything after it. Rows are never silently skipped: they
@@ -431,7 +431,7 @@ the existing `resync_required` convention (`wire.rs:79-85`).
   closes its socket and the guard drops. A plugin that hangs without closing is
   covered by `ack_stalled` / `write_stalled`, which end the subscription and so
   release the lease.
-- Revocation and role removal release it through the same `SubEnd`.
+- Revocation and role removal release it through the same `SubEnd`. A revoke queues `SubEnd{unauthorized/profile_revoked}` before the connection closes, however it is noticed (a reserved writer slot makes this independent of queue state).
 - Requests are deliberately not leased: a profile's plugin may open a second
   connection for tool calls (the MCP launcher is a different process from the
   channel adapter), and all of those are bound to the same account anyway. The

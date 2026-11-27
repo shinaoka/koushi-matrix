@@ -8,9 +8,9 @@
 //! low-frequency, and a write here can never resurrect a revoked profile. A
 //! state file without a profile row is ignored and swept at start.
 //!
-//! PR 1b writes the baseline and the rejection time. The acknowledged cursor is
-//! added by the subscription stage; unknown keys are kept so that stage's file
-//! survives a downgrade.
+//! It also holds the one acknowledged cursor of the profile (D7), written only
+//! by the host that owns the profile's lease. Unknown keys are kept so a newer
+//! file survives a downgrade.
 
 use std::path::{Path, PathBuf};
 
@@ -35,6 +35,8 @@ pub struct ProfileState {
     pub baseline: Option<Baseline>,
     /// When a connection last presented this profile with the wrong secret.
     pub last_rejected_ms: Option<u64>,
+    /// The latest row the plugin acknowledged (`mf1.<generation>.<seq>`).
+    pub acked_cursor: Option<String>,
     pub(crate) extra: Map<String, Value>,
 }
 
@@ -66,9 +68,14 @@ pub(crate) fn load(data_dir: &Path, id: &ProfileId) -> ProfileState {
         _ => None,
     };
     let last_rejected_ms = root.remove("last_rejected_ms").and_then(|v| v.as_u64());
+    let acked_cursor = match root.remove("acked_cursor") {
+        Some(Value::String(cursor)) => Some(cursor),
+        _ => None,
+    };
     ProfileState {
         baseline,
         last_rejected_ms,
+        acked_cursor,
         extra: root,
     }
 }
@@ -90,6 +97,9 @@ pub(crate) fn save(data_dir: &Path, id: &ProfileId, state: &ProfileState) -> std
     if let Some(at) = state.last_rejected_ms {
         root.insert("last_rejected_ms".to_owned(), json!(at));
     }
+    if let Some(cursor) = &state.acked_cursor {
+        root.insert("acked_cursor".to_owned(), json!(cursor));
+    }
     let bytes = serde_json::to_vec_pretty(&Value::Object(root))
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     // `tempfile` creates the file 0600 on Unix.
@@ -107,6 +117,9 @@ pub(crate) fn save(data_dir: &Path, id: &ProfileId, state: &ProfileState) -> std
 /// Coalesced to one write per second so a guessing loop cannot become a
 /// write loop.
 pub(crate) fn note_rejected(data_dir: &Path, id: &ProfileId, now_ms: u64) {
+    let _writer = WRITER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut state = load(data_dir, id);
     if state
         .last_rejected_ms
@@ -117,6 +130,48 @@ pub(crate) fn note_rejected(data_dir: &Path, id: &ProfileId, now_ms: u64) {
     state.last_rejected_ms = Some(now_ms);
     let _ = save(data_dir, id, &state);
 }
+
+/// Records the acknowledged cursor, never lowering it. Skipped when the profile
+/// no longer has a row, so a late write cannot bring a revoked profile's file
+/// back. Says whether the cursor is now durable, the profile is gone (nothing
+/// to save, not a fault), or the write failed.
+pub(crate) fn save_acked(
+    data_dir: &Path,
+    id: &ProfileId,
+    cursor: &str,
+    seq_of: impl Fn(&str) -> Option<u64>,
+) -> SaveOutcome {
+    let _writer = WRITER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if crate::profiles::lookup(data_dir, id).is_none() {
+        return SaveOutcome::Revoked;
+    }
+    let mut state = load(data_dir, id);
+    if let (Some(stored), Some(new)) = (
+        state.acked_cursor.as_deref().and_then(&seq_of),
+        seq_of(cursor),
+    ) && stored >= new
+    {
+        return SaveOutcome::Durable;
+    }
+    state.acked_cursor = Some(cursor.to_owned());
+    if save(data_dir, id, &state).is_ok() {
+        SaveOutcome::Durable
+    } else {
+        SaveOutcome::Failed
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SaveOutcome {
+    Durable,
+    Revoked,
+    Failed,
+}
+
+/// Serialises this process's read-modify-write of a state file.
+static WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(crate) fn remove(data_dir: &Path, id: &ProfileId) {
     let _ = std::fs::remove_file(path(data_dir, id));

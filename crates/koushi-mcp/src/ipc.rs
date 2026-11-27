@@ -245,7 +245,10 @@ impl Client {
                 message,
                 reason,
             }),
-            ServerMessage::HelloOk { .. } => {
+            // The launcher never subscribes, so a host has no push to send it.
+            ServerMessage::HelloOk { .. }
+            | ServerMessage::Push { .. }
+            | ServerMessage::SubEnd { .. } => {
                 Err(WireError::new_without_detail(ErrorCode::Internal))
             }
         }

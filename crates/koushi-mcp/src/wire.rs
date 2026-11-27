@@ -54,6 +54,9 @@ pub enum ErrorCode {
     /// window). The message leads with the reason token; the caller starts a
     /// fresh baseline instead of assuming nothing happened.
     ResyncRequired,
+    /// Another connection of the same agent profile already holds its push
+    /// subscription (#2132). Requests on this connection keep working.
+    ProfileBusy,
     /// An unexpected internal failure; no detail crosses the boundary.
     Internal,
 }
@@ -73,6 +76,7 @@ impl ErrorCode {
             Self::Conflict => "conflict",
             Self::Unsupported => "unsupported",
             Self::ResyncRequired => "resync_required",
+            Self::ProfileBusy => "profile_busy",
             Self::Internal => "internal",
         }
     }
@@ -197,6 +201,16 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<WireError>,
     },
+    /// Wake rows pushed to a subscribed protocol 2 connection, in per-account
+    /// sequence order. `cursor` is the last row's cursor (#2132).
+    Push {
+        sub: u64,
+        rows: Vec<serde_json::Value>,
+        cursor: String,
+    },
+    /// The subscription ended for a typed reason; the lease is already
+    /// released and the connection stays open (#2132).
+    SubEnd { sub: u64, error: WireError },
     /// Fatal pre-handshake failure; the app closes the socket afterwards.
     Error {
         code: ErrorCode,
@@ -311,6 +325,8 @@ mod tests {
             ErrorCode::Busy,
             ErrorCode::Conflict,
             ErrorCode::Unsupported,
+            ErrorCode::ResyncRequired,
+            ErrorCode::ProfileBusy,
             ErrorCode::Internal,
         ];
         let mut seen = std::collections::HashSet::new();

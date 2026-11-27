@@ -2704,7 +2704,9 @@ until the settings UI lands, so the path is reachable only through the Rust API.
 
 ### Open decisions
 
-These are not decided; do not implement either side before the owner decides.
+These are not decided (item 4 was decided in #2132 and is kept so its number
+stays stable); do not implement either side of the others before the owner
+decides.
 
 1. **DM classification.** The epic's rule (agent plus exactly one other joined
    member, judged on arrival) versus the shipped `room.is_direct()`. Decided
@@ -2714,9 +2716,9 @@ These are not decided; do not implement either side before the owner decides.
 3. **Keyword highlights.** Whether a push-rule keyword or display-name highlight
    counts as a mention for an agent. The epic proposes no; the shipped feed counts
    it.
-4. **Cursor acknowledgement for the push subscription.** Waits for the harness
-   verifications (#2126, #2127, #2128, #2129) and is decided in #2132. See the
-   state machine, "Wake-feed row and subscription lifecycle".
+4. **Cursor acknowledgement for the push subscription.** Decided in #2132:
+   explicit, cumulative `ack`. See the state machine, "Wake-feed row and
+   subscription lifecycle".
 5. **Store-key storage on a host without an OS secret store.** A 0600 key file or
    systemd credentials. Until decided, such a host fails closed (repository rules,
    Key Management).
