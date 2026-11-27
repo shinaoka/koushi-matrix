@@ -13,9 +13,13 @@ use koushi_state::{
 };
 
 pub fn session_info() -> SessionInfo {
+    session_info_for("@member1:example.invalid")
+}
+
+pub fn session_info_for(user_id: &str) -> SessionInfo {
     SessionInfo {
         homeserver: "https://example.invalid".into(),
-        user_id: "@member1:example.invalid".into(),
+        user_id: user_id.into(),
         device_id: "SYNTHETIC".into(),
         authentication_method: SessionAuthenticationMethod::Unknown,
     }
@@ -23,11 +27,16 @@ pub fn session_info() -> SessionInfo {
 
 /// Signs the disposable runtime in.
 pub async fn sign_in(runtime: &CoreRuntime) {
+    sign_in_as(runtime, "@member1:example.invalid").await;
+}
+
+/// Signs the disposable runtime in as `user_id`.
+pub async fn sign_in_as(runtime: &CoreRuntime, user_id: &str) {
     apply_actions(
         runtime,
         vec![
             AppAction::RestoreSessionRequested,
-            AppAction::RestoreSessionSucceeded(session_info()),
+            AppAction::RestoreSessionSucceeded(session_info_for(user_id)),
             AppAction::CurrentDeviceTrustChanged(CurrentDeviceTrustState::Verified),
         ],
     )
@@ -137,4 +146,25 @@ pub fn space(
             .collect(),
         parent_side_child_room_ids: Vec::new(),
     }
+}
+
+/// Marks `user_id` as an agent account in this runtime's settings, as the
+/// owner's settings page does.
+pub async fn mark_agent_account(runtime: &CoreRuntime, user_id: &str) {
+    let mut values = koushi_state::AppSettingsValues::default();
+    values
+        .agent_accounts
+        .apply(&koushi_state::AgentAccountPatch {
+            user_id: user_id.to_owned(),
+            role: Some(koushi_state::AgentAccountRole::default()),
+        });
+    apply_actions(runtime, vec![AppAction::AppSettingsSynchronized { values }]).await;
+    let connection = runtime.attach();
+    for _ in 0..500 {
+        if connection.snapshot().is_agent_account() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the agent role did not settle in time");
 }

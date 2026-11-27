@@ -1,4 +1,14 @@
 use super::*;
+
+const PROFILE_ID: &str = "prof_00000000000000000000000000000001";
+
+fn profile() -> GrantSubject {
+    GrantSubject::profile(crate::consent::ProfileId::parse(PROFILE_ID).expect("a profile id"))
+}
+
+fn caller() -> GrantSubject {
+    GrantSubject::client("caller")
+}
 use koushi_core::CoreRuntime;
 use koushi_state::{ActivityRow, SessionInfo};
 
@@ -81,7 +91,7 @@ async fn continuation_is_immutable_when_new_current_rows_arrive() {
     let pages = ActivityPages::default();
     let first = pages
         .read(
-            "caller",
+            &caller(),
             "account",
             query(2),
             None,
@@ -95,7 +105,7 @@ async fn continuation_is_immutable_when_new_current_rows_arrive() {
     newer.rows[0].event_id = Some("$newest-added-later".into());
     let second = pages
         .read(
-            "caller",
+            &caller(),
             "account",
             query(2),
             Some(cursor(&first)),
@@ -112,7 +122,7 @@ async fn continuation_is_immutable_when_new_current_rows_arrive() {
     );
     let third = pages
         .read(
-            "caller",
+            &caller(),
             "account",
             query(2),
             Some(cursor(&second)),
@@ -134,7 +144,7 @@ async fn cursors_bind_caller_account_query_and_limit() {
     let pages = ActivityPages::default();
     let first = pages
         .read(
-            "caller",
+            &caller(),
             "account",
             query(1),
             None,
@@ -144,12 +154,16 @@ async fn cursors_bind_caller_account_query_and_limit() {
             &std::collections::HashMap::new(),
         )
         .unwrap();
-    for (caller, account, query) in [
-        ("other", "account", query(1)),
-        ("caller", "other", query(1)),
-        ("caller", "account", query(2)),
+    for (subject, account, query) in [
+        (GrantSubject::client("other"), "account", query(1)),
+        // A profile never replays a client's cursor, even one whose name is
+        // the profile's own id.
+        (profile(), "account", query(1)),
+        (GrantSubject::client(PROFILE_ID), "account", query(1)),
+        (caller(), "other", query(1)),
+        (caller(), "account", query(2)),
         (
-            "caller",
+            caller(),
             "account",
             Query {
                 from: Some(1),
@@ -157,7 +171,7 @@ async fn cursors_bind_caller_account_query_and_limit() {
             },
         ),
         (
-            "caller",
+            caller(),
             "account",
             Query {
                 rooms: vec!["!room:example.test".into()],
@@ -167,7 +181,7 @@ async fn cursors_bind_caller_account_query_and_limit() {
     ] {
         assert_reason(
             pages.read(
-                caller,
+                &subject,
                 account,
                 query,
                 Some(cursor(&first)),
@@ -190,7 +204,7 @@ async fn malformed_unknown_and_expired_cursors_require_resync() {
     for malformed in ["", "not-a-cursor", &"g".repeat(64)] {
         assert_reason(
             pages.read(
-                "caller",
+                &caller(),
                 "account",
                 query(1),
                 Some(malformed),
@@ -204,7 +218,7 @@ async fn malformed_unknown_and_expired_cursors_require_resync() {
     }
     assert_reason(
         pages.read(
-            "caller",
+            &caller(),
             "account",
             query(1),
             Some(&"a".repeat(64)),
@@ -217,7 +231,7 @@ async fn malformed_unknown_and_expired_cursors_require_resync() {
     );
     let first = pages
         .read(
-            "caller",
+            &caller(),
             "account",
             query(1),
             None,
@@ -231,7 +245,7 @@ async fn malformed_unknown_and_expired_cursors_require_resync() {
         Instant::now() - TTL - Duration::from_secs(1);
     assert_reason(
         pages.read(
-            "caller",
+            &caller(),
             "account",
             query(1),
             Some(cursor(&first)),
@@ -254,7 +268,7 @@ async fn session_revision_identity_and_runtime_replacement_invalidate_cursors() 
     for variant in 0..4 {
         let first = pages
             .read(
-                "caller",
+                &caller(),
                 "account",
                 query(1),
                 None,
@@ -281,7 +295,7 @@ async fn session_revision_identity_and_runtime_replacement_invalidate_cursors() 
         };
         assert_reason(
             pages.read(
-                "caller",
+                &caller(),
                 "account",
                 query(1),
                 Some(cursor(&first)),
@@ -304,7 +318,7 @@ async fn room_left_or_newly_muted_invalidates_retained_cursor() {
     let pages = ActivityPages::default();
     let first = pages
         .read(
-            "caller",
+            &caller(),
             "account",
             query(1),
             None,
@@ -316,7 +330,7 @@ async fn room_left_or_newly_muted_invalidates_retained_cursor() {
         .unwrap();
     assert_reason(
         pages.read(
-            "caller",
+            &caller(),
             "account",
             query(1),
             Some(cursor(&first)),
@@ -329,7 +343,7 @@ async fn room_left_or_newly_muted_invalidates_retained_cursor() {
     );
     let error = pages
         .read(
-            "caller",
+            &caller(),
             "account",
             Query {
                 rooms: vec!["!left:example.test".into()],
@@ -355,7 +369,7 @@ async fn initial_reads_exclude_current_rows_outside_eligibility() {
     snapshot.rows[0].room_id = "!muted:example.test".into();
     let result = pages
         .read(
-            "caller",
+            &caller(),
             "account",
             query(2),
             None,
@@ -386,7 +400,7 @@ async fn unicode_preview_truncation_and_unknown_content_are_explicit() {
     snapshot.rows[1].preview = None;
     let result = pages
         .read(
-            "caller",
+            &caller(),
             "account",
             query(2),
             None,
@@ -421,7 +435,7 @@ async fn retention_enforces_snapshot_count_byte_budget_and_two_hundred_rows() {
     let pages = ActivityPages::default();
     let first = pages
         .read(
-            "caller",
+            &caller(),
             "account",
             query(100),
             None,
@@ -434,7 +448,7 @@ async fn retention_enforces_snapshot_count_byte_budget_and_two_hundred_rows() {
     for _ in 0..16 {
         pages
             .read(
-                "caller",
+                &caller(),
                 "account",
                 query(100),
                 None,
@@ -447,7 +461,7 @@ async fn retention_enforces_snapshot_count_byte_budget_and_two_hundred_rows() {
     }
     assert_reason(
         pages.read(
-            "caller",
+            &caller(),
             "account",
             query(100),
             Some(cursor(&first)),
@@ -474,7 +488,7 @@ async fn retention_enforces_snapshot_count_byte_budget_and_two_hundred_rows() {
     for _ in 0..2 {
         pages
             .read(
-                "caller",
+                &caller(),
                 "account",
                 query(100),
                 None,
@@ -507,7 +521,7 @@ async fn worst_case_unicode_pages_stay_wire_bounded_and_resume_without_row_loss(
     }
     let mut result = pages
         .read(
-            "caller",
+            &caller(),
             "account",
             query(100),
             None,
@@ -531,7 +545,7 @@ async fn worst_case_unicode_pages_stay_wire_bounded_and_resume_without_row_loss(
         };
         result = pages
             .read(
-                "caller",
+                &caller(),
                 "account",
                 query(100),
                 Some(&next),
@@ -560,7 +574,7 @@ async fn individually_oversized_rows_are_dropped_with_explicit_truncation() {
     snapshot.rows[0].event_id = Some("x".repeat(MAX_PAGE_BYTES + 1));
     let result = pages
         .read(
-            "caller",
+            &caller(),
             "account",
             query(100),
             None,
@@ -596,7 +610,7 @@ async fn escaped_previews_fit_actual_tool_result_and_both_transport_envelopes() 
         loop {
             let result = pages
                 .read(
-                    "caller",
+                    &caller(),
                     "account",
                     query(100),
                     next.as_deref(),
@@ -638,7 +652,7 @@ async fn changed_notification_mode_requires_resync_without_comparing_live_rows()
     let pages = ActivityPages::default();
     let first = pages
         .read(
-            "caller",
+            &caller(),
             "account",
             query(1),
             None,
@@ -657,7 +671,7 @@ async fn changed_notification_mode_requires_resync_without_comparing_live_rows()
     )]);
     assert_reason(
         pages.read(
-            "caller",
+            &caller(),
             "account",
             query(1),
             Some(cursor(&first)),

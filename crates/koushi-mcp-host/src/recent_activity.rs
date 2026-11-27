@@ -7,6 +7,8 @@ use koushi_core::{CoreConnection, direct_activity::RecentActivitySnapshot};
 use koushi_mcp::wire::{ErrorCode, WireError};
 use serde_json::{Value, json};
 
+use crate::consent::GrantSubject;
+
 const TTL: Duration = Duration::from_secs(120);
 const MAX_SNAPSHOTS: usize = 16;
 const MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -84,7 +86,7 @@ struct Page {
     end: usize,
 }
 struct Retained {
-    client: String,
+    subject: GrantSubject,
     account: String,
     query: Query,
     runtime: CoreConnection,
@@ -110,7 +112,7 @@ impl ActivityPages {
     )]
     pub(crate) fn read(
         &self,
-        client: &str,
+        subject: &GrantSubject,
         account: &str,
         query: Query,
         cursor: Option<&str>,
@@ -120,7 +122,7 @@ impl ActivityPages {
         settings: &std::collections::HashMap<String, koushi_state::RoomNotificationSettings>,
     ) -> Result<Value, WireError> {
         // These are stable host identities, not arbitrary data-bearing metadata.
-        if client.len() > 1024 || account.len() > 1024 || !(1..=100).contains(&query.limit) {
+        if account.len() > 1024 || !(1..=100).contains(&query.limit) {
             return Err(invalid("invalid activity scope"));
         }
         let mut snapshots = self
@@ -141,7 +143,10 @@ impl ActivityPages {
                 return Err(resync("expired_cursor"));
             };
             let snapshot = &snapshots[index];
-            if snapshot.client != client || snapshot.account != account || snapshot.query != query {
+            if &snapshot.subject != subject
+                || snapshot.account != account
+                || snapshot.query != query
+            {
                 return Err(resync("query_mismatch"));
             }
             if snapshot.session != current.session
@@ -248,7 +253,7 @@ impl ActivityPages {
             })
             .collect();
         let mut snapshot = Retained {
-            client: client.into(),
+            subject: subject.clone(),
             account: account.into(),
             query,
             runtime,

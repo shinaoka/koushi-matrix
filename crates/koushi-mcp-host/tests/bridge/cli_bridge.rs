@@ -4,6 +4,7 @@ mod support;
 
 use koushi_core::runtime::CoreRuntime;
 use koushi_mcp::{ipc, wire::ClientInfo};
+use koushi_mcp_host::consent::GrantSubject;
 use koushi_mcp_host::{
     BridgeAccount, BridgeAccounts, Need,
     consent::{ConsentBroker, ConsentMode},
@@ -105,7 +106,7 @@ async fn cli_grants_do_not_inherit_from_mcp_or_cross_accounts_and_revocation_app
     let bridge =
         koushi_mcp_host::start(accounts.clone(), data.clone(), broker.clone()).expect("bridge");
     broker
-        .set_permission("codex", FIRST, Need::Read, true)
+        .set_permission(&GrantSubject::client("codex"), FIRST, Need::Read, true)
         .await
         .expect("other client grant");
     let mut cli = connect(&data, "koushi-cli").await;
@@ -114,7 +115,7 @@ async fn cli_grants_do_not_inherit_from_mcp_or_cross_accounts_and_revocation_app
         "consent_required"
     );
     broker
-        .set_permission("koushi-cli", FIRST, Need::Read, true)
+        .set_permission(&GrantSubject::client("koushi-cli"), FIRST, Need::Read, true)
         .await
         .expect("grant first");
     assert_eq!(
@@ -126,7 +127,12 @@ async fn cli_grants_do_not_inherit_from_mcp_or_cross_accounts_and_revocation_app
         "consent_required"
     );
     broker
-        .set_permission("koushi-cli", SECOND, Need::Read, true)
+        .set_permission(
+            &GrantSubject::client("koushi-cli"),
+            SECOND,
+            Need::Read,
+            true,
+        )
         .await
         .expect("grant second");
     let mut tasks = Vec::new();
@@ -144,7 +150,12 @@ async fn cli_grants_do_not_inherit_from_mcp_or_cross_accounts_and_revocation_app
         );
     }
     broker
-        .set_permission("koushi-cli", FIRST, Need::Read, false)
+        .set_permission(
+            &GrantSubject::client("koushi-cli"),
+            FIRST,
+            Need::Read,
+            false,
+        )
         .await
         .expect("revoke");
     assert_eq!(
@@ -185,7 +196,7 @@ async fn first_cli_read_requires_an_in_app_answer_and_denial_returns_no_data() {
     for allow in [false, true] {
         if allow {
             broker
-                .remove_client("koushi-cli")
+                .remove_subject(&GrantSubject::client("koushi-cli"))
                 .await
                 .expect("reset denial");
         }
@@ -223,7 +234,7 @@ async fn a_cli_read_grant_admits_no_write_tool() {
     let broker = ConsentBroker::new(data.clone(), ConsentMode::FailClosed);
     let bridge = koushi_mcp_host::start(accounts, data.clone(), broker.clone()).expect("bridge");
     broker
-        .set_permission("koushi-cli", FIRST, Need::Read, true)
+        .set_permission(&GrantSubject::client("koushi-cli"), FIRST, Need::Read, true)
         .await
         .expect("read grant");
     let mut cli = connect(&data, "koushi-cli").await;

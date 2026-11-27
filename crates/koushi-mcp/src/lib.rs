@@ -8,6 +8,7 @@
 pub mod cli;
 pub mod endpoint;
 pub mod ipc;
+pub mod profile_secret;
 pub mod server;
 pub mod tools;
 pub mod wire;

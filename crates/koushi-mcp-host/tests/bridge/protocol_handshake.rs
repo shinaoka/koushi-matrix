@@ -224,7 +224,7 @@ async fn a_v1_hello_is_answered_1_and_status_reports_1() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_v2_hello_needs_a_profile_and_a_profile_cannot_be_verified_yet() {
+async fn a_v2_hello_needs_a_profile_and_an_unverifiable_one_is_one_neutral_refusal() {
     let (_dir, data, _bridge) = start().await;
     let missing = handshake_error(&data, |t| hello(2, t, "codex", None)).await;
     assert_eq!(missing["type"], "error");
@@ -233,8 +233,8 @@ async fn a_v2_hello_needs_a_profile_and_a_profile_cannot_be_verified_yet() {
 
     let profile = json!({"id": "p1", "secret": "s3cret"});
     let presented = handshake_error(&data, |t| hello(2, t, "codex", Some(profile.clone()))).await;
-    assert_eq!(presented["code"], "unsupported");
-    assert_eq!(presented["reason"], "profile_rejected");
+    assert_eq!(presented["code"], "unauthorized");
+    assert_eq!(presented["reason"], "profile_secret");
     assert!(!presented.to_string().contains("s3cret"));
 
     // An unknown id and a wrong secret must be indistinguishable, byte for

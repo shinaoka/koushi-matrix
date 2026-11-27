@@ -1697,6 +1697,7 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             target,
             document,
             client_name,
+            subject,
             replace,
             reply_to_event_id,
         } => timeline::handle_assistant_draft_staged(
@@ -1704,6 +1705,7 @@ fn reduce_action(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             target,
             document,
             client_name,
+            subject,
             replace,
             reply_to_event_id,
         ),

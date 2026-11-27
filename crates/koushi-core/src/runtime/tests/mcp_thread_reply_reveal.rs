@@ -54,7 +54,7 @@ fn thread_reply_request() -> DirectMessageRequest {
         body: "synthetic reply".to_owned(),
         formatting: Default::default(),
         retry: Some(DirectRetryKey {
-            client: "synthetic-client".to_owned(),
+            subject: "synthetic-client".to_owned(),
             client_request_id: "synthetic-request".to_owned(),
         }),
     }
@@ -284,7 +284,7 @@ fn thread_reply_request_to(room_id: &str, root_event_id: &str) -> DirectMessageR
         body: "synthetic reply".to_owned(),
         formatting: Default::default(),
         retry: Some(DirectRetryKey {
-            client: "synthetic-client".to_owned(),
+            subject: "synthetic-client".to_owned(),
             client_request_id: "synthetic-request".to_owned(),
         }),
     }

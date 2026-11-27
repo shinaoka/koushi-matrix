@@ -15,12 +15,13 @@ use tokio::sync::watch;
 
 use crate::BridgeAccounts;
 use crate::consent::{ClientIdentity, ConsentBroker};
+use crate::endpoint::constant_time_eq;
 use koushi_mcp::wire::{
     ClientMessage, ErrorCode, LEGACY_PROTOCOL, MAX_FRAME_BYTES, SUPPORTED_PROTOCOLS, ServerMessage,
     WireError, decode_line, encode_line,
 };
 
-use super::{endpoint, events, handlers};
+use super::{endpoint, events, handlers, profiles};
 
 #[cfg(unix)]
 type Listener = tokio::net::UnixListener;
@@ -101,6 +102,9 @@ pub fn start(
     broker: Arc<ConsentBroker>,
 ) -> Result<BridgeHandle, &'static str> {
     endpoint::ensure_dir(&data_dir).map_err(|_| "mcp_dir")?;
+    // A secret file with no row, left by a crash between the two, authenticates
+    // nothing; remove it.
+    profiles::sweep_orphans(&data_dir);
     let transport = endpoint::transport_path(&data_dir);
     let token = endpoint::new_token().map_err(|_| "mcp_token")?;
     let socket_path = PathBuf::from(&transport);
@@ -241,10 +245,37 @@ async fn serve_connection(
     let (read_half, mut write_half) = tokio::io::split(stream);
     let mut reader = BufReader::new(read_half);
 
-    let (client, protocol) = match read_hello(&mut reader, &token).await {
-        Ok(Hello::Accepted(client, protocol)) => {
-            shared.broker.note_current_launcher(&client.name);
-            (client, protocol)
+    let (client, protocol, hello_name) = match read_hello(
+        &mut reader,
+        &token,
+        shared.broker.data_dir(),
+    )
+    .await
+    {
+        Ok(Hello::Accepted {
+            identity,
+            protocol,
+            declared_name,
+        }) => {
+            shared.broker.note_current_launcher(&declared_name);
+            (identity, protocol, declared_name)
+        }
+        Ok(Hello::ProfileRejected(presented_id)) => {
+            // One reply for an unknown id, a wrong secret and an unreadable
+            // store, written before anything that differs between them. The
+            // rejection is recorded afterwards, so its cost is not visible.
+            let _ = write_message(
+                &mut write_half,
+                &ServerMessage::Error {
+                    code: ErrorCode::Unauthorized,
+                    message: PROFILE_REJECTED_MESSAGE.to_owned(),
+                    reason: Some("profile_secret".to_owned()),
+                    supported: None,
+                },
+            )
+            .await;
+            profiles::note_rejected(shared.broker.data_dir(), &presented_id);
+            return;
         }
         Ok(Hello::Outdated(name)) => {
             if let Some(name) = name {
@@ -283,7 +314,7 @@ async fn serve_connection(
         &mut write_half,
         &ServerMessage::HelloOk {
             protocol,
-            connection_id: format!("{}-{}", client.name, std::process::id()),
+            connection_id: format!("{}-{}", hello_name, std::process::id()),
             app_version: env!("CARGO_PKG_VERSION").to_owned(),
         },
     )
@@ -293,9 +324,18 @@ async fn serve_connection(
         return;
     }
 
+    // A profiled connection ends when its profile is revoked. Subscribed
+    // before the first request, and every request re-checks the row anyway, so
+    // a missed signal cannot keep a revoked profile working.
+    let mut revoked = client
+        .subject()
+        .profile_id()
+        .map(|id| shared.broker.watch_revocation(id));
+
     loop {
         let line = tokio::select! {
             _ = shutdown.changed() => return,
+            _ = revoked_signal(&mut revoked) => return,
             read = koushi_mcp::ipc::read_frame(&mut reader) => match read {
                 Ok(line) => line,
                 Err(_) => return,
@@ -329,6 +369,16 @@ async fn serve_connection(
                     biased;
                     _ = shutdown.changed() => return,
                     _ = closed(&mut reader) => return,
+                    // A revocation answers the call that was waiting, with no
+                    // data, and ends the connection.
+                    _ = revoked_signal(&mut revoked) => {
+                        let _ = write_message(
+                            &mut write_half,
+                            &ServerMessage::failure(id, crate::consent::profile_revoked()),
+                        )
+                        .await;
+                        return;
+                    }
                     result = dispatch => {
                         // Stopping signals the connection and then releases
                         // waiting approvals, and one poll can observe the
@@ -358,6 +408,18 @@ async fn serve_connection(
     }
 }
 
+/// Resolves when the connection's profile was revoked; never for an
+/// unprofiled connection.
+async fn revoked_signal(revoked: &mut Option<watch::Receiver<bool>>) {
+    match revoked {
+        Some(receiver) => {
+            // A sent value and a dropped sender both mean the profile is gone.
+            let _ = receiver.wait_for(|revoked| *revoked).await;
+        }
+        None => std::future::pending::<()>().await,
+    }
+}
+
 /// Resolves when the peer closed its side. Data that arrives meanwhile stays
 /// buffered for the next read, and this future then never resolves.
 async fn closed<R: tokio::io::AsyncRead + Unpin>(reader: &mut BufReader<R>) {
@@ -370,10 +432,22 @@ async fn closed<R: tokio::io::AsyncRead + Unpin>(reader: &mut BufReader<R>) {
     }
 }
 
+/// The one message for every failed profile authentication.
+const PROFILE_REJECTED_MESSAGE: &str = "agent profile id or secret rejected";
+
 enum Hello {
     /// The identity and the protocol version negotiated for this connection.
-    Accepted(ClientIdentity, u32),
+    /// `declared_name` is the unverified name the launcher sent; it clears the
+    /// "outdated launcher" note and nothing else.
+    Accepted {
+        identity: ClientIdentity,
+        protocol: u32,
+        declared_name: String,
+    },
     Rejected(WireError),
+    /// The token matched and a profile was presented, but it did not verify.
+    /// Carries the presented id only to record the rejection.
+    ProfileRejected(String),
     /// The token matched, but the launcher speaks another bridge protocol:
     /// a copy left over from an older Koushi (such as a Claude Desktop
     /// extension). Carries its name when that name is valid.
@@ -384,6 +458,7 @@ enum Hello {
 async fn read_hello<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut BufReader<R>,
     expected_token: &str,
+    data_dir: &std::path::Path,
 ) -> std::io::Result<Hello> {
     let unauthorized = || {
         Hello::Rejected(WireError::new(
@@ -423,7 +498,12 @@ async fn read_hello<R: tokio::io::AsyncRead + Unpin>(
             koushi_mcp::wire::CLIENT_NAME_RULE,
         )));
     }
-    match (protocol, profile) {
+    let version = if koushi_mcp::wire::valid_client_version(&client.version) {
+        client.version.clone()
+    } else {
+        String::new()
+    };
+    let identity = match (protocol, profile) {
         // A v1 peer cannot know the field, so a profile is never accepted on
         // the legacy path.
         (LEGACY_PROTOCOL, Some(_)) => {
@@ -433,7 +513,7 @@ async fn read_hello<R: tokio::io::AsyncRead + Unpin>(
                 "a profile needs protocol 2",
             )));
         }
-        (LEGACY_PROTOCOL, None) => {}
+        (LEGACY_PROTOCOL, None) => ClientIdentity::unprofiled(&client.name, &version),
         (_, None) => {
             return Ok(Hello::Rejected(WireError::with_reason(
                 ErrorCode::Unsupported,
@@ -441,42 +521,28 @@ async fn read_hello<R: tokio::io::AsyncRead + Unpin>(
                 "protocol 2 needs an agent profile",
             )));
         }
-        // No profile can be verified until the profile store exists, and a
-        // presented profile is never accepted unverified. The token is
-        // neutral on purpose: an unknown id and a wrong secret must produce
-        // byte-identical errors, or the host tells a caller which profile ids
-        // exist.
-        (_, Some(_)) => {
-            return Ok(Hello::Rejected(WireError::with_reason(
-                ErrorCode::Unsupported,
-                "profile_rejected",
-                "agent profiles are not available in this Koushi yet",
-            )));
+        // An unknown id, a malformed id, a wrong secret and an unreadable
+        // store are one outcome, so neither the reply nor its timing says
+        // which profile ids exist. The profile's label, set by the owner,
+        // names the connection; the name the launcher declared never keys
+        // anything.
+        (_, Some(presented)) => {
+            match profiles::authenticate(data_dir, &presented.id, &presented.secret) {
+                Some(row) => ClientIdentity::profiled(
+                    row.id.clone(),
+                    &row.label,
+                    &version,
+                    row.account_id.clone(),
+                ),
+                None => return Ok(Hello::ProfileRejected(presented.id)),
+            }
         }
-    }
-    let version = if koushi_mcp::wire::valid_client_version(&client.version) {
-        client.version
-    } else {
-        String::new()
     };
-    Ok(Hello::Accepted(
-        ClientIdentity {
-            name: client.name,
-            version,
-        },
+    Ok(Hello::Accepted {
+        identity,
         protocol,
-    ))
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut difference = 0u8;
-    for (a, b) in left.iter().zip(right) {
-        difference |= a ^ b;
-    }
-    difference == 0
+        declared_name: client.name,
+    })
 }
 
 /// Windows named-pipe listener. Kept small: one instance is prepared before the
@@ -524,6 +590,11 @@ impl NamedPipeListener {
     }
 }
 
+/// Every method `dispatch_method` serves. The table is the gate: an arm that is
+/// not listed here is never reached, so no method can be served without its row
+/// in the no-write test, which is generated from this list.
+pub(crate) const METHODS: &[&str] = &["tools/call", "status"];
+
 /// Dispatches one IPC request.
 async fn dispatch_method(
     shared: &Shared,
@@ -533,6 +604,10 @@ async fn dispatch_method(
     params: Value,
 ) -> Result<Value, WireError> {
     match method {
+        other if !METHODS.contains(&other) => Err(WireError::new(
+            ErrorCode::Unsupported,
+            format!("unsupported bridge method: {other}"),
+        )),
         "tools/call" => handlers::dispatch_tool_call(shared, client, params).await,
         "status" => Ok(serde_json::json!({
             "protocol": protocol,
@@ -548,13 +623,20 @@ async fn dispatch_method(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consent::GrantSubject;
 
     async fn handshake(input: &str, expected_token: &str) -> Hello {
         let (mut client, server) = tokio::io::duplex(8 * 1024);
         client.write_all(input.as_bytes()).await.expect("write");
         client.shutdown().await.expect("shutdown");
         let mut reader = BufReader::new(server);
-        read_hello(&mut reader, expected_token).await.expect("read")
+        read_hello(
+            &mut reader,
+            expected_token,
+            std::path::Path::new("/nonexistent-koushi-test"),
+        )
+        .await
+        .expect("read")
     }
 
     fn hello(token: &str, name: &str, version: &str) -> String {
@@ -570,20 +652,26 @@ mod tests {
     fn rejected(hello: Hello) -> ErrorCode {
         match hello {
             Hello::Rejected(error) => error.code,
-            Hello::Accepted(..) => panic!("accepted"),
+            Hello::Accepted { .. } => panic!("accepted"),
+            Hello::ProfileRejected(_) => panic!("profile rejected"),
             Hello::Outdated(_) => panic!("outdated"),
         }
     }
 
     #[tokio::test]
     async fn accepts_the_matching_token_and_returns_client_info() {
-        let Hello::Accepted(client, _) =
-            handshake(&hello("secret", "codex", "0.147.0"), "secret").await
+        let Hello::Accepted {
+            identity,
+            declared_name,
+            ..
+        } = handshake(&hello("secret", "codex", "0.147.0"), "secret").await
         else {
             panic!("rejected");
         };
-        assert_eq!(client.name, "codex");
-        assert_eq!(client.version, "0.147.0");
+        assert_eq!(declared_name, "codex");
+        assert_eq!(identity.label().to_string(), "codex");
+        assert_eq!(identity.subject(), &GrantSubject::client("codex"));
+        assert_eq!(identity.version(), "0.147.0");
     }
 
     #[tokio::test]
@@ -637,12 +725,12 @@ mod tests {
 
     #[tokio::test]
     async fn drops_an_unusable_version_but_keeps_the_client() {
-        let Hello::Accepted(client, _) =
+        let Hello::Accepted { identity, .. } =
             handshake(&hello("secret", "pi", "1.0\u{202E}"), "secret").await
         else {
             panic!("rejected");
         };
-        assert_eq!(client.version, "");
+        assert_eq!(identity.version(), "");
     }
 
     #[tokio::test]

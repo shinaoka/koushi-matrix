@@ -43,15 +43,35 @@ fn pipe_suffix(data_dir: &Path) -> String {
 /// Creates the `mcp` directory with restrictive permissions and returns it.
 pub(crate) fn ensure_dir(data_dir: &Path) -> std::io::Result<PathBuf> {
     let dir = data_dir.join("mcp");
-    std::fs::create_dir_all(&dir)?;
+    ensure_private_dir(&dir)?;
+    Ok(dir)
+}
+
+/// Creates `dir` (and its parents) and makes it private to the user.
+pub(crate) fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
     #[cfg(windows)]
-    koushi_mcp::windows_security::PrivateSecurity::new()?.apply(&dir)?;
-    Ok(dir)
+    koushi_mcp::windows_security::PrivateSecurity::new()?.apply(dir)?;
+    Ok(())
+}
+
+/// Compares two byte strings without stopping at the first difference. A
+/// length difference is not secret here: both sides are fixed-size digests or
+/// tokens of one known length.
+pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (a, b) in left.iter().zip(right) {
+        difference |= a ^ b;
+    }
+    difference == 0
 }
 
 /// Generates a fresh token for this app launch.
@@ -96,7 +116,7 @@ pub(crate) fn fill_random(bytes: &mut [u8]) -> std::io::Result<()> {
     }
 }
 
-fn base64url(bytes: &[u8]) -> String {
+pub(crate) fn base64url(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

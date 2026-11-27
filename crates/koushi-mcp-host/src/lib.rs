@@ -14,12 +14,29 @@ mod endpoint;
 mod events;
 mod grants;
 mod handlers;
+mod profile_state;
+mod profiles;
 mod recent_activity;
 pub mod registration;
 mod server;
 mod spaces;
+mod subject;
+
+/// The tools the dispatcher serves. For the isolation tests, which are
+/// generated from it so a new tool cannot ship without a row.
+#[doc(hidden)]
+pub fn tool_names() -> &'static [&'static str] {
+    handlers::TOOLS
+}
+
+/// The IPC methods the dispatcher serves, for the same tests.
+#[doc(hidden)]
+pub fn method_names() -> &'static [&'static str] {
+    server::METHODS
+}
 
 pub use grants::{Need, StoreStatus};
+pub use profiles::{CreatedProfile, ProfileError, ProfileGrants};
 pub use server::{BridgeHandle, start};
 
 use std::path::PathBuf;
@@ -75,3 +92,6 @@ impl BridgeAccounts for AccountRuntimeManager {
             .feed_for_user(account_id.strip_prefix("account:")?)
     }
 }
+
+#[cfg(test)]
+mod dispatch_surface_tests;

@@ -87,6 +87,7 @@ fn stage_reply(
             target,
             document: staged_text(),
             client_name: CLIENT.to_owned(),
+            subject: format!("client:{CLIENT}"),
             replace: false,
             reply_to_event_id: reply_to_event_id.map(str::to_owned),
         },
@@ -100,6 +101,7 @@ fn replace_stage(state: &mut AppState, target: ComposerTarget, text: &str) -> Ve
             target,
             document: ComposerDocument::from_plain_text(text),
             client_name: CLIENT.to_owned(),
+            subject: format!("client:{CLIENT}"),
             replace: true,
             reply_to_event_id: None,
         },
@@ -158,6 +160,7 @@ fn staging_a_closed_room_writes_only_that_draft_and_leaves_navigation_alone() {
         composer.assistant_draft,
         Some(AssistantDraftMarker {
             client_name: CLIENT.to_owned(),
+            subject: format!("client:{CLIENT}"),
             revision: composer.draft_revision,
         })
     );

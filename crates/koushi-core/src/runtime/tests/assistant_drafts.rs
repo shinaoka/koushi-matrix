@@ -45,6 +45,7 @@ fn reply_request(
         document: koushi_state::ComposerDocument::from_plain_text("assistant text"),
         reply_to_event_id: reply_to_event_id.map(str::to_owned),
         client_name: "claude-code".to_owned(),
+        subject: "client:claude-code".to_owned(),
         replace: false,
     }
 }
@@ -287,6 +288,7 @@ async fn an_open_composer_sending_blocks_a_replacement() {
             &main_target(ROOM),
             koushi_state::ComposerDocument::from_plain_text("assistant text"),
             "claude-code".to_owned(),
+            "client:claude-code".to_owned(),
             false,
             None,
         )

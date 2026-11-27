@@ -1202,9 +1202,27 @@ pub enum ComposerDraftPersistenceImportError {
 pub struct AssistantDraftMarker {
     /// The assistant's self-declared, validated MCP client name.
     pub client_name: String,
+    /// The grant subject key of the connection that staged the draft (#2132):
+    /// who owns it, as opposed to `client_name`, which is only shown. Empty on
+    /// a marker stored before it existed, which then belongs to the client of
+    /// that name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub subject: String,
     /// The revision the staged draft was written at. The renderer keys its
     /// composer synchronization on it, so a newly staged draft is adopted.
     pub revision: ComposerDraftRevision,
+}
+
+impl AssistantDraftMarker {
+    /// The subject that owns the draft: the stored key, or for a marker that
+    /// predates it, the client of that name.
+    pub fn owner_subject(&self) -> String {
+        if self.subject.is_empty() {
+            format!("client:{}", self.client_name)
+        } else {
+            self.subject.clone()
+        }
+    }
 }
 
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -1453,6 +1471,17 @@ impl ComposerDraftStore {
     /// staged there, so `replace` may overwrite it: the content exists and the
     /// marker names the stored revision.
     pub fn assistant_draft_is_untouched(&self, target: &ComposerTarget) -> bool {
+        self.assistant_draft_is_untouched_by(target, None)
+    }
+
+    /// As [`Self::assistant_draft_is_untouched`], and, when `subject` is given,
+    /// only if that subject staged it (#2132): another assistant's draft is not
+    /// this one's to read back or replace.
+    pub fn assistant_draft_is_untouched_by(
+        &self,
+        target: &ComposerTarget,
+        subject: Option<&str>,
+    ) -> bool {
         let (marker, revision) = match target {
             ComposerTarget::Main { room_id } => (
                 self.room_assistant_marker(room_id),
@@ -1466,7 +1495,10 @@ impl ComposerDraftStore {
                 self.thread_revision(room_id, root_event_id),
             ),
         };
-        marker.is_some_and(|marker| marker.revision == revision)
+        marker.is_some_and(|marker| {
+            marker.revision == revision
+                && subject.is_none_or(|subject| marker.owner_subject() == subject)
+        })
     }
 
     /// #1644: write an assistant-staged draft into an empty target at the
@@ -1479,6 +1511,7 @@ impl ComposerDraftStore {
         target: &ComposerTarget,
         document: ComposerDocument,
         client_name: String,
+        subject: String,
         replace: bool,
         reply_to_event_id: Option<String>,
     ) -> Option<ComposerDraftRevision> {
@@ -1487,8 +1520,8 @@ impl ComposerDraftStore {
         }
         // #1905: a replacement is the one write into a non-empty target, and
         // only while it still holds an assistant's untouched draft.
-        let writable =
-            self.target_is_empty(target) || (replace && self.assistant_draft_is_untouched(target));
+        let writable = self.target_is_empty(target)
+            || (replace && self.assistant_draft_is_untouched_by(target, Some(&subject)));
         if !writable {
             return None;
         }
@@ -1503,6 +1536,7 @@ impl ComposerDraftStore {
             ComposerDraftRevision::checked_successor(current, ComposerDraftRevision::ZERO).ok()?;
         let marker = AssistantDraftMarker {
             client_name,
+            subject,
             revision,
         };
         match target {

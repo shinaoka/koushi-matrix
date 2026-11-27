@@ -12,7 +12,7 @@ fn edit_key(client: &str, client_request_id: &str) -> DirectActionKey {
         body: "edited".to_owned(),
         formatting: koushi_state::ComposerFormattingOptions::default(),
         retry: Some(DirectRetryKey {
-            client: client.to_owned(),
+            subject: client.to_owned(),
             client_request_id: client_request_id.to_owned(),
         }),
     })
@@ -190,7 +190,7 @@ fn keys_are_scoped_to_the_client_and_requests_without_a_retry_key_are_not_kept()
         body: "reply".to_owned(),
         formatting: koushi_state::ComposerFormattingOptions::default(),
         retry: Some(DirectRetryKey {
-            client: "pi".to_owned(),
+            subject: "pi".to_owned(),
             client_request_id: "uuid-9".to_owned(),
         }),
     };
@@ -219,7 +219,7 @@ fn a_quote_target_does_not_change_a_thread_replys_retry_key() {
         body: "reply".to_owned(),
         formatting: koushi_state::ComposerFormattingOptions::default(),
         retry: Some(DirectRetryKey {
-            client: "pi".to_owned(),
+            subject: "pi".to_owned(),
             client_request_id: "uuid-9".to_owned(),
         }),
     };
@@ -239,7 +239,7 @@ fn edit_request(client_request_id: &str) -> DirectMessageRequest {
         body: "edited".to_owned(),
         formatting: koushi_state::ComposerFormattingOptions::default(),
         retry: Some(DirectRetryKey {
-            client: "pi".to_owned(),
+            subject: "pi".to_owned(),
             client_request_id: client_request_id.to_owned(),
         }),
     }

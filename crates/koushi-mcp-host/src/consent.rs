@@ -1,7 +1,7 @@
 //! In-app approval of MCP assistants (#1536).
 //!
 //! A tool call that needs a permission the grant store does not hold becomes a
-//! pending approval, keyed by (client name, account, permission), and waits
+//! pending approval, keyed by (grant subject, account, permission), and waits
 //! for the user's answer in Koushi. Allow writes exactly that permission to
 //! the store; Deny is remembered for the rest of this bridge run.
 //!
@@ -22,7 +22,10 @@ use tokio::sync::{oneshot, watch};
 use tokio::time::Instant;
 
 use crate::grants::{self, Need, Store, StoreStatus};
+use crate::profiles::{self, CreatedProfile, ProfileError, ProfileGrants};
 use crate::registration::{self, Registration};
+
+pub use crate::subject::{ClientIdentity, ClientName, GrantSubject, Label, ProfileId};
 
 /// How long a tool call waits for the user before answering
 /// `consent_required`. The launcher allows 70 s per call and Codex's default
@@ -77,14 +80,6 @@ pub enum LauncherUnavailable {
 pub enum LauncherStatus {
     Available { path: String },
     Unavailable { reason: LauncherUnavailable },
-}
-
-/// The assistant-declared identity from the connection handshake. It is not
-/// verified: any process of the same OS user can claim any name.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ClientIdentity {
-    pub name: String,
-    pub version: String,
 }
 
 /// What the dialog shows besides the client, account, and permission.
@@ -194,11 +189,13 @@ enum Outcome {
     Denied,
     StoreFailed,
     Unavailable,
+    /// The profile was revoked while the call waited.
+    Revoked,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct Key {
-    client: String,
+    subject: GrantSubject,
     account: String,
     need: Need,
 }
@@ -206,6 +203,8 @@ struct Key {
 struct Pending {
     request_id: u64,
     key: Key,
+    /// Text for the dialog. It names the connection and keys nothing.
+    label: String,
     client_version: String,
     room_label: Option<String>,
     message_preview: Option<String>,
@@ -231,7 +230,7 @@ struct Inner {
     next_request_id: u64,
     pending: Vec<Pending>,
     denied: HashSet<Key>,
-    seen: HashMap<String, Seen>,
+    seen: HashMap<GrantSubject, Seen>,
     outdated: std::collections::BTreeSet<String>,
     bridge: BridgeStatus,
     launcher: LauncherStatus,
@@ -271,6 +270,9 @@ pub struct ConsentBroker {
     inner: Mutex<Inner>,
     writer: tokio::sync::Mutex<()>,
     state: watch::Sender<McpAssistantsState>,
+    /// One signal per profile with a live connection, fired when it is
+    /// revoked. Entries are created by connections and removed by revocation.
+    revocations: Mutex<HashMap<ProfileId, watch::Sender<bool>>>,
 }
 
 impl ConsentBroker {
@@ -297,6 +299,7 @@ impl ConsentBroker {
             inner: Mutex::new(inner),
             writer: tokio::sync::Mutex::new(()),
             state,
+            revocations: Mutex::new(HashMap::new()),
         })
     }
 
@@ -391,8 +394,12 @@ impl ConsentBroker {
     ) -> Result<(), WireError> {
         let generation = self.lock().store_generation;
         let loaded = grants::load(&self.data_dir);
+        // A profile's grants are its own row, read here and never under the
+        // state lock; a revoked profile or another account fails before any
+        // approval can exist.
+        let profile_grants = self.profile_grants(client.subject(), account_id)?;
         let key = Key {
-            client: client.name.clone(),
+            subject: client.subject().clone(),
             account: account_id.to_owned(),
             need,
         };
@@ -400,7 +407,13 @@ impl ConsentBroker {
             let mut inner = self.lock();
             let mut changed = inner.adopt(generation, loaded);
             changed |= note_use(&mut inner, client);
-            if inner.store.allows(&key.client, &key.account, need) {
+            let granted = match &key.subject {
+                GrantSubject::Client(name) => inner.store.allows(name.as_str(), &key.account, need),
+                GrantSubject::Profile(_) => {
+                    profile_grants.is_some_and(|grants| grants.allows(need))
+                }
+            };
+            if granted {
                 if changed {
                     self.publish(&inner);
                 }
@@ -417,7 +430,7 @@ impl ConsentBroker {
                     ErrorCode::NotPermitted,
                     format!(
                         "{} was denied {} access in Koushi",
-                        client.name,
+                        client.label(),
                         need_word(need)
                     ),
                 ));
@@ -446,7 +459,7 @@ impl ConsentBroker {
                     let per_client = inner
                         .pending
                         .iter()
-                        .filter(|pending| pending.key.client == key.client)
+                        .filter(|pending| pending.key.subject == key.subject)
                         .count();
                     if per_client >= PENDING_PER_CLIENT || inner.pending.len() >= PENDING_TOTAL {
                         if changed {
@@ -462,7 +475,8 @@ impl ConsentBroker {
                     inner.pending.push(Pending {
                         request_id,
                         key: key.clone(),
-                        client_version: client.version.clone(),
+                        label: sanitize(&client.label().to_string(), 120),
+                        client_version: client.version().to_owned(),
                         room_label,
                         message_preview,
                         expires_at: now + APPROVAL_LIFETIME,
@@ -506,12 +520,14 @@ impl ConsentBroker {
                 None => return AnswerOutcome::Stale,
             }
         };
-        let saved = self.write_store(|store| store.set(&key.client, &key.account, key.need, true));
+        let saved = self.write_grant(&key.subject, &key.account, key.need, true);
         let mut inner = self.lock();
         let index = live_index(&inner, request_id);
         match saved {
-            Ok(store) => {
-                inner.written(store);
+            Ok(written) => {
+                if let Some(store) = written {
+                    inner.written(store);
+                }
                 inner.denied.remove(&key);
                 // Settle every approval for this key, including one created
                 // after the answered one expired during the write.
@@ -540,22 +556,24 @@ impl ConsentBroker {
     /// also clears a remembered denial and settles a matching approval.
     pub async fn set_permission(
         &self,
-        client_name: &str,
+        subject: &GrantSubject,
         account_id: &str,
         need: Need,
         allowed: bool,
     ) -> Result<(), StoreError> {
         let _writer = self.writer.lock().await;
-        let saved = self.write_store(|store| store.set(client_name, account_id, need, allowed));
+        let saved = self.write_grant(subject, account_id, need, allowed);
         let key = Key {
-            client: client_name.to_owned(),
+            subject: subject.clone(),
             account: account_id.to_owned(),
             need,
         };
         let mut inner = self.lock();
         match saved {
-            Ok(store) => {
-                inner.written(store);
+            Ok(written) => {
+                if let Some(store) = written {
+                    inner.written(store);
+                }
                 if allowed {
                     inner.denied.remove(&key);
                     if let Some(index) = inner.pending.iter().position(|pending| pending.key == key)
@@ -574,26 +592,34 @@ impl ConsentBroker {
         }
     }
 
-    /// Removes an assistant entirely: its grants, its open approvals, and its
-    /// remembered denials.
-    pub async fn remove_client(&self, client_name: &str) -> Result<(), StoreError> {
+    /// Removes a subject's approvals, remembered denials and last-use record,
+    /// and, for an unprofiled client, its grants. A profile's row is not touched
+    /// here: revoking a profile is [`ConsentBroker::revoke_profile`].
+    pub async fn remove_subject(&self, subject: &GrantSubject) -> Result<(), StoreError> {
         let _writer = self.writer.lock().await;
-        let saved = self.write_store(|store| {
-            store.remove(client_name);
-        });
+        let saved = match subject {
+            GrantSubject::Client(name) => self
+                .write_store(|store| {
+                    store.remove(name.as_str());
+                })
+                .map(Some),
+            GrantSubject::Profile(_) => Ok(None),
+        };
         let mut inner = self.lock();
         match saved {
-            Ok(store) => {
-                inner.written(store);
-                inner.denied.retain(|key| key.client != client_name);
+            Ok(written) => {
+                if let Some(store) = written {
+                    inner.written(store);
+                }
+                inner.denied.retain(|key| &key.subject != subject);
                 inner.pending.retain_mut(|pending| {
-                    let keep = pending.key.client != client_name;
+                    let keep = &pending.key.subject != subject;
                     if !keep {
                         pending.resolve(Outcome::Denied);
                     }
                     keep
                 });
-                inner.seen.remove(client_name);
+                inner.seen.remove(subject);
                 self.publish(&inner);
                 Ok(())
             }
@@ -603,6 +629,168 @@ impl ConsentBroker {
                 Err(StoreError(status))
             }
         }
+    }
+
+    /// Writes one grant to where the subject's grants live. An unprofiled
+    /// client's store is returned so the caller installs it; a profile's row
+    /// is its own file and has nothing to install.
+    fn write_grant(
+        &self,
+        subject: &GrantSubject,
+        account_id: &str,
+        need: Need,
+        allowed: bool,
+    ) -> Result<Option<Store>, StoreStatus> {
+        match subject {
+            GrantSubject::Client(name) => self
+                .write_store(|store| store.set(name.as_str(), account_id, need, allowed))
+                .map(Some),
+            GrantSubject::Profile(id) => {
+                profiles::set_grant(&self.data_dir, id, account_id, need, allowed)
+                    .map(|()| None)
+                    .map_err(|error| match error {
+                        ProfileError::StoreUnusable(status) => status,
+                        _ => StoreStatus::WriteFailed,
+                    })
+            }
+        }
+    }
+
+    /// The grants of a profile subject for `account_id`, `None` for an
+    /// unprofiled client. A deleted row is `unauthorized/profile_revoked`;
+    /// another account is `not_permitted/profile_account`.
+    fn profile_grants(
+        &self,
+        subject: &GrantSubject,
+        account_id: &str,
+    ) -> Result<Option<ProfileGrants>, WireError> {
+        let GrantSubject::Profile(id) = subject else {
+            return Ok(None);
+        };
+        let Some(row) = profiles::lookup(&self.data_dir, id) else {
+            return Err(profile_revoked());
+        };
+        if row.account_id != account_id {
+            return Err(profile_account());
+        }
+        Ok(Some(row.grants))
+    }
+
+    /// The permissions a subject holds for an account, as the store has them
+    /// now. A client reads `connections.json`; a profile reads its row, and
+    /// only for its bound account. Never a path from one to the other.
+    pub(crate) fn permissions(&self, subject: &GrantSubject, account_id: &str) -> ProfileGrants {
+        match subject {
+            GrantSubject::Client(name) => self
+                .store()
+                .account(name.as_str(), account_id)
+                .map(|grant| ProfileGrants {
+                    read: grant.read,
+                    send: grant.send,
+                    attachments: grant.attachments,
+                    message_actions: grant.message_actions,
+                    draft: grant.draft,
+                })
+                .unwrap_or_default(),
+            GrantSubject::Profile(_) => self
+                .profile_grants(subject, account_id)
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Whether the subject holds `need` for the account right now, without
+    /// asking.
+    pub(crate) fn allows(&self, subject: &GrantSubject, account_id: &str, need: Need) -> bool {
+        self.permissions(subject, account_id).allows(need)
+    }
+
+    /// Creates a profile bound to an agent account (owner path). The secret is
+    /// written once to the returned file and nowhere else.
+    pub async fn create_profile(
+        &self,
+        accounts: &dyn crate::BridgeAccounts,
+        label: &str,
+        account_id: &str,
+        grants: ProfileGrants,
+    ) -> Result<CreatedProfile, ProfileError> {
+        let Some(account) = accounts
+            .accounts()
+            .into_iter()
+            .find(|account| account.id == account_id)
+        else {
+            return Err(ProfileError::AccountUnavailable);
+        };
+        if !account.connection.snapshot().is_agent_account() {
+            return Err(ProfileError::NotAgentAccount);
+        }
+        let baseline = match accounts.mention_feed(account_id) {
+            Some(feed) => match feed.wait(None, Duration::ZERO, 1).await {
+                Ok(page) => baseline_from_cursor(page.cursor),
+                Err(_) => None,
+            },
+            None => None,
+        };
+        let _writer = self.writer.lock().await;
+        profiles::create(
+            &self.data_dir,
+            label,
+            account_id,
+            grants,
+            baseline,
+            profiles::now_ms(),
+        )
+    }
+
+    /// Revokes a profile (owner path): the row goes first, the secret file
+    /// after, then every live connection of it is signalled and its approvals
+    /// end as `unauthorized/profile_revoked`. A send already on the wire
+    /// cannot be recalled.
+    pub async fn revoke_profile(&self, id: &ProfileId) -> Result<bool, ProfileError> {
+        let _writer = self.writer.lock().await;
+        let removed = profiles::revoke(&self.data_dir, id)?;
+        if let Some(signal) = self
+            .revocations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id)
+        {
+            let _ = signal.send(true);
+        }
+        let subject = GrantSubject::Profile(id.clone());
+        let mut inner = self.lock();
+        inner.denied.retain(|key| key.subject != subject);
+        inner.pending.retain_mut(|pending| {
+            let keep = pending.key.subject != subject;
+            if !keep {
+                pending.resolve(Outcome::Revoked);
+            }
+            keep
+        });
+        inner.seen.remove(&subject);
+        self.publish(&inner);
+        Ok(removed)
+    }
+
+    /// When a connection last presented this profile with a wrong secret.
+    pub fn profile_last_rejected_ms(&self, id: &ProfileId) -> Option<u64> {
+        crate::profile_state::load(&self.data_dir, id).last_rejected_ms
+    }
+
+    /// A signal that fires when the profile is revoked. Held by each live
+    /// connection of the profile.
+    pub(crate) fn watch_revocation(&self, id: &ProfileId) -> watch::Receiver<bool> {
+        self.revocations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(id.clone())
+            .or_insert_with(|| watch::channel(false).0)
+            .subscribe()
+    }
+
+    pub(crate) fn data_dir(&self) -> &std::path::Path {
+        &self.data_dir
     }
 
     /// Reads, changes, and writes the store. Called with the writer lock held
@@ -675,11 +863,12 @@ impl Waiter<'_> {
         let outcome = tokio::time::timeout(APPROVAL_WAIT, &mut self.receiver).await;
         match outcome {
             Ok(Ok(Outcome::Allowed)) => Ok(()),
+            Ok(Ok(Outcome::Revoked)) => Err(profile_revoked()),
             Ok(Ok(Outcome::Denied)) => Err(WireError::new(
                 ErrorCode::NotPermitted,
                 format!(
                     "{} was denied {} access in Koushi",
-                    client.name,
+                    client.label(),
                     need_word(need)
                 ),
             )),
@@ -696,7 +885,7 @@ impl Waiter<'_> {
                 format!(
                     "waiting for approval in Koushi timed out; approve {} for {} in Koushi, then retry",
                     need_word(need),
-                    client.name
+                    client.label()
                 ),
             )),
         }
@@ -714,10 +903,39 @@ fn consent_required(client: &ClientIdentity, need: Need) -> WireError {
         ErrorCode::ConsentRequired,
         format!(
             "no Koushi grant gives {} {} access",
-            client.name,
+            client.label(),
             need_word(need)
         ),
     )
+}
+
+/// The error for a profile whose row is gone.
+pub(crate) fn profile_revoked() -> WireError {
+    WireError::with_reason(
+        ErrorCode::Unauthorized,
+        "profile_revoked",
+        "this agent profile was revoked in Koushi",
+    )
+}
+
+/// The one error for any account other than the profile's own. Identical for
+/// an account that exists and one that does not.
+pub(crate) fn profile_account() -> WireError {
+    WireError::with_reason(
+        ErrorCode::NotPermitted,
+        "profile_account",
+        "this agent profile can use only its own account",
+    )
+}
+
+/// The creation baseline of a profile from the feed's head cursor
+/// (`mf1.<generation>.<seq>`).
+fn baseline_from_cursor(cursor: String) -> Option<crate::profile_state::Baseline> {
+    let generation = cursor.split('.').nth(1)?.to_owned();
+    Some(crate::profile_state::Baseline {
+        feed_generation: generation,
+        head_cursor: cursor,
+    })
 }
 
 fn need_word(need: Need) -> &'static str {
@@ -742,21 +960,21 @@ fn live_index(inner: &Inner, request_id: u64) -> Option<usize> {
 /// state changed.
 fn note_use(inner: &mut Inner, client: &ClientIdentity) -> bool {
     let now_ms = now_ms();
-    match inner.seen.get_mut(&client.name) {
+    match inner.seen.get_mut(client.subject()) {
         Some(seen)
-            if seen.version == client.version
+            if seen.version == client.version()
                 && now_ms.saturating_sub(seen.last_used_ms) < LAST_USED_GRANULARITY_MS =>
         {
             false
         }
         _ => {
-            if inner.seen.len() >= SEEN_LIMIT && !inner.seen.contains_key(&client.name) {
+            if inner.seen.len() >= SEEN_LIMIT && !inner.seen.contains_key(client.subject()) {
                 prune_seen(inner);
             }
             inner.seen.insert(
-                client.name.clone(),
+                client.subject().clone(),
                 Seen {
-                    version: client.version.clone(),
+                    version: client.version().to_owned(),
                     last_used_ms: now_ms,
                 },
             );
@@ -775,10 +993,12 @@ fn prune_seen(inner: &mut Inner) {
         pending,
         ..
     } = inner;
-    seen.retain(|name, _| {
-        store.client(name).is_some()
-            || denied.iter().any(|key| &key.client == name)
-            || pending.iter().any(|request| &request.key.client == name)
+    seen.retain(|subject, _| {
+        matches!(subject, GrantSubject::Client(name) if store.client(name.as_str()).is_some())
+            || denied.iter().any(|key| &key.subject == subject)
+            || pending
+                .iter()
+                .any(|request| &request.key.subject == subject)
     });
 }
 
@@ -832,7 +1052,7 @@ fn view(inner: &Inner) -> McpAssistantsState {
         .iter()
         .map(|pending| PendingApproval {
             request_id: pending.request_id,
-            client_name: pending.key.client.clone(),
+            client_name: pending.label.clone(),
             client_version: pending.client_version.clone(),
             account_id: pending.key.account.clone(),
             need: pending.key.need,
@@ -850,11 +1070,19 @@ fn view(inner: &Inner) -> McpAssistantsState {
             names.push(&grant.client_name);
         }
     }
-    let mut denied: Vec<&Key> = inner.denied.iter().collect();
-    denied.sort_by(|a, b| (&a.client, &a.account).cmp(&(&b.client, &b.account)));
-    for key in &denied {
-        if !names.contains(&key.client.as_str()) {
-            names.push(&key.client);
+    // Profiles are listed by the profile section, not as assistants by name.
+    let mut denied: Vec<(&str, &Key)> = inner
+        .denied
+        .iter()
+        .filter_map(|key| match &key.subject {
+            GrantSubject::Client(name) => Some((name.as_str(), key)),
+            GrantSubject::Profile(_) => None,
+        })
+        .collect();
+    denied.sort_by(|a, b| (a.0, &a.1.account).cmp(&(b.0, &b.1.account)));
+    for (client, _) in &denied {
+        if !names.contains(client) {
+            names.push(client);
         }
     }
     for name in names {
@@ -877,7 +1105,7 @@ fn view(inner: &Inner) -> McpAssistantsState {
                     .collect()
             })
             .unwrap_or_default();
-        for key in denied.iter().filter(|key| key.client == name) {
+        for (_, key) in denied.iter().filter(|(client, _)| *client == name) {
             let row = match accounts
                 .iter_mut()
                 .position(|row| row.account_id == key.account)
@@ -902,7 +1130,7 @@ fn view(inner: &Inner) -> McpAssistantsState {
             row.denied
                 .sort_by_key(|need| Need::ALL.iter().position(|n| n == need));
         }
-        let seen = inner.seen.get(name);
+        let seen = inner.seen.get(&GrantSubject::client(name));
         assistants.push(AssistantView {
             client_name: name.to_owned(),
             client_version: seen.map(|seen| seen.version.clone()),

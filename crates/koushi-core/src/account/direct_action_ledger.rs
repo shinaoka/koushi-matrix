@@ -3,7 +3,7 @@
 //! An out-of-band caller's `client_request_id` is its retry key. The SDK send
 //! queue mints its own transaction id, and an edit has no queue entry at all,
 //! so nothing downstream can deduplicate a retry. The account actor keeps this
-//! ledger, which remembers per (client, action, room, target,
+//! ledger, which remembers per (subject, action, room, target,
 //! `client_request_id`) whether an identical request is running, settled, or
 //! ended ambiguously, and answers a repeat without acting again.
 //!
@@ -39,7 +39,7 @@ enum ActionKind {
 /// The identity of one retryable request on this account.
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub(super) struct DirectActionKey {
-    client: String,
+    subject: String,
     kind: ActionKind,
     room_id: String,
     target_event_id: String,
@@ -76,7 +76,7 @@ impl DirectActionKey {
         };
         let retry = retry.as_ref()?;
         Some(Self {
-            client: retry.client.clone(),
+            subject: retry.subject.clone(),
             kind,
             room_id: room_id.clone(),
             target_event_id: target_event_id.clone(),

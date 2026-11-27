@@ -5,7 +5,7 @@
 use std::sync::atomic::Ordering;
 
 use koushi_mcp_host::Need;
-use koushi_mcp_host::consent::{AnswerOutcome, McpAssistantsState};
+use koushi_mcp_host::consent::{AnswerOutcome, GrantSubject, McpAssistantsState};
 use koushi_mcp_host::registration::{Platform, RegistrationClient};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -47,7 +47,12 @@ pub async fn set_mcp_permission(
 ) -> Result<(), ()> {
     state
         .broker
-        .set_permission(&client_name, &account_id, need, allowed)
+        .set_permission(
+            &GrantSubject::client(&client_name),
+            &account_id,
+            need,
+            allowed,
+        )
         .await
         .map_err(|_| ())
 }
@@ -60,7 +65,7 @@ pub async fn remove_mcp_assistant(
 ) -> Result<(), ()> {
     state
         .broker
-        .remove_client(&client_name)
+        .remove_subject(&GrantSubject::client(&client_name))
         .await
         .map_err(|_| ())
 }
