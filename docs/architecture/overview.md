@@ -2638,11 +2638,19 @@ until the settings UI lands, so the path is reachable only through the Rust API.
   row second; revocation deletes the row first and the file after. The launcher
   refuses a secret file that is a symlink, not a regular file, owned by another
   user, or readable by group or others.
+- **What the secret authorises.** Whoever holds a profile's secret can have
+  decrypted content of the bound account returned and can send as that account,
+  within the profile's grants. An **unprofiled** connection (protocol 1, a
+  client name) still reaches agent accounts through client-name grants; the
+  profile does not narrow that path, and the owner revokes it by removing the
+  client's grant.
 - **Handshake.** A protocol 2 hello carries `profile {id, secret}`. An unknown
   id, a malformed id, an unreadable store and a wrong secret all return the
   byte-identical `unauthorized/profile_secret` (a dummy verifier and a
-  constant-time comparison of the hashes for an unknown id; the rejection is
-  recorded after the reply is written). There is no lockout, because a lockout
+  constant-time comparison of the hashes for an unknown id; the store is read
+  for every presented id). Only the reply is claimed identical; timing is not
+  claimed to be: the rejection is recorded after the reply is written and the
+  stream closed, off the connection task. There is no lockout, because a lockout
   would let anyone holding the endpoint token lock the real plugin out. A
   rejection is a token-only diagnostic and, for an existing profile, sets
   `last_rejected_ms` in its state file.
@@ -2652,7 +2660,14 @@ until the settings UI lands, so the path is reachable only through the Rust API.
   `remove_subject`), `list_accounts`, the `read_recent_activity` check and its
   cursor, `DirectRetryKey`, and the assistant draft's owner. The name the client
   declared is a `Label`: it can be shown and cannot be hashed, compared or
-  converted to a key, so the compiler rejects a key built from it. A profiled
+  converted to a key: turning a label into a key by accident does not compile
+  (it is not `Hash`, `Eq` or `Into<String>`, and no `GrantSubject` parameter
+  accepts it). Doing it deliberately through a `String`
+  (`GrantSubject::client(&label.to_string())`) compiles, because those
+  constructors are `pub` for the Tauri adapter and the integration tests; that
+  is a convention the review checks, not a compiler guarantee. `DirectRetryKey`
+  and `AssistantDraftMarker` carry the subject key as a plain `String`, and an
+  empty subject is rejected when a draft is staged. A profiled
   connection is labelled with the owner's profile label. A client-name
   connection has no path to a profile's grants, and a profile has none to a
   client's.
@@ -2661,12 +2676,27 @@ until the settings UI lands, so the path is reachable only through the Rust API.
   argument of every tool; any other value fails with the one error
   `not_permitted/profile_account`, before authorisation and identical for an
   account that exists and one that does not.
+- **Concurrent writers.** Create (secret file, baseline, row), revoke, grant
+  edits and the startup orphan sweep each run under the one store lock, with a
+  bounded wait, off the async threads. The sweep removes files only when the
+  store parsed, so a missing store removes nothing. The store file, the secret
+  directory and the state directory are fsynced after a rename, create or
+  unlink, so a power loss cannot un-revoke a profile.
+- **Draft text.** `get_draft` returns the draft body only when the draft is the
+  caller's own, empty, or edited by the user; another subject's untouched
+  staged draft has an empty body.
+- **Deferred to the settings stage (PR 3).** `ProfileView.status` needs a
+  `secret_missing` value, since a row whose secret file is gone is otherwise
+  undetectable; `PendingApproval` needs a `subject_kind`, since a profile label
+  can be made to look like a client name in an approval dialog.
 - **No IPC writer.** No IPC method creates, edits, rebinds or widens a profile.
   The only writers are the owner paths; an approval that widens a grant is
   answered by the owner.
 - **Revocation.** Revoking signals every live connection of the profile and ends
   its pending approvals as `unauthorized/profile_revoked`; every request
-  re-checks the row regardless. A send already on the wire cannot be recalled.
+  re-checks the row regardless. A live connection whose store cannot be read
+  fails with `unauthorized/profile_store_unusable`, which is not a revocation
+  and says nothing else. A send already on the wire cannot be recalled.
 - **Same-user isolation does not exist.** The agent runs as the owner's OS user
   and can read every `0600` secret file and `endpoint.json`. A profile limits
   what an honest plugin is allowed to do; it does not stop a malicious or

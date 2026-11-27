@@ -263,7 +263,10 @@ async fn serve_connection(
         Ok(Hello::ProfileRejected(presented_id)) => {
             // One reply for an unknown id, a wrong secret and an unreadable
             // store, written before anything that differs between them. The
-            // rejection is recorded afterwards, so its cost is not visible.
+            // rejection is recorded after the stream is closed and off this
+            // task, so the peer does not wait for it. (The store is read for
+            // every presented id; the remaining timing difference is not
+            // claimed to be zero.)
             let _ = write_message(
                 &mut write_half,
                 &ServerMessage::Error {
@@ -274,7 +277,10 @@ async fn serve_connection(
                 },
             )
             .await;
-            profiles::note_rejected(shared.broker.data_dir(), &presented_id);
+            let _ = tokio::io::AsyncWriteExt::shutdown(&mut write_half).await;
+            drop(write_half);
+            let data_dir = shared.broker.data_dir().to_owned();
+            tokio::task::spawn_blocking(move || profiles::note_rejected(&data_dir, &presented_id));
             return;
         }
         Ok(Hello::Outdated(name)) => {

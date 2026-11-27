@@ -802,3 +802,22 @@ fn a_staged_draft_without_a_reply_target_leaves_the_composer_plain() {
     assert_eq!(state.timeline.composer.mode, ComposerMode::Plain);
     assert_eq!(state.composer_drafts.room_reply_target(ROOM), None);
 }
+
+#[test]
+fn a_draft_with_no_owning_subject_is_not_staged() {
+    let mut state = ready_state();
+    let effects = reduce(
+        &mut state,
+        AppAction::AssistantDraftStaged {
+            target: main_target(ROOM),
+            document: staged_text(),
+            client_name: CLIENT.to_owned(),
+            subject: String::new(),
+            replace: false,
+            reply_to_event_id: None,
+        },
+    );
+    assert!(state.composer_drafts.room_assistant_marker(ROOM).is_none());
+    assert!(state.composer_drafts.target_is_empty(&main_target(ROOM)));
+    let _ = effects;
+}

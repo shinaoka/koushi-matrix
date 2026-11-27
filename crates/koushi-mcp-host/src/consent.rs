@@ -667,8 +667,10 @@ impl ConsentBroker {
         let GrantSubject::Profile(id) = subject else {
             return Ok(None);
         };
-        let Some(row) = profiles::lookup(&self.data_dir, id) else {
-            return Err(profile_revoked());
+        let row = match profiles::lookup_checked(&self.data_dir, id) {
+            profiles::Lookup::Found(row) => row,
+            profiles::Lookup::Gone => return Err(profile_revoked()),
+            profiles::Lookup::Unusable => return Err(profile_store_unusable()),
         };
         if row.account_id != account_id {
             return Err(profile_account());
@@ -733,14 +735,22 @@ impl ConsentBroker {
             None => None,
         };
         let _writer = self.writer.lock().await;
-        profiles::create(
-            &self.data_dir,
-            label,
-            account_id,
-            grants,
-            baseline,
-            profiles::now_ms(),
-        )
+        // The store lock can wait on another process; never on this thread.
+        let data_dir = self.data_dir.clone();
+        let label = label.to_owned();
+        let account_id = account_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            profiles::create(
+                &data_dir,
+                &label,
+                &account_id,
+                grants,
+                baseline,
+                profiles::now_ms(),
+            )
+        })
+        .await
+        .map_err(|_| ProfileError::Io)?
     }
 
     /// Revokes a profile (owner path): the row goes first, the secret file
@@ -749,7 +759,13 @@ impl ConsentBroker {
     /// cannot be recalled.
     pub async fn revoke_profile(&self, id: &ProfileId) -> Result<bool, ProfileError> {
         let _writer = self.writer.lock().await;
-        let removed = profiles::revoke(&self.data_dir, id)?;
+        let removed = {
+            let data_dir = self.data_dir.clone();
+            let id = id.clone();
+            tokio::task::spawn_blocking(move || profiles::revoke(&data_dir, &id))
+                .await
+                .map_err(|_| ProfileError::Io)??
+        };
         if let Some(signal) = self
             .revocations
             .lock()
@@ -915,6 +931,16 @@ pub(crate) fn profile_revoked() -> WireError {
         ErrorCode::Unauthorized,
         "profile_revoked",
         "this agent profile was revoked in Koushi",
+    )
+}
+
+/// The error for a live profile connection when the profile store cannot be
+/// read. Not a revocation: the row may well still exist.
+pub(crate) fn profile_store_unusable() -> WireError {
+    WireError::with_reason(
+        ErrorCode::Unauthorized,
+        "profile_store_unusable",
+        "Koushi cannot read the agent profile store right now",
     )
 }
 

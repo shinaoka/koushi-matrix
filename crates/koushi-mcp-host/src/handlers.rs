@@ -24,8 +24,9 @@ use super::grants::Need;
 use super::spaces;
 
 /// Every tool the dispatcher serves. The profile isolation tests are generated
-/// from this list, and a test keeps it equal to the dispatcher's arms, so a new
-/// tool cannot ship without its row.
+/// from this list. A test keeps it equal to the list the launcher advertises,
+/// and the dispatcher serves only names in it, so a new tool cannot ship
+/// without its row.
 pub(crate) const TOOLS: &[&str] = &[
     "list_accounts",
     "list_rooms",
@@ -76,8 +77,12 @@ fn admit_profile(
     let GrantSubject::Profile(id) = client.subject() else {
         return Ok(());
     };
-    if crate::profiles::lookup(shared.broker.data_dir(), id).is_none() {
-        return Err(crate::consent::profile_revoked());
+    match crate::profiles::lookup_checked(shared.broker.data_dir(), id) {
+        crate::profiles::Lookup::Found(_) => {}
+        crate::profiles::Lookup::Gone => return Err(crate::consent::profile_revoked()),
+        crate::profiles::Lookup::Unusable => {
+            return Err(crate::consent::profile_store_unusable());
+        }
     }
     // An account this host does not expose answers `account_unavailable` from
     // the tool itself, as for any client.
@@ -1320,9 +1325,16 @@ async fn get_draft(
     } else {
         "user_edited"
     };
+    // Another subject's untouched draft is not this connection's to read: its
+    // status says only that it is not theirs, and its body is withheld. (A
+    // draft the user has since edited is the user's own text and is returned.)
+    let foreign = snapshot
+        .composer_drafts
+        .assistant_draft_is_untouched(&target)
+        && status != "assistant";
     Ok(json!({
         "status": status,
-        "body": composer.draft,
+        "body": if foreign { "" } else { composer.draft.as_str() },
         "reply_to_event_id": match &composer.mode {
             koushi_state::ComposerMode::Plain => None,
             koushi_state::ComposerMode::Reply {

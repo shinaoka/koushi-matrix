@@ -399,9 +399,15 @@ async fn a_wrong_secret_and_an_unknown_id_are_byte_identical_and_never_lock_out(
 
     // The rejection time of a real profile is recorded for the settings page;
     // a guess at an unknown id leaves nothing behind.
-    let recorded = (0..100)
-        .find_map(|_| world.broker.profile_last_rejected_ms(&id))
-        .or_else(|| world.broker.profile_last_rejected_ms(&id));
+    // The write happens after the connection closed, off its task: poll.
+    let mut recorded = None;
+    for _ in 0..100 {
+        recorded = world.broker.profile_last_rejected_ms(&id);
+        if recorded.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     assert!(recorded.is_some(), "last_rejected_ms is recorded");
     let unknown_id = ProfileId::parse(unknown).expect("shape");
     assert_eq!(world.broker.profile_last_rejected_ms(&unknown_id), None);
@@ -648,9 +654,11 @@ async fn a_draft_staged_by_a_client_is_not_the_profiles() {
         .expect("connects");
     let read = json!({"account_id": AGENT_A, "room_id": ROOM});
     let mut status = Value::Null;
+    let mut body = Value::Null;
     for _ in 0..100 {
         let reply = profiled.call("get_draft", read.clone()).await;
         status = structured(&reply)["status"].clone();
+        body = structured(&reply)["body"].clone();
         if status != "empty" {
             break;
         }
@@ -659,6 +667,10 @@ async fn a_draft_staged_by_a_client_is_not_the_profiles() {
     assert_eq!(
         status, "user_edited",
         "another subject's draft is never reported as this profile's own"
+    );
+    assert_eq!(
+        body, "",
+        "another subject's draft text is not returned to this profile"
     );
     let replaced = profiled
         .call(

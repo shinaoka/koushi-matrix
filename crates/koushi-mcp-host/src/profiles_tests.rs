@@ -1,5 +1,15 @@
 use super::*;
-use std::os::unix::fs::PermissionsExt;
+
+/// The permission bits of `path`, on a platform that has them.
+#[cfg(unix)]
+fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777
+}
 
 const ACCOUNT: &str = "account:@agent:example.invalid";
 
@@ -26,10 +36,11 @@ fn creation_writes_a_verifier_and_a_private_secret_file_once() {
 
     // The secret is a 256-bit value in a 0600 file inside a 0700 directory.
     assert_eq!(secret.len(), 43, "32 bytes in unpadded base64url");
-    let file = std::fs::metadata(&created.secret_path).expect("metadata");
-    assert_eq!(file.permissions().mode() & 0o777, 0o600);
-    let directory = std::fs::metadata(secret_dir(dir.path())).expect("metadata");
-    assert_eq!(directory.permissions().mode() & 0o777, 0o700);
+    #[cfg(unix)]
+    {
+        assert_eq!(mode_of(&created.secret_path), 0o600);
+        assert_eq!(mode_of(&secret_dir(dir.path())), 0o700);
+    }
 
     // The store holds the SHA-256 verifier and never the secret.
     let stored = std::fs::read_to_string(profiles_path(dir.path())).expect("profiles.json");
@@ -248,6 +259,85 @@ fn a_crash_between_the_secret_and_the_row_leaves_an_orphan_that_is_swept() {
 }
 
 #[test]
+fn a_missing_store_sweeps_nothing_and_the_sweep_waits_for_the_lock() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // No profiles.json yet: every secret file would look orphaned.
+    let id = ProfileId::parse("prof_22222222222222222222222222222222").unwrap();
+    std::fs::create_dir_all(secret_dir(dir.path())).unwrap();
+    write_secret_file(&secret_path(dir.path(), &id), "in-flight").unwrap();
+    sweep_orphans(dir.path());
+    assert!(secret_path(dir.path(), &id).exists(), "a missing store");
+
+    // A creator holding the lock between its secret file and its row is not
+    // swept: the sweep runs only once the lock is free, and then finds the row.
+    let data = dir.path().to_owned();
+    let (held, release) = std::sync::mpsc::channel::<()>();
+    let (locked, wait_locked) = std::sync::mpsc::channel::<()>();
+    let creator = std::thread::spawn({
+        let data = data.clone();
+        move || {
+            with_lock(&data, || {
+                locked.send(()).unwrap();
+                release.recv().unwrap();
+                create_row_unlocked(&data)
+            })
+            .unwrap()
+        }
+    });
+    wait_locked.recv().unwrap();
+    let sweeper = std::thread::spawn({
+        let data = data.clone();
+        move || sweep_orphans(&data)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    held.send(()).unwrap();
+    let kept = creator.join().unwrap();
+    sweeper.join().unwrap();
+    assert!(
+        secret_path(&data, &kept).exists(),
+        "the new secret survives"
+    );
+    assert!(lookup(&data, &kept).is_some());
+}
+
+/// A secret file and its row, written as `create` does inside the lock (the
+/// caller holds it).
+fn create_row_unlocked(data: &Path) -> ProfileId {
+    let id = ProfileId::parse("prof_33333333333333333333333333333333").unwrap();
+    std::fs::create_dir_all(secret_dir(data)).unwrap();
+    write_secret_file(&secret_path(data, &id), "s").unwrap();
+    let mut loaded = load(data);
+    loaded.store.entries.push(Entry::Profile(Profile {
+        id: id.clone(),
+        label: "L".to_owned(),
+        account_id: ACCOUNT.to_owned(),
+        grants: read_only(),
+        verifier: digest("s"),
+        created_at_ms: 1,
+        extra: Map::new(),
+    }));
+    save(data, &loaded.store).unwrap();
+    id
+}
+
+#[test]
+fn an_unusable_store_is_not_a_revocation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (created, _) = make(dir.path());
+    assert!(matches!(
+        lookup_checked(dir.path(), &created.profile_id),
+        Lookup::Found(_)
+    ));
+    let other = ProfileId::parse("prof_44444444444444444444444444444444").unwrap();
+    assert_eq!(lookup_checked(dir.path(), &other), Lookup::Gone);
+    std::fs::write(profiles_path(dir.path()), "{broken").unwrap();
+    assert_eq!(
+        lookup_checked(dir.path(), &created.profile_id),
+        Lookup::Unusable
+    );
+}
+
+#[test]
 fn the_baseline_is_kept_in_the_state_file_and_not_in_the_store() {
     let dir = tempfile::tempdir().expect("tempdir");
     let baseline = Baseline {
@@ -267,8 +357,11 @@ fn the_baseline_is_kept_in_the_state_file_and_not_in_the_store() {
     assert_eq!(state.baseline, Some(baseline));
     let stored = std::fs::read_to_string(profiles_path(dir.path())).unwrap();
     assert!(!stored.contains("mf1.abcd.7"));
-    let file = std::fs::metadata(profile_state::path(dir.path(), &created.profile_id)).unwrap();
-    assert_eq!(file.permissions().mode() & 0o777, 0o600);
+    #[cfg(unix)]
+    assert_eq!(
+        mode_of(&profile_state::path(dir.path(), &created.profile_id)),
+        0o600
+    );
 
     // A rejection writes only the state file, coalesced to one per second.
     let before = std::fs::read(profiles_path(dir.path())).unwrap();

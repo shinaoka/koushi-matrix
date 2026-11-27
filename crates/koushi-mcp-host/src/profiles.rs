@@ -320,6 +320,18 @@ fn parse_row(value: Value) -> Result<Entry, ()> {
     }))
 }
 
+/// Flushes a directory's entries (a rename, a create, an unlink) to disk, so a
+/// power loss cannot roll back a revocation while keeping its secret file's
+/// removal, or the reverse. A no-op where a directory cannot be opened.
+fn sync_dir(directory: &Path) {
+    #[cfg(unix)]
+    if let Ok(handle) = std::fs::File::open(directory) {
+        let _ = handle.sync_all();
+    }
+    #[cfg(not(unix))]
+    let _ = directory;
+}
+
 /// Writes the store: a private temporary file in the same directory, then an
 /// atomic rename over the old file.
 fn save(data_dir: &Path, store: &Store) -> std::io::Result<()> {
@@ -335,6 +347,7 @@ fn save(data_dir: &Path, store: &Store) -> std::io::Result<()> {
     temporary
         .persist(profiles_path(data_dir))
         .map_err(|error| error.error)?;
+    sync_dir(&dir);
     Ok(())
 }
 
@@ -365,8 +378,15 @@ pub struct CreatedProfile {
     pub secret_path: PathBuf,
 }
 
+/// How long an owner action waits for the store lock before giving up.
+const LOCK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Runs `change` holding the exclusive profile-store lock. The lock is a
-/// separate file so the atomic rename of `profiles.json` never moves it.
+/// separate file so the atomic rename of `profiles.json` never moves it. The
+/// wait is bounded: another process holding the lock for longer than
+/// [`LOCK_DEADLINE`] fails the action with `TimedOut` rather than hanging the
+/// caller. The wait blocks the calling thread, so async callers run this in
+/// `spawn_blocking`.
 fn with_lock<T>(data_dir: &Path, change: impl FnOnce() -> T) -> std::io::Result<T> {
     let dir = endpoint::ensure_dir(data_dir)?;
     let lock = std::fs::OpenOptions::new()
@@ -375,7 +395,19 @@ fn with_lock<T>(data_dir: &Path, change: impl FnOnce() -> T) -> std::io::Result<
         .create(true)
         .truncate(false)
         .open(dir.join(LOCK_NAME))?;
-    lock.lock()?;
+    let started = std::time::Instant::now();
+    loop {
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if started.elapsed() >= LOCK_DEADLINE {
+                    return Err(std::io::ErrorKind::TimedOut.into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
+        }
+    }
     let result = change();
     // Dropping the handle releases the lock; unlock first so it is explicit.
     let _ = lock.unlock();
@@ -401,17 +433,20 @@ fn write_secret_file(path: &Path, secret: &str) -> std::io::Result<()> {
     if written.is_err() {
         drop(file);
         let _ = std::fs::remove_file(path);
+    } else if let Some(parent) = path.parent() {
+        sync_dir(parent);
     }
     written
 }
 
 /// Creates a profile bound to `account_id`.
 ///
-/// The order is fixed: the secret file first (so no row can exist without a
-/// secret the plugin can read), then the baseline, then the verifier row under
-/// the lock. A crash after the file leaves an orphan that authenticates
-/// nothing and [`sweep_orphans`] removes. A failure after the file removes it
-/// again.
+/// Everything after choosing the id runs under the store lock, so a sweep in
+/// another process cannot remove the secret file between its write and the
+/// row. The order inside is fixed: the secret file first (so no row can exist
+/// without a secret the plugin can read), then the baseline, then the verifier
+/// row. A crash after the file leaves an orphan that authenticates nothing and
+/// [`sweep_orphans`] removes. A failure after the file removes it again.
 pub(crate) fn create(
     data_dir: &Path,
     label: &str,
@@ -424,11 +459,6 @@ pub(crate) fn create(
     if label.trim().is_empty() {
         return Err(ProfileError::InvalidLabel);
     }
-    let loaded = load(data_dir);
-    if !loaded.writable() {
-        return Err(ProfileError::StoreUnusable(loaded.status));
-    }
-
     let mut id_bytes = [0u8; 16];
     let mut secret_bytes = [0u8; 32];
     endpoint::fill_random(&mut id_bytes).map_err(|_| ProfileError::Io)?;
@@ -436,56 +466,48 @@ pub(crate) fn create(
     let id = ProfileId::from_random(id_bytes);
     let secret = endpoint::base64url(&secret_bytes);
 
-    endpoint::ensure_private_dir(&secret_dir(data_dir)).map_err(|_| ProfileError::Io)?;
-    let secret_file = secret_path(data_dir, &id);
-    write_secret_file(&secret_file, &secret).map_err(|_| ProfileError::Io)?;
-
-    let cleanup = |id: &ProfileId| {
-        let _ = std::fs::remove_file(secret_path(data_dir, id));
-        profile_state::remove(data_dir, id);
-    };
-    if let Some(baseline) = baseline {
-        let state = ProfileState {
-            baseline: Some(baseline),
-            ..ProfileState::default()
-        };
-        if profile_state::save(data_dir, &id, &state).is_err() {
-            cleanup(&id);
-            return Err(ProfileError::Io);
-        }
-    }
-
-    let row = Profile {
-        id: id.clone(),
-        label,
-        account_id: account_id.to_owned(),
-        grants,
-        verifier: digest(&secret),
-        created_at_ms: now_ms,
-        extra: Map::new(),
-    };
-    let written = with_lock(data_dir, || {
+    with_lock(data_dir, || {
         let mut loaded = load(data_dir);
         if !loaded.writable() {
             return Err(ProfileError::StoreUnusable(loaded.status));
         }
-        loaded.store.entries.push(Entry::Profile(row));
-        save(data_dir, &loaded.store).map_err(|_| ProfileError::Io)
-    });
-    match written {
-        Ok(Ok(())) => Ok(CreatedProfile {
-            profile_id: id,
+        endpoint::ensure_private_dir(&secret_dir(data_dir)).map_err(|_| ProfileError::Io)?;
+        let secret_file = secret_path(data_dir, &id);
+        write_secret_file(&secret_file, &secret).map_err(|_| ProfileError::Io)?;
+
+        let cleanup = || {
+            let _ = std::fs::remove_file(secret_path(data_dir, &id));
+            profile_state::remove(data_dir, &id);
+        };
+        if let Some(baseline) = baseline {
+            let state = ProfileState {
+                baseline: Some(baseline),
+                ..ProfileState::default()
+            };
+            if profile_state::save(data_dir, &id, &state).is_err() {
+                cleanup();
+                return Err(ProfileError::Io);
+            }
+        }
+        loaded.store.entries.push(Entry::Profile(Profile {
+            id: id.clone(),
+            label,
+            account_id: account_id.to_owned(),
+            grants,
+            verifier: digest(&secret),
+            created_at_ms: now_ms,
+            extra: Map::new(),
+        }));
+        if save(data_dir, &loaded.store).is_err() {
+            cleanup();
+            return Err(ProfileError::Io);
+        }
+        Ok(CreatedProfile {
+            profile_id: id.clone(),
             secret_path: secret_file,
-        }),
-        Ok(Err(error)) => {
-            cleanup(&id);
-            Err(error)
-        }
-        Err(_) => {
-            cleanup(&id);
-            Err(ProfileError::Io)
-        }
-    }
+        })
+    })
+    .map_err(|_| ProfileError::Io)?
 }
 
 /// Revokes a profile: the verifier row is deleted first, so authentication
@@ -510,6 +532,7 @@ pub(crate) fn revoke(data_dir: &Path, id: &ProfileId) -> Result<bool, ProfileErr
     })
     .map_err(|_| ProfileError::Io)??;
     let _ = std::fs::remove_file(secret_path(data_dir, id));
+    sync_dir(&secret_dir(data_dir));
     profile_state::remove(data_dir, id);
     Ok(removed)
 }
@@ -545,14 +568,35 @@ pub(crate) fn set_grant(
     .map_err(|_| ProfileError::Io)?
 }
 
+/// What reading one profile found.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Lookup {
+    Found(Box<Profile>),
+    /// The store is readable and has no such row: the profile was revoked.
+    Gone,
+    /// The store could not be read or understood. Nothing is authorised, but
+    /// this is not a revocation.
+    Unusable,
+}
+
+pub(crate) fn lookup_checked(data_dir: &Path, id: &ProfileId) -> Lookup {
+    let loaded = load(data_dir);
+    if loaded.status != StoreStatus::Ok {
+        return Lookup::Unusable;
+    }
+    match loaded.store.find(id) {
+        Some(profile) => Lookup::Found(Box::new(profile.clone())),
+        None => Lookup::Gone,
+    }
+}
+
 /// The stored profile, or `None` when it is gone or the file cannot be
 /// trusted. Fails closed.
 pub(crate) fn lookup(data_dir: &Path, id: &ProfileId) -> Option<Profile> {
-    let loaded = load(data_dir);
-    if loaded.status != StoreStatus::Ok {
-        return None;
+    match lookup_checked(data_dir, id) {
+        Lookup::Found(profile) => Some(*profile),
+        Lookup::Gone | Lookup::Unusable => None,
     }
-    loaded.store.find(id).cloned()
 }
 
 /// Verifies a presented id and secret. An unknown id, a malformed id, an
@@ -564,7 +608,14 @@ pub(crate) fn authenticate(data_dir: &Path, presented_id: &str, secret: &str) ->
     // The digest of a fixed text no secret can have been generated as.
     static DUMMY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
     let dummy = DUMMY.get_or_init(|| digest("koushi profile verifier: no such profile"));
-    let row = ProfileId::parse(presented_id).and_then(|id| lookup(data_dir, &id));
+    // The store is read for a malformed id too, so that read is not what
+    // tells a well-formed id from a malformed one.
+    let loaded = load(data_dir);
+    let row = ProfileId::parse(presented_id).and_then(|id| {
+        (loaded.status == StoreStatus::Ok)
+            .then(|| loaded.store.find(&id).cloned())
+            .flatten()
+    });
     let expected = row.as_ref().map_or(dummy, |row| &row.verifier);
     let matched = endpoint::constant_time_eq(&digest(secret), expected);
     if matched { row } else { None }
@@ -572,9 +623,10 @@ pub(crate) fn authenticate(data_dir: &Path, presented_id: &str, secret: &str) ->
 
 /// Records a rejected profile connection: a token-only diagnostic (never the
 /// presented id or secret), and, for a profile that exists, the time in its
-/// state file for the settings page. Runs after the rejection was written, so
-/// its cost does not tell a known id from an unknown one. No lockout: the real
-/// plugin always authenticates with the right secret.
+/// state file for the settings page. The caller runs it after the rejection
+/// was written and the stream closed, off the connection task, so the peer
+/// does not wait for it. No lockout: the real plugin always authenticates with
+/// the right secret.
 pub(crate) fn note_rejected(data_dir: &Path, presented_id: &str) {
     koushi_diagnostics::record(
         DiagnosticEvent::new(DiagnosticLevel::Warn, "mcp.profiles", "authentication")
@@ -596,37 +648,42 @@ pub(crate) fn now_ms() -> u64 {
 
 /// Removes secret files and state files that have no profile row: what a crash
 /// between the secret file and the row leaves, and what a revoke from another
-/// process may leave. When the store cannot be read nothing is removed, since
-/// no file can be called an orphan then.
+/// process may leave. It runs under the store lock, the same lock `create`
+/// holds from the secret file to the row, so it never removes a file whose row
+/// is about to be written. Only a store that parsed (`Ok`) names orphans: a
+/// missing, unreadable or newer file removes nothing, since without rows every
+/// secret would look orphaned.
 pub(crate) fn sweep_orphans(data_dir: &Path) {
-    let loaded = load(data_dir);
-    if !loaded.writable() {
-        return;
-    }
-    for (directory, extension) in [
-        (secret_dir(data_dir), "secret"),
-        (profile_state::dir(data_dir), "json"),
-    ] {
-        let Ok(entries) = std::fs::read_dir(&directory) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|value| value.to_str()) != Some(extension) {
-                continue;
-            }
-            let Some(id) = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .and_then(ProfileId::parse)
-            else {
+    let _ = with_lock(data_dir, || {
+        let loaded = load(data_dir);
+        if loaded.status != StoreStatus::Ok {
+            return;
+        }
+        for (directory, extension) in [
+            (secret_dir(data_dir), "secret"),
+            (profile_state::dir(data_dir), "json"),
+        ] {
+            let Ok(entries) = std::fs::read_dir(&directory) else {
                 continue;
             };
-            if loaded.store.find(&id).is_none() {
-                let _ = std::fs::remove_file(&path);
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|value| value.to_str()) != Some(extension) {
+                    continue;
+                }
+                let Some(id) = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .and_then(ProfileId::parse)
+                else {
+                    continue;
+                };
+                if loaded.store.find(&id).is_none() {
+                    let _ = std::fs::remove_file(&path);
+                }
             }
         }
-    }
+    });
 }
 
 #[cfg(test)]

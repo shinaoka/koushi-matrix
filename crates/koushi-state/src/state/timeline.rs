@@ -1215,7 +1215,8 @@ pub struct AssistantDraftMarker {
 
 impl AssistantDraftMarker {
     /// The subject that owns the draft: the stored key, or for a marker that
-    /// predates it, the client of that name.
+    /// predates it (never written now: staging rejects an empty subject), the
+    /// client of that name.
     pub fn owner_subject(&self) -> String {
         if self.subject.is_empty() {
             format!("client:{}", self.client_name)
@@ -1515,7 +1516,9 @@ impl ComposerDraftStore {
         replace: bool,
         reply_to_event_id: Option<String>,
     ) -> Option<ComposerDraftRevision> {
-        if document.is_empty() {
+        // An unowned draft would fall back to a client of the same name, which
+        // a profile's label can equal; refuse to stage one.
+        if document.is_empty() || subject.is_empty() {
             return None;
         }
         // #1905: a replacement is the one write into a non-empty target, and
