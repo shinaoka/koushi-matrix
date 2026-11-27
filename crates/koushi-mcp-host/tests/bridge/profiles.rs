@@ -833,9 +833,6 @@ async fn no_ipc_method_changes_the_profile_store() {
         "profiles/list",
         "grant",
         "approve",
-        "subscribe",
-        "unsubscribe",
-        "ack",
     ] {
         let reply = conn.request(method, hostile.clone()).await;
         assert_eq!(reply["error"]["code"], "unsupported", "{method}");

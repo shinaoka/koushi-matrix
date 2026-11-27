@@ -14,6 +14,7 @@ mod endpoint;
 mod events;
 mod grants;
 mod handlers;
+mod profile_limits;
 mod profile_state;
 mod profiles;
 mod recent_activity;
@@ -21,6 +22,7 @@ pub mod registration;
 mod server;
 mod spaces;
 mod subject;
+mod subscription;
 
 /// The tools the dispatcher serves. For the isolation tests, which are
 /// generated from it so a new tool cannot ship without a row.
@@ -36,8 +38,9 @@ pub fn method_names() -> &'static [&'static str] {
 }
 
 pub use grants::{Need, StoreStatus};
+pub use profile_limits::TestLimits;
 pub use profiles::{CreatedProfile, ProfileError, ProfileGrants};
-pub use server::{BridgeHandle, start};
+pub use server::{BridgeHandle, start, start_with_limits};
 
 use std::path::PathBuf;
 

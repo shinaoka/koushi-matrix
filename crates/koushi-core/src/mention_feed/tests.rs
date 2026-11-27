@@ -44,6 +44,28 @@ async fn three_mentions_in_one_room_are_three_entries_in_order() {
     );
 }
 
+/// The two accessors the push subscription uses (#2132): the cursor before the
+/// oldest retained row, and the sequence a cursor names without refusing one
+/// that has expired.
+#[tokio::test]
+async fn the_retained_start_and_a_cursors_sequence_are_exposed() {
+    let feed = memory_feed();
+    for event in ["$a", "$b"] {
+        feed.record(candidate(event, "@m:x")).await;
+    }
+    let start = feed.retained_start_cursor();
+    assert_eq!(feed.seq_of(&start), Ok(0));
+    let page = poll(&feed, Some(&start)).await.expect("page");
+    assert_eq!(page.entries.len(), 2, "the start cursor precedes every row");
+    assert_eq!(feed.seq_of(&feed.cursor_for(2)), Ok(2));
+    assert_eq!(feed.seq_of("garbage"), Err(CursorRejection::Malformed));
+    let other = memory_feed();
+    assert_eq!(
+        feed.seq_of(&other.cursor_for(1)),
+        Err(CursorRejection::Foreign)
+    );
+}
+
 #[tokio::test]
 async fn a_cursor_resumes_after_what_was_read() {
     let feed = memory_feed();

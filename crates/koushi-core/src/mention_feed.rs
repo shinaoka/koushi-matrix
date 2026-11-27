@@ -282,6 +282,38 @@ impl MentionFeed {
         format!("{CURSOR_VERSION}.{}.{seq}", self.lock().generation)
     }
 
+    /// The cursor that precedes the oldest retained row: continuing from it
+    /// delivers everything still retained (#2132, `subscribe after:"retained"`).
+    pub fn retained_start_cursor(&self) -> String {
+        let floor = self.lock().evicted_at(now_ms());
+        self.cursor_for(floor)
+    }
+
+    /// The sequence number a cursor names, checking only that this feed issued
+    /// it (shape and generation). Unlike a read, it does not refuse a cursor
+    /// that has since expired: an acknowledgement of an old row is a no-op, not
+    /// a failure (#2132).
+    pub fn seq_of(&self, cursor: &str) -> Result<u64, CursorRejection> {
+        let data = self.lock();
+        let mut parts = cursor.split('.');
+        let (Some(version), Some(generation), Some(seq), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return Err(CursorRejection::Malformed);
+        };
+        let seq = seq.parse::<u64>().map_err(|_| CursorRejection::Malformed)?;
+        if version != CURSOR_VERSION
+            || generation.len() != 16
+            || !generation.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(CursorRejection::Malformed);
+        }
+        if generation != data.generation {
+            return Err(CursorRejection::Foreign);
+        }
+        Ok(seq)
+    }
+
     /// Appends one row, committing it before it is visible to a reader.
     ///
     /// The commit runs in a detached task that also advances memory, so a

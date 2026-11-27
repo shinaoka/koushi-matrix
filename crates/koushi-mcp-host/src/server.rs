@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use crate::BridgeAccounts;
 use crate::consent::{ClientIdentity, ConsentBroker};
@@ -22,6 +22,8 @@ use koushi_mcp::wire::{
 };
 
 use super::{endpoint, events, handlers, profiles};
+use crate::profile_limits::{Limits, WRITER_CHANNEL};
+use crate::subscription::{self, Leases, PumpStart, SubSlot};
 
 #[cfg(unix)]
 type Listener = tokio::net::UnixListener;
@@ -101,6 +103,27 @@ pub fn start(
     data_dir: PathBuf,
     broker: Arc<ConsentBroker>,
 ) -> Result<BridgeHandle, &'static str> {
+    start_with(accounts, data_dir, broker, Limits::DEFAULT)
+}
+
+/// `start` with the subscription's timeouts shrunk, for tests that cannot wait
+/// a minute for a stall.
+#[doc(hidden)]
+pub fn start_with_limits(
+    accounts: Arc<dyn BridgeAccounts>,
+    data_dir: PathBuf,
+    broker: Arc<ConsentBroker>,
+    limits: crate::profile_limits::TestLimits,
+) -> Result<BridgeHandle, &'static str> {
+    start_with(accounts, data_dir, broker, limits.into())
+}
+
+fn start_with(
+    accounts: Arc<dyn BridgeAccounts>,
+    data_dir: PathBuf,
+    broker: Arc<ConsentBroker>,
+    limits: Limits,
+) -> Result<BridgeHandle, &'static str> {
     endpoint::ensure_dir(&data_dir).map_err(|_| "mcp_dir")?;
     // A secret file with no row, left by a crash between the two, authenticates
     // nothing; remove it.
@@ -135,6 +158,8 @@ pub fn start(
             log,
             activity_pages: Arc::new(crate::recent_activity::ActivityPages::default()),
             broker: Arc::clone(&broker),
+            leases: Arc::new(Leases::default()),
+            limits,
         },
         token,
         shutdown_rx,
@@ -156,6 +181,9 @@ pub(crate) struct Shared {
     pub(crate) log: Arc<events::EventLog>,
     pub(crate) activity_pages: Arc<crate::recent_activity::ActivityPages>,
     pub(crate) broker: Arc<ConsentBroker>,
+    /// Which connection holds each profile's push subscription.
+    pub(crate) leases: Arc<Leases>,
+    pub(crate) limits: Limits,
 }
 
 fn spawn_sweeper(broker: Arc<ConsentBroker>, mut shutdown: watch::Receiver<bool>) {
@@ -338,11 +366,80 @@ async fn serve_connection(
         .profile_id()
         .map(|id| shared.broker.watch_revocation(id));
 
+    // From here the write half belongs to one writer task fed by a bounded
+    // channel, so a push can interleave with responses. A connection that never
+    // subscribes sends only responses through it, in order, as before.
+    let (tx, rx) = mpsc::channel::<ServerMessage>(WRITER_CHANNEL);
+    let writer = tokio::spawn(run_writer(rx, write_half, shared.limits.write_stall));
+    let mut writer = AbortOnDrop(Some(writer));
+    let mut slot = SubSlot::default();
+
+    serve_requests(
+        &mut reader,
+        &shared,
+        &client,
+        protocol,
+        &mut shutdown,
+        &mut revoked,
+        &tx,
+        &mut slot,
+    )
+    .await;
+
+    // The subscription ends first, so its acknowledged cursor is durable before
+    // the lease is free; then the writer drains what was queued.
+    slot.finish().await;
+    drop(tx);
+    if let Some(task) = writer.0.take() {
+        let _ = tokio::time::timeout(shared.limits.write_stall, task).await;
+    }
+}
+
+/// Aborts its task when dropped, so a connection task that is itself aborted
+/// at shutdown leaves no writer holding the socket.
+struct AbortOnDrop(Option<tokio::task::JoinHandle<()>>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if let Some(task) = &self.0 {
+            task.abort();
+        }
+    }
+}
+
+/// The only writer of the connection. A frame that cannot be written within
+/// `stall` means the peer is not reading: the writer ends, which closes the
+/// channel and with it the connection.
+async fn run_writer(
+    mut frames: mpsc::Receiver<ServerMessage>,
+    mut write_half: impl AsyncWriteExt + Unpin,
+    stall: Duration,
+) {
+    while let Some(frame) = frames.recv().await {
+        match tokio::time::timeout(stall, write_message(&mut write_half, &frame)).await {
+            Ok(Ok(())) => {}
+            _ => return,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn serve_requests(
+    reader: &mut BufReader<tokio::io::ReadHalf<Stream>>,
+    shared: &Shared,
+    client: &ClientIdentity,
+    protocol: u32,
+    shutdown: &mut watch::Receiver<bool>,
+    revoked: &mut Option<watch::Receiver<bool>>,
+    tx: &mpsc::Sender<ServerMessage>,
+    slot: &mut SubSlot,
+) {
     loop {
         let line = tokio::select! {
             _ = shutdown.changed() => return,
-            _ = revoked_signal(&mut revoked) => return,
-            read = koushi_mcp::ipc::read_frame(&mut reader) => match read {
+            _ = revoked_signal(revoked) => return,
+            _ = tx.closed() => return,
+            read = koushi_mcp::ipc::read_frame(reader) => match read {
                 Ok(line) => line,
                 Err(_) => return,
             },
@@ -351,18 +448,17 @@ async fn serve_connection(
             return;
         }
         if line.len() > MAX_FRAME_BYTES {
-            let _ = write_message(
-                &mut write_half,
-                &ServerMessage::Error {
+            let _ = tx
+                .send(ServerMessage::Error {
                     code: ErrorCode::Internal,
                     message: "frame too large".to_owned(),
                     reason: None,
                     supported: None,
-                },
-            )
-            .await;
+                })
+                .await;
             return;
         }
+        let mut pump_start = None;
         let response = match decode_line::<ClientMessage>(&line) {
             Ok(ClientMessage::Request { id, method, params }) => {
                 // The launcher sends one request at a time, so while a call
@@ -370,19 +466,17 @@ async fn serve_connection(
                 // (it cancelled, or was killed) or the bridge stopping. Either
                 // drops the call before it can act, including a send that is
                 // still waiting for approval.
-                let dispatch = dispatch_method(&shared, &client, protocol, &method, params);
+                let dispatch = dispatch_request(shared, client, protocol, slot, &method, params);
                 tokio::select! {
                     biased;
                     _ = shutdown.changed() => return,
-                    _ = closed(&mut reader) => return,
+                    _ = closed(reader) => return,
                     // A revocation answers the call that was waiting, with no
                     // data, and ends the connection.
-                    _ = revoked_signal(&mut revoked) => {
-                        let _ = write_message(
-                            &mut write_half,
-                            &ServerMessage::failure(id, crate::consent::profile_revoked()),
-                        )
-                        .await;
+                    _ = revoked_signal(revoked) => {
+                        let _ = tx
+                            .send(ServerMessage::failure(id, crate::consent::profile_revoked()))
+                            .await;
                         return;
                     }
                     result = dispatch => {
@@ -394,7 +488,10 @@ async fn serve_connection(
                             return;
                         }
                         match result {
-                            Ok(value) => ServerMessage::success(id, value),
+                            Ok((value, start)) => {
+                                pump_start = start;
+                                ServerMessage::success(id, value)
+                            }
                             Err(error) => ServerMessage::failure(id, error),
                         }
                     }
@@ -408,10 +505,41 @@ async fn serve_connection(
                 ServerMessage::failure(0, WireError::new(ErrorCode::Internal, "malformed request"))
             }
         };
-        if write_message(&mut write_half, &response).await.is_err() {
+        if tx.send(response).await.is_err() {
             return;
         }
+        // Only now: the response is queued ahead of every push.
+        if let Some(start) = pump_start {
+            slot.start(start, tx.clone());
+        }
     }
+}
+
+/// The subscription methods exist on protocol 2 only; a protocol 1 connection
+/// reaches `dispatch_method` for them, which refuses them as it always did.
+async fn dispatch_request(
+    shared: &Shared,
+    client: &ClientIdentity,
+    protocol: u32,
+    slot: &mut SubSlot,
+    method: &str,
+    params: Value,
+) -> Result<(Value, Option<PumpStart>), WireError> {
+    if protocol > LEGACY_PROTOCOL {
+        match method {
+            "subscribe" => return subscription::subscribe(shared, client, slot, &params).await,
+            "unsubscribe" => {
+                return subscription::unsubscribe(slot, &params)
+                    .await
+                    .map(|value| (value, None));
+            }
+            "ack" => return subscription::ack(slot, &params).map(|value| (value, None)),
+            _ => {}
+        }
+    }
+    dispatch_method(shared, client, protocol, method, params)
+        .await
+        .map(|value| (value, None))
 }
 
 /// Resolves when the connection's profile was revoked; never for an
@@ -599,7 +727,7 @@ impl NamedPipeListener {
 /// Every method `dispatch_method` serves. The table is the gate: an arm that is
 /// not listed here is never reached, so no method can be served without its row
 /// in the no-write test, which is generated from this list.
-pub(crate) const METHODS: &[&str] = &["tools/call", "status"];
+pub(crate) const METHODS: &[&str] = &["tools/call", "status", "subscribe", "unsubscribe", "ack"];
 
 /// Dispatches one IPC request.
 async fn dispatch_method(
@@ -759,6 +887,27 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).await.expect("read");
         assert_eq!(line, "next\n", "buffered data is kept for the next read");
+    }
+
+    /// A peer that stops reading ends the writer within the stall, which closes
+    /// the channel and with it the connection (and the lease).
+    #[tokio::test]
+    async fn a_writer_that_cannot_write_gives_up_after_the_stall() {
+        let (peer, ours) = tokio::io::duplex(16);
+        let (tx, rx) = mpsc::channel(WRITER_CHANNEL);
+        let writer = tokio::spawn(run_writer(rx, ours, Duration::from_millis(100)));
+        tx.send(ServerMessage::success(
+            1,
+            serde_json::json!({"x": "y".repeat(256)}),
+        ))
+        .await
+        .expect("queued");
+        tokio::time::timeout(Duration::from_secs(5), writer)
+            .await
+            .expect("the writer gave up")
+            .expect("no panic");
+        assert!(tx.is_closed(), "the reader loop sees the connection end");
+        drop(peer);
     }
 
     #[test]

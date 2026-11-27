@@ -10,4 +10,5 @@ mod profiles;
 mod protocol_handshake;
 mod send_attachments;
 mod spaces;
+mod subscription;
 mod thread_reply_target;
