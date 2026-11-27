@@ -102,13 +102,10 @@ async fn async_main() -> ExitCode {
 
     let profile = match (profile_id, profile_secret_file) {
         (None, None) => None,
-        (Some(id), Some(path)) => match std::fs::read_to_string(&path) {
-            Ok(secret) if !secret.trim().is_empty() => Some(koushi_mcp::wire::ProfileHello {
-                id,
-                secret: secret.trim().to_owned(),
-            }),
-            _ => {
-                eprintln!("koushi-mcp: cannot read the profile secret file");
+        (Some(id), Some(path)) => match koushi_mcp::profile_secret::read(&path) {
+            Ok(secret) => Some(koushi_mcp::wire::ProfileHello { id, secret }),
+            Err(error) => {
+                eprintln!("koushi-mcp: {}", error.explanation());
                 return ExitCode::from(2);
             }
         },

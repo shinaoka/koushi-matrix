@@ -265,6 +265,14 @@ to upstream or revert.
   secret: a 0600 key file or systemd credentials. This is not yet an allowed
   option. Until it is decided, such a host fails closed and the rule above
   stands unchanged.
+- An agent profile secret (#2132) is an authentication credential to the running
+  host, not an unlock secret, so this section's secret-store rule does not govern
+  it and this section neither decides nor depends on the open decision above.
+  The host stores only its SHA-256 verifier and writes the secret once to a
+  `0600` file (`O_EXCL`, directory `0700`) that the plugin reads; it never goes
+  in argv, the environment, a log, a diagnostic, a DTO or the clipboard. macOS
+  and a headless host use the same mechanism. A holder of the same OS user can
+  read it, as it can read `endpoint.json`.
 - Do not hardcode, derive from user passwords, reuse access tokens, or commit
   local store secrets.
 - Derive independent keys from the unlock secret with domain-separated labels

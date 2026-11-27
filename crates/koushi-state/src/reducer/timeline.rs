@@ -866,6 +866,7 @@ pub(crate) fn handle_assistant_draft_staged(
     target: crate::ComposerTarget,
     document: crate::ComposerDocument,
     client_name: String,
+    subject: String,
     replace: bool,
     reply_to_event_id: Option<String>,
 ) -> Vec<AppEffect> {
@@ -879,7 +880,14 @@ pub(crate) fn handle_assistant_draft_staged(
     }
     if state
         .composer_drafts
-        .stage_assistant_draft(&target, document, client_name, replace, reply_to_event_id)
+        .stage_assistant_draft(
+            &target,
+            document,
+            client_name,
+            subject,
+            replace,
+            reply_to_event_id,
+        )
         .is_none()
     {
         return Vec::new();

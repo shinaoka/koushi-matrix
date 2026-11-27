@@ -254,8 +254,9 @@ impl std::fmt::Debug for DirectThreadReplyOutcome {
 /// caller-chosen labels.
 #[derive(Clone, Eq, PartialEq)]
 pub struct DirectRetryKey {
-    /// The calling assistant's validated client name.
-    pub client: String,
+    /// The calling connection's grant subject key (#2132), never its display
+    /// name: two connections that declare the same name do not share retries.
+    pub subject: String,
     pub client_request_id: String,
 }
 
@@ -420,6 +421,9 @@ pub struct AssistantDraftRequest {
     pub reply_to_event_id: Option<String>,
     /// The calling assistant's validated client name, shown by the marker.
     pub client_name: String,
+    /// #2132: the calling connection's grant subject key. It owns the draft,
+    /// so only the same subject may read it back as its own or replace it.
+    pub subject: String,
     /// #1905: replace the target's own untouched assistant draft. Without it a
     /// non-empty target is a `Conflict`.
     pub replace: bool,

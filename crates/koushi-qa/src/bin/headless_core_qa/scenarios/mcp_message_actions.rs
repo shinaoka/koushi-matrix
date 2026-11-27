@@ -661,7 +661,7 @@ async fn unreact(
 /// would send it.
 fn qa_retry_key(client_request_id: &str) -> koushi_core::DirectRetryKey {
     koushi_core::DirectRetryKey {
-        client: "qa".to_owned(),
+        subject: "qa".to_owned(),
         client_request_id: client_request_id.to_owned(),
     }
 }

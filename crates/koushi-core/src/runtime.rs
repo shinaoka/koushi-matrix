@@ -2924,7 +2924,7 @@ impl AppActor {
             && self
                 .state
                 .composer_drafts
-                .assistant_draft_is_untouched(&request.target);
+                .assistant_draft_is_untouched_by(&request.target, Some(&request.subject));
         if (!self.state.composer_drafts.target_is_empty(&request.target) && !replaceable)
             || open_composer_pending
             || self.composer_draft_leases.has_command_permit(&scope)
@@ -2937,6 +2937,7 @@ impl AppActor {
             target: request.target,
             document: request.document,
             client_name: request.client_name,
+            subject: request.subject,
             replace: request.replace,
             reply_to_event_id: request.reply_to_event_id,
         }))

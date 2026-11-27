@@ -6,7 +6,7 @@ use std::time::Duration;
 use koushi_mcp::wire::ErrorCode;
 use koushi_mcp_host::consent::{
     APPROVAL_LIFETIME, APPROVAL_WAIT, AnswerOutcome, ClientIdentity, ConsentBroker, ConsentContext,
-    ConsentMode, PENDING_PER_CLIENT,
+    ConsentMode, GrantSubject, PENDING_PER_CLIENT,
 };
 use koushi_mcp_host::{Need, StoreStatus};
 
@@ -14,10 +14,7 @@ const ALICE: &str = "account:@alice:example.invalid";
 const BOB: &str = "account:@bob:example.invalid";
 
 fn client(name: &str) -> ClientIdentity {
-    ClientIdentity {
-        name: name.to_owned(),
-        version: "1.0.0".to_owned(),
-    }
+    ClientIdentity::unprofiled(name, "1.0.0")
 }
 
 fn broker(dir: &tempfile::TempDir) -> Arc<ConsentBroker> {
@@ -155,7 +152,7 @@ async fn deny_is_remembered_until_the_permission_is_turned_on() {
 
     // The settings page undoes it.
     broker
-        .set_permission("codex", ALICE, Need::Send, true)
+        .set_permission(&GrantSubject::client("codex"), ALICE, Need::Send, true)
         .await
         .expect("saved");
     broker
@@ -364,7 +361,7 @@ async fn removing_an_assistant_clears_grants_approvals_and_denials() {
     let dir = tempfile::tempdir().expect("tempdir");
     let broker = broker(&dir);
     broker
-        .set_permission("pi", ALICE, Need::Read, true)
+        .set_permission(&GrantSubject::client("pi"), ALICE, Need::Read, true)
         .await
         .expect("saved");
     let (denied, denied_id) = ask(&broker, "pi", BOB, Need::Read, ConsentContext::default()).await;
@@ -372,7 +369,10 @@ async fn removing_an_assistant_clears_grants_approvals_and_denials() {
     let _ = denied.await;
     let (task, _) = ask(&broker, "pi", ALICE, Need::Send, ConsentContext::default()).await;
 
-    broker.remove_client("pi").await.expect("removed");
+    broker
+        .remove_subject(&GrantSubject::client("pi"))
+        .await
+        .expect("removed");
     assert_eq!(
         task.await.expect("join").expect_err("removed").code,
         ErrorCode::NotPermitted
@@ -493,7 +493,12 @@ async fn an_outdated_launcher_is_listed_until_it_connects_on_the_current_protoco
     );
     // A tool call does not clear it; a current-protocol handshake does.
     broker
-        .set_permission("claude-desktop", ALICE, Need::Read, true)
+        .set_permission(
+            &GrantSubject::client("claude-desktop"),
+            ALICE,
+            Need::Read,
+            true,
+        )
         .await
         .expect("saved");
     broker

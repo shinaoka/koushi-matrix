@@ -1542,6 +1542,8 @@ pub enum AppAction {
         target: crate::ComposerTarget,
         document: crate::ComposerDocument,
         client_name: String,
+        /// #2132: the grant subject key that owns the draft.
+        subject: String,
         replace: bool,
         /// #1906: the event the staged draft replies to, already validated by
         /// Core against the target room and thread.

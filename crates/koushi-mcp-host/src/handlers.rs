@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::BridgeAccounts;
-use crate::consent::{ClientIdentity, ConsentContext};
+use crate::consent::{ClientIdentity, ConsentContext, GrantSubject};
 use crate::server::Shared;
 
 use koushi_mcp::wire::{ErrorCode, WireError};
@@ -22,6 +22,85 @@ use koushi_state::{ComposerDocument, ComposerTarget, SessionInfo, SessionState};
 use super::events;
 use super::grants::Need;
 use super::spaces;
+
+/// Every tool the dispatcher serves. The profile isolation tests are generated
+/// from this list. A test keeps it equal to the list the launcher advertises,
+/// and the dispatcher serves only names in it, so a new tool cannot ship
+/// without its row.
+pub(crate) const TOOLS: &[&str] = &[
+    "list_accounts",
+    "list_rooms",
+    "list_spaces",
+    "list_space_rooms",
+    "search_messages",
+    "send_message",
+    "wait_for_events",
+    "wait_for_mentions",
+    "read_recent_activity",
+    "get_attachment",
+    "read_room_messages",
+    "get_message",
+    "react_to_message",
+    "unreact_to_message",
+    "edit_message",
+    "delete_message",
+    "send_thread_reply",
+    "draft_message",
+    "get_draft",
+];
+
+/// What a profiled connection may do at all, checked before any tool runs and
+/// before any authorization: the profile still exists, the call names no
+/// account but its own, and the bound account is still an agent account.
+///
+/// `account_id` stays a required argument of every tool; a profile never
+/// defaults it. An omitted or malformed value falls through to the tool's own
+/// "account_id is required" failure. The foreign-account failure is one
+/// error, with no data and no difference between an account that exists and
+/// one that does not.
+fn admit_profile(
+    shared: &Shared,
+    client: &ClientIdentity,
+    arguments: &Value,
+) -> Result<(), WireError> {
+    let Some(bound) = client.bound_account() else {
+        return Ok(());
+    };
+    if let Some(named) = arguments
+        .get("account_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        && named != bound
+    {
+        return Err(crate::consent::profile_account());
+    }
+    let GrantSubject::Profile(id) = client.subject() else {
+        return Ok(());
+    };
+    match crate::profiles::lookup_checked(shared.broker.data_dir(), id) {
+        crate::profiles::Lookup::Found(_) => {}
+        crate::profiles::Lookup::Gone => return Err(crate::consent::profile_revoked()),
+        crate::profiles::Lookup::Unusable => {
+            return Err(crate::consent::profile_store_unusable());
+        }
+    }
+    // An account this host does not expose answers `account_unavailable` from
+    // the tool itself, as for any client.
+    if let Some(account) = shared
+        .accounts
+        .accounts()
+        .into_iter()
+        .find(|account| account.id == bound)
+        && !account.connection.snapshot().is_agent_account()
+    {
+        return Err(WireError::with_reason(
+            ErrorCode::NotPermitted,
+            "not_agent_account",
+            "the account this profile is bound to is no longer an agent account",
+        ));
+    }
+    Ok(())
+}
 
 /// One `tools/call` request.
 pub(crate) async fn dispatch_tool_call(
@@ -40,7 +119,17 @@ pub(crate) async fn dispatch_tool_call(
         .cloned()
         .unwrap_or_else(|| json!({}));
 
+    if let Err(error) = admit_profile(shared, client, &arguments) {
+        return Ok(tool_result(Err(error)));
+    }
+
     let result = match name {
+        // The table is the gate: an arm that is not listed in `TOOLS` is never
+        // reached, so no tool can be served without its isolation test row.
+        other if !TOOLS.contains(&other) => Err(WireError::new(
+            ErrorCode::Unsupported,
+            format!("unknown tool: {other}"),
+        )),
         "list_accounts" => list_accounts(shared, client),
         "list_rooms" => list_rooms(shared, client, &arguments).await,
         "list_spaces" => list_spaces(shared, client, &arguments).await,
@@ -104,22 +193,26 @@ pub(crate) fn tool_result(result: Result<Value, WireError>) -> Value {
 /// permission for the account.
 /// `permissions` says which; a missing one is asked for in Koushi on first use.
 fn list_accounts(shared: &Shared, client: &ClientIdentity) -> Result<Value, WireError> {
-    let store = shared.broker.store();
     let mut listed = Vec::new();
     for account in shared.accounts.accounts() {
+        // A profile sees exactly its bound account and no other id.
+        if client
+            .bound_account()
+            .is_some_and(|bound| bound != account.id)
+        {
+            continue;
+        }
         let snapshot = account.connection.snapshot();
         let (status, session) = session_status(&snapshot.session);
-        let grant = store.account(&client.name, &account.id);
+        let grant = shared.broker.permissions(client.subject(), &account.id);
         let permissions = json!({
-            "read": grant.is_some_and(|grant| grant.read),
-            "send": grant.is_some_and(|grant| grant.send),
-            "attachments": grant.is_some_and(|grant| grant.attachments),
-            "message_actions": grant.is_some_and(|grant| grant.message_actions),
-            "draft": grant.is_some_and(|grant| grant.draft),
+            "read": grant.read,
+            "send": grant.send,
+            "attachments": grant.attachments,
+            "message_actions": grant.message_actions,
+            "draft": grant.draft,
         });
-        if grant.is_some_and(|grant| {
-            grant.read || grant.send || grant.attachments || grant.message_actions || grant.draft
-        }) {
+        if grant.any() {
             let user_id = session.map(|info| info.user_id.clone());
             let homeserver = session
                 .map(|info| info.homeserver.clone())
@@ -806,7 +899,7 @@ async fn edit_message(
             body,
             formatting,
             retry: Some(koushi_core::DirectRetryKey {
-                client: client.name.clone(),
+                subject: client.subject().key(),
                 client_request_id: request_id.clone(),
             }),
         })
@@ -940,7 +1033,7 @@ async fn send_thread_reply(
                 body,
                 formatting,
                 retry: Some(koushi_core::DirectRetryKey {
-                    client: client.name.clone(),
+                    subject: client.subject().key(),
                     client_request_id: request_id,
                 }),
             })
@@ -1144,7 +1237,8 @@ async fn draft_message(
             target,
             document: ComposerDocument::from_plain_text(body),
             reply_to_event_id: reply_to_event_id.clone(),
-            client_name: client.name.clone(),
+            client_name: client.label().to_string(),
+            subject: client.subject().key(),
             replace,
         })
         .await
@@ -1225,15 +1319,22 @@ async fn get_draft(
         "empty"
     } else if snapshot
         .composer_drafts
-        .assistant_draft_is_untouched(&target)
+        .assistant_draft_is_untouched_by(&target, Some(&client.subject().key()))
     {
         "assistant"
     } else {
         "user_edited"
     };
+    // Another subject's untouched draft is not this connection's to read: its
+    // status says only that it is not theirs, and its body is withheld. (A
+    // draft the user has since edited is the user's own text and is returned.)
+    let foreign = snapshot
+        .composer_drafts
+        .assistant_draft_is_untouched(&target)
+        && status != "assistant";
     Ok(json!({
         "status": status,
-        "body": composer.draft,
+        "body": if foreign { "" } else { composer.draft.as_str() },
         "reply_to_event_id": match &composer.mode {
             koushi_state::ComposerMode::Plain => None,
             koushi_state::ComposerMode::Reply {
@@ -1643,8 +1744,7 @@ async fn read_recent_activity(
         if !connection.shares_runtime_with(&current)
             || !shared
                 .broker
-                .store()
-                .allows(&client.name, &account_id, Need::Read)
+                .allows(client.subject(), &account_id, Need::Read)
         {
             return Err(WireError::new(
                 ErrorCode::AccountUnavailable,
@@ -1680,7 +1780,7 @@ async fn read_recent_activity(
             .map(|room| room.room_id.clone())
             .collect();
         shared.activity_pages.read(
-            &client.name,
+            client.subject(),
             &account_id,
             query,
             arguments.get("cursor").and_then(Value::as_str),
