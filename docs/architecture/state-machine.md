@@ -8009,7 +8009,10 @@ Canon for #2118 as shipped and for the #2124 target; stages are named per item.
   A protocol 2 profile connection that subscribed (#2132) is also pushed it,
   in per-account sequence order, at most `PUSH_WINDOW` rows sent and not
   acknowledged; a full window stops the pump reading the feed, so a slow
-  consumer is paced, never overflowed.
+  consumer is paced, never overflowed. A row past the profile's wake budget is
+  **held**: the pump stops in front of it, sends one `wake_budget_exceeded`
+  frame per hold, and pushes it, in order, when the window allows or the owner
+  resets the budget (see "Wake budget" in the architecture overview, #2155).
 - **acknowledged**: the plugin sends `ack {sub, cursor}` and Core stores one
   acknowledged cursor per profile (see "Cursor acknowledgement"). `wait_for_mentions`
   keeps no per-reader state: the cursor its caller presents next is its only

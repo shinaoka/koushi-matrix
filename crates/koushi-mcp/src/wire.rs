@@ -211,6 +211,19 @@ pub enum ServerMessage {
     /// The subscription ended for a typed reason; the lease is already
     /// released and the connection stays open (#2132).
     SubEnd { sub: u64, error: WireError },
+    /// Rows past the profile's wake budget are held, not dropped: they stay in
+    /// the wake feed and are pushed, in order, when the window allows or the
+    /// owner resets the budget. Sent once per hold (#2155).
+    WakeBudgetExceeded {
+        sub: u64,
+        room_id: String,
+        /// `room` or `account`: which window was exceeded.
+        window: String,
+        limit: u32,
+        window_ms: u64,
+        /// When the next held row may be pushed, if nothing resets the budget.
+        retry_after_ms: u64,
+    },
     /// Fatal pre-handshake failure; the app closes the socket afterwards.
     Error {
         code: ErrorCode,

@@ -314,6 +314,7 @@ fn create_row_unlocked(data: &Path) -> ProfileId {
         grants: read_only(),
         verifier: digest("s"),
         created_at_ms: 1,
+        wake_budget: crate::wake_budget::WakeBudget::default(),
         extra: Map::new(),
     }));
     save(data, &loaded.store).unwrap();

@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use koushi_core::mention_feed::{CursorRejection, MentionFeed};
+use koushi_core::mention_feed::{CursorRejection, MentionEntry, MentionFeed, MentionKind};
 use serde_json::{Value, json};
 use tokio::sync::mpsc::OwnedPermit;
 use tokio::sync::{Notify, mpsc};
@@ -26,6 +26,7 @@ use crate::profile_limits::Limits;
 use crate::profile_state::SaveOutcome;
 use crate::server::Shared;
 use crate::subject::ProfileId;
+use crate::wake_budget::{Admission, HeldView, Offer, WakeBudget};
 use crate::{handlers, profile_state, profiles};
 use koushi_mcp::wire::{ErrorCode, ServerMessage, WireError};
 
@@ -584,7 +585,7 @@ enum Exit {
 
 /// Everything that must hold before a batch is sent, as `wait_for_mentions`
 /// re-checks after its wait. The profile store is read off the async worker.
-async fn check(ctx: &PumpCtx) -> Result<(), WireError> {
+async fn check(ctx: &PumpCtx) -> Result<WakeBudget, WireError> {
     if !ctx.state.feed.is_healthy() {
         return Err(unhealthy());
     }
@@ -627,7 +628,7 @@ async fn check(ctx: &PumpCtx) -> Result<(), WireError> {
                     "read access was removed from this profile",
                 ));
             }
-            Ok(())
+            Ok(row.wake_budget)
         }
         profiles::Lookup::Gone => Err(crate::consent::profile_revoked()),
         profiles::Lookup::Unusable => Err(crate::consent::profile_store_unusable()),
@@ -649,6 +650,9 @@ async fn pump(ctx: PumpCtx, tx: mpsc::Sender<ServerMessage>) {
     // ended, so a resubscribe cannot replace it unseen.
     ctx.state.flush().await;
     ctx.lease.release();
+    // A hold does not outlive the stream: the next subscriber is told again.
+    ctx.shared.broker.budgets().episode_over(&ctx.profile);
+    ctx.shared.broker.profile_over_budget(&ctx.profile, None);
     match exit {
         Exit::Ended(error) => ctx.state.end(Some(error)),
         Exit::Gone => ctx.state.end(None),
@@ -677,9 +681,91 @@ async fn flush_ticker(state: &Arc<SubState>, every: Duration) -> WireError {
     }
 }
 
+/// Whether a DM row is from the owner: a non-agent account signed in on this
+/// host, or a sender the owner named in the budget. Asked only when a row would
+/// otherwise be held.
+async fn is_owner(ctx: &PumpCtx, budget: &WakeBudget, sender: &str) -> bool {
+    if budget.exempt_senders.iter().any(|named| named == sender) {
+        return true;
+    }
+    ctx.shared.accounts.accounts().iter().any(|account| {
+        account.id.strip_prefix("account:") == Some(sender)
+            && !account.connection.snapshot().is_agent_account()
+    })
+}
+
+/// Decides which leading rows of `entries` are pushed now (#2155).
+async fn admit(ctx: &PumpCtx, budget: &WakeBudget, entries: &[MentionEntry]) -> Admission {
+    let budgets = ctx.shared.broker.budgets();
+    let now = std::time::Instant::now();
+    let plain: Vec<Offer<'_>> = entries
+        .iter()
+        .map(|entry| Offer {
+            room_id: &entry.room_id,
+            exempt: false,
+        })
+        .collect();
+    let mut flags = vec![false; entries.len()];
+    // A first pass without exemptions is enough to know whether any row is
+    // held; the owner lookup is only worth making for a DM when one is.
+    let probe = budgets.would_hold(&ctx.profile, budget, &plain, now);
+    if probe {
+        for (flag, entry) in flags.iter_mut().zip(entries) {
+            *flag = entry.kind == MentionKind::Dm && is_owner(ctx, budget, &entry.sender).await;
+        }
+    }
+    let offers: Vec<Offer<'_>> = entries
+        .iter()
+        .zip(&flags)
+        .map(|(entry, exempt)| Offer {
+            room_id: &entry.room_id,
+            exempt: *exempt,
+        })
+        .collect();
+    budgets.admit(&ctx.profile, budget, &offers, now)
+}
+
+async fn send_frame(
+    tx: &mpsc::Sender<ServerMessage>,
+    frame: ServerMessage,
+    limits: Limits,
+) -> Result<(), Exit> {
+    match tokio::time::timeout(limits.write_stall, tx.send(frame)).await {
+        Ok(Ok(())) => Ok(()),
+        // The writer is gone: the connection is ending.
+        Ok(Err(_)) => Err(Exit::Gone),
+        // The queue stayed full: the peer is not reading.
+        Err(_) => Err(Exit::Ended(stalled(
+            "write_stalled",
+            "write_stalled: frames could not be written. Subscribe again without after; unacknowledged rows are redelivered.",
+        ))),
+    }
+}
+
 async fn stream(ctx: &PumpCtx, tx: &mpsc::Sender<ServerMessage>, limits: Limits) -> Exit {
+    match stream_rows(ctx, tx, limits).await {
+        Ok(never) => match never {},
+        Err(exit) => exit,
+    }
+}
+
+async fn stream_rows(
+    ctx: &PumpCtx,
+    tx: &mpsc::Sender<ServerMessage>,
+    limits: Limits,
+) -> Result<std::convert::Infallible, Exit> {
     let mut position = ctx.position.clone();
+    // Rows are held behind `position`: wait for the window or a reset before
+    // reading the feed again, which would return them at once.
+    let mut holding: Option<std::time::Duration> = None;
     loop {
+        if let Some(retry_after) = holding.take() {
+            let budgets = ctx.shared.broker.budgets();
+            tokio::select! {
+                () = tokio::time::sleep(retry_after.min(limits.recheck)) => {}
+                () = budgets.reset_requested() => {}
+            }
+        }
         // A full window stops the pump reading the feed. The feed is a durable
         // log, so waiting here loses nothing.
         while ctx.state.free(limits.push_window) == 0 {
@@ -688,10 +774,10 @@ async fn stream(ctx: &PumpCtx, tx: &mpsc::Sender<ServerMessage>, limits: Limits)
                 break;
             }
             if tokio::time::timeout(limits.ack_stall, acked).await.is_err() {
-                return Exit::Ended(stalled(
+                return Err(Exit::Ended(stalled(
                     "ack_stalled",
                     "ack_stalled: the window stayed full without an ack. Subscribe again without after; unacknowledged rows are redelivered.",
-                ));
+                )));
             }
         }
         let room = ctx.state.free(limits.push_window);
@@ -702,47 +788,67 @@ async fn stream(ctx: &PumpCtx, tx: &mpsc::Sender<ServerMessage>, limits: Limits)
             .await
         {
             Ok(page) => page,
-            Err(rejection) => return Exit::Ended(lost_position(rejection)),
+            Err(rejection) => return Err(Exit::Ended(lost_position(rejection))),
         };
         // One check per page, and one per idle wake-up: the wait can last, so
         // it comes after the wait, never before.
-        if let Err(error) = check(ctx).await {
-            return Exit::Ended(error);
-        }
+        let budget = check(ctx).await.map_err(Exit::Ended)?;
         if page.entries.is_empty() {
             continue;
         }
-        let rows: Vec<Value> = page
-            .entries
-            .iter()
-            .map(|entry| handlers::mention_row(&ctx.state.feed, &ctx.account_id, entry))
-            .collect();
-        {
-            // Recorded before the frame can reach the peer, so its ack is
-            // never "ahead".
-            let mut window = ctx.state.window();
-            for entry in &page.entries {
-                window.outstanding.push_back(entry.seq);
-                window.sent = entry.seq;
+        let admission = admit(ctx, &budget, &page.entries).await;
+        let admitted = &page.entries[..admission.admitted];
+        if let Some(last) = admitted.last() {
+            let rows: Vec<Value> = admitted
+                .iter()
+                .map(|entry| handlers::mention_row(&ctx.state.feed, &ctx.account_id, entry))
+                .collect();
+            let cursor = if admitted.len() == page.entries.len() {
+                page.cursor.clone()
+            } else {
+                ctx.state.feed.cursor_for(last.seq)
+            };
+            {
+                // Recorded before the frame can reach the peer, so its ack is
+                // never "ahead".
+                let mut window = ctx.state.window();
+                for entry in admitted {
+                    window.outstanding.push_back(entry.seq);
+                    window.sent = entry.seq;
+                }
+            }
+            position = cursor.clone();
+            let push = ServerMessage::Push {
+                sub: ctx.sub,
+                rows,
+                cursor,
+            };
+            send_frame(tx, push, limits).await?;
+            if admission.held.is_none() {
+                ctx.shared.broker.profile_over_budget(&ctx.profile, None);
             }
         }
-        position = page.cursor.clone();
-        let push = ServerMessage::Push {
-            sub: ctx.sub,
-            rows,
-            cursor: page.cursor,
-        };
-        match tokio::time::timeout(limits.write_stall, tx.send(push)).await {
-            Ok(Ok(())) => {}
-            // The writer is gone: the connection is ending.
-            Ok(Err(_)) => return Exit::Gone,
-            // The queue stayed full: the peer is not reading.
-            Err(_) => {
-                return Exit::Ended(stalled(
-                    "write_stalled",
-                    "write_stalled: frames could not be written. Subscribe again without after; unacknowledged rows are redelivered.",
-                ));
+        if let Some(held) = admission.held {
+            ctx.shared.broker.profile_over_budget(
+                &ctx.profile,
+                Some(HeldView {
+                    room_id: held.room_id.clone(),
+                    window: held.window.as_str().to_owned(),
+                    since_ms: crate::profiles::now_ms(),
+                }),
+            );
+            if admission.notify {
+                let notice = ServerMessage::WakeBudgetExceeded {
+                    sub: ctx.sub,
+                    room_id: held.room_id,
+                    window: held.window.as_str().to_owned(),
+                    limit: held.limit,
+                    window_ms: u64::try_from(held.window_len.as_millis()).unwrap_or(u64::MAX),
+                    retry_after_ms: u64::try_from(held.retry_after.as_millis()).unwrap_or(u64::MAX),
+                };
+                send_frame(tx, notice, limits).await?;
             }
+            holding = Some(held.retry_after);
         }
     }
 }

@@ -82,7 +82,10 @@ pub async fn create_agent_profile(
                 ProfileError::NotAgentAccount => "not_agent_account",
                 ProfileError::AccountUnavailable => "account_unavailable",
                 ProfileError::StoreUnusable(_) => "store_unusable",
-                ProfileError::NotFound | ProfileError::AccountMismatch | ProfileError::Io => "io",
+                ProfileError::NotFound
+                | ProfileError::AccountMismatch
+                | ProfileError::InvalidBudget
+                | ProfileError::Io => "io",
             },
         },
     };

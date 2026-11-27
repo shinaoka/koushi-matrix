@@ -248,7 +248,8 @@ impl Client {
             // The launcher never subscribes, so a host has no push to send it.
             ServerMessage::HelloOk { .. }
             | ServerMessage::Push { .. }
-            | ServerMessage::SubEnd { .. } => {
+            | ServerMessage::SubEnd { .. }
+            | ServerMessage::WakeBudgetExceeded { .. } => {
                 Err(WireError::new_without_detail(ErrorCode::Internal))
             }
         }

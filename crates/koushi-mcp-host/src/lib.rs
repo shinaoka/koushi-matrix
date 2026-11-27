@@ -24,6 +24,7 @@ mod server;
 mod spaces;
 mod subject;
 mod subscription;
+mod wake_budget;
 
 /// The tools the dispatcher serves. For the isolation tests, which are
 /// generated from it so a new tool cannot ship without a row.
@@ -42,6 +43,7 @@ pub use grants::{Need, StoreStatus};
 pub use profile_limits::TestLimits;
 pub use profiles::{CreatedProfile, ProfileError, ProfileGrants};
 pub use server::{BridgeHandle, start, start_with_limits};
+pub use wake_budget::{BudgetWindow, HeldView, WakeBudget};
 
 use std::path::PathBuf;
 

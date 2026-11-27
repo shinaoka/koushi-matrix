@@ -285,6 +285,9 @@ pub struct ConsentBroker {
     /// One signal per profile with a live connection, fired when it is
     /// revoked. Entries are created by connections and removed by revocation.
     revocations: Mutex<HashMap<ProfileId, watch::Sender<bool>>>,
+    /// The wake-budget ledgers (#2155). Only the owner paths below change a
+    /// budget or reset a ledger; the IPC has no method for either.
+    budgets: crate::wake_budget::Budgets,
 }
 
 impl ConsentBroker {
@@ -315,6 +318,7 @@ impl ConsentBroker {
             writer: tokio::sync::Mutex::new(()),
             state,
             revocations: Mutex::new(HashMap::new()),
+            budgets: crate::wake_budget::Budgets::default(),
         })
     }
 
@@ -847,6 +851,68 @@ impl ConsentBroker {
         });
     }
 
+    /// Sets a profile's wake budget (owner path, #2155). The pump reads the row
+    /// on every page, so a change applies to the next page.
+    pub async fn set_wake_budget(
+        &self,
+        id: &ProfileId,
+        budget: crate::wake_budget::WakeBudget,
+    ) -> Result<(), ProfileError> {
+        if !budget.is_valid() {
+            return Err(ProfileError::InvalidBudget);
+        }
+        let _writer = self.writer.lock().await;
+        {
+            let data_dir = self.data_dir.clone();
+            let id = id.clone();
+            let stored = budget.clone();
+            tokio::task::spawn_blocking(move || profiles::set_wake_budget(&data_dir, &id, &stored))
+                .await
+                .map_err(|_| ProfileError::Io)??;
+        }
+        self.update(|inner| {
+            if let Some(facts) = inner
+                .profiles
+                .iter_mut()
+                .find(|facts| facts.profile_id == id.as_str())
+            {
+                facts.wake_budget = budget;
+            }
+        });
+        Ok(())
+    }
+
+    /// Resets a profile's wake budget (owner path, #2155): the window is
+    /// forgotten and held rows are pushed at once, in order.
+    pub fn reset_wake_budget(&self, id: &ProfileId) {
+        self.budgets.reset(id);
+        self.update(|inner| {
+            if let Some(live) = inner.live.get_mut(id) {
+                live.over_budget = None;
+            }
+        });
+    }
+
+    pub(crate) fn budgets(&self) -> &crate::wake_budget::Budgets {
+        &self.budgets
+    }
+
+    /// The pump holds rows past the budget (`Some`), or no longer does.
+    pub(crate) fn profile_over_budget(
+        &self,
+        id: &ProfileId,
+        held: Option<crate::wake_budget::HeldView>,
+    ) {
+        self.update(|inner| match held {
+            Some(held) => inner.live.entry(id.clone()).or_default().over_budget = Some(held),
+            None => {
+                if let Some(live) = inner.live.get_mut(id) {
+                    live.over_budget = None;
+                }
+            }
+        });
+    }
+
     /// Revokes a profile (owner path): the row goes first, the secret file
     /// after, then every live connection of it is signalled and its approvals
     /// end as `unauthorized/profile_revoked`. A send already on the wire
@@ -880,6 +946,7 @@ impl ConsentBroker {
         });
         inner.seen.remove(&subject);
         inner.live.remove(id);
+        self.budgets.forget(id);
         inner
             .profiles
             .retain(|profile| profile.profile_id != id.as_str());
@@ -1220,6 +1287,7 @@ fn read_profile_facts(
                 secret_path: secret.to_string_lossy().into_owned(),
                 last_rejected_ms: crate::profile_state::load(data_dir, &profile.id)
                     .last_rejected_ms,
+                wake_budget: profile.wake_budget.clone(),
             }
         })
         .collect()
@@ -1334,7 +1402,7 @@ fn view(inner: &Inner) -> McpAssistantsState {
         .iter()
         .map(|facts| {
             let live = ProfileId::parse(&facts.profile_id)
-                .and_then(|id| inner.live.get(&id).copied())
+                .and_then(|id| inner.live.get(&id).cloned())
                 .unwrap_or_default();
             ProfileView {
                 profile_id: facts.profile_id.clone(),
@@ -1350,6 +1418,8 @@ fn view(inner: &Inner) -> McpAssistantsState {
                 subscribed: live.subscribed,
                 last_seen_ms: live.last_seen_ms,
                 last_rejected_ms: facts.last_rejected_ms,
+                wake_budget: (&facts.wake_budget).into(),
+                over_budget: live.over_budget,
                 snippets: launcher_path
                     .map(|launcher| {
                         registration::profile_registrations(
