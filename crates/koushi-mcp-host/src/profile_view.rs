@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::profiles::ProfileGrants;
 use crate::registration::Registration;
+use crate::wake_budget::{HeldView, WakeBudget};
 
 /// Whether a profile can be launched right now.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -39,8 +40,36 @@ pub struct ProfileView {
     pub last_seen_ms: Option<u64>,
     /// When a connection last presented the wrong secret for this profile.
     pub last_rejected_ms: Option<u64>,
+    /// The owner's wake budget for this profile (#2155).
+    pub wake_budget: WakeBudgetView,
+    /// Set while the profile's subscription is holding rows past its budget.
+    pub over_budget: Option<HeldView>,
     /// Launch snippets per client, built in Rust; empty without a launcher.
     pub snippets: Vec<Registration>,
+}
+
+/// A profile's wake budget as the settings page shows it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct WakeBudgetView {
+    pub room_limit: u32,
+    pub room_window_ms: u64,
+    pub account_limit: u32,
+    pub account_window_ms: u64,
+    pub exempt_senders: Vec<String>,
+}
+
+impl From<&WakeBudget> for WakeBudgetView {
+    fn from(budget: &WakeBudget) -> Self {
+        let millis =
+            |window: std::time::Duration| u64::try_from(window.as_millis()).unwrap_or(u64::MAX);
+        Self {
+            room_limit: budget.room_limit,
+            room_window_ms: millis(budget.room_window),
+            account_limit: budget.account_limit,
+            account_window_ms: millis(budget.account_window),
+            exempt_senders: budget.exempt_senders.clone(),
+        }
+    }
 }
 
 impl std::fmt::Debug for ProfileView {
@@ -64,12 +93,14 @@ pub(crate) struct ProfileFacts {
     pub(crate) status: ProfileStatus,
     pub(crate) secret_path: String,
     pub(crate) last_rejected_ms: Option<u64>,
+    pub(crate) wake_budget: WakeBudget,
 }
 
 /// Connections and lease of one profile, kept in memory only.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Live {
     pub(crate) connections: usize,
     pub(crate) subscribed: bool,
     pub(crate) last_seen_ms: Option<u64>,
+    pub(crate) over_budget: Option<HeldView>,
 }

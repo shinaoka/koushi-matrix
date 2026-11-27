@@ -26,6 +26,7 @@ use crate::endpoint;
 use crate::grants::{Need, StoreStatus};
 use crate::profile_state::{self, Baseline, ProfileState};
 use crate::subject::ProfileId;
+use crate::wake_budget::WakeBudget;
 
 pub(crate) const FILE_NAME: &str = "profiles.json";
 const LOCK_NAME: &str = "profiles.json.lock";
@@ -80,6 +81,8 @@ pub(crate) struct Profile {
     pub(crate) grants: ProfileGrants,
     verifier: [u8; 32],
     pub(crate) created_at_ms: u64,
+    /// The owner's wake budget (#2155); the default when the row has none.
+    pub(crate) wake_budget: WakeBudget,
     extra: Map<String, Value>,
 }
 
@@ -145,6 +148,7 @@ impl Store {
                     );
                     row.insert("secret_verifier".to_owned(), json!(hex(&profile.verifier)));
                     row.insert("created_at_ms".to_owned(), json!(profile.created_at_ms));
+                    row.insert("wake_budget".to_owned(), profile.wake_budget.to_json());
                     Value::Object(row)
                 }
             })
@@ -309,6 +313,10 @@ fn parse_row(value: Value) -> Result<Entry, ()> {
     let Some(created_at_ms) = row.remove("created_at_ms").and_then(|value| value.as_u64()) else {
         return Err(());
     };
+    let wake_budget = row
+        .remove("wake_budget")
+        .map(|value| WakeBudget::from_json(&value))
+        .unwrap_or_default();
     Ok(Entry::Profile(Profile {
         id,
         label,
@@ -316,6 +324,7 @@ fn parse_row(value: Value) -> Result<Entry, ()> {
         grants,
         verifier,
         created_at_ms,
+        wake_budget,
         extra: row,
     }))
 }
@@ -366,6 +375,8 @@ pub enum ProfileError {
     NotAgentAccount,
     /// The account is not exposed by this host.
     AccountUnavailable,
+    /// A wake budget with a zero limit or window.
+    InvalidBudget,
     /// A file could not be written.
     Io,
 }
@@ -496,6 +507,7 @@ pub(crate) fn create(
             grants,
             verifier: digest(&secret),
             created_at_ms: now_ms,
+            wake_budget: WakeBudget::default(),
             extra: Map::new(),
         }));
         if save(data_dir, &loaded.store).is_err() {
@@ -563,6 +575,32 @@ pub(crate) fn set_grant(
             return Err(ProfileError::AccountMismatch);
         }
         profile.grants.set(need, allowed);
+        save(data_dir, &loaded.store).map_err(|_| ProfileError::Io)
+    })
+    .map_err(|_| ProfileError::Io)?
+}
+
+/// Stores the profile's wake budget. Owner path only (#2155): nothing on the
+/// IPC reaches it.
+pub(crate) fn set_wake_budget(
+    data_dir: &Path,
+    id: &ProfileId,
+    budget: &WakeBudget,
+) -> Result<(), ProfileError> {
+    with_lock(data_dir, || {
+        let mut loaded = load(data_dir);
+        if !loaded.writable() {
+            return Err(ProfileError::StoreUnusable(loaded.status));
+        }
+        let Some(Entry::Profile(profile)) = loaded
+            .store
+            .entries
+            .iter_mut()
+            .find(|entry| matches!(entry, Entry::Profile(profile) if &profile.id == id))
+        else {
+            return Err(ProfileError::NotFound);
+        };
+        profile.wake_budget = budget.clone();
         save(data_dir, &loaded.store).map_err(|_| ProfileError::Io)
     })
     .map_err(|_| ProfileError::Io)?

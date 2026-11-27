@@ -668,6 +668,20 @@ export type McpExtensionOutcome =
 
 export type McpProfileStatus = "ready" | "account_unavailable" | "not_agent_account" | "secret_missing";
 
+export interface McpWakeBudget {
+  room_limit: number;
+  room_window_ms: number;
+  account_limit: number;
+  account_window_ms: number;
+  exempt_senders: string[];
+}
+
+export interface McpOverBudget {
+  room_id: string;
+  window: "room" | "account";
+  since_ms: number;
+}
+
 /** One agent profile (#2132). Rust decides every field; the secret is never here, only its file's path inside `snippets`. */
 export interface McpProfile {
   profile_id: string;
@@ -686,6 +700,10 @@ export interface McpProfile {
   last_seen_ms: number | null;
   /** When a connection last presented the wrong secret. */
   last_rejected_ms: number | null;
+  /** The owner's wake budget for this profile (#2155); the UI to edit it is not built yet. */
+  wake_budget: McpWakeBudget;
+  /** Set while the subscription holds wake rows past the budget (#2155). */
+  over_budget: McpOverBudget | null;
   /** Launch snippets per client, built in Rust and copied verbatim. */
   snippets: McpRegistration[];
 }

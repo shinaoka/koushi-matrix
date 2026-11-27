@@ -2703,6 +2703,38 @@ until the settings UI lands, so the path is reachable only through the Rust API.
   what an honest plugin is allowed to do; it does not stop a malicious or
   prompt-injected agent from reading another profile's secret file.
 
+### Wake budget (#2155, host side)
+
+A loop guard Core owns and an agent cannot change: the allow-list and explicit
+mentions stop agents that behave, not one that is hijacked and mentions another
+agent every turn. The push subscription counts the rows it pushes per profile in
+a sliding window: per (account, room) (default 30 per 10 minutes) and per account
+across rooms (default 120 per hour); the constants are in
+`wake_budget.rs` and are judgement, not measurement. A row past either window is
+**held, not dropped**: it is already in the durable wake feed and stays readable
+there, and the subscription's position stays in front of it. The first hold of an
+episode sends one typed `wake_budget_exceeded` frame (room, window, limit,
+window length, retry-after); no further notice follows until the hold has ended.
+Pushing resumes when the window allows or when the owner resets the budget, and
+held rows are then pushed in order. The budget is written only by the owner
+(`ConsentBroker::set_wake_budget` and `reset_wake_budget`, stored in the profile
+row); no IPC method reads or writes it, and the pump re-reads the row on every
+page. `ProfileView` carries the budget and `over_budget` (room, window, since) for
+the agent tab and, later, `koushi agent status`. The ledger is in memory: a restart
+of Koushi clears the window, so it can release up to one budget of held rows
+early, and loses none, because held rows are unacknowledged feed rows the next
+subscription resumes at.
+
+**Owner DMs are exempt**, decided here: a held agent must stay reachable by its
+owner. An exempt row is a DM from a non-agent account signed in on the host, or
+from a sender the owner named in the budget (`exempt_senders`, for a headless
+host with no owner account). It is never held and is not counted. Because the
+acknowledged cursor is cumulative, a row cannot be pushed past an earlier held
+one: an owner DM therefore brings the rows held before it, in order, and those
+count toward the window. Rows after it are held again if the budget is still
+exceeded. Not decided here: an owner-set budget UI (macOS) and
+`koushi agent status` (#2109).
+
 ### Open decisions
 
 These are not decided (item 4 was decided in #2132 and is kept so its number

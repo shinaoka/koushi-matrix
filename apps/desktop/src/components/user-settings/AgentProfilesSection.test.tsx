@@ -60,6 +60,14 @@ function profile(overrides: Partial<McpProfile> = {}): McpProfile {
     subscribed: false,
     last_seen_ms: null,
     last_rejected_ms: null,
+    wake_budget: {
+      room_limit: 30,
+      room_window_ms: 600_000,
+      account_limit: 120,
+      account_window_ms: 3_600_000,
+      exempt_senders: [],
+    },
+    over_budget: null,
     snippets: [
       { client: "claude_code", client_name: "claude-code", kind: "command", text: RUST_SNIPPET, config_hint: null, action: null },
       { client: "other", client_name: "my-client", kind: "json", text: "{\"from\":\"rust\"}", config_hint: null, action: null }

@@ -20,7 +20,7 @@ use std::time::Duration;
 use koushi_core::mention_feed::{MentionCandidate, MentionFeed, MentionKind};
 use koushi_core::runtime::CoreRuntime;
 use koushi_mcp_host::consent::{ConsentBroker, ConsentMode, ProfileId};
-use koushi_mcp_host::{BridgeAccount, BridgeAccounts, ProfileGrants, TestLimits};
+use koushi_mcp_host::{BridgeAccount, BridgeAccounts, ProfileGrants, TestLimits, WakeBudget};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -59,7 +59,7 @@ struct World {
     broker: Arc<ConsentBroker>,
     /// While `true`, the feed of AGENT_A commits; clearing it makes it unhealthy.
     storage_ok: Arc<AtomicBool>,
-    bridge: koushi_mcp_host::BridgeHandle,
+    bridge: Option<koushi_mcp_host::BridgeHandle>,
 }
 
 fn limits(push_window: usize, ack_stall_ms: u64) -> TestLimits {
@@ -119,7 +119,7 @@ impl World {
             accounts,
             broker,
             storage_ok,
-            bridge,
+            bridge: Some(bridge),
         }
     }
 
@@ -180,6 +180,62 @@ impl World {
         assert_eq!(outcome, koushi_core::mention_feed::RecordOutcome::Recorded);
     }
 
+    /// A wake-feed row with a chosen room, sender and kind.
+    async fn record_row(
+        &self,
+        account: &str,
+        event: &str,
+        room: &str,
+        sender: &str,
+        kind: MentionKind,
+    ) {
+        let outcome = self
+            .feed(account)
+            .record(MentionCandidate {
+                room_id: room.to_owned(),
+                event_id: Some(event.to_owned()),
+                sender: sender.to_owned(),
+                timestamp_ms: koushi_core::mention_feed::now_ms(),
+                thread_root: None,
+                kind,
+            })
+            .await;
+        assert_eq!(outcome, koushi_core::mention_feed::RecordOutcome::Recorded);
+    }
+
+    /// Stops the bridge and starts a new one, with a new broker, on the same
+    /// data directory and feeds: a restart of Koushi.
+    async fn restart(&mut self) {
+        if let Some(bridge) = self.bridge.take() {
+            bridge.shutdown().await;
+        }
+        self.broker = ConsentBroker::new(self.data.clone(), ConsentMode::FailClosed);
+        self.bridge = Some(
+            koushi_mcp_host::start_with_limits(
+                Arc::clone(&self.accounts) as Arc<dyn BridgeAccounts>,
+                self.data.clone(),
+                Arc::clone(&self.broker),
+                limits(64, 60_000),
+            )
+            .expect("bridge"),
+        );
+    }
+
+    async fn budget(&self, id: &ProfileId, room_limit: u32, window_ms: u64) {
+        self.broker
+            .set_wake_budget(
+                id,
+                WakeBudget {
+                    room_limit,
+                    room_window: Duration::from_millis(window_ms),
+                    account_limit: 1_000_000,
+                    ..WakeBudget::default()
+                },
+            )
+            .await
+            .expect("budget stored");
+    }
+
     fn state_file(&self, id: &ProfileId) -> Value {
         let path = self
             .data
@@ -188,7 +244,9 @@ impl World {
     }
 
     async fn shutdown(self) {
-        self.bridge.shutdown().await;
+        if let Some(bridge) = self.bridge {
+            bridge.shutdown().await;
+        }
     }
 }
 
@@ -522,6 +580,8 @@ async fn a_consumer_that_never_acks_is_stopped_by_the_window_and_loses_nothing()
 async fn an_acknowledged_window_keeps_the_stream_going_in_order() {
     let world = World::start_with(limits(3, 60_000)).await;
     let (id, secret) = world.profile(AGENT_A).await;
+    // The window is under test here, not the wake budget.
+    world.budget(&id, 1_000, 3_600_000).await;
     let total = 40;
     for index in 1..=total {
         world.record(AGENT_A, &format!("$e{index}")).await;
@@ -909,5 +969,215 @@ async fn the_settings_state_follows_the_lease_and_the_connection() {
     row_where(&world, &id, |row| row.subscribed).await;
     drop(conn);
     row_where(&world, &id, |row| !row.connected && !row.subscribed).await;
+    world.shutdown().await;
+}
+
+const ROOM: &str = "!room:example.invalid";
+const SOMEONE: &str = "@someone:example.invalid";
+const OWNER: &str = "@owner:example.invalid";
+
+async fn over_budget(world: &World, id: &ProfileId) -> Option<koushi_mcp_host::HeldView> {
+    for _ in 0..100 {
+        let held = world
+            .broker
+            .subscribe()
+            .borrow()
+            .profiles
+            .iter()
+            .find(|row| row.profile_id == id.as_str())
+            .and_then(|row| row.over_budget.clone());
+        if held.is_some() {
+            return held;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    None
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_row_past_the_budget_is_held_with_one_notice_and_pushed_in_order_after_the_window() {
+    let world = World::start().await;
+    let (id, secret) = world.profile(AGENT_A).await;
+    world.budget(&id, 2, 700).await;
+    let mut conn = Conn::profiled(&world, &id, &secret).await;
+    sub_of(&conn.subscribe(None).await);
+    for event in ["$e1", "$e2", "$e3", "$e4"] {
+        world.record(AGENT_A, event).await;
+    }
+
+    // The first two are pushed.
+    assert_eq!(conn.rows(2).await.0, ["$e1", "$e2"]);
+    // The third is held, and the peer is told once, naming room and window.
+    let notice = conn
+        .next_frame(Duration::from_secs(10))
+        .await
+        .expect("a notice");
+    assert_eq!(notice["type"], "wake_budget_exceeded", "{notice}");
+    assert_eq!(notice["room_id"], ROOM);
+    assert_eq!(notice["window"], "room");
+    assert_eq!(notice["limit"], 2);
+    assert_eq!(notice["window_ms"], 700);
+    // Held rows stay readable in the feed.
+    let held = world
+        .feed(AGENT_A)
+        .wait(None, Duration::ZERO, 10)
+        .await
+        .expect("page");
+    assert_eq!(held.entries.len(), 4);
+    // The owner sees which profile is over budget.
+    let seen = over_budget(&world, &id).await.expect("over budget");
+    assert_eq!(
+        (seen.room_id.as_str(), seen.window.as_str()),
+        (ROOM, "room")
+    );
+
+    // After the window, the held rows come in order, with no second notice.
+    assert_eq!(conn.rows(2).await.0, ["$e3", "$e4"]);
+    conn.nothing_for(Duration::from_millis(300)).await;
+    world.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_owner_reset_pushes_the_held_rows_at_once_in_order() {
+    let world = World::start().await;
+    let (id, secret) = world.profile(AGENT_A).await;
+    world.budget(&id, 2, 3_600_000).await;
+    let mut conn = Conn::profiled(&world, &id, &secret).await;
+    sub_of(&conn.subscribe(None).await);
+    for event in ["$e1", "$e2", "$e3", "$e4"] {
+        world.record(AGENT_A, event).await;
+    }
+    assert_eq!(conn.rows(2).await.0, ["$e1", "$e2"]);
+    let notice = conn
+        .next_frame(Duration::from_secs(10))
+        .await
+        .expect("notice");
+    assert_eq!(notice["type"], "wake_budget_exceeded", "{notice}");
+    conn.nothing_for(Duration::from_millis(300)).await;
+
+    world.broker.reset_wake_budget(&id);
+    assert_eq!(conn.rows(2).await.0, ["$e3", "$e4"]);
+    world.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rows_held_when_koushi_restarts_are_not_lost() {
+    let mut world = World::start().await;
+    let (id, secret) = world.profile(AGENT_A).await;
+    world.budget(&id, 2, 3_600_000).await;
+    let mut conn = Conn::profiled(&world, &id, &secret).await;
+    sub_of(&conn.subscribe(None).await);
+    for event in ["$e1", "$e2", "$e3", "$e4"] {
+        world.record(AGENT_A, event).await;
+    }
+    let (_, cursor) = conn.rows(2).await;
+    let notice = conn
+        .next_frame(Duration::from_secs(10))
+        .await
+        .expect("notice");
+    assert_eq!(notice["type"], "wake_budget_exceeded", "{notice}");
+    let acked = conn
+        .request("ack", json!({"sub": 1, "cursor": cursor}))
+        .await;
+    assert_eq!(acked["ok"], true, "{acked}");
+    // Let the acknowledged cursor reach disk, then restart.
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    drop(conn);
+
+    world.restart().await;
+    let mut again = Conn::profiled(&world, &id, &secret).await;
+    sub_of(&subscribe_when_free(&mut again, None).await);
+    // The held rows were never acknowledged, so they are what resumes; the
+    // restarted host's window is empty, so both are pushed, none replayed.
+    assert_eq!(again.rows(2).await.0, ["$e3", "$e4"]);
+    world.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_owner_dm_is_never_held_and_brings_the_rows_held_before_it() {
+    let world = World::start().await;
+    let (id, secret) = world.profile(AGENT_A).await;
+    world
+        .broker
+        .set_wake_budget(
+            &id,
+            WakeBudget {
+                room_limit: 1,
+                room_window: Duration::from_secs(3_600),
+                exempt_senders: vec![OWNER.to_owned()],
+                ..WakeBudget::default()
+            },
+        )
+        .await
+        .expect("budget stored");
+    let mut conn = Conn::profiled(&world, &id, &secret).await;
+    sub_of(&conn.subscribe(None).await);
+    world.record(AGENT_A, "$e1").await;
+    world.record(AGENT_A, "$e2").await;
+    assert_eq!(conn.rows(1).await.0, ["$e1"]);
+    let notice = conn
+        .next_frame(Duration::from_secs(10))
+        .await
+        .expect("notice");
+    assert_eq!(notice["type"], "wake_budget_exceeded", "{notice}");
+    // Another sender's DM is not exempt.
+    world
+        .record_row(AGENT_A, "$dm-other", ROOM, SOMEONE, MentionKind::Dm)
+        .await;
+    conn.nothing_for(Duration::from_millis(300)).await;
+    // The owner's DM is pushed, and the held rows with it, in order.
+    world
+        .record_row(AGENT_A, "$dm-owner", ROOM, OWNER, MentionKind::Dm)
+        .await;
+    assert_eq!(conn.rows(3).await.0, ["$e2", "$dm-other", "$dm-owner"]);
+    world.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ipc_client_cannot_read_or_change_its_own_budget() {
+    let world = World::start().await;
+    let (id, secret) = world.profile(AGENT_A).await;
+    let before = world
+        .broker
+        .subscribe()
+        .borrow()
+        .profiles
+        .iter()
+        .find(|row| row.profile_id == id.as_str())
+        .map(|row| row.wake_budget.clone())
+        .expect("row");
+    let mut conn = Conn::profiled(&world, &id, &secret).await;
+    for method in [
+        "set_wake_budget",
+        "wake_budget",
+        "reset_wake_budget",
+        "profile/update",
+    ] {
+        let reply = conn
+            .request(
+                method,
+                json!({"room_limit": 1000000, "account_limit": 1000000,
+                       "room_window_ms": 1, "account_window_ms": 1}),
+            )
+            .await;
+        assert_eq!(error_of(&reply).0, "unsupported", "{method}: {reply}");
+    }
+    // Nor does a subscribe parameter carry one.
+    let reply = conn
+        .request("subscribe", json!({"wake_budget": {"room_limit": 1000000}}))
+        .await;
+    sub_of(&reply);
+    let on_disk = std::fs::read_to_string(world.data.join("mcp/profiles.json")).expect("store");
+    assert!(!on_disk.contains("1000000"), "{on_disk}");
+    let after = world
+        .broker
+        .subscribe()
+        .borrow()
+        .profiles
+        .iter()
+        .find(|row| row.profile_id == id.as_str())
+        .map(|row| row.wake_budget.clone())
+        .expect("row");
+    assert_eq!(before, after);
     world.shutdown().await;
 }
