@@ -41,6 +41,7 @@ pub(super) async fn seed_newer_history(
         let body = format!("Anchored forward QA message {index}");
         let request_id = conn.next_request_id();
         conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id,
             key: key.clone(),
             transaction_id: format!("qa-anchored-forward-txn-{index}"),
@@ -339,6 +340,7 @@ pub(super) async fn confirm_anchored_live_tail(
     let body = "Anchored live tail QA message".to_owned();
     let request_id = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        explicit_mentions: None,
         request_id,
         key: live_key.clone(),
         transaction_id: "qa-anchored-live-tail-txn".to_owned(),

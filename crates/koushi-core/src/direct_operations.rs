@@ -305,6 +305,10 @@ pub enum DirectMessageRequest {
         reply_to_event_id: Option<String>,
         body: String,
         formatting: koushi_state::ComposerFormattingOptions,
+        /// Exactly the event's `m.mentions.user_ids` when given (#2154); a
+        /// quoted reply then does not add the quoted sender. `None` keeps the
+        /// default.
+        mentions: Option<Vec<String>>,
         retry: Option<DirectRetryKey>,
     },
 }
@@ -460,6 +464,12 @@ pub enum AssistantDraftFailure {
     Conflict,
     /// The account's draft store has not loaded (or failed to load).
     Unavailable,
+}
+
+/// True when `id` is a well-formed Matrix user id (#2154); the host rejects a
+/// bad `mentions` entry with `invalid_params` before anything is sent.
+pub fn is_valid_user_id(id: &str) -> bool {
+    matrix_sdk::ruma::UserId::parse(id).is_ok()
 }
 
 #[cfg(test)]

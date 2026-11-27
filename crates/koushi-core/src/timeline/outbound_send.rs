@@ -344,11 +344,13 @@ pub(super) enum TimelineSendEnqueuePayload {
     Text {
         document: ComposerDocument,
         formatting_options: ComposerFormattingOptions,
+        explicit_mentions: Option<Vec<String>>,
     },
     Reply {
         in_reply_to_event_id: String,
         document: ComposerDocument,
         formatting_options: ComposerFormattingOptions,
+        explicit_mentions: Option<Vec<String>>,
     },
     Media {
         request_id: RequestId,
@@ -667,12 +669,14 @@ async fn enqueue_document_send(
     context: MatrixTimelineSendEnqueueContext,
     document: ComposerDocument,
     formatting_options: ComposerFormattingOptions,
+    explicit_mentions: Option<Vec<String>>,
 ) -> Result<SendEnqueueSuccess, TimelineFailureKind> {
     let mut content = build_room_message_content_from_composer_document_with_options(
         document,
         formatting_options,
     )?;
     make_offline_thread_content(&mut content, &context.key)?;
+    apply_explicit_mentions(&mut content, explicit_mentions.as_deref())?;
     context
         .room
         .send_queue()
@@ -706,6 +710,7 @@ async fn enqueue_document_reply_send(
     in_reply_to_event_id: String,
     document: ComposerDocument,
     formatting_options: ComposerFormattingOptions,
+    explicit_mentions: Option<Vec<String>>,
 ) -> Result<SendEnqueueSuccess, TimelineFailureKind> {
     let reply_event_id = matrix_sdk::ruma::EventId::parse(&in_reply_to_event_id)
         .map_err(|_| TimelineFailureKind::Sdk)?;
@@ -714,13 +719,14 @@ async fn enqueue_document_reply_send(
         formatting_options,
     )?;
     let source = reply_source(&context, &reply_event_id).await;
-    let content = make_offline_reply_content(
+    let mut content = make_offline_reply_content(
         content,
         reply_event_id,
         &context.key,
         source,
         context.session.client().user_id(),
     )?;
+    apply_explicit_mentions(&mut content, explicit_mentions.as_deref())?;
     context
         .room
         .send_queue()
@@ -786,6 +792,24 @@ fn reply_source_from_raw(
     let thread_root = super::item_projection::thread_root_from_original_json(&raw)
         .and_then(|root| matrix_sdk::ruma::EventId::parse(root).ok());
     Some((sender, thread_root))
+}
+
+/// Makes `m.mentions.user_ids` exactly `explicit` when it is given (#2154): the
+/// replied-to sender and any mention pill in the body are dropped, and an empty
+/// list leaves `m.mentions: {}`, which mentions nobody. `None` changes nothing.
+pub(super) fn apply_explicit_mentions(
+    content: &mut RoomMessageEventContent,
+    explicit: Option<&[String]>,
+) -> Result<(), TimelineFailureKind> {
+    let Some(explicit) = explicit else {
+        return Ok(());
+    };
+    let user_ids = explicit
+        .iter()
+        .map(|id| UserId::parse(id).map_err(|_| TimelineFailureKind::Sdk))
+        .collect::<Result<Vec<_>, _>>()?;
+    content.mentions = Some(Mentions::with_user_ids(user_ids));
+    Ok(())
 }
 
 pub(super) fn make_offline_reply_content(
@@ -890,17 +914,28 @@ async fn enqueue_timeline_send(
                     TimelineSendEnqueuePayload::Text {
                         document,
                         formatting_options,
-                    } => enqueue_document_send(context, document, formatting_options).await,
+                        explicit_mentions,
+                    } => {
+                        enqueue_document_send(
+                            context,
+                            document,
+                            formatting_options,
+                            explicit_mentions,
+                        )
+                        .await
+                    }
                     TimelineSendEnqueuePayload::Reply {
                         in_reply_to_event_id,
                         document,
                         formatting_options,
+                        explicit_mentions,
                     } => {
                         enqueue_document_reply_send(
                             context,
                             in_reply_to_event_id,
                             document,
                             formatting_options,
+                            explicit_mentions,
                         )
                         .await
                     }

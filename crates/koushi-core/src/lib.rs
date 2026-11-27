@@ -79,7 +79,7 @@ pub use direct_operations::{
     DirectMessageEdit, DirectMessageFailure, DirectMessageReaction, DirectMessageRequest,
     DirectMessageResponse, DirectMessageView, DirectReactionOutcome, DirectRedactOutcome,
     DirectRetryKey, DirectThreadPaneOutcome, DirectThreadReplyOutcome, FetchedAttachment,
-    RoomMessagesFailure, StagedAssistantDraft,
+    RoomMessagesFailure, StagedAssistantDraft, is_valid_user_id,
 };
 pub use koushi_protocol::command::*;
 pub use koushi_protocol::event::*;

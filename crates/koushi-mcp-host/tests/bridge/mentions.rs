@@ -305,3 +305,35 @@ async fn a_feed_that_could_not_save_answers_account_unavailable() {
     assert_eq!(error_code(&reply), "account_unavailable", "{reply}");
     harness.stop().await;
 }
+
+/// #2154: a bad `mentions` entry is `invalid_params` before anything is sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_invalid_mentions_argument_is_invalid_params_and_nothing_is_sent() {
+    let mut harness = Harness::start(Some(Harness::account_grant(true, true, true)), feed()).await;
+    for bad in [
+        json!(["not-a-user"]),
+        json!(["@ok:example.invalid", ""]),
+        json!("@a:b"),
+        json!([7]),
+    ] {
+        let reply = harness
+            .call(
+                "send_message",
+                json!({ "account_id": ACCOUNT, "room_id": ROOM, "body": "hi", "mentions": bad }),
+            )
+            .await;
+        assert_eq!(error_reason(&reply), "invalid_params", "{reply}");
+        assert!(reply["result"]["structuredContent"]["event_id"].is_null());
+        let reply = harness
+            .call(
+                "send_thread_reply",
+                json!({
+                    "account_id": ACCOUNT, "room_id": ROOM, "thread_root_event_id": "$root",
+                    "body": "hi", "client_request_id": "r1", "mentions": bad
+                }),
+            )
+            .await;
+        assert_eq!(error_reason(&reply), "invalid_params", "{reply}");
+    }
+    harness.stop().await;
+}

@@ -1544,6 +1544,7 @@ impl TimelineManagerActor {
                 key,
                 transaction_id,
                 document,
+                explicit_mentions,
             } => {
                 let body = document.plain_body();
                 if let Err(kind) = validate_composer_body_for_timeline_send(&body) {
@@ -1559,6 +1560,7 @@ impl TimelineManagerActor {
                     TimelineSendEnqueuePayload::Text {
                         document,
                         formatting_options: self.composer_formatting_options,
+                        explicit_mentions,
                     },
                 ))
                 .await;
@@ -1593,6 +1595,7 @@ impl TimelineManagerActor {
                     TimelineSendEnqueuePayload::Text {
                         document,
                         formatting_options: self.composer_formatting_options,
+                        explicit_mentions: None,
                     },
                     composer_permit.take(),
                 ))
@@ -1604,6 +1607,7 @@ impl TimelineManagerActor {
                 transaction_id,
                 in_reply_to_event_id,
                 document,
+                explicit_mentions,
             } => {
                 let body = document.plain_body();
                 if let Err(kind) = validate_composer_body_for_timeline_send(&body) {
@@ -1620,6 +1624,7 @@ impl TimelineManagerActor {
                         in_reply_to_event_id,
                         document,
                         formatting_options: self.composer_formatting_options,
+                        explicit_mentions,
                     },
                 ))
                 .await;
@@ -1656,6 +1661,7 @@ impl TimelineManagerActor {
                         in_reply_to_event_id,
                         document,
                         formatting_options: self.composer_formatting_options,
+                        explicit_mentions: None,
                     },
                     composer_permit.take(),
                 ))

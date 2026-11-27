@@ -400,6 +400,7 @@ async fn send_text(
     let request_id = conn.next_request_id();
     conn.command(CoreCommand::Timeline(
         koushi_protocol::command::TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id,
             key: key.clone(),
             transaction_id: transaction_id.to_owned(),

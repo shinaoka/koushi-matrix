@@ -1233,6 +1233,7 @@ async fn send_fast_send_queue_text_expect_local_echo(
     fast_send_queue_phase(
         label,
         conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id,
             key: key.clone(),
             transaction_id: client_transaction_id.to_owned(),
@@ -1814,6 +1815,7 @@ async fn run_fast_send_queue_feedback() {
     fast_send_queue_phase(
         "fast_send_queue initial send command",
         conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id: initial_request_id,
             key: key.clone(),
             transaction_id: "fast-initial-client".to_owned(),

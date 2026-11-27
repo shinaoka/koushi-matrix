@@ -558,6 +558,7 @@ async fn send_text(
 ) -> Result<String, String> {
     let request_id = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        explicit_mentions: None,
         request_id,
         key: key.clone(),
         transaction_id: transaction_id.to_owned(),
@@ -730,6 +731,7 @@ async fn thread_reply(
             reply_to_event_id: None,
             body: body.to_owned(),
             formatting,
+            mentions: None,
             retry: Some(qa_retry_key(client_request_id)),
         },
         label,

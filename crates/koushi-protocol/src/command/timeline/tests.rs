@@ -14,6 +14,7 @@ fn test_session_key() -> crate::SessionKeyId {
 #[test]
 fn send_text_debug_redacts_body_and_mentions() {
     let command = TimelineCommand::SendText {
+        explicit_mentions: None,
         request_id: fake_rid(6),
         key: TimelineKey::room(AccountKey("@a:test".to_owned()), "!room:test"),
         transaction_id: "txn-text".to_owned(),
@@ -45,6 +46,7 @@ fn send_text_debug_redacts_body_and_mentions() {
 #[test]
 fn send_reply_debug_redacts_body_and_event_ids() {
     let command = TimelineCommand::SendReply {
+        explicit_mentions: None,
         request_id: fake_rid(7),
         key: TimelineKey::room(AccountKey("@a:test".to_owned()), "!room:test"),
         transaction_id: "txn-reply".to_owned(),

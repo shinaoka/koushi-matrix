@@ -46,6 +46,7 @@ async fn seed_room(participant: &mut QaParticipantLoginOutcome) -> Result<String
     participant
         .conn
         .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id,
             key: key.clone(),
             transaction_id: transaction.into(),

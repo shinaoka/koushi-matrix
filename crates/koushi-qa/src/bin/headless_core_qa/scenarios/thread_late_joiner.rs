@@ -248,6 +248,7 @@ async fn run_thread_late_joiner_flow(
         let request_id = conn_a.next_request_id();
         conn_a
             .command(CoreCommand::Timeline(TimelineCommand::SendText {
+                explicit_mentions: None,
                 request_id,
                 key: room_key_a.clone(),
                 transaction_id: format!("thread-late-joiner-filler-{index}"),
@@ -483,6 +484,7 @@ async fn send_text(
 ) -> Result<String, String> {
     let request_id = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        explicit_mentions: None,
         request_id,
         key: key.clone(),
         transaction_id: transaction_id.to_owned(),
@@ -507,6 +509,7 @@ async fn send_thread_reply(
 ) -> Result<String, String> {
     let request_id = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::SendReply {
+        explicit_mentions: None,
         request_id,
         key: thread_key.clone(),
         transaction_id: transaction_id.to_owned(),

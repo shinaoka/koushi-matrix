@@ -946,6 +946,38 @@ async fn delete_message(
     }
 }
 
+/// The optional `mentions` argument (#2154): `None` when absent, otherwise the
+/// exact user ids the event mentions, an empty list meaning nobody. Anything
+/// that is not an array of valid Matrix user ids is `invalid_params`, checked
+/// before a send is attempted.
+fn mentions_argument(arguments: &Value) -> Result<Option<Vec<String>>, WireError> {
+    let invalid =
+        |message: &str| WireError::with_reason(ErrorCode::Unsupported, "invalid_params", message);
+    match arguments.get("mentions") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) => {
+            let mut ids = Vec::with_capacity(items.len());
+            for item in items {
+                let id = item
+                    .as_str()
+                    .filter(|id| koushi_core::is_valid_user_id(id))
+                    .ok_or_else(|| {
+                        invalid(
+                            "invalid_params: mentions must be Matrix user ids like @name:server",
+                        )
+                    })?;
+                if !ids.iter().any(|existing| existing == id) {
+                    ids.push(id.to_owned());
+                }
+            }
+            Ok(Some(ids))
+        }
+        Some(_) => Err(invalid(
+            "invalid_params: mentions must be an array of user ids",
+        )),
+    }
+}
+
 /// Posts a plain-text reply under a visible thread root (#1628), optionally
 /// quoting one message of that thread (#1807).
 ///
@@ -968,6 +1000,7 @@ async fn send_thread_reply(
         .filter(|id| !id.is_empty())
         .map(str::to_owned);
     let body = required_argument(arguments, "body")?.to_owned();
+    let mentions = mentions_argument(arguments)?;
     let request_id = client_request_id(arguments)?.to_owned();
     // Core's retry ledger answers a repeated key at the submission below; every
     // call is authorized first, so a repeat never answers after the grant or
@@ -1032,6 +1065,7 @@ async fn send_thread_reply(
                 reply_to_event_id: reply_to_event_id.clone(),
                 body,
                 formatting,
+                mentions,
                 retry: Some(koushi_core::DirectRetryKey {
                     subject: client.subject().key(),
                     client_request_id: request_id,
@@ -1411,6 +1445,13 @@ async fn send_message(
             "reply_to_event_id cannot be combined with attachments; send the reply and the files separately",
         ));
     }
+    let mentions = mentions_argument(arguments)?;
+    if mentions.is_some() && !attachments.is_empty() {
+        return Err(WireError::new(
+            ErrorCode::Unsupported,
+            "mentions cannot be combined with attachments; send the message and the files separately",
+        ));
+    }
     let client_request_id = arguments
         .get("client_request_id")
         .and_then(Value::as_str)
@@ -1498,12 +1539,14 @@ async fn send_message(
                 transaction_id: transaction_id.clone(),
                 in_reply_to_event_id: event_id,
                 document,
+                explicit_mentions: mentions,
             },
             None => TimelineCommand::SendText {
                 request_id,
                 key: key.clone(),
                 transaction_id: transaction_id.clone(),
                 document,
+                explicit_mentions: mentions,
             },
         };
         connection

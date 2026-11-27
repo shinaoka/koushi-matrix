@@ -63,6 +63,7 @@ fn secret_bearing_commands_redact_debug() {
     });
     let key = TimelineKey::room(AccountKey("acc".to_owned()), "!room:example.test");
     let send = CoreCommand::Timeline(TimelineCommand::SendText {
+        explicit_mentions: None,
         request_id: fake_request_id(),
         key: key.clone(),
         transaction_id: "txn-1".to_owned(),

@@ -658,6 +658,7 @@ pub(crate) async fn thread_reply_direct(
     reply_to_event_id: Option<&str>,
     body: &str,
     formatting: koushi_state::ComposerFormattingOptions,
+    mentions: Option<&[String]>,
 ) -> Result<crate::direct_operations::DirectThreadReplyOutcome, DirectMessageFailure> {
     const SEND_TIMEOUT: Duration = Duration::from_secs(60);
     let room = joined_room(&session, room_id)?;
@@ -716,7 +717,7 @@ pub(crate) async fn thread_reply_direct(
         },
     };
     let document = koushi_state::ComposerDocument::from_plain_text(body.to_owned());
-    let content = match quoted {
+    let mut content = match quoted {
         None => {
             let mut content =
                 super::composer::build_room_message_content_from_composer_document_with_options(
@@ -743,6 +744,9 @@ pub(crate) async fn thread_reply_direct(
             .map_err(|_| DirectMessageFailure::Unavailable)?
         }
     };
+
+    super::outbound_send::apply_explicit_mentions(&mut content, mentions)
+        .map_err(|_| DirectMessageFailure::Unavailable)?;
 
     let queue = room.send_queue();
     // Subscribe before enqueuing so the terminal update cannot be missed.
@@ -848,6 +852,7 @@ pub(crate) async fn run_direct_message_action(
             reply_to_event_id,
             body,
             formatting,
+            mentions,
             retry: _,
         } => thread_reply_direct(
             session,
@@ -856,6 +861,7 @@ pub(crate) async fn run_direct_message_action(
             reply_to_event_id.as_deref(),
             &body,
             formatting,
+            mentions.as_deref(),
         )
         .await
         .map(Response::ThreadReply),

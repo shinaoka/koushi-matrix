@@ -184,6 +184,7 @@ async fn a_late_completion_of_an_aged_out_claim_does_not_touch_a_newer_claim() {
 fn keys_are_scoped_to_the_client_and_requests_without_a_retry_key_are_not_kept() {
     assert_ne!(edit_key("pi", "uuid-9"), edit_key("codex", "uuid-9"));
     let reply = DirectMessageRequest::ThreadReply {
+        mentions: None,
         room_id: "!room:example.invalid".to_owned(),
         root_event_id: "$target".to_owned(),
         reply_to_event_id: None,
@@ -213,6 +214,7 @@ fn keys_are_scoped_to_the_client_and_requests_without_a_retry_key_are_not_kept()
 #[test]
 fn a_quote_target_does_not_change_a_thread_replys_retry_key() {
     let reply = |reply_to_event_id: Option<&str>| DirectMessageRequest::ThreadReply {
+        mentions: None,
         room_id: "!room:example.invalid".to_owned(),
         root_event_id: "$target".to_owned(),
         reply_to_event_id: reply_to_event_id.map(str::to_owned),

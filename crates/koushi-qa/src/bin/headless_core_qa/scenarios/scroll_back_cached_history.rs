@@ -209,6 +209,7 @@ pub(super) async fn run_scroll_back_cached_history_scenario(
         let body = seed_body(index);
         let send_id = conn.next_request_id();
         conn.command_with_admission(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id: send_id,
             key: key.clone(),
             transaction_id: transaction_id.clone(),

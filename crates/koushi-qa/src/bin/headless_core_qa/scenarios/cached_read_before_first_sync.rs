@@ -194,6 +194,7 @@ pub(super) async fn run_cached_read_before_first_sync_scenario(
     let blocked_send_id = restored.next_request_id();
     restored
         .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id: blocked_send_id,
             key: key.clone(),
             transaction_id: "cached-read-blocked".to_owned(),
@@ -252,6 +253,7 @@ pub(super) async fn run_cached_read_before_first_sync_scenario(
     let send_id = restored.next_request_id();
     restored
         .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            explicit_mentions: None,
             request_id: send_id,
             key: key.clone(),
             transaction_id: "cached-read-after-admission".to_owned(),
