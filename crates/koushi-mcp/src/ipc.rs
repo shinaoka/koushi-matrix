@@ -11,8 +11,8 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufR
 
 use crate::endpoint;
 use crate::wire::{
-    ClientInfo, ClientMessage, EndpointFile, ErrorCode, MAX_FRAME_BYTES, PROTOCOL_VERSION,
-    ServerMessage, WireError, decode_line, encode_line,
+    ClientInfo, ClientMessage, EndpointFile, ErrorCode, LEGACY_PROTOCOL, MAX_FRAME_BYTES,
+    PROTOCOL_VERSION, ProfileHello, ServerMessage, WireError, decode_line, encode_line,
 };
 
 #[cfg(unix)]
@@ -83,8 +83,24 @@ async fn open(endpoint_path: &EndpointFile) -> Result<Stream, WireError> {
     }
 }
 
-/// Connects and completes the `hello` handshake.
+/// Connects and completes the `hello` handshake as an unprofiled launcher,
+/// which speaks protocol 1 so it still works against an older host.
 pub async fn connect(path: &Path, client: ClientInfo) -> Result<Client, WireError> {
+    connect_with_profile(path, client, None).await
+}
+
+/// Connects and completes the `hello` handshake. A profile needs protocol 2;
+/// without one the launcher keeps sending protocol 1.
+pub async fn connect_with_profile(
+    path: &Path,
+    client: ClientInfo,
+    profile: Option<ProfileHello>,
+) -> Result<Client, WireError> {
+    let requested = if profile.is_some() {
+        PROTOCOL_VERSION
+    } else {
+        LEGACY_PROTOCOL
+    };
     let endpoint_file = endpoint::read(path)
         .map_err(|_| WireError::new_without_detail(ErrorCode::KoushiUnavailable))?;
 
@@ -100,9 +116,10 @@ pub async fn connect(path: &Path, client: ClientInfo) -> Result<Client, WireErro
     };
 
     let hello = ClientMessage::Hello {
-        protocol: PROTOCOL_VERSION,
+        protocol: requested,
         token: endpoint_file.token,
         client,
+        profile,
     };
     let line =
         encode_line(&hello).map_err(|_| WireError::new_without_detail(ErrorCode::Internal))?;
@@ -118,14 +135,39 @@ pub async fn connect(path: &Path, client: ClientInfo) -> Result<Client, WireErro
         .map_err(|_| WireError::new_without_detail(ErrorCode::KoushiUnavailable))?;
 
     match client_socket.read_message().await? {
-        ServerMessage::HelloOk { protocol, .. } if protocol == PROTOCOL_VERSION => {}
+        ServerMessage::HelloOk { protocol, .. } if protocol == requested => {}
         ServerMessage::HelloOk { .. } => {
-            return Err(WireError::new(
+            return Err(WireError::with_reason(
                 ErrorCode::Unsupported,
+                "protocol_version",
                 "the running Koushi speaks an unsupported bridge protocol",
             ));
         }
-        ServerMessage::Error { code, message } => return Err(WireError::new(code, message)),
+        // A host from before protocol 2 answers a protocol 2 hello with a bare
+        // `unsupported`; that is "host older than the protocol I need".
+        ServerMessage::Error {
+            code: ErrorCode::Unsupported,
+            reason: None,
+            ..
+        } if requested > LEGACY_PROTOCOL => {
+            return Err(WireError::with_reason(
+                ErrorCode::Unsupported,
+                "protocol_version",
+                "the running Koushi is older than this launcher needs; update Koushi",
+            ));
+        }
+        ServerMessage::Error {
+            code,
+            message,
+            reason,
+            ..
+        } => {
+            return Err(WireError {
+                code,
+                message,
+                reason,
+            });
+        }
         other => {
             return Err(WireError::new(
                 ErrorCode::Internal,
@@ -193,7 +235,16 @@ impl Client {
             ServerMessage::Response { .. } => {
                 Err(WireError::new_without_detail(ErrorCode::Internal))
             }
-            ServerMessage::Error { code, message } => Err(WireError::new(code, message)),
+            ServerMessage::Error {
+                code,
+                message,
+                reason,
+                ..
+            } => Err(WireError {
+                code,
+                message,
+                reason,
+            }),
             ServerMessage::HelloOk { .. } => {
                 Err(WireError::new_without_detail(ErrorCode::Internal))
             }

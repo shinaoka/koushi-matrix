@@ -16,10 +16,14 @@ koushi-mcp - MCP server for a running Koushi instance
 
 Usage:
   koushi-mcp [--endpoint <path>] [--client-name <name>]
+              [--profile <id> --profile-secret-file <path>]
 
 Options:
   --endpoint <path>     Path to Koushi's endpoint.json (default: platform location)
   --client-name <name>  Name shown in Koushi's consent surface (default: koushi-mcp)
+  --profile <id>        Agent profile id; makes the launcher speak protocol 2
+  --profile-secret-file <path>
+                        File holding the profile secret (never pass it in argv)
   -h, --help            Print this help
 
 The server needs a running Koushi. It stays alive when Koushi is down and
@@ -43,6 +47,8 @@ fn main() -> ExitCode {
 async fn async_main() -> ExitCode {
     let mut endpoint_path = None;
     let mut client_name = "koushi-mcp".to_owned();
+    let mut profile_id = None;
+    let mut profile_secret_file = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -64,6 +70,20 @@ async fn async_main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             },
+            "--profile" => match args.next() {
+                Some(value) => profile_id = Some(value),
+                None => {
+                    eprintln!("koushi-mcp: --profile requires an id");
+                    return ExitCode::from(2);
+                }
+            },
+            "--profile-secret-file" => match args.next() {
+                Some(value) => profile_secret_file = Some(std::path::PathBuf::from(value)),
+                None => {
+                    eprintln!("koushi-mcp: --profile-secret-file requires a path");
+                    return ExitCode::from(2);
+                }
+            },
             "--help" | "-h" => {
                 eprintln!("{USAGE}");
                 return ExitCode::SUCCESS;
@@ -80,13 +100,35 @@ async fn async_main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let backend = Arc::new(AppBackend::new(
+    let profile = match (profile_id, profile_secret_file) {
+        (None, None) => None,
+        (Some(id), Some(path)) => match std::fs::read_to_string(&path) {
+            Ok(secret) if !secret.trim().is_empty() => Some(koushi_mcp::wire::ProfileHello {
+                id,
+                secret: secret.trim().to_owned(),
+            }),
+            _ => {
+                eprintln!("koushi-mcp: cannot read the profile secret file");
+                return ExitCode::from(2);
+            }
+        },
+        _ => {
+            eprintln!("koushi-mcp: --profile and --profile-secret-file go together");
+            return ExitCode::from(2);
+        }
+    };
+
+    let mut backend = AppBackend::new(
         endpoint_path,
         ClientInfo {
             name: client_name,
             version: env!("CARGO_PKG_VERSION").to_owned(),
         },
-    ));
+    );
+    if let Some(profile) = profile {
+        backend = backend.with_profile(profile);
+    }
+    let backend = Arc::new(backend);
 
     match serve(tokio::io::stdin(), tokio::io::stdout(), backend).await {
         Ok(()) => ExitCode::SUCCESS,

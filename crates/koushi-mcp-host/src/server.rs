@@ -16,8 +16,8 @@ use tokio::sync::watch;
 use crate::BridgeAccounts;
 use crate::consent::{ClientIdentity, ConsentBroker};
 use koushi_mcp::wire::{
-    ClientMessage, ErrorCode, MAX_FRAME_BYTES, PROTOCOL_VERSION, ServerMessage, WireError,
-    decode_line, encode_line,
+    ClientMessage, ErrorCode, LEGACY_PROTOCOL, MAX_FRAME_BYTES, SUPPORTED_PROTOCOLS, ServerMessage,
+    WireError, decode_line, encode_line,
 };
 
 use super::{endpoint, events, handlers};
@@ -241,10 +241,10 @@ async fn serve_connection(
     let (read_half, mut write_half) = tokio::io::split(stream);
     let mut reader = BufReader::new(read_half);
 
-    let client = match read_hello(&mut reader, &token).await {
-        Ok(Hello::Accepted(client)) => {
+    let (client, protocol) = match read_hello(&mut reader, &token).await {
+        Ok(Hello::Accepted(client, protocol)) => {
             shared.broker.note_current_launcher(&client.name);
-            client
+            (client, protocol)
         }
         Ok(Hello::Outdated(name)) => {
             if let Some(name) = name {
@@ -256,6 +256,8 @@ async fn serve_connection(
                     code: ErrorCode::Unsupported,
                     message: "this koushi-mcp launcher is older than the running Koushi; register it again"
                         .to_owned(),
+                    reason: Some("protocol_version".to_owned()),
+                    supported: Some(SUPPORTED_PROTOCOLS.to_vec()),
                 },
             )
             .await;
@@ -267,6 +269,8 @@ async fn serve_connection(
                 &ServerMessage::Error {
                     code: error.code,
                     message: error.message,
+                    reason: error.reason,
+                    supported: None,
                 },
             )
             .await;
@@ -278,7 +282,7 @@ async fn serve_connection(
     if write_message(
         &mut write_half,
         &ServerMessage::HelloOk {
-            protocol: PROTOCOL_VERSION,
+            protocol,
             connection_id: format!("{}-{}", client.name, std::process::id()),
             app_version: env!("CARGO_PKG_VERSION").to_owned(),
         },
@@ -306,6 +310,8 @@ async fn serve_connection(
                 &ServerMessage::Error {
                     code: ErrorCode::Internal,
                     message: "frame too large".to_owned(),
+                    reason: None,
+                    supported: None,
                 },
             )
             .await;
@@ -318,7 +324,7 @@ async fn serve_connection(
                 // (it cancelled, or was killed) or the bridge stopping. Either
                 // drops the call before it can act, including a send that is
                 // still waiting for approval.
-                let dispatch = dispatch_method(&shared, &client, &method, params);
+                let dispatch = dispatch_method(&shared, &client, protocol, &method, params);
                 tokio::select! {
                     biased;
                     _ = shutdown.changed() => return,
@@ -365,7 +371,8 @@ async fn closed<R: tokio::io::AsyncRead + Unpin>(reader: &mut BufReader<R>) {
 }
 
 enum Hello {
-    Accepted(ClientIdentity),
+    /// The identity and the protocol version negotiated for this connection.
+    Accepted(ClientIdentity, u32),
     Rejected(WireError),
     /// The token matched, but the launcher speaks another bridge protocol:
     /// a copy left over from an older Koushi (such as a Claude Desktop
@@ -394,6 +401,7 @@ async fn read_hello<R: tokio::io::AsyncRead + Unpin>(
         protocol,
         token,
         client,
+        profile,
     }) = decode_line::<ClientMessage>(&line)
     else {
         return Ok(unauthorized());
@@ -403,26 +411,61 @@ async fn read_hello<R: tokio::io::AsyncRead + Unpin>(
     }
     // Checked after the token, so only a launcher that may connect at all can
     // put its name on the settings page as outdated.
-    if protocol != PROTOCOL_VERSION {
+    if !SUPPORTED_PROTOCOLS.contains(&protocol) {
         return Ok(Hello::Outdated(
             koushi_mcp::wire::valid_client_name(&client.name).then_some(client.name),
         ));
     }
     if !koushi_mcp::wire::valid_client_name(&client.name) {
-        return Ok(Hello::Rejected(WireError::new(
+        return Ok(Hello::Rejected(WireError::with_reason(
             ErrorCode::Unsupported,
+            "client_name",
             koushi_mcp::wire::CLIENT_NAME_RULE,
         )));
+    }
+    match (protocol, profile) {
+        // A v1 peer cannot know the field, so a profile is never accepted on
+        // the legacy path.
+        (LEGACY_PROTOCOL, Some(_)) => {
+            return Ok(Hello::Rejected(WireError::with_reason(
+                ErrorCode::Unsupported,
+                "profile_requires_protocol_2",
+                "a profile needs protocol 2",
+            )));
+        }
+        (LEGACY_PROTOCOL, None) => {}
+        (_, None) => {
+            return Ok(Hello::Rejected(WireError::with_reason(
+                ErrorCode::Unsupported,
+                "profile_required",
+                "protocol 2 needs an agent profile",
+            )));
+        }
+        // No profile can be verified until the profile store exists, and a
+        // presented profile is never accepted unverified. The token is
+        // neutral on purpose: an unknown id and a wrong secret must produce
+        // byte-identical errors, or the host tells a caller which profile ids
+        // exist.
+        (_, Some(_)) => {
+            return Ok(Hello::Rejected(WireError::with_reason(
+                ErrorCode::Unsupported,
+                "profile_rejected",
+                "agent profiles are not available in this Koushi yet",
+            )));
+        }
     }
     let version = if koushi_mcp::wire::valid_client_version(&client.version) {
         client.version
     } else {
         String::new()
     };
-    Ok(Hello::Accepted(ClientIdentity {
-        name: client.name,
-        version,
-    }))
+    Ok(Hello::Accepted(
+        ClientIdentity {
+            name: client.name,
+            version,
+        },
+        protocol,
+    ))
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -485,13 +528,14 @@ impl NamedPipeListener {
 async fn dispatch_method(
     shared: &Shared,
     client: &ClientIdentity,
+    protocol: u32,
     method: &str,
     params: Value,
 ) -> Result<Value, WireError> {
     match method {
         "tools/call" => handlers::dispatch_tool_call(shared, client, params).await,
         "status" => Ok(serde_json::json!({
-            "protocol": PROTOCOL_VERSION,
+            "protocol": protocol,
             "app_version": env!("CARGO_PKG_VERSION")
         })),
         other => Err(WireError::new(
@@ -526,14 +570,14 @@ mod tests {
     fn rejected(hello: Hello) -> ErrorCode {
         match hello {
             Hello::Rejected(error) => error.code,
-            Hello::Accepted(_) => panic!("accepted"),
+            Hello::Accepted(..) => panic!("accepted"),
             Hello::Outdated(_) => panic!("outdated"),
         }
     }
 
     #[tokio::test]
     async fn accepts_the_matching_token_and_returns_client_info() {
-        let Hello::Accepted(client) =
+        let Hello::Accepted(client, _) =
             handshake(&hello("secret", "codex", "0.147.0"), "secret").await
         else {
             panic!("rejected");
@@ -593,7 +637,7 @@ mod tests {
 
     #[tokio::test]
     async fn drops_an_unusable_version_but_keeps_the_client() {
-        let Hello::Accepted(client) =
+        let Hello::Accepted(client, _) =
             handshake(&hello("secret", "pi", "1.0\u{202E}"), "secret").await
         else {
             panic!("rejected");

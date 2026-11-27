@@ -5,7 +5,7 @@ use std::path::Path;
 
 use koushi_mcp::ipc;
 use koushi_mcp::wire::{
-    ClientInfo, ClientMessage, PROTOCOL_VERSION, ServerMessage, WireError, decode_line, encode_line,
+    ClientInfo, ClientMessage, LEGACY_PROTOCOL, ServerMessage, WireError, decode_line, encode_line,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -45,6 +45,8 @@ async fn accept_once(
         let encoded = encode_line(&ServerMessage::Error {
             code: koushi_mcp::ErrorCode::Unauthorized,
             message: "nope".to_owned(),
+            reason: None,
+            supported: None,
         })
         .expect("encode");
         write_half
@@ -54,7 +56,7 @@ async fn accept_once(
         return;
     }
     let hello_ok = encode_line(&ServerMessage::HelloOk {
-        protocol: PROTOCOL_VERSION,
+        protocol: LEGACY_PROTOCOL,
         connection_id: "test".to_owned(),
         app_version: "0.26.0".to_owned(),
     })
@@ -156,4 +158,119 @@ async fn a_missing_endpoint_file_reports_koushi_unavailable() {
         Err(error) => error,
     };
     assert_eq!(error.code, koushi_mcp::ErrorCode::KoushiUnavailable);
+}
+
+/// Fake host that reads one hello, returns it, and answers with `reply`.
+async fn answer_hello(
+    reply: ServerMessage,
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    tokio::task::JoinHandle<ClientMessage>,
+) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket_path = dir.path().join("mcp.sock");
+    let endpoint_path = dir.path().join("endpoint.json");
+    write_endpoint(&endpoint_path, &socket_path.to_string_lossy(), "tok");
+    let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+    let task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept");
+        let (read_half, mut write_half) = stream.into_split();
+        let mut line = String::new();
+        BufReader::new(read_half)
+            .read_line(&mut line)
+            .await
+            .expect("hello");
+        write_half
+            .write_all(encode_line(&reply).expect("encode").as_bytes())
+            .await
+            .expect("reply");
+        decode_line(&line).expect("hello json")
+    });
+    (dir, endpoint_path, task)
+}
+
+fn info() -> ClientInfo {
+    ClientInfo {
+        name: "test".to_owned(),
+        version: "1".to_owned(),
+    }
+}
+
+fn hello_ok(protocol: u32) -> ServerMessage {
+    ServerMessage::HelloOk {
+        protocol,
+        connection_id: "t".to_owned(),
+        app_version: "0".to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn an_unprofiled_launcher_sends_protocol_1_without_a_profile() {
+    let (_dir, endpoint, task) = answer_hello(hello_ok(1)).await;
+    ipc::connect(&endpoint, info()).await.expect("connect");
+    let ClientMessage::Hello {
+        protocol, profile, ..
+    } = task.await.expect("task")
+    else {
+        panic!("hello");
+    };
+    assert_eq!(protocol, 1);
+    assert!(profile.is_none());
+}
+
+#[tokio::test]
+async fn a_profiled_launcher_sends_protocol_2_with_the_profile() {
+    let (_dir, endpoint, task) = answer_hello(hello_ok(2)).await;
+    let profile = koushi_mcp::wire::ProfileHello {
+        id: "p1".to_owned(),
+        secret: "s".to_owned(),
+    };
+    ipc::connect_with_profile(&endpoint, info(), Some(profile))
+        .await
+        .expect("connect");
+    let ClientMessage::Hello {
+        protocol, profile, ..
+    } = task.await.expect("task")
+    else {
+        panic!("hello");
+    };
+    assert_eq!(protocol, 2);
+    assert_eq!(profile.expect("profile").id, "p1");
+}
+
+#[tokio::test]
+async fn version_mismatches_map_to_a_typed_protocol_version_error() {
+    let profile = || {
+        Some(koushi_mcp::wire::ProfileHello {
+            id: "p1".to_owned(),
+            secret: "s".to_owned(),
+        })
+    };
+    // A host from before protocol 2: the legacy bare `unsupported`.
+    // Another protocol in `hello_ok`.
+    // A typed error from the host.
+    for reply in [
+        ServerMessage::Error {
+            code: koushi_mcp::ErrorCode::Unsupported,
+            message: "older".to_owned(),
+            reason: None,
+            supported: None,
+        },
+        hello_ok(1),
+        ServerMessage::Error {
+            code: koushi_mcp::ErrorCode::Unsupported,
+            message: "x".to_owned(),
+            reason: Some("protocol_version".to_owned()),
+            supported: Some(vec![1]),
+        },
+    ] {
+        let (_dir, endpoint, _task) = answer_hello(reply).await;
+        let error = match ipc::connect_with_profile(&endpoint, info(), profile()).await {
+            Ok(_) => panic!("must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, koushi_mcp::ErrorCode::Unsupported);
+        assert_eq!(error.reason.as_deref(), Some("protocol_version"));
+    }
 }

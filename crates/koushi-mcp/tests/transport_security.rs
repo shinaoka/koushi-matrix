@@ -169,7 +169,7 @@ async fn an_untrusted_connected_pipe_receives_no_handshake_bytes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn windows_unread_stdout_does_not_block_the_command_deadline() {
     use koushi_mcp::wire::{
-        ClientMessage, PROTOCOL_VERSION, ServerMessage, decode_line, encode_line,
+        ClientMessage, LEGACY_PROTOCOL, ServerMessage, decode_line, encode_line,
     };
     use std::process::{Command, Stdio};
     use tokio::net::windows::named_pipe::ServerOptions;
@@ -200,7 +200,7 @@ async fn windows_unread_stdout_does_not_block_the_command_deadline() {
         write
             .write_all(
                 encode_line(&ServerMessage::HelloOk {
-                    protocol: PROTOCOL_VERSION,
+                    protocol: LEGACY_PROTOCOL,
                     connection_id: "fixture".into(),
                     app_version: "0".into(),
                 })

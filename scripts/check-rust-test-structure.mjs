@@ -17,6 +17,10 @@ export const ALLOWED_NON_RUST_TARGETS = new Set([
   "crates/koushi-core/tests/fixtures/room_history_export/element_expected.json",
   // The generated koushi CLI surface, pinned as a reviewable diff.
   "crates/koushi-mcp/tests/cli/surface.golden.txt",
+  // The raw lines a v1 bridge session saw before protocol 2 (#2132, PR 1a),
+  // measured against the base build and pinned as a reviewable diff so a later
+  // edit to the handshake cannot move what an older launcher receives.
+  "crates/koushi-mcp-host/tests/bridge/golden/v1_session.jsonl",
   // Synthetic website search corpus and its golden results.
   "site/fixtures/search-corpus.json",
   "site/generated/search-scenes.json"
