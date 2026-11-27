@@ -133,18 +133,19 @@ pub(crate) fn note_rejected(data_dir: &Path, id: &ProfileId, now_ms: u64) {
 
 /// Records the acknowledged cursor, never lowering it. Skipped when the profile
 /// no longer has a row, so a late write cannot bring a revoked profile's file
-/// back. Returns whether the cursor is now durable.
+/// back. Says whether the cursor is now durable, the profile is gone (nothing
+/// to save, not a fault), or the write failed.
 pub(crate) fn save_acked(
     data_dir: &Path,
     id: &ProfileId,
     cursor: &str,
     seq_of: impl Fn(&str) -> Option<u64>,
-) -> bool {
+) -> SaveOutcome {
     let _writer = WRITER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if crate::profiles::lookup(data_dir, id).is_none() {
-        return false;
+        return SaveOutcome::Revoked;
     }
     let mut state = load(data_dir, id);
     if let (Some(stored), Some(new)) = (
@@ -152,10 +153,21 @@ pub(crate) fn save_acked(
         seq_of(cursor),
     ) && stored >= new
     {
-        return true;
+        return SaveOutcome::Durable;
     }
     state.acked_cursor = Some(cursor.to_owned());
-    save(data_dir, id, &state).is_ok()
+    if save(data_dir, id, &state).is_ok() {
+        SaveOutcome::Durable
+    } else {
+        SaveOutcome::Failed
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SaveOutcome {
+    Durable,
+    Revoked,
+    Failed,
 }
 
 /// Serialises this process's read-modify-write of a state file.

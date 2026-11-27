@@ -537,3 +537,10 @@ async fn rows_older_than_the_age_limit_expire_and_so_do_their_cursors() {
         CursorRejection::Expired
     );
 }
+
+#[tokio::test]
+async fn a_recreated_feed_has_another_generation_and_a_cursor_names_it() {
+    let (first, second) = (memory_feed(), memory_feed());
+    assert_ne!(first.generation(), second.generation());
+    assert!(first.cursor_for(3).contains(&first.generation()));
+}

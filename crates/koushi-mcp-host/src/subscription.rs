@@ -11,17 +11,19 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use koushi_core::mention_feed::{CursorRejection, MentionFeed};
 use serde_json::{Value, json};
+use tokio::sync::mpsc::OwnedPermit;
 use tokio::sync::{Notify, mpsc};
 
 use crate::consent::{ClientIdentity, ConsentContext};
 use crate::grants::Need;
 use crate::profile_limits::Limits;
+use crate::profile_state::SaveOutcome;
 use crate::server::Shared;
 use crate::subject::ProfileId;
 use crate::{handlers, profile_state, profiles};
@@ -91,6 +93,7 @@ impl Drop for LeaseGuard {
 /// What both sides of one subscription see: the sent-and-unacknowledged
 /// window and the acknowledged position.
 struct SubState {
+    sub: u64,
     feed: MentionFeed,
     profile: ProfileId,
     data_dir: PathBuf,
@@ -99,7 +102,16 @@ struct SubState {
     flushing: tokio::sync::Mutex<()>,
     /// A permit is stored if an ack lands before the pump waits.
     acked: Notify,
+    /// Set only once the end of the stream is settled: its `SubEnd` is queued,
+    /// or nobody is left to tell. A resubscribe may replace a subscription only
+    /// then, so it can never erase a `SubEnd`.
     ended: AtomicBool,
+    /// One slot of the writer queue, kept back for this subscription's
+    /// `SubEnd`, so the end can always be queued however full the queue is.
+    /// Whoever takes it ends the stream; there is exactly one `SubEnd`.
+    end_permit: Mutex<Option<OwnedPermit<ServerMessage>>>,
+    /// Consecutive acknowledged-cursor writes that failed.
+    flush_failures: AtomicU32,
 }
 
 struct Window {
@@ -136,18 +148,59 @@ impl SubState {
         };
         let cursor = self.feed.cursor_for(target);
         let state = Arc::clone(self);
-        let saved = tokio::task::spawn_blocking(move || {
+        let outcome = tokio::task::spawn_blocking(move || {
             let feed = state.feed.clone();
             profile_state::save_acked(&state.data_dir, &state.profile, &cursor, |text| {
                 feed.seq_of(text).ok()
             })
         })
         .await
-        .unwrap_or(false);
-        if saved {
-            let mut window = self.window();
-            window.persisted = window.persisted.max(target);
+        .unwrap_or(SaveOutcome::Failed);
+        match outcome {
+            SaveOutcome::Durable => {
+                let mut window = self.window();
+                window.persisted = window.persisted.max(target);
+                self.flush_failures.store(0, Ordering::Release);
+            }
+            // A revoked profile has nothing to save, and that is not a fault.
+            SaveOutcome::Revoked => {}
+            SaveOutcome::Failed => {
+                let failures = self.flush_failures.fetch_add(1, Ordering::AcqRel) + 1;
+                // Once per streak, not once per second.
+                if failures == 1 {
+                    koushi_diagnostics::record(
+                        koushi_diagnostics::DiagnosticEvent::new(
+                            koushi_diagnostics::DiagnosticLevel::Warn,
+                            "mcp.subscription",
+                            "ack_flush",
+                        )
+                        .field(koushi_diagnostics::DiagnosticField::token(
+                            "reason",
+                            "write_failed",
+                        )),
+                    );
+                }
+            }
         }
+    }
+
+    /// Ends the stream exactly once: queues its `SubEnd` through the reserved
+    /// slot (never waiting, never failing for a full queue), then marks the
+    /// subscription ended. No await between the two, so the pair cannot be
+    /// split by a cancellation.
+    fn end(&self, error: Option<WireError>) {
+        let permit = self
+            .end_permit
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let (Some(permit), Some(error)) = (permit, error) {
+            permit.send(ServerMessage::SubEnd {
+                sub: self.sub,
+                error,
+            });
+        }
+        self.ended.store(true, Ordering::Release);
     }
 
     /// Cumulative acknowledgement (D7).
@@ -209,7 +262,8 @@ struct Active {
     id: u64,
     state: Arc<SubState>,
     pump: PumpTask,
-    guard: LeaseGuard,
+    /// Held for its `Drop`: the lease is released when this is dropped.
+    _guard: LeaseGuard,
 }
 
 /// The connection's subscription, at most one.
@@ -217,6 +271,7 @@ struct Active {
 pub(crate) struct SubSlot {
     current: Option<Active>,
     counter: u64,
+    stall_guard: Arc<AtomicBool>,
 }
 
 /// What `subscribe` hands back besides the response: the pump is started only
@@ -237,25 +292,50 @@ struct PumpCtx {
 }
 
 impl SubSlot {
-    /// Starts the pump of a subscription whose response has been queued.
-    pub(crate) fn start(&mut self, start: PumpStart, tx: mpsc::Sender<ServerMessage>) {
+    /// Starts the pump of a subscription whose response has been queued. The
+    /// `SubEnd` slot is reserved first, so the end can always be told.
+    pub(crate) async fn start(&mut self, start: PumpStart, tx: &mpsc::Sender<ServerMessage>) {
         let Some(active) = self.current.as_mut() else {
             return;
         };
-        if active.id == start.ctx.sub {
-            active.pump = PumpTask(Some(tokio::spawn(pump(start.ctx, tx))));
+        if active.id != start.ctx.sub {
+            return;
         }
+        let Ok(permit) = tx.clone().reserve_owned().await else {
+            return;
+        };
+        *active
+            .state
+            .end_permit
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(permit);
+        self.stall_guard.store(true, Ordering::Release);
+        active.pump = PumpTask(Some(tokio::spawn(pump(start.ctx, tx.clone()))));
     }
 
-    /// Ends the subscription: stops the pump, makes the acknowledged cursor
+    /// Whether the connection ever subscribed: only then may a frame that
+    /// cannot be written end the writer. A protocol 1 connection never has.
+    pub(crate) fn write_timeout_armed(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.stall_guard)
+    }
+
+    /// Ends the subscription: stops the pump, tells the peer why if a reason is
+    /// given and the pump has not already, makes the acknowledged cursor
     /// durable, then releases the lease, in that order, so the next holder
-    /// reads what this one acknowledged.
-    pub(crate) async fn finish(&mut self) {
-        if let Some(mut active) = self.current.take() {
+    /// reads what this one acknowledged. `current` stays until the flush is
+    /// done, so a cancelled call is simply repeated by the next one.
+    pub(crate) async fn finish_with(&mut self, end: Option<WireError>) {
+        if let Some(active) = self.current.as_mut() {
             active.pump.stop().await;
+            active.state.end(end);
             active.state.flush().await;
-            drop(active.guard);
         }
+        // The guard is dropped here, after the flush.
+        self.current = None;
+    }
+
+    pub(crate) async fn finish(&mut self) {
+        self.finish_with(None).await;
     }
 }
 
@@ -365,6 +445,7 @@ pub(crate) async fn subscribe(
     slot.counter += 1;
     let sub = slot.counter;
     let state = Arc::new(SubState {
+        sub,
         feed,
         profile: profile.clone(),
         data_dir,
@@ -377,13 +458,15 @@ pub(crate) async fn subscribe(
         flushing: tokio::sync::Mutex::new(()),
         acked: Notify::new(),
         ended: AtomicBool::new(false),
+        end_permit: Mutex::new(None),
+        flush_failures: AtomicU32::new(0),
     });
     let lease = guard.0.clone();
     slot.current = Some(Active {
         id: sub,
         state: Arc::clone(&state),
         pump: PumpTask(None),
-        guard,
+        _guard: guard,
     });
     let window = shared.limits.push_window;
     Ok((
@@ -483,18 +566,25 @@ enum Exit {
 }
 
 /// Everything that must hold before a batch is sent, as `wait_for_mentions`
-/// re-checks after its wait.
-fn check(ctx: &PumpCtx) -> Result<(), WireError> {
+/// re-checks after its wait. The profile store is read off the async worker.
+async fn check(ctx: &PumpCtx) -> Result<(), WireError> {
     if !ctx.state.feed.is_healthy() {
         return Err(unhealthy());
     }
     let current = handlers::account_connection(&ctx.shared.accounts, &ctx.account_id)?;
-    if !ctx.connection.shares_runtime_with(&current)
-        || ctx.shared.accounts.mention_feed(&ctx.account_id).is_none()
-    {
+    // The live feed, not the one this subscription started on: a recreated feed
+    // is another log, and the position held here means nothing in it.
+    let live = ctx.shared.accounts.mention_feed(&ctx.account_id);
+    if !ctx.connection.shares_runtime_with(&current) || live.is_none() {
         return Err(WireError::new(
             ErrorCode::AccountUnavailable,
             "account changed during the subscription",
+        ));
+    }
+    if live.is_some_and(|live| live.generation() != ctx.state.feed.generation()) {
+        return Err(stalled(
+            "generation_changed",
+            "generation_changed: the mention log was recreated; wake rows may have been missed. Subscribe with after:\"retained\" and de-duplicate by event id.",
         ));
     }
     if !current.snapshot().is_agent_account() {
@@ -504,7 +594,12 @@ fn check(ctx: &PumpCtx) -> Result<(), WireError> {
             "the account is no longer an agent account",
         ));
     }
-    match profiles::lookup_checked(ctx.shared.broker.data_dir(), &ctx.profile) {
+    let data_dir = ctx.shared.broker.data_dir().to_owned();
+    let profile = ctx.profile.clone();
+    let lookup = tokio::task::spawn_blocking(move || profiles::lookup_checked(&data_dir, &profile))
+        .await
+        .map_err(|_| WireError::new_without_detail(ErrorCode::Internal))?;
+    match lookup {
         profiles::Lookup::Found(row) => {
             if row.account_id != ctx.account_id {
                 return Err(crate::consent::profile_account());
@@ -524,33 +619,44 @@ fn check(ctx: &PumpCtx) -> Result<(), WireError> {
 
 async fn pump(ctx: PumpCtx, tx: mpsc::Sender<ServerMessage>) {
     let limits = ctx.shared.limits;
+    // `tx` is only for the stream's frames; the end goes through the reserved
+    // slot in `SubState`.
     let exit = tokio::select! {
         biased;
         exit = stream(&ctx, &tx, limits) => exit,
-        never = flush_ticker(&ctx.state, limits.ack_flush) => match never {},
+        error = flush_ticker(&ctx.state, limits.ack_flush) => Exit::Ended(error),
     };
     // Ending: the position is made durable, then the lease is freed, and only
     // then is the peer told, so a consumer that resubscribes at once finds
-    // both in place.
-    ctx.state.ended.store(true, Ordering::Release);
+    // both in place. The `SubEnd` is queued before the subscription counts as
+    // ended, so a resubscribe cannot replace it unseen.
     ctx.state.flush().await;
     ctx.lease.release();
-    if let Exit::Ended(error) = exit {
-        let end = ServerMessage::SubEnd {
-            sub: ctx.sub,
-            error,
-        };
-        let _ = tokio::time::timeout(limits.write_stall, tx.send(end)).await;
+    match exit {
+        Exit::Ended(error) => ctx.state.end(Some(error)),
+        Exit::Gone => ctx.state.end(None),
     }
 }
 
-/// Writes a changed acknowledged cursor at most once per `every`.
-async fn flush_ticker(state: &Arc<SubState>, every: Duration) -> std::convert::Infallible {
+/// How many consecutive failed writes of the acknowledged cursor (one per
+/// `ACK_FLUSH`) end the stream rather than redeliver forever.
+const FLUSH_FAILURE_LIMIT: u32 = 5;
+
+/// Writes a changed acknowledged cursor at most once per `every`. Returns only
+/// to report that the cursor cannot be saved.
+async fn flush_ticker(state: &Arc<SubState>, every: Duration) -> WireError {
     let mut ticker = tokio::time::interval(every);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
         state.flush().await;
+        if state.flush_failures.load(Ordering::Acquire) >= FLUSH_FAILURE_LIMIT {
+            return WireError::with_reason(
+                ErrorCode::Internal,
+                "ack_unsaved",
+                "ack_unsaved: the acknowledged cursor could not be saved. Fix the disk, then subscribe again without after; unacknowledged rows are redelivered.",
+            );
+        }
     }
 }
 
@@ -571,9 +677,6 @@ async fn stream(ctx: &PumpCtx, tx: &mpsc::Sender<ServerMessage>, limits: Limits)
                 ));
             }
         }
-        if let Err(error) = check(ctx) {
-            return Exit::Ended(error);
-        }
         let room = ctx.state.free(limits.push_window);
         let page = match ctx
             .state
@@ -584,12 +687,13 @@ async fn stream(ctx: &PumpCtx, tx: &mpsc::Sender<ServerMessage>, limits: Limits)
             Ok(page) => page,
             Err(rejection) => return Exit::Ended(lost_position(rejection)),
         };
+        // One check per page, and one per idle wake-up: the wait can last, so
+        // it comes after the wait, never before.
+        if let Err(error) = check(ctx).await {
+            return Exit::Ended(error);
+        }
         if page.entries.is_empty() {
             continue;
-        }
-        // The wait can last: re-check before anything is sent.
-        if let Err(error) = check(ctx) {
-            return Exit::Ended(error);
         }
         let rows: Vec<Value> = page
             .entries
@@ -623,5 +727,91 @@ async fn stream(ctx: &PumpCtx, tx: &mpsc::Sender<ServerMessage>, limits: Limits)
                 ));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(sub: u64, dir: &std::path::Path) -> Arc<SubState> {
+        Arc::new(SubState {
+            sub,
+            feed: MentionFeed::open(None, 0, |_| true).expect("feed"),
+            profile: ProfileId::parse(&format!("prof_{}", "a".repeat(32))).expect("id"),
+            data_dir: dir.to_owned(),
+            window: Mutex::new(Window {
+                outstanding: VecDeque::new(),
+                acked: 5,
+                persisted: 0,
+                sent: 5,
+            }),
+            flushing: tokio::sync::Mutex::new(()),
+            acked: Notify::new(),
+            ended: AtomicBool::new(false),
+            end_permit: Mutex::new(None),
+            flush_failures: AtomicU32::new(0),
+        })
+    }
+
+    /// The end is queued through the slot kept back for it, so a queue that is
+    /// full (a peer that stopped reading) cannot swallow it, and it is queued
+    /// once.
+    #[tokio::test]
+    async fn the_end_is_queued_even_when_the_writer_queue_is_full() {
+        let dir = tempfile::tempdir().expect("dir");
+        let state = state(7, dir.path());
+        let (tx, mut rx) = mpsc::channel(2);
+        *state.end_permit.lock().expect("permit") =
+            Some(tx.clone().reserve_owned().await.expect("reserved"));
+        tx.try_send(ServerMessage::success(1, json!({})))
+            .expect("one frame fits");
+        assert!(
+            tx.try_send(ServerMessage::success(2, json!({}))).is_err(),
+            "the queue is full for everything else"
+        );
+        state.end(Some(stalled("write_stalled", "write_stalled: test")));
+        state.end(Some(stalled("write_stalled", "a second end is dropped")));
+        assert!(state.ended.load(Ordering::Acquire));
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMessage::Response { .. })
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMessage::SubEnd { sub: 7, .. })
+        ));
+        drop(tx);
+        assert!(rx.recv().await.is_none(), "exactly one SubEnd");
+    }
+
+    /// A cancelled `finish` (a dropped `unsubscribe`) keeps the subscription and
+    /// its lease until the flush has run, so the cursor is durable before the
+    /// lease is released, and the next call finishes the job.
+    #[tokio::test]
+    async fn a_cancelled_finish_keeps_the_lease_until_the_flush_is_done() {
+        let dir = tempfile::tempdir().expect("dir");
+        let state = state(1, dir.path());
+        let leases = Arc::new(Leases::default());
+        let profile = state.profile.clone();
+        let mut slot = SubSlot {
+            current: Some(Active {
+                id: 1,
+                state: Arc::clone(&state),
+                pump: PumpTask(None),
+                _guard: leases.acquire(&profile).expect("lease"),
+            }),
+            ..SubSlot::default()
+        };
+        let blocked = state.flushing.lock().await;
+        let cancelled =
+            tokio::time::timeout(Duration::from_millis(50), slot.finish_with(None)).await;
+        assert!(cancelled.is_err(), "the flush is still waiting");
+        assert!(slot.current.is_some(), "the subscription is kept");
+        assert!(leases.acquire(&profile).is_err(), "the lease is still held");
+        drop(blocked);
+        slot.finish().await;
+        assert!(slot.current.is_none());
+        assert!(leases.acquire(&profile).is_ok(), "released after the flush");
     }
 }

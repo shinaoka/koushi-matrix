@@ -278,6 +278,11 @@ impl MentionFeed {
         self.inner.healthy.load(Ordering::Acquire)
     }
 
+    /// Names this log: a recreated feed has another one (#2132).
+    pub fn generation(&self) -> String {
+        self.lock().generation.clone()
+    }
+
     pub fn cursor_for(&self, seq: u64) -> String {
         format!("{CURSOR_VERSION}.{}.{seq}", self.lock().generation)
     }

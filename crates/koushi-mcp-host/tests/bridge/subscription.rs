@@ -30,7 +30,7 @@ const AGENT_B: &str = "account:@agent-b:example.invalid";
 
 struct Accounts {
     cores: Vec<(String, Arc<CoreRuntime>)>,
-    feeds: HashMap<String, MentionFeed>,
+    feeds: std::sync::Mutex<HashMap<String, MentionFeed>>,
     media: PathBuf,
 }
 
@@ -48,7 +48,7 @@ impl BridgeAccounts for Accounts {
     }
 
     fn mention_feed(&self, account_id: &str) -> Option<MentionFeed> {
-        self.feeds.get(account_id).cloned()
+        self.feeds.lock().expect("feeds").get(account_id).cloned()
     }
 }
 
@@ -102,7 +102,7 @@ impl World {
         }
         let accounts = Arc::new(Accounts {
             cores,
-            feeds,
+            feeds: std::sync::Mutex::new(feeds),
             media,
         });
         let broker = ConsentBroker::new(data.clone(), ConsentMode::FailClosed);
@@ -123,8 +123,18 @@ impl World {
         }
     }
 
-    fn feed(&self, account: &str) -> &MentionFeed {
-        &self.accounts.feeds[account]
+    fn feed(&self, account: &str) -> MentionFeed {
+        self.accounts.feeds.lock().expect("feeds")[account].clone()
+    }
+
+    /// Replaces the account's feed with a new log, as a rebuilt runtime would.
+    fn recreate_feed(&self, account: &str) {
+        let feed = MentionFeed::open(None, 0, |_| true).expect("feed");
+        self.accounts
+            .feeds
+            .lock()
+            .expect("feeds")
+            .insert(account.to_owned(), feed);
     }
 
     fn core(&self, account: &str) -> &Arc<CoreRuntime> {
@@ -684,5 +694,179 @@ async fn a_protocol_1_connection_has_no_subscription() {
         let reply = conn.request(method, json!({"sub": 1, "cursor": "x"})).await;
         assert_eq!(error_of(&reply).0, "unsupported", "{method}");
     }
+    world.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_revoked_profile_ends_the_stream_with_unauthorized_not_eof() {
+    let world = World::start().await;
+    let (id, secret) = world.profile(AGENT_A).await;
+    let mut conn = Conn::profiled(&world, &id, &secret).await;
+    sub_of(&conn.subscribe(None).await);
+    world.record(AGENT_A, "$e1").await;
+    assert_eq!(conn.rows(1).await.0, ["$e1"]);
+    world.broker.revoke_profile(&id).await.expect("revoked");
+    // Every time, not only when the pump's own re-check wins a race.
+    let (code, reason) = conn.sub_end().await;
+    assert_eq!(
+        (code.as_str(), reason.as_str()),
+        ("unauthorized", "profile_revoked")
+    );
+    assert!(
+        conn.next_frame(Duration::from_secs(5)).await.is_none(),
+        "then EOF"
+    );
+    world.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_revoke_during_a_request_answers_it_and_still_ends_the_stream() {
+    let world = World::start().await;
+    let (id, secret) = world.profile(AGENT_A).await;
+    let mut conn = Conn::profiled(&world, &id, &secret).await;
+    sub_of(&conn.subscribe(None).await);
+    conn.send(
+        &json!({"type":"request","id":900,"method":"tools/call","params":{
+        "name":"wait_for_mentions","arguments":{"account_id": AGENT_A, "timeout_ms":30000,
+        "cursor": world.feed(AGENT_A).cursor_for(0)}}}),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    world.broker.revoke_profile(&id).await.expect("revoked");
+    let mut saw_end = false;
+    while let Some(frame) = conn.next_frame(Duration::from_secs(5)).await {
+        saw_end |= frame["type"] == "sub_end" && frame["error"]["code"] == "unauthorized";
+    }
+    assert!(saw_end, "the stream's end was told");
+    world.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ack_is_applied_while_a_request_is_still_running() {
+    // Window of 2 and a stall of 1.5 s: if the ack waited for the request (up
+    // to 6 s here), the subscription would die ack_stalled first.
+    let world = World::start_with(limits(2, 1_500)).await;
+    let (id, secret) = world.profile(AGENT_A).await;
+    let mut conn = Conn::profiled(&world, &id, &secret).await;
+    sub_of(&conn.subscribe(None).await);
+    for event in ["$e1", "$e2", "$e3", "$e4"] {
+        world.record(AGENT_A, event).await;
+    }
+    let (_, first) = conn.rows(2).await;
+    conn.send(
+        &json!({"type":"request","id":900,"method":"tools/call","params":{
+        "name":"wait_for_mentions","arguments":{"account_id": AGENT_A, "timeout_ms":6000,
+        "cursor": world.feed(AGENT_A).cursor_for(4)}}}),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    conn.send(&json!({"type":"request","id":901,"method":"ack","params":{"sub":1,"cursor":first}}))
+        .await;
+    // The ack's answer comes while request 900 is still running.
+    let mut answered = false;
+    let mut late_rows = 0;
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_secs(4) {
+        let Some(frame) = conn.next_frame(Duration::from_millis(500)).await else {
+            continue;
+        };
+        match frame["type"].as_str() {
+            Some("response") if frame["id"] == 901 => {
+                assert_eq!(frame["ok"], true, "{frame}");
+                answered = true;
+            }
+            Some("response") if frame["id"] == 900 => {
+                assert!(
+                    started.elapsed() > Duration::from_secs(2),
+                    "the request was meant to run on: {frame}"
+                );
+                break;
+            }
+            Some("push") => {
+                late_rows += frame["rows"].as_array().map_or(0, Vec::len);
+                // Request 900 is still running (it has 6 s): that is the point.
+                if answered && late_rows >= 2 {
+                    break;
+                }
+            }
+            Some("sub_end") => panic!("the subscription died: {frame}"),
+            _ => {}
+        }
+    }
+    assert!(answered, "the ack was answered during the request");
+    assert!(late_rows >= 2, "the freed window let the next rows through");
+    world.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_recreated_feed_ends_the_stream_generation_changed() {
+    let world = World::start().await;
+    let (id, secret) = world.profile(AGENT_A).await;
+    let mut conn = Conn::profiled(&world, &id, &secret).await;
+    sub_of(&conn.subscribe(None).await);
+    world.recreate_feed(AGENT_A);
+    let (code, reason) = conn.sub_end().await;
+    assert_eq!(
+        (code.as_str(), reason.as_str()),
+        ("resync_required", "generation_changed")
+    );
+    world.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resubscribe_never_erases_the_sub_end() {
+    // Window 1, quick stall: the pump ends ack_stalled while the client is
+    // already hammering subscribe.
+    let world = World::start_with(limits(1, 150)).await;
+    let (id, secret) = world.profile(AGENT_A).await;
+    let mut conn = Conn::profiled(&world, &id, &secret).await;
+    sub_of(&conn.subscribe(None).await);
+    world.record(AGENT_A, "$e1").await;
+    world.record(AGENT_A, "$e2").await;
+    let mut resubscribed = false;
+    for _ in 0..400 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let reply = conn.subscribe(None).await;
+        if reply["ok"] == true {
+            resubscribed = true;
+            break;
+        }
+        assert_eq!(error_of(&reply).1, "already_subscribed", "{reply}");
+    }
+    assert!(resubscribed);
+    // The new subscription's response came after the old one's end.
+    let ended = conn
+        .buffered
+        .iter()
+        .any(|frame| frame["type"] == "sub_end" && frame["error"]["reason"] == "ack_stalled");
+    assert!(
+        ended,
+        "the end was queued before the new subscription: {:?}",
+        conn.buffered
+    );
+    world.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cursor_that_cannot_be_saved_is_reported_and_ends_the_stream() {
+    let world = World::start().await;
+    let (id, secret) = world.profile(AGENT_A).await;
+    let mut conn = Conn::profiled(&world, &id, &secret).await;
+    let sub = sub_of(&conn.subscribe(None).await);
+    // A file where the state directory should be: every write fails.
+    let dir = world.data.join("mcp/profile-state");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::write(&dir, b"not a directory").expect("block the directory");
+    world.record(AGENT_A, "$e1").await;
+    let (_, cursor) = conn.rows(1).await;
+    let reply = conn
+        .request("ack", json!({"sub": sub, "cursor": cursor}))
+        .await;
+    assert_eq!(reply["ok"], true, "{reply}");
+    let (code, reason) = conn.sub_end().await;
+    assert_eq!(
+        (code.as_str(), reason.as_str()),
+        ("internal", "ack_unsaved")
+    );
     world.shutdown().await;
 }
