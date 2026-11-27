@@ -34,8 +34,9 @@ use super::diagnostics::{
 use super::display_projection::DisplayProjectionState;
 use super::gap_repair::LIVE_TAIL_CANCELLATION_DEADLINE;
 use super::item_projection::{
-    eligible_activity_preview, has_user_visible_content, is_attention_eligible_event,
-    is_unread_navigation_item, item_index_for_event_id, timeline_item_event_id,
+    counts_as_message, eligible_activity_preview, has_user_visible_content,
+    is_attention_eligible_event, is_unread_navigation_item, item_index_for_event_id,
+    timeline_item_event_id,
 };
 use super::manager::TimelineManagerActor;
 use super::thread_projection::{ThreadAttentionObservation, ThreadAttentionTracker};
@@ -1732,7 +1733,10 @@ pub(super) fn derive_timeline_navigation_snapshot_with_read_state(
         })
         .collect();
 
-    snapshot.unread_event_count = unread_items.len() as u64;
+    snapshot.unread_event_count = unread_items
+        .iter()
+        .filter(|(_, item)| counts_as_message(item))
+        .count() as u64;
     if let Some((first_unread_index, first_unread)) = unread_items.first() {
         snapshot.first_unread_event_id =
             timeline_item_event_id(first_unread).map(ToOwned::to_owned);
@@ -2111,7 +2115,9 @@ fn newer_unread_event_count(
         .iter()
         .skip(first_newer_unread_index)
         .filter(|item| {
-            navigation_item_in_scope(kind, item) && is_unread_navigation_item(item, own_user_id)
+            navigation_item_in_scope(kind, item)
+                && is_unread_navigation_item(item, own_user_id)
+                && counts_as_message(item)
         })
         .count() as u64
 }
