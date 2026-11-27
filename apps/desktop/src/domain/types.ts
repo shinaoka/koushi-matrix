@@ -694,7 +694,7 @@ export type McpProfileGrants = Record<McpNeed, boolean>;
 
 /** Result of `create_agent_profile`: the id and the secret file's path, never the secret. */
 export type McpCreateProfileOutcome =
-  | { kind: "created"; profile_id: string; secret_path: string }
+  | { kind: "created"; profile_id: string }
   | { kind: "failed"; reason: "invalid_label" | "not_agent_account" | "account_unavailable" | "store_unusable" | "io" };
 
 export type McpRevokeProfileOutcome = "revoked" | "not_found" | "failed";

@@ -20,7 +20,6 @@ use crate::mcp::register::{self, RegisterOutcome};
 pub async fn get_mcp_assistants_state(
     state: State<'_, McpController>,
 ) -> Result<McpAssistantsState, ()> {
-    state.broker.refresh();
     state.broker.refresh_profiles(&*state.accounts).await;
     Ok(state.broker.refresh())
 }
@@ -36,21 +35,16 @@ pub struct ProfileGrantsInput {
     draft: bool,
 }
 
-/// The outcome of creating a profile. The secret is never here: only the path
-/// of the `0600` file that holds it.
+/// The outcome of creating a profile. Neither the secret nor the path of its
+/// `0600` file is here; the launch snippets in the state carry the path.
 #[derive(serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CreateProfileOutcome {
-    Created {
-        profile_id: String,
-        secret_path: String,
-    },
-    Failed {
-        reason: &'static str,
-    },
+    Created { profile_id: String },
+    Failed { reason: &'static str },
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RevokeProfileOutcome {
     Revoked,
@@ -81,7 +75,6 @@ pub async fn create_agent_profile(
     {
         Ok(created) => CreateProfileOutcome::Created {
             profile_id: created.profile_id.as_str().to_owned(),
-            secret_path: created.secret_path.to_string_lossy().into_owned(),
         },
         Err(error) => CreateProfileOutcome::Failed {
             reason: match error {
@@ -117,6 +110,10 @@ pub async fn revoke_agent_profile(
         Ok(false) => RevokeProfileOutcome::NotFound,
         Err(_) => RevokeProfileOutcome::Failed,
     };
+    // Also on `NotFound`: a second press must clear a row that lingers.
+    if outcome != RevokeProfileOutcome::Failed {
+        state.broker.refresh_profiles(&*state.accounts).await;
+    }
     record(
         "mcp.profile.revoke",
         match outcome {

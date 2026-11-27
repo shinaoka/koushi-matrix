@@ -774,7 +774,21 @@ impl ConsentBroker {
     /// Re-reads the profile store, the secret files and the accounts' roles and
     /// publishes the profile rows and the choosable agent accounts. The disk is
     /// read off the async worker and never under the state lock.
+    ///
+    /// The read and the update both run under the writer lock, so a revoke or
+    /// create cannot land between them and be overwritten by the stale read.
     pub async fn refresh_profiles(&self, accounts: &dyn crate::BridgeAccounts) {
+        self.refresh_profiles_between(accounts, async {}).await;
+    }
+
+    /// `refresh_profiles`, with `between` run after the disk read and before
+    /// the update, so a test can put a writer in that window.
+    async fn refresh_profiles_between(
+        &self,
+        accounts: &dyn crate::BridgeAccounts,
+        between: impl std::future::Future<Output = ()>,
+    ) {
+        let _writer = self.writer.lock().await;
         let roles: HashMap<String, bool> = accounts
             .accounts()
             .into_iter()
@@ -796,6 +810,7 @@ impl ConsentBroker {
             .map(|account| account.id)
             .collect();
         agent_accounts.sort();
+        between.await;
         self.update(|inner| {
             inner.profiles = rows;
             inner.agent_accounts = agent_accounts;
@@ -819,9 +834,16 @@ impl ConsentBroker {
     /// The profile's lease was taken or released.
     pub(crate) fn profile_subscribed(&self, id: &ProfileId, subscribed: bool) {
         self.update(|inner| {
-            let live = inner.live.entry(id.clone()).or_default();
-            live.subscribed = subscribed;
-            live.last_seen_ms = Some(profiles::now_ms());
+            // A release after a revoke must not recreate the removed entry.
+            let live = if subscribed {
+                Some(inner.live.entry(id.clone()).or_default())
+            } else {
+                inner.live.get_mut(id)
+            };
+            if let Some(live) = live {
+                live.subscribed = subscribed;
+                live.last_seen_ms = Some(profiles::now_ms());
+            }
         });
     }
 
@@ -1403,6 +1425,58 @@ mod tests {
             state
                 .store
                 .allows("pi", "account:@alice:example.invalid", Need::Read)
+        );
+    }
+
+    struct NoAccounts;
+
+    impl crate::BridgeAccounts for NoAccounts {
+        fn accounts(&self) -> Vec<crate::BridgeAccount> {
+            Vec::new()
+        }
+    }
+
+    /// A revoke that lands between a refresh's disk read and its update must
+    /// not be overwritten by the stale read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_revoke_between_a_refresh_read_and_its_update_does_not_resurrect_the_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let broker = ConsentBroker::new(dir.path().to_path_buf(), ConsentMode::FailClosed);
+        let created = profiles::create(
+            dir.path(),
+            "Reader",
+            "account:@agent:example.invalid",
+            ProfileGrants::default(),
+            None,
+            1,
+        )
+        .expect("created");
+        broker.refresh_profiles(&NoAccounts).await;
+        assert_eq!(broker.subscribe().borrow().profiles.len(), 1);
+
+        let (read_done, read_done_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let refresher = Arc::clone(&broker);
+        let refresh = tokio::spawn(async move {
+            refresher
+                .refresh_profiles_between(&NoAccounts, async {
+                    let _ = read_done.send(());
+                    let _ = release_rx.await;
+                })
+                .await;
+        });
+        // The stale read has the row; the revoke starts in the window.
+        read_done_rx.await.expect("read finished");
+        let revoker = Arc::clone(&broker);
+        let id = created.profile_id.clone();
+        let revoke = tokio::spawn(async move { revoker.revoke_profile(&id).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        release.send(()).expect("release");
+        refresh.await.expect("refresh");
+        assert_eq!(revoke.await.expect("revoke"), Ok(true));
+        assert!(
+            broker.subscribe().borrow().profiles.is_empty(),
+            "the revoked row came back"
         );
     }
 }

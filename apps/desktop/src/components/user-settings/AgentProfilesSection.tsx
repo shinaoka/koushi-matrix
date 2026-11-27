@@ -222,7 +222,7 @@ function ProfileRow({ profile, accountName }: { profile: McpProfile; accountName
         <li data-status-kind="status">{t(STATUS_LABELS[profile.status])}</li>
         <li>{profile.connected ? t("settings.agentProfileConnected") : t("settings.agentProfileNotConnected")}</li>
         <li>{profile.subscribed ? t("settings.agentProfileSubscribed") : t("settings.agentProfileNotSubscribed")}</li>
-        <li>
+        <li title={t("settings.agentProfileLastSeenHint")}>
           {profile.last_seen_ms !== null
             ? t("settings.agentProfileLastSeen", { time: formatTime(profile.last_seen_ms) })
             : t("settings.agentProfileNeverSeen")}
@@ -262,7 +262,11 @@ function ProfileRow({ profile, accountName }: { profile: McpProfile; accountName
                 : ""}
           </p>
         </div>
-      ) : null}
+      ) : (
+        <p className="settings-assistants-note" data-testid="profile-no-launcher">
+          {t("settings.agentProfileNoLauncher")}
+        </p>
+      )}
       {confirming ? (
         <ModalDialog
           title={t("settings.agentProfileRevokeTitle", { label: profile.label })}

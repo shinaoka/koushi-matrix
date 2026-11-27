@@ -979,6 +979,8 @@ export type MessageId =
   | "settings.agentProfileNotSubscribed"
   | "settings.agentProfileLastSeen"
   | "settings.agentProfileNeverSeen"
+  | "settings.agentProfileLastSeenHint"
+  | "settings.agentProfileNoLauncher"
   | "settings.agentProfileLastRejected"
   | "settings.agentProfileClientField"
   | "settings.agentProfileLaunchHint"
@@ -3443,15 +3445,17 @@ const en: Catalog = {
   "settings.agentProfileNotConnected": "Not connected",
   "settings.agentProfileSubscribed": "Subscribed",
   "settings.agentProfileNotSubscribed": "Not subscribed",
-  "settings.agentProfileLastSeen": "Last seen {time}",
-  "settings.agentProfileNeverSeen": "Not seen yet",
+  "settings.agentProfileLastSeen": "Last connection change {time}",
+  "settings.agentProfileNeverSeen": "No connection yet",
+  "settings.agentProfileLastSeenHint": "When a connection of this profile last opened, closed, or took or released the subscription. It is not a heartbeat.",
+  "settings.agentProfileNoLauncher": "The launch command is not shown because Koushi's MCP launcher is unavailable. The profile and its secret file exist; the command appears once the launcher is available.",
   "settings.agentProfileLastRejected": "Last wrong secret {time}",
   "settings.agentProfileClientField": "Client",
   "settings.agentProfileLaunchHint": "Run this to start the client with this profile. The secret stays in the file; it is not shown.",
   "settings.agentProfileRevoke": "Revoke",
   "settings.agentProfileRevokeLabel": "Revoke {label}",
   "settings.agentProfileRevokeTitle": "Revoke {label}?",
-  "settings.agentProfileRevokeExplain": "The agent using this profile stops at once and its secret file is deleted. This cannot be undone; create a new profile to connect it again.",
+  "settings.agentProfileRevokeExplain": "The agent using this profile stops at once (a message already being sent still finishes) and its secret file is deleted. This cannot be undone; create a new profile to connect it again.",
   "settings.agentProfileRevokeConfirm": "Revoke",
   "settings.agentProfileRevokeFailed": "The profile could not be revoked.",
   "settings.agentAccountForget": "Remove the agent mark for {user}",
@@ -5947,15 +5951,17 @@ const ja: Catalog = {
   "settings.agentProfileNotConnected": "未接続",
   "settings.agentProfileSubscribed": "購読中",
   "settings.agentProfileNotSubscribed": "購読していません",
-  "settings.agentProfileLastSeen": "最終確認 {time}",
-  "settings.agentProfileNeverSeen": "まだ確認されていません",
+  "settings.agentProfileLastSeen": "最後の接続変化 {time}",
+  "settings.agentProfileNeverSeen": "まだ接続がありません",
+  "settings.agentProfileLastSeenHint": "このプロファイルの接続が最後に開始・終了した、または購読を取得・解放した時刻です。生存確認ではありません。",
+  "settings.agentProfileNoLauncher": "Koushi の MCP ランチャーを利用できないため、起動コマンドを表示できません。プロファイルとシークレットファイルは作成済みで、ランチャーが使えるようになるとコマンドが表示されます。",
   "settings.agentProfileLastRejected": "最後の誤ったシークレット {time}",
   "settings.agentProfileClientField": "クライアント",
   "settings.agentProfileLaunchHint": "これを実行すると、このプロファイルでクライアントが起動します。シークレットはファイルに残り、表示されません。",
   "settings.agentProfileRevoke": "失効",
   "settings.agentProfileRevokeLabel": "{label} を失効",
   "settings.agentProfileRevokeTitle": "{label} を失効させますか？",
-  "settings.agentProfileRevokeExplain": "このプロファイルを使っているエージェントはすぐ止まり、シークレットファイルは削除されます。元に戻せません。再び接続するには新しいプロファイルを作成してください。",
+  "settings.agentProfileRevokeExplain": "このプロファイルを使っているエージェントはすぐ止まり（送信中のメッセージは最後まで送られます）、シークレットファイルは削除されます。元に戻せません。再び接続するには新しいプロファイルを作成してください。",
   "settings.agentProfileRevokeConfirm": "失効させる",
   "settings.agentProfileRevokeFailed": "プロファイルを失効できませんでした。",
   "settings.agentAccountForget": "{user} のエージェント設定を削除",

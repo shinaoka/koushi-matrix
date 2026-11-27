@@ -117,8 +117,8 @@ test("with no agent account the form says so and cannot create", async () => {
   expect((within(section()).getByRole("button", { name: "Create profile" }) as HTMLButtonElement).disabled).toBe(true);
 });
 
-test("create sends the label, the account and the chosen grants, and shows no secret", async () => {
-  fixture.create.mockResolvedValue({ kind: "created", profile_id: ID, secret_path: "/rust/built/path.secret", secret: "S3CR3T-MARKER" });
+test("create sends the label, the account and the chosen grants", async () => {
+  fixture.create.mockResolvedValue({ kind: "created", profile_id: ID });
   await renderPage(state());
   fireEvent.change(within(section()).getByLabelText("Label"), { target: { value: "Reviewer" } });
   fireEvent.click(within(section()).getByRole("checkbox", { name: "Read" }));
@@ -128,7 +128,11 @@ test("create sends the label, the account and the chosen grants, and shows no se
     read: true, send: true, attachments: false, message_actions: false, draft: false
   }));
   expect(await within(section()).findByText(/Profile created/)).toBeTruthy();
-  expect(document.body.textContent).not.toContain("S3CR3T-MARKER");
+});
+
+test("a profile with no launch snippets says why", async () => {
+  await renderPage(state({ profiles: [profile({ snippets: [] })] }));
+  expect(within(section()).getByText(/launcher is unavailable/)).toBeTruthy();
 });
 
 test("a failed create names the reason from Rust", async () => {
@@ -144,12 +148,12 @@ test("the row follows Rust's status: ready, connected, subscribed, secret missin
   const row = () => within(section()).getByRole("article", { name: "Reviewer" });
   expect(within(row()).getByText("Ready")).toBeTruthy();
   expect(within(row()).getByText("Not connected")).toBeTruthy();
-  expect(within(row()).getByText("Not seen yet")).toBeTruthy();
+  expect(within(row()).getByText("No connection yet")).toBeTruthy();
 
   publish(state({ profiles: [profile({ connected: true, last_seen_ms: Date.UTC(2026, 10, 27, 9, 30) })] }));
   expect(within(row()).getByText("Connected")).toBeTruthy();
   expect(within(row()).getByText("Not subscribed")).toBeTruthy();
-  expect(within(row()).getByText(/Last seen/)).toBeTruthy();
+  expect(within(row()).getByText(/Last connection change/)).toBeTruthy();
 
   publish(state({ profiles: [profile({ connected: true, subscribed: true })] }));
   expect(within(row()).getByText("Subscribed")).toBeTruthy();
