@@ -386,7 +386,7 @@ async fn serve_connection(
     let (frame_tx, mut frames) = mpsc::channel::<Frame>(FRAME_QUEUE);
     let reader_task = AbortOnDrop(Some(tokio::spawn(read_frames(reader, frame_tx))));
 
-    serve_requests(
+    Box::pin(serve_requests(
         &mut frames,
         &shared,
         &client,
@@ -395,7 +395,7 @@ async fn serve_connection(
         &mut revoked,
         &tx,
         &mut slot,
-    )
+    ))
     .await;
 
     // The subscription ends first, so its acknowledged cursor is durable before
@@ -537,7 +537,16 @@ async fn serve_requests(
                             .map(|value| (value, None))
                     };
                     let ack_slot = (protocol > LEGACY_PROTOCOL).then_some(&*slot);
-                    run_call(work, ack_slot, shutdown, revoked, frames, &mut pending, tx).await
+                    Box::pin(run_call(
+                        work,
+                        ack_slot,
+                        shutdown,
+                        revoked,
+                        frames,
+                        &mut pending,
+                        tx,
+                    ))
+                    .await
                 };
                 match call {
                     Call::Stop => return,
