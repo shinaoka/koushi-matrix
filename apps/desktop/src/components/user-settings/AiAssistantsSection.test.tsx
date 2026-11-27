@@ -64,6 +64,8 @@ function state(overrides: Partial<McpAssistantsState> = {}): McpAssistantsState 
       { client: "deepseek_harness", client_name: "deepseek-harness", kind: "yaml", text: "- id: mcp-koushi\n", config_hint: "~/.dsh/profiles/<profile>/cordis.patch.yml", action: null }
     ],
     outdated_launchers: [],
+    profiles: [],
+    agent_accounts: [],
     ...overrides
   };
 }

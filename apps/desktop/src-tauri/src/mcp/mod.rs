@@ -21,6 +21,8 @@ pub const MCP_EVENT_NAME: &str = "koushi-desktop://mcp";
 /// Tauri-managed owner of the broker and the running bridge.
 pub(crate) struct McpController {
     pub(crate) broker: Arc<ConsentBroker>,
+    /// The accounts the bridge serves, for the owner's profile actions.
+    pub(crate) accounts: Arc<dyn koushi_mcp_host::BridgeAccounts>,
     /// The running bridge. Never held across an await, so the synchronous
     /// exit handler can always take it.
     bridge: std::sync::Mutex<Option<BridgeHandle>>,
@@ -75,6 +77,7 @@ pub(crate) fn install(app: &AppHandle, runtime: Arc<AccountRuntimeManager>, data
     broker.set_launcher(launcher::resolve(&data_dir));
     app.manage(McpController {
         broker: Arc::clone(&broker),
+        accounts: Arc::clone(&runtime) as Arc<dyn koushi_mcp_host::BridgeAccounts>,
         bridge: std::sync::Mutex::new(None),
         switch: tokio::sync::Mutex::new(()),
         registering: std::sync::atomic::AtomicBool::new(false),
@@ -196,3 +199,7 @@ fn request_attention(app: &AppHandle) {
     }
     let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
 }
+
+#[cfg(test)]
+#[path = "capability_tests.rs"]
+mod capability_tests;

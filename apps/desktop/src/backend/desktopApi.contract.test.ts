@@ -109,6 +109,8 @@ describe("DesktopApi command contract", () => {
         "removeMcpAssistant",
         "registerMcpClient",
         "createClaudeDesktopExtension",
+        "createAgentProfile",
+        "revokeAgentProfile",
         "saveDiagnosticsReport",
         "currentSessionAccessToken",
         "cancelOidcLogin",

@@ -19,6 +19,9 @@ import type {
   DesktopSnapshot,
   DesktopUpdateState,
   McpAssistantsState,
+  McpCreateProfileOutcome,
+  McpProfileGrants,
+  McpRevokeProfileOutcome,
   McpExtensionOutcome,
   McpNeed,
   McpRegisterOutcome,
@@ -209,6 +212,18 @@ export class TauriDesktopApi implements DesktopApi {
 
   async registerMcpClient(client: McpRegistrationClient): Promise<McpRegisterOutcome> {
     return this.invokeCommand<McpRegisterOutcome>("register_mcp_client", { client });
+  }
+
+  async createAgentProfile(
+    label: string,
+    accountId: string,
+    grants: McpProfileGrants
+  ): Promise<McpCreateProfileOutcome> {
+    return this.invokeCommand<McpCreateProfileOutcome>("create_agent_profile", { label, accountId, grants });
+  }
+
+  async revokeAgentProfile(profileId: string): Promise<McpRevokeProfileOutcome> {
+    return this.invokeCommand<McpRevokeProfileOutcome>("revoke_agent_profile", { profileId });
   }
 
   async createClaudeDesktopExtension(): Promise<McpExtensionOutcome> {

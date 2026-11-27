@@ -120,6 +120,22 @@ describe("TauriDesktopApi", () => {
     expect(invoke).toHaveBeenCalledWith("remove_mcp_assistant", { clientName: "pi" });
   });
 
+  test("forwards the owner's profile commands with only the ids and grants", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+    const api = new TauriDesktopApi();
+    const grants = { read: true, send: false, attachments: false, message_actions: false, draft: false };
+
+    await api.createAgentProfile("Reviewer", "account:@agent:example.invalid", grants);
+    await api.revokeAgentProfile("prof_00112233445566778899aabbccddeeff");
+
+    expect(invoke).toHaveBeenCalledWith("create_agent_profile", {
+      label: "Reviewer",
+      accountId: "account:@agent:example.invalid",
+      grants
+    });
+    expect(invoke).toHaveBeenCalledWith("revoke_agent_profile", { profileId: "prof_00112233445566778899aabbccddeeff" });
+  });
+
   test("uses distinct state-only and state-plus-timeline resync commands", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 

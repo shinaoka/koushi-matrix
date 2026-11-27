@@ -4,9 +4,9 @@
 
 use std::sync::atomic::Ordering;
 
-use koushi_mcp_host::Need;
-use koushi_mcp_host::consent::{AnswerOutcome, GrantSubject, McpAssistantsState};
+use koushi_mcp_host::consent::{AnswerOutcome, GrantSubject, McpAssistantsState, ProfileId};
 use koushi_mcp_host::registration::{Platform, RegistrationClient};
+use koushi_mcp_host::{Need, ProfileError, ProfileGrants};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
@@ -14,10 +14,118 @@ use crate::mcp::McpController;
 use crate::mcp::extension::{self, ExtensionOutcome};
 use crate::mcp::register::{self, RegisterOutcome};
 
-/// The current state, after re-reading the grant store so a hand edit shows.
+/// The current state, after re-reading the grant store and the agent profiles
+/// so a hand edit, a role change or a deleted secret file shows.
 #[tauri::command]
-pub fn get_mcp_assistants_state(state: State<'_, McpController>) -> McpAssistantsState {
-    state.broker.refresh()
+pub async fn get_mcp_assistants_state(
+    state: State<'_, McpController>,
+) -> Result<McpAssistantsState, ()> {
+    state.broker.refresh();
+    state.broker.refresh_profiles(&*state.accounts).await;
+    Ok(state.broker.refresh())
+}
+
+/// The permissions a new profile starts with. The webview names them; the
+/// host decides whether the account may be bound at all.
+#[derive(serde::Deserialize)]
+pub struct ProfileGrantsInput {
+    read: bool,
+    send: bool,
+    attachments: bool,
+    message_actions: bool,
+    draft: bool,
+}
+
+/// The outcome of creating a profile. The secret is never here: only the path
+/// of the `0600` file that holds it.
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CreateProfileOutcome {
+    Created {
+        profile_id: String,
+        secret_path: String,
+    },
+    Failed {
+        reason: &'static str,
+    },
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevokeProfileOutcome {
+    Revoked,
+    NotFound,
+    Failed,
+}
+
+/// Owner action: creates a profile bound to an agent account. Not reachable
+/// from remote content (no capability grants it) and not an IPC method.
+#[tauri::command]
+pub async fn create_agent_profile(
+    state: State<'_, McpController>,
+    label: String,
+    account_id: String,
+    grants: ProfileGrantsInput,
+) -> Result<CreateProfileOutcome, ()> {
+    let grants = ProfileGrants {
+        read: grants.read,
+        send: grants.send,
+        attachments: grants.attachments,
+        message_actions: grants.message_actions,
+        draft: grants.draft,
+    };
+    let outcome = match state
+        .broker
+        .create_profile(&*state.accounts, &label, &account_id, grants)
+        .await
+    {
+        Ok(created) => CreateProfileOutcome::Created {
+            profile_id: created.profile_id.as_str().to_owned(),
+            secret_path: created.secret_path.to_string_lossy().into_owned(),
+        },
+        Err(error) => CreateProfileOutcome::Failed {
+            reason: match error {
+                ProfileError::InvalidLabel => "invalid_label",
+                ProfileError::NotAgentAccount => "not_agent_account",
+                ProfileError::AccountUnavailable => "account_unavailable",
+                ProfileError::StoreUnusable(_) => "store_unusable",
+                ProfileError::NotFound | ProfileError::AccountMismatch | ProfileError::Io => "io",
+            },
+        },
+    };
+    record(
+        "mcp.profile.create",
+        match outcome {
+            CreateProfileOutcome::Created { .. } => "created",
+            CreateProfileOutcome::Failed { reason } => reason,
+        },
+    );
+    Ok(outcome)
+}
+
+/// Owner action: revokes a profile. The webview names only the id.
+#[tauri::command]
+pub async fn revoke_agent_profile(
+    state: State<'_, McpController>,
+    profile_id: String,
+) -> Result<RevokeProfileOutcome, ()> {
+    let Some(id) = ProfileId::parse(&profile_id) else {
+        return Ok(RevokeProfileOutcome::NotFound);
+    };
+    let outcome = match state.broker.revoke_profile(&id).await {
+        Ok(true) => RevokeProfileOutcome::Revoked,
+        Ok(false) => RevokeProfileOutcome::NotFound,
+        Err(_) => RevokeProfileOutcome::Failed,
+    };
+    record(
+        "mcp.profile.revoke",
+        match outcome {
+            RevokeProfileOutcome::Revoked => "revoked",
+            RevokeProfileOutcome::NotFound => "not_found",
+            RevokeProfileOutcome::Failed => "failed",
+        },
+    );
+    Ok(outcome)
 }
 
 /// Answers one approval. Returns `applied`, `stale` (already answered or

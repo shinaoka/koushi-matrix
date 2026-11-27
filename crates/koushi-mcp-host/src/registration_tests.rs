@@ -157,3 +157,40 @@ fn the_manifest_lists_exactly_the_tools_the_launcher_serves() {
     listed.sort();
     assert_eq!(listed, served);
 }
+
+#[test]
+fn profile_snippets_carry_the_profile_and_the_secret_path_and_no_secret() {
+    let id = "prof_00112233445566778899aabbccddeeff";
+    let path = "/Users/me/Library/Application Support/koushi/mcp/profiles/prof_00112233445566778899aabbccddeeff.secret";
+    let snippets = profile_registrations(
+        "/Applications/Koushi.app/Contents/MacOS/koushi-mcp",
+        Platform::MacOs,
+        id,
+        path,
+    );
+    let claude = snippets
+        .iter()
+        .find(|snippet| snippet.client == RegistrationClient::ClaudeCode)
+        .expect("Claude Code");
+    assert_eq!(
+        claude.text,
+        format!(
+            "claude mcp add --scope user koushi-prof_00112233 -- /Applications/Koushi.app/Contents/MacOS/koushi-mcp --client-name claude-code --profile {id} --profile-secret-file '{path}'"
+        )
+    );
+    assert_eq!(claude.kind, SnippetKind::Command);
+    let other = snippets
+        .iter()
+        .find(|snippet| snippet.client == RegistrationClient::Other)
+        .expect("generic");
+    let parsed: serde_json::Value = serde_json::from_str(&other.text).expect("json");
+    let args = &parsed["mcpServers"]["koushi-prof_00112233"]["args"];
+    assert_eq!(args[2], "--profile");
+    assert_eq!(args[3], id);
+    assert_eq!(args[5], path);
+    // The same text on every platform except the quoting of the launcher path.
+    for platform in [Platform::MacOs, Platform::Linux] {
+        let again = profile_registrations("/opt/koushi-mcp", platform, id, "/data/p.secret");
+        assert_eq!(again.len(), 4);
+    }
+}

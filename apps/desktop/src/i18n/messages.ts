@@ -957,6 +957,37 @@ export type MessageId =
   | "settings.agentAccountSwitch"
   | "settings.agentAccountOpenSettings"
   | "settings.agentAccountNotSignedIn"
+  | "settings.agentProfiles"
+  | "settings.agentProfilesDescription"
+  | "settings.agentProfilesNone"
+  | "settings.agentProfileNoAgentAccount"
+  | "settings.agentProfileLabelField"
+  | "settings.agentProfileAccountField"
+  | "settings.agentProfileGrantsLegend"
+  | "settings.agentProfileCreate"
+  | "settings.agentProfileCreated"
+  | "settings.agentProfileFailedLabel"
+  | "settings.agentProfileFailedAccount"
+  | "settings.agentProfileFailedStore"
+  | "settings.agentProfileStatusReady"
+  | "settings.agentProfileStatusAccountUnavailable"
+  | "settings.agentProfileStatusNotAgentAccount"
+  | "settings.agentProfileStatusSecretMissing"
+  | "settings.agentProfileConnected"
+  | "settings.agentProfileNotConnected"
+  | "settings.agentProfileSubscribed"
+  | "settings.agentProfileNotSubscribed"
+  | "settings.agentProfileLastSeen"
+  | "settings.agentProfileNeverSeen"
+  | "settings.agentProfileLastRejected"
+  | "settings.agentProfileClientField"
+  | "settings.agentProfileLaunchHint"
+  | "settings.agentProfileRevoke"
+  | "settings.agentProfileRevokeLabel"
+  | "settings.agentProfileRevokeTitle"
+  | "settings.agentProfileRevokeExplain"
+  | "settings.agentProfileRevokeConfirm"
+  | "settings.agentProfileRevokeFailed"
   | "settings.agentAccountForget"
   | "settings.allowedSenders"
   | "settings.allowedSendersGuarantee"
@@ -3392,6 +3423,37 @@ const en: Catalog = {
   "settings.agentAccountSwitch": "{account} is an agent account",
   "settings.agentAccountOpenSettings": "Open settings for {account}",
   "settings.agentAccountNotSignedIn": "(not signed in)",
+  "settings.agentProfiles": "Agent profiles",
+  "settings.agentProfilesDescription": "A profile gives one agent its own secret and its own permissions on one agent account. Revoking it stops that agent at once. Other assistants are not affected.",
+  "settings.agentProfilesNone": "No agent profiles yet.",
+  "settings.agentProfileNoAgentAccount": "Mark an account as an agent account above before creating a profile.",
+  "settings.agentProfileLabelField": "Label",
+  "settings.agentProfileAccountField": "Agent account",
+  "settings.agentProfileGrantsLegend": "Initial permissions",
+  "settings.agentProfileCreate": "Create profile",
+  "settings.agentProfileCreated": "Profile created. Copy the launch command below.",
+  "settings.agentProfileFailedLabel": "Enter a label for the profile.",
+  "settings.agentProfileFailedAccount": "That account cannot be used for a profile. Choose an agent account that is signed in.",
+  "settings.agentProfileFailedStore": "The profile could not be saved. Check disk space and the profile folder, then try again.",
+  "settings.agentProfileStatusReady": "Ready",
+  "settings.agentProfileStatusAccountUnavailable": "Account not signed in",
+  "settings.agentProfileStatusNotAgentAccount": "Account is no longer an agent account",
+  "settings.agentProfileStatusSecretMissing": "Secret file is missing",
+  "settings.agentProfileConnected": "Connected",
+  "settings.agentProfileNotConnected": "Not connected",
+  "settings.agentProfileSubscribed": "Subscribed",
+  "settings.agentProfileNotSubscribed": "Not subscribed",
+  "settings.agentProfileLastSeen": "Last seen {time}",
+  "settings.agentProfileNeverSeen": "Not seen yet",
+  "settings.agentProfileLastRejected": "Last wrong secret {time}",
+  "settings.agentProfileClientField": "Client",
+  "settings.agentProfileLaunchHint": "Run this to start the client with this profile. The secret stays in the file; it is not shown.",
+  "settings.agentProfileRevoke": "Revoke",
+  "settings.agentProfileRevokeLabel": "Revoke {label}",
+  "settings.agentProfileRevokeTitle": "Revoke {label}?",
+  "settings.agentProfileRevokeExplain": "The agent using this profile stops at once and its secret file is deleted. This cannot be undone; create a new profile to connect it again.",
+  "settings.agentProfileRevokeConfirm": "Revoke",
+  "settings.agentProfileRevokeFailed": "The profile could not be revoked.",
   "settings.agentAccountForget": "Remove the agent mark for {user}",
   "settings.allowedSenders": "Who an agent answers",
   "settings.allowedSendersGuarantee": "This list keeps mentions from other senders out of wait_for_mentions. It does not stop those senders' messages from being readable by an assistant that has read access to the room.",
@@ -5865,6 +5927,37 @@ const ja: Catalog = {
   "settings.agentAccountSwitch": "{account} をエージェントアカウントにする",
   "settings.agentAccountOpenSettings": "{account} の設定を開く",
   "settings.agentAccountNotSignedIn": "（サインインしていません）",
+  "settings.agentProfiles": "エージェントプロファイル",
+  "settings.agentProfilesDescription": "プロファイルは、エージェント1つに専用のシークレットと、エージェントアカウント1つに対する専用の権限を与えます。失効させるとそのエージェントはすぐ止まります。他のアシスタントには影響しません。",
+  "settings.agentProfilesNone": "エージェントプロファイルはまだありません。",
+  "settings.agentProfileNoAgentAccount": "プロファイルを作る前に、上でアカウントをエージェントアカウントに設定してください。",
+  "settings.agentProfileLabelField": "ラベル",
+  "settings.agentProfileAccountField": "エージェントアカウント",
+  "settings.agentProfileGrantsLegend": "最初の権限",
+  "settings.agentProfileCreate": "プロファイルを作成",
+  "settings.agentProfileCreated": "プロファイルを作成しました。下の起動コマンドをコピーしてください。",
+  "settings.agentProfileFailedLabel": "プロファイルのラベルを入力してください。",
+  "settings.agentProfileFailedAccount": "このアカウントはプロファイルに使えません。サインイン済みのエージェントアカウントを選んでください。",
+  "settings.agentProfileFailedStore": "プロファイルを保存できませんでした。ディスクの空きとプロファイルのフォルダを確認して、もう一度お試しください。",
+  "settings.agentProfileStatusReady": "利用可能",
+  "settings.agentProfileStatusAccountUnavailable": "アカウントがサインインしていません",
+  "settings.agentProfileStatusNotAgentAccount": "アカウントがエージェントアカウントではなくなりました",
+  "settings.agentProfileStatusSecretMissing": "シークレットファイルがありません",
+  "settings.agentProfileConnected": "接続中",
+  "settings.agentProfileNotConnected": "未接続",
+  "settings.agentProfileSubscribed": "購読中",
+  "settings.agentProfileNotSubscribed": "購読していません",
+  "settings.agentProfileLastSeen": "最終確認 {time}",
+  "settings.agentProfileNeverSeen": "まだ確認されていません",
+  "settings.agentProfileLastRejected": "最後の誤ったシークレット {time}",
+  "settings.agentProfileClientField": "クライアント",
+  "settings.agentProfileLaunchHint": "これを実行すると、このプロファイルでクライアントが起動します。シークレットはファイルに残り、表示されません。",
+  "settings.agentProfileRevoke": "失効",
+  "settings.agentProfileRevokeLabel": "{label} を失効",
+  "settings.agentProfileRevokeTitle": "{label} を失効させますか？",
+  "settings.agentProfileRevokeExplain": "このプロファイルを使っているエージェントはすぐ止まり、シークレットファイルは削除されます。元に戻せません。再び接続するには新しいプロファイルを作成してください。",
+  "settings.agentProfileRevokeConfirm": "失効させる",
+  "settings.agentProfileRevokeFailed": "プロファイルを失効できませんでした。",
   "settings.agentAccountForget": "{user} のエージェント設定を削除",
   "settings.allowedSenders": "エージェントが応答する相手",
   "settings.allowedSendersGuarantee": "この一覧は、他の送信者からのメンションを wait_for_mentions に入れないためのものです。それらの送信者のメッセージを、ルームの読み取り権限を持つアシスタントが読めなくなるわけではありません。",

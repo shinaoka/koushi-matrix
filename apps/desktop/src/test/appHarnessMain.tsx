@@ -1606,8 +1606,16 @@ mock.setCommandResponse("get_mcp_assistants_state", () => ({
   pending: [],
   assistants: [],
   registrations: [],
-  outdated_launchers: []
+  outdated_launchers: [],
+  profiles: [],
+  agent_accounts: []
 }));
+mock.setCommandResponse("create_agent_profile", () => ({
+  kind: "created",
+  profile_id: "prof_00112233445566778899aabbccddeeff",
+  secret_path: "/Users/member1/Library/Application Support/koushi/mcp/profiles/prof_00112233445566778899aabbccddeeff.secret"
+}));
+mock.setCommandResponse("revoke_agent_profile", () => "revoked");
 mock.setCommandResponse("answer_mcp_approval", () => "applied");
 mock.setCommandResponse("set_mcp_permission", () => null);
 mock.setCommandResponse("remove_mcp_assistant", () => null);

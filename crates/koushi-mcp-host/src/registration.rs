@@ -178,6 +178,74 @@ pub fn registrations(launcher: &str, platform: Platform) -> Vec<Registration> {
     all
 }
 
+/// The launch snippets for one agent profile. The profile id and the secret
+/// file's path are substituted; the secret itself is never here. A snippet is a
+/// command or a config fragment, identical in every locale. Only the clients
+/// that can run a profiled plugin appear: the registration CLIs and a generic
+/// config fragment.
+pub fn profile_registrations(
+    launcher: &str,
+    platform: Platform,
+    profile_id: &str,
+    secret_path: &str,
+) -> Vec<Registration> {
+    let windows = platform == Platform::Windows;
+    // One MCP server name per profile, so two profiles do not overwrite each
+    // other in a client's configuration.
+    let server: String = format!("koushi-{}", profile_id.chars().take(13).collect::<String>());
+    let launcher_args = |client| -> Vec<String> {
+        vec![
+            "--client-name".to_owned(),
+            client_name(client).to_owned(),
+            "--profile".to_owned(),
+            profile_id.to_owned(),
+            "--profile-secret-file".to_owned(),
+            secret_path.to_owned(),
+        ]
+    };
+    let command = |client, program: &str, prefix: &[&str]| {
+        let mut words: Vec<String> = prefix.iter().map(|word| (*word).to_owned()).collect();
+        words.push(server.clone());
+        words.push("--".to_owned());
+        words.push(launcher.to_owned());
+        words.extend(launcher_args(client));
+        let quoted: Vec<String> = words.iter().map(|word| shell_word(word, windows)).collect();
+        Registration {
+            client,
+            client_name: client_name(client).to_owned(),
+            kind: SnippetKind::Command,
+            text: format!("{program} {}", quoted.join(" ")),
+            config_hint: None,
+            action: None,
+        }
+    };
+    let other = json!({
+        "mcpServers": {
+            server.clone(): {
+                "command": launcher,
+                "args": launcher_args(RegistrationClient::Other)
+            }
+        }
+    });
+    vec![
+        command(
+            RegistrationClient::ClaudeCode,
+            "claude",
+            &["mcp", "add", "--scope", "user"],
+        ),
+        command(RegistrationClient::Codex, "codex", &["mcp", "add"]),
+        command(RegistrationClient::Pi, "pi", &["mcp", "add"]),
+        Registration {
+            client: RegistrationClient::Other,
+            client_name: client_name(RegistrationClient::Other).to_owned(),
+            kind: SnippetKind::Json,
+            text: serde_json::to_string_pretty(&other).unwrap_or_default(),
+            config_hint: None,
+            action: None,
+        },
+    ]
+}
+
 /// One shell word: plain when it needs no quoting, else quoted for the shell.
 fn shell_word(text: &str, windows: bool) -> String {
     let plain = !text.is_empty()

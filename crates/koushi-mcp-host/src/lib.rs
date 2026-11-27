@@ -16,6 +16,7 @@ mod grants;
 mod handlers;
 mod profile_limits;
 mod profile_state;
+pub mod profile_view;
 mod profiles;
 mod recent_activity;
 pub mod registration;

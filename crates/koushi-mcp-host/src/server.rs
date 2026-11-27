@@ -150,7 +150,11 @@ fn start_with(
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let log = Arc::new(events::EventLog::new());
     events::spawn_poller(Arc::clone(&accounts), Arc::clone(&log), shutdown_rx.clone());
-    spawn_sweeper(Arc::clone(&broker), shutdown_rx.clone());
+    spawn_sweeper(
+        Arc::clone(&broker),
+        Arc::clone(&accounts),
+        shutdown_rx.clone(),
+    );
     let accept_task = tokio::spawn(accept_loop(
         listener,
         Shared {
@@ -158,7 +162,7 @@ fn start_with(
             log,
             activity_pages: Arc::new(crate::recent_activity::ActivityPages::default()),
             broker: Arc::clone(&broker),
-            leases: Arc::new(Leases::default()),
+            leases: Arc::new(Leases::with_broker(Arc::clone(&broker))),
             limits,
         },
         token,
@@ -186,7 +190,11 @@ pub(crate) struct Shared {
     pub(crate) limits: Limits,
 }
 
-fn spawn_sweeper(broker: Arc<ConsentBroker>, mut shutdown: watch::Receiver<bool>) {
+fn spawn_sweeper(
+    broker: Arc<ConsentBroker>,
+    accounts: Arc<dyn BridgeAccounts>,
+    mut shutdown: watch::Receiver<bool>,
+) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(SWEEP_INTERVAL);
         loop {
@@ -196,7 +204,11 @@ fn spawn_sweeper(broker: Arc<ConsentBroker>, mut shutdown: watch::Receiver<bool>
                         return;
                     }
                 }
-                _ = ticker.tick() => broker.sweep(),
+                _ = ticker.tick() => {
+                    broker.sweep();
+                    // A role change or a deleted secret file shows without a reopen.
+                    broker.refresh_profiles(accounts.as_ref()).await;
+                }
             }
         }
     });
@@ -365,6 +377,11 @@ async fn serve_connection(
         .subject()
         .profile_id()
         .map(|id| shared.broker.watch_revocation(id));
+    // Held until the connection task ends, however it ends.
+    let _live = client
+        .subject()
+        .profile_id()
+        .map(|id| shared.broker.profile_connected(id));
 
     // From here the write half belongs to one writer task fed by a bounded
     // channel, so a push can interleave with responses. A connection that never
