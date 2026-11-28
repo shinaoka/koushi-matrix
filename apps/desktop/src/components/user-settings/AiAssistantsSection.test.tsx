@@ -150,6 +150,7 @@ test("an approval whose dialog was closed can be answered here", async () => {
   await renderSection(state({
     pending: [{
       request_id: 5,
+      subject_kind: "client",
       client_name: "pi",
       client_version: "",
       account_id: HOME,

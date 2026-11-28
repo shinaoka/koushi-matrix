@@ -103,9 +103,30 @@ impl std::fmt::Debug for ConsentContext {
     }
 }
 
+/// Who is asking, derived in Core from the connection's [`GrantSubject`]
+/// (#2153). A `client` chose its own name; a `profile` proved the owner's
+/// profile secret and its name is the owner's label.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalSubjectKind {
+    Client,
+    Profile,
+}
+
+impl From<&GrantSubject> for ApprovalSubjectKind {
+    fn from(subject: &GrantSubject) -> Self {
+        match subject {
+            GrantSubject::Client(_) => Self::Client,
+            GrantSubject::Profile(_) => Self::Profile,
+        }
+    }
+}
+
 #[derive(Clone, Eq, PartialEq, Serialize)]
 pub struct PendingApproval {
     pub request_id: u64,
+    pub subject_kind: ApprovalSubjectKind,
+    /// A client's self-declared name, or a profile's owner-chosen label.
     pub client_name: String,
     pub client_version: String,
     pub account_id: String,
@@ -1299,6 +1320,7 @@ fn view(inner: &Inner) -> McpAssistantsState {
         .iter()
         .map(|pending| PendingApproval {
             request_id: pending.request_id,
+            subject_kind: ApprovalSubjectKind::from(&pending.key.subject),
             client_name: pending.label.clone(),
             client_version: pending.client_version.clone(),
             account_id: pending.key.account.clone(),

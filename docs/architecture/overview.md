@@ -2686,10 +2686,12 @@ until the settings UI lands, so the path is reachable only through the Rust API.
   caller's own, empty, or edited by the user; another subject's untouched
   staged draft has an empty body.
 - **Settings stage (PR 3).** `ProfileView.status` has a `secret_missing` value,
-  since a row whose secret file is gone is otherwise undetectable. Still
-  deferred, and a release requirement tracked in #2153: `PendingApproval` needs
-  a `subject_kind`, since a profile label can be made to look like a client
-  name in an approval dialog.
+  since a row whose secret file is gone is otherwise undetectable.
+- **Approval subject kind (#2153).** `PendingApproval.subject_kind` is `client`
+  or `profile`, derived in Core from the connection's `GrantSubject`, never in
+  React. An unprofiled connection may declare any name, including a profile's
+  label, so the dialog says a `client` is a program using the token and not a
+  profile, and a `profile` approval names the profile the owner created.
 - **No IPC writer.** No IPC method creates, edits, rebinds or widens a profile.
   The only writers are the owner paths; an approval that widens a grant is
   answered by the owner.

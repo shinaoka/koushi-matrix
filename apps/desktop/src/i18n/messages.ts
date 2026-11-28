@@ -1069,6 +1069,8 @@ export type MessageId =
   | "mcp.attachmentsExplain"
   | "mcp.attachmentsRoom"
   | "mcp.selfDeclared"
+  | "mcp.subjectProfile"
+  | "mcp.subjectClient"
   | "mcp.deny"
   | "mcp.allowRead"
   | "mcp.allowSend"
@@ -3537,6 +3539,8 @@ const en: Catalog = {
   "mcp.attachmentsExplain": "If you allow, {client} can send files from this computer as attachments from {account}, and download attachments from {account} into Koushi's media cache, without asking again.",
   "mcp.attachmentsRoom": "Requested for a file in {room}.",
   "mcp.selfDeclared": "“{client}” is the name the assistant gave itself. Allow it only if you just set up or asked that assistant.",
+  "mcp.subjectProfile": "Agent profile “{client}”: this connection proved the profile you created in settings.",
+  "mcp.subjectClient": "A program using the token, not a profile. “{client}” is a name the program chose itself, even if a profile has the same name.",
   "mcp.deny": "Deny",
   "mcp.allowRead": "Allow reading {account}",
   "mcp.allowSend": "Allow sending from {account}",
@@ -6043,6 +6047,8 @@ const ja: Catalog = {
   "mcp.attachmentsExplain": "許可すると、{client} は今後確認なしで、このコンピューター上のファイルを {account} から添付ファイルとして送信し、{account} の添付ファイルを Koushi のメディアキャッシュにダウンロードできます。",
   "mcp.attachmentsRoom": "{room} のファイルについての要求です。",
   "mcp.selfDeclared": "「{client}」はアシスタントの自己申告による名前です。そのアシスタントを設定した直後や、頼みごとをした場合にだけ許可してください。",
+  "mcp.subjectProfile": "エージェントプロファイル「{client}」: 設定で作成したプロファイルとして接続しています。",
+  "mcp.subjectClient": "トークンを使うプログラムであり、プロファイルではありません。「{client}」はプログラムが自分で付けた名前で、同名のプロファイルとは無関係です。",
   "mcp.deny": "拒否",
   "mcp.allowRead": "{account} の読み取りを許可",
   "mcp.allowSend": "{account} からの送信を許可",
