@@ -96,11 +96,48 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    serve_with_channel(input, output, backend, None).await
+}
+
+/// Like [`serve`], and with a channel the server declares `claude/channel`
+/// and, once the client has sent `notifications/initialized`, starts the
+/// channel feeding notifications into the same stdout. Without one it is
+/// [`serve`] exactly: no capability, no extra task.
+pub async fn serve_with_channel<R, W>(
+    input: R,
+    output: W,
+    backend: Arc<dyn Backend>,
+    mut channel: Option<Box<dyn crate::channel::ChannelFeed>>,
+) -> std::io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut lines = BufReader::new(input).lines();
     let mut output = output;
     let mut initialized = false;
+    let channel_declared = channel.is_some();
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel::<Outbound>(16);
+    // Dropped with this frame, so the feed never outlives the stdio loop.
+    let mut feed_task = AbortOnDrop(None);
 
-    while let Some(line) = lines.next_line().await? {
+    loop {
+        let line = tokio::select! {
+            line = lines.next_line() => match line? {
+                Some(line) => line,
+                None => break,
+            },
+            Some(outbound) = outbound_rx.recv() => {
+                // The feed learns of a hand-off only after the write and flush
+                // resolved; Claude Code gives no receipt beyond that.
+                let written = write_message(&mut output, &outbound.message).await;
+                if let Some(done) = outbound.written {
+                    let _ = done.send(written.is_ok());
+                }
+                written?;
+                continue;
+            }
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -113,7 +150,18 @@ where
             continue;
         }
         let response = match serde_json::from_str::<Value>(&line) {
-            Ok(message) => handle_message(message, &backend, &mut initialized).await,
+            Ok(message) => {
+                let was_initialized = initialized;
+                let response =
+                    handle_message(message, &backend, &mut initialized, channel_declared).await;
+                if initialized
+                    && !was_initialized
+                    && let Some(mut feed) = channel.take()
+                {
+                    feed_task.0 = Some(feed.start(outbound_tx.clone()));
+                }
+                response
+            }
             Err(_) => Some(error_response(Value::Null, -32700, "parse error")),
         };
         if let Some(response) = response {
@@ -121,6 +169,23 @@ where
         }
     }
     Ok(())
+}
+
+struct AbortOnDrop(Option<tokio::task::JoinHandle<()>>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
+
+/// One line the channel feed asks the stdio loop to write.
+pub struct Outbound {
+    pub message: Value,
+    /// Resolved with whether the line was written and flushed.
+    pub written: Option<tokio::sync::oneshot::Sender<bool>>,
 }
 
 async fn write_message<W: AsyncWrite + Unpin>(
@@ -156,6 +221,7 @@ async fn handle_message(
     message: Value,
     backend: &Arc<dyn Backend>,
     initialized: &mut bool,
+    channel_declared: bool,
 ) -> Option<Value> {
     let id = message.get("id").cloned();
     let method = message
@@ -174,14 +240,7 @@ async fn handle_message(
     match method {
         "initialize" => Some(result_response(
             id.unwrap_or(Value::Null),
-            json!({
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": { "tools": { "listChanged": false } },
-                "serverInfo": {
-                    "name": "koushi",
-                    "version": env!("CARGO_PKG_VERSION")
-                }
-            }),
+            initialize_result(channel_declared),
         )),
         "ping" => Some(result_response(id.unwrap_or(Value::Null), json!({}))),
         "tools/list" => Some(result_response(
@@ -199,6 +258,25 @@ async fn handle_message(
             &format!("method not found: {other}"),
         )),
     }
+}
+
+/// The `initialize` result. Without a channel it is the v1 shape, byte for
+/// byte. With one it also declares `claude/channel` and tells the model how
+/// events arrive and how to answer them.
+fn initialize_result(channel_declared: bool) -> Value {
+    let mut result = json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "capabilities": { "tools": { "listChanged": false } },
+        "serverInfo": {
+            "name": "koushi",
+            "version": env!("CARGO_PKG_VERSION")
+        }
+    });
+    if channel_declared {
+        result["capabilities"]["experimental"] = json!({ "claude/channel": {} });
+        result["instructions"] = json!(crate::channel::INSTRUCTIONS);
+    }
+    result
 }
 
 fn tool_list() -> Vec<Value> {

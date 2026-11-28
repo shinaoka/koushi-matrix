@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "koushi": {
+      "command": "${KOUSHI_MCP_LAUNCHER:-koushi-mcp}",
+      "args": ["--client-name", "claude-code", "--claude-channel"]
+    }
+  }
+}

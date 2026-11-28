@@ -413,6 +413,71 @@ Two failures look similar and mean different things:
   separate decisions. A working connection does not authorize sending, editing,
   or changing settings, and one successful test call is not ongoing access.
 
+## Launch an agent session in Claude Code (channel)
+
+An agent profile (**App Settings → AI assistants → Agent profiles**) lets a
+Claude Code session be woken by Koushi: a message that mentions the agent
+account, or arrives in its direct message, shows up in the session as a
+`<channel source="koushi" ...>` event whose content is the message text, with
+`room_id`, `event_id`, `thread_root`, `sender` and `kind` alongside. The agent
+answers with the `send_message` or `send_thread_reply` tools, which need a fresh
+`client_request_id` for each reply. This is a Claude Code research preview and
+needs a claude.ai or Anthropic Console login; it is not available on Bedrock,
+Vertex or Foundry.
+
+1. Create the profile in Koushi and keep its secret file. The settings page
+   shows the profile id and the secret file's path.
+2. Get the plugin folder `crates/koushi-mcp/claude-plugin` from the Koushi
+   source for your release. It holds no profile, so it is safe to leave loaded.
+3. Start Claude Code **in one command**, so the profile belongs to this session
+   only (do not `export` the variables, and do not put them in a config file):
+
+   ```bash
+   KOUSHI_MCP_LAUNCHER=/Applications/Koushi.app/Contents/MacOS/koushi-mcp \
+   KOUSHI_PROFILE=<profile id> \
+   KOUSHI_PROFILE_SECRET_FILE=<secret file path> \
+   claude --plugin-dir <plugin folder> \
+     --dangerously-load-development-channels plugin:koushi@inline
+   ```
+
+   `KOUSHI_MCP_LAUNCHER` is the launcher path the settings page shows; without
+   it the plugin runs `koushi-mcp` from `PATH`. The same options exist as
+   `--profile <id> --profile-secret-file <path> --claude-channel` for a launcher
+   started by hand.
+
+What to expect:
+
+- **Opt-in is per session.** Koushi is not on Claude Code's approved channel
+  list, so the development flag is required, and it works only in interactive
+  sessions; it is ignored with `-p` and the Agent SDK. Organisations can allow
+  the plugin through `allowedChannelPlugins` with `channelsEnabled` on. Claude
+  Code does not tell a server whether it was loaded as a channel, so Koushi
+  cannot check: the launcher subscribes only when it was started with a profile
+  and `--claude-channel` (the plugin passes it). A session that has the profile
+  variables but was started without the channel flag would take the
+  subscription and Claude Code would drop its events silently, so set them only
+  in the command that starts the session you mean.
+- **One session per profile.** A second session using the same profile is told
+  `profile_busy` in the session; it receives no events but keeps all request
+  tools. End the other session or use another profile.
+- **At-most-once delivery.** Claude Code gives no delivery receipt. Koushi marks
+  an event delivered when the notification has been written to Claude Code, not
+  when the agent has seen it, and Claude Code drops events silently if the
+  session did not opt in or has closed. A dropped event is not sent again. After
+  a restart or a quiet period the agent can call `wait_for_mentions` to see what
+  is still retained.
+- **Busy agent.** Events that arrive during a turn are queued and handed to the
+  agent together on its next turn.
+- **Text.** The launcher reads the message text with the profile's own read
+  permission. If it cannot (an invite, an undecryptable message, a slow room) the
+  event says so and points at `get_message`. Text is cut at 16 KiB.
+- **Wake budget and endings.** When the profile's wake budget holds events, and
+  when the subscription ends (revoked profile, locked account, lost position),
+  the session gets a note with `kind` set to `wake_budget` or
+  `subscription_ended`. Lost position and stalls resubscribe automatically.
+- Permission prompts are not relayed: an unattended session needs a permission
+  policy that lets it use the Koushi tools without asking.
+
 ## Limitations
 
 - `read_room_messages` decrypts each page before returning it. A message this

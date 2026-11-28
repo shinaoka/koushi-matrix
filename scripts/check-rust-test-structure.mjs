@@ -21,6 +21,10 @@ export const ALLOWED_NON_RUST_TARGETS = new Set([
   // measured against the base build and pinned as a reviewable diff so a later
   // edit to the handshake cannot move what an older launcher receives.
   "crates/koushi-mcp-host/tests/bridge/golden/v1_session.jsonl",
+  // The Claude Code channel plugin manifests, checked against the launcher's
+  // options so the packaging cannot drift from them (#2126).
+  "crates/koushi-mcp/claude-plugin/.mcp.json",
+  "crates/koushi-mcp/claude-plugin/.claude-plugin/plugin.json",
   // Synthetic website search corpus and its golden results.
   "site/fixtures/search-corpus.json",
   "site/generated/search-scenes.json"

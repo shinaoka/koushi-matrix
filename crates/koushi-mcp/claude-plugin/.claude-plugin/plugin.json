@@ -1,0 +1,5 @@
+{
+  "name": "koushi",
+  "version": "0.1.0",
+  "description": "Koushi wake events as a Claude Code channel. Does nothing unless the session is started with an agent profile in its environment."
+}
