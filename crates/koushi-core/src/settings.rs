@@ -14,7 +14,11 @@ use tokio::sync::watch;
 /// Version 4 moves all notification preferences into encrypted account settings.
 /// Pre-v4 shared destinations are archived, never activated. The earlier version-3
 /// legacy account seed remains retryable until every saved account has been seeded.
-pub const SETTINGS_SCHEMA_VERSION: u32 = 4;
+///
+/// Version 5 (#2166) resets `display.hide_redacted` to the new opt-in default
+/// (off). Older builds defaulted it to on and wrote that default into every
+/// saved file, so a stored `true` cannot be told apart from a deliberate choice.
+pub const SETTINGS_SCHEMA_VERSION: u32 = 5;
 
 const SCHEMA_VERSION_KEY: &str = "schema_version";
 const LEGACY_NOTIFICATION_ARCHIVE_KEY: &str = "legacy_notification_archive";
@@ -256,6 +260,10 @@ fn ensure_loaded(
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
         *legacy.delivery = Default::default();
+    }
+    let mut values = values;
+    if version < 5 {
+        values.display.hide_redacted = false;
     }
     state.values = values;
     state.legacy_account_settings = legacy_account_settings;

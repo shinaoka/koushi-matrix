@@ -4504,7 +4504,7 @@ const en: Catalog = {
   "timeline.saveEdit": "Save edit",
   "timeline.cancelEdit": "Cancel edit",
   "timeline.redactMessage": "Redact message",
-  "timeline.redactedMessage": "Message redacted",
+  "timeline.redactedMessage": "Message deleted",
   "timeline.revealSpoiler": "Reveal spoiler",
   "timeline.pinMessage": "Pin message",
   "timeline.spoiler": "Spoiler",
