@@ -192,10 +192,22 @@ export function McpApprovalPrompt({
           </>
         ) : null}
 
-        <p className="mcp-approval-warning">
-          <ShieldAlert size={16} aria-hidden="true" />
-          <span>{t("mcp.selfDeclared", { client })}</span>
-        </p>
+        {request.subject_kind === "profile" ? (
+          <p className="mcp-approval-subject is-profile" data-subject-kind="profile">
+            <span>{t("mcp.subjectProfile", { client })}</span>
+          </p>
+        ) : (
+          <>
+            <p className="mcp-approval-warning mcp-approval-subject is-client" data-subject-kind="client">
+              <ShieldAlert size={16} aria-hidden="true" />
+              <span>{t("mcp.subjectClient", { client })}</span>
+            </p>
+            <p className="mcp-approval-warning">
+              <ShieldAlert size={16} aria-hidden="true" />
+              <span>{t("mcp.selfDeclared", { client })}</span>
+            </p>
+          </>
+        )}
         {saveFailed ? <p role="alert" className="mcp-approval-error">{t("mcp.saveFailed")}</p> : null}
         {request.waiting_calls > 1
           ? <p className="mcp-approval-more">{t("mcp.moreMessagesWaiting", { count: String(request.waiting_calls - 1) })}</p>

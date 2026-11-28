@@ -597,9 +597,13 @@ export interface MentionAllowedSenders {
 
 export type McpNeed = "read" | "send" | "attachments" | "message_actions" | "draft";
 
+/** `client` chose its own name; `profile` proved an owner-created profile (#2153). */
+export type McpSubjectKind = "client" | "profile";
+
 export interface McpPendingApproval {
   request_id: number;
-  /** Self-declared by the assistant; validated to `[A-Za-z0-9._-]{1,64}`. */
+  subject_kind: McpSubjectKind;
+  /** A client's self-declared name (validated to `[A-Za-z0-9._-]{1,64}`), or a profile's label. */
   client_name: string;
   client_version: string;
   account_id: string;

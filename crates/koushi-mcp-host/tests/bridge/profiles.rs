@@ -788,6 +788,67 @@ async fn a_revoke_ends_a_pending_approval_with_no_data() {
     world.shutdown().await;
 }
 
+async fn first_pending(world: &World) -> koushi_mcp_host::consent::PendingApproval {
+    for _ in 0..200 {
+        if !world.broker.subscribe().borrow().pending.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let pending = world.broker.subscribe().borrow().pending.clone();
+    assert_eq!(pending.len(), 1);
+    pending[0].clone()
+}
+
+async fn ask_for_read(conn: &mut Conn) {
+    conn.next_id += 1;
+    let id = conn.next_id;
+    conn.send_raw(
+        &json!({"type":"request","id":id,"method":"tools/call",
+                "params":{"name":"list_rooms","arguments":{"account_id": AGENT_A}}})
+        .to_string(),
+    )
+    .await;
+}
+
+/// #2153: an unprofiled caller that presents a profile's label is still a
+/// client; only a connection that proved the profile secret is a profile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unprofiled_caller_using_a_profile_label_is_a_client_approval() {
+    use koushi_mcp_host::consent::ApprovalSubjectKind;
+    let world = World::start(ConsentMode::Interactive).await;
+    let (_id, _secret) = world
+        .create("Reviewer", AGENT_A, ProfileGrants::default())
+        .await;
+    let mut spoof = Conn::unprofiled(&world, "Reviewer").await;
+    ask_for_read(&mut spoof).await;
+    let pending = first_pending(&world).await;
+    assert_eq!(pending.client_name, "Reviewer");
+    assert_eq!(pending.subject_kind, ApprovalSubjectKind::Client);
+    let json = serde_json::to_value(&pending).expect("serializes");
+    assert_eq!(json["subject_kind"], "client");
+    world.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_profiled_approval_carries_the_profile_kind_and_label() {
+    use koushi_mcp_host::consent::ApprovalSubjectKind;
+    let world = World::start(ConsentMode::Interactive).await;
+    let (id, secret) = world
+        .create("Reviewer", AGENT_A, ProfileGrants::default())
+        .await;
+    let mut conn = Conn::profiled(&world, "whatever", id.as_str(), &secret)
+        .await
+        .expect("connects");
+    ask_for_read(&mut conn).await;
+    let pending = first_pending(&world).await;
+    assert_eq!(pending.client_name, "Reviewer");
+    assert_eq!(pending.subject_kind, ApprovalSubjectKind::Profile);
+    let json = serde_json::to_value(&pending).expect("serializes");
+    assert_eq!(json["subject_kind"], "profile");
+    world.shutdown().await;
+}
+
 /// No IPC method creates, edits or widens a profile: every method the
 /// dispatcher knows, and every name that sounds like one, is called over a
 /// profiled connection and the store's bytes and modification time stay put.

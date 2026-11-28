@@ -51,6 +51,7 @@ test("an assistant's first read opens an approval that answers by request id", a
   await page.evaluate((state) => window.__harness.pushMcpAssistants(state), mcpState({
     pending: [{
       request_id: 4,
+      subject_kind: "client",
       client_name: "claude-code",
       client_version: "2.1.0",
       account_id: ACCOUNT,
@@ -118,6 +119,7 @@ test("a message-actions approval names the react, edit, and delete grant (#1628)
   await page.evaluate((state) => window.__harness.pushMcpAssistants(state), mcpState({
     pending: [{
       request_id: 7,
+      subject_kind: "client",
       client_name: "claude-code",
       client_version: "2.1.0",
       account_id: ACCOUNT,

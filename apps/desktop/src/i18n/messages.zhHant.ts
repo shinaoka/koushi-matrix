@@ -1067,6 +1067,8 @@ export const zhHant: Catalog = {
   "mcp.attachmentsExplain": "如果允許，{client} 之後可以直接從 {account} 將這台電腦上的檔案作為附加檔案傳送，並將 {account} 中的附加檔案下載到 Koushi 的媒體快取，不再詢問。",
   "mcp.attachmentsRoom": "要求針對 {room} 中的檔案。",
   "mcp.selfDeclared": "「{client}」是助理自稱的名稱。只有在你剛設定或剛向該助理提出請求時才允許。",
+  "mcp.subjectProfile": "代理設定檔「{client}」：由你在設定中建立的設定檔連線。",
+  "mcp.subjectClient": "這是使用權杖的程式，不是設定檔。「{client}」是該程式自己取的名稱，即使與某個設定檔同名也無關。",
   "mcp.deny": "拒絕",
   "mcp.allowRead": "允許讀取 {account}",
   "mcp.allowSend": "允許從 {account} 傳送",

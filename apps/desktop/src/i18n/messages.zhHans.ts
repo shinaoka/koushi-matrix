@@ -1067,6 +1067,8 @@ export const zhHans: Catalog = {
   "mcp.attachmentsExplain": "如果允许，{client} 之后可以直接从 {account} 将这台电脑上的文件作为附件发送，并将 {account} 中的附件下载到 Koushi 的媒体缓存，不再询问。",
   "mcp.attachmentsRoom": "请求针对 {room} 中的文件。",
   "mcp.selfDeclared": "“{client}”是助手自称的名称。只有在你刚设置或刚向该助手提出请求时才允许。",
+  "mcp.subjectProfile": "智能体配置文件“{client}”：由你在设置中创建的配置文件连接。",
+  "mcp.subjectClient": "这是使用令牌的程序，不是配置文件。“{client}”是该程序自己取的名称，即使与某个配置文件同名也无关。",
   "mcp.deny": "拒绝",
   "mcp.allowRead": "允许读取 {account}",
   "mcp.allowSend": "允许从 {account} 发送",

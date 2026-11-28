@@ -36,6 +36,7 @@ const tabs: AccountTabSummary[] = [{
 function request(overrides: Partial<McpPendingApproval> = {}): McpPendingApproval {
   return {
     request_id: 1,
+    subject_kind: "client",
     client_name: "claude-code",
     client_version: "2.1.0",
     account_id: WORK,
@@ -259,4 +260,31 @@ test("a draft approval whose caller gave up still says it stopped waiting", () =
   );
   const dialog = screen.getByRole("dialog", { name: "Allow claude-code to write drafts?" });
   expect(dialog.textContent).toContain("stopped waiting");
+});
+
+test("a client approval says the caller is a program using the token, not a profile (#2153)", () => {
+  render(
+    <McpApprovalPrompt
+      request={request({ subject_kind: "client", client_name: "Reviewer" })}
+      accountTabs={tabs}
+      moreWaiting={0}
+      onClose={() => undefined}
+    />
+  );
+  expect(screen.getByText(/A program using the token, not a profile/)).toBeTruthy();
+  expect(screen.queryByText(/Agent profile/)).toBeNull();
+});
+
+test("a profile approval is visibly a profile and does not claim to be a bare program (#2153)", () => {
+  render(
+    <McpApprovalPrompt
+      request={request({ subject_kind: "profile", client_name: "Reviewer" })}
+      accountTabs={tabs}
+      moreWaiting={0}
+      onClose={() => undefined}
+    />
+  );
+  expect(screen.getByText(/Agent profile “Reviewer”/)).toBeTruthy();
+  expect(screen.queryByText(/not a profile/)).toBeNull();
+  expect(screen.queryByText(/the name the assistant gave itself/)).toBeNull();
 });

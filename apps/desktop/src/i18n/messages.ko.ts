@@ -1067,6 +1067,8 @@ export const ko: Catalog = {
   "mcp.attachmentsExplain": "허용하면 {client}은(는) 이후 다시 묻지 않고 이 컴퓨터의 파일을 {account}에서 첨부 파일로 보내고, {account}의 첨부 파일을 Koushi 미디어 캐시에 다운로드할 수 있습니다.",
   "mcp.attachmentsRoom": "{room}의 파일에 대한 요청입니다.",
   "mcp.selfDeclared": "“{client}”은(는) 어시스턴트가 스스로 밝힌 이름입니다. 방금 설정했거나 요청한 어시스턴트일 때만 허용하세요.",
+  "mcp.subjectProfile": "에이전트 프로필 “{client}”입니다. 설정에서 만든 프로필이 직접 연결했습니다.",
+  "mcp.subjectClient": "토큰을 사용하는 프로그램이며 프로필이 아닙니다. “{client}”은(는) 프로그램이 스스로 정한 이름이므로 같은 이름의 프로필과 무관합니다.",
   "mcp.deny": "거부",
   "mcp.allowRead": "{account} 읽기 허용",
   "mcp.allowSend": "{account}에서 보내기 허용",
