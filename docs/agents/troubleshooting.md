@@ -118,8 +118,8 @@ the lane that shows the symptom. Lane commands are in
   sending. The redaction seed uses balanced native key actions with explicit
   Shift lifetimes and verifies the exact editable value before Enter; do not
   loosen the expected message text. The lane also checks the Rust default
-  `hide_redacted=true`, reveals the placeholder, then hides it again rather
-  than assuming deleted messages are initially visible.
+  `hide_redacted=false`, sees the placeholder, then opts in to hiding it
+  (#2166).
 - **A `datetime-local` control stays empty.** WebDriverIO/WebKit `setValue()` did
   not populate it in the date-jump lane: the DOM input stayed `valueLength=0`,
   `valid=false`, and the app title stayed `panel=closed focused=closed`. Use the
