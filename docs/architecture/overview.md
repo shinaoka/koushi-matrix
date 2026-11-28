@@ -2924,7 +2924,13 @@ Invariants:
   the composer lease registry), or when the open composer has a pending
   submission. It is refused with `unavailable` until the account's draft store
   has loaded. It does not select a room, account, pane, or thread, move focus
-  or scroll, or touch read state. When the target composer is open and empty
+  or scroll, or touch read state. #2164: it is also refused with
+  `not_permitted` / `send_not_admitted`, the refusal every room-writing tool
+  gives, while Secure Backup holds sending back: the message box is read-only
+  then, so a staged draft could be neither edited, sent nor cleared. The check
+  reads the account's send admission before any thread-root or reply-target
+  read and before anything is staged; a draft staged before the lock stays and
+  reads back as before. When the target composer is open and empty
   the staged document hydrates it at once (the `ComposerDraftsLoaded` rule),
   and the renderer adopts it through the composer synchronization key without
   moving focus; otherwise the draft appears when the user next opens that

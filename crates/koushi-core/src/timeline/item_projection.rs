@@ -1124,6 +1124,26 @@ pub(super) fn has_readable_activity(item: &TimelineItem) -> bool {
         && (item.formatted.is_some() || item.body.is_some() || item.media.is_some())
 }
 
+/// The one Core answer to "does this row count as a *message* for an unread
+/// or new-message count?". Membership, profile and state notices carry a body
+/// and `TimelineMessageKind::Notice` but are activity, not messages; a bot's
+/// `m.notice` message is a message and still counts.
+///
+/// Answered from the row alone: `actions.can_pin` is set exactly for remote
+/// message-like content (message, sticker, poll, undecryptable), never for a
+/// state, membership or profile row (see `message_actions_for_timeline_item`),
+/// so a `Notice` row that cannot be pinned is a state notice. This also covers
+/// kicks and bans, which have no `notice_category`. Non-`Notice` rows are
+/// always messages.
+///
+/// The Jump bar's "{count} new messages" (`newer_event_count`) and
+/// `unread_event_count` use this. The room-list badge is the SDK's unread
+/// count, a server-side notion that can still differ (it follows push rules and
+/// covers events Core has not loaded).
+pub(super) fn counts_as_message(item: &TimelineItem) -> bool {
+    item.message_kind != TimelineMessageKind::Notice || item.actions.can_pin
+}
+
 pub(super) fn is_unread_navigation_item(item: &TimelineItem, own_user_id: Option<&str>) -> bool {
     if !is_attention_eligible_event(item) {
         return false;

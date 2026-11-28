@@ -215,6 +215,69 @@ fn eligibility_skips_redacted_and_own_rows_for_first_unread_and_newer_count() {
     assert_eq!(snapshot.newer_event_count, 1);
 }
 
+/// #2151: the Jump bar says "new messages", so a join, leave, kick or ban below
+/// the viewport (rows that carry a body and `TimelineMessageKind::Notice`) must
+/// not be counted. A real `m.notice` message, a thread reply, an edited row and a
+/// redacted row keep behaving as before.
+#[test]
+fn newer_message_count_excludes_membership_and_state_notices() {
+    use koushi_protocol::event::TimelineMessageKind;
+    let state_notice = |id: &str, body: &str| {
+        let mut item = timeline_item(id, Some(body), "@bob:test", false);
+        item.message_kind = TimelineMessageKind::Notice;
+        item
+    };
+    let marker = timeline_item("$marker:test", Some("marker"), "@alice:test", false);
+    let message = timeline_item("$m1:test", Some("hello"), "@bob:test", false);
+    let join = state_notice("$join:test", "Bob joined the room");
+    let leave = state_notice("$leave:test", "Carol left the room");
+    let kick = state_notice("$kick:test", "Dave was kicked");
+    let ban = state_notice("$ban:test", "Eve was banned");
+    let mut bot_notice = timeline_item("$bot:test", Some("deploy done"), "@bot:test", false);
+    bot_notice.message_kind = TimelineMessageKind::Notice;
+    // A real message-like event is pinnable; a state notice is not.
+    bot_notice.actions.can_pin = true;
+    let mut edited = timeline_item("$edit:test", Some("fixed"), "@bob:test", false);
+    edited.is_edited = true;
+    let mut redacted = timeline_item("$red:test", Some("gone"), "@bob:test", false);
+    redacted.is_redacted = true;
+    let mut thread_reply = timeline_item("$thr:test", Some("reply"), "@bob:test", false);
+    thread_reply.thread_root = Some("$m1:test".to_owned());
+    let items = vec![
+        marker,
+        join,
+        message,
+        leave,
+        kick,
+        ban,
+        bot_notice,
+        edited,
+        redacted,
+        thread_reply,
+    ];
+    let observation = TimelineViewportObservation {
+        first_visible_event_id: Some("$marker:test".to_owned()),
+        last_visible_event_id: Some("$marker:test".to_owned()),
+        bottom_arrival: TimelineBottomArrival::User,
+        at_bottom: false,
+        ..TimelineViewportObservation::default()
+    };
+
+    let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
+        &items,
+        Some("$marker:test"),
+        &observation,
+        Some("@me:test"),
+    );
+
+    // message + bot m.notice + edited message; not join/leave/kick/ban, not the
+    // redacted row, not the thread reply.
+    assert_eq!(snapshot.newer_event_count, 3);
+    assert_eq!(snapshot.unread_event_count, 3);
+    assert!(snapshot.can_jump_to_bottom);
+}
+
 #[test]
 fn formatted_only_activity_rows_remain_eligible() {
     let mut item = timeline_item("$formatted:test", None, "@alice:test", false);

@@ -116,6 +116,9 @@ impl World {
                 timestamp_ms: koushi_core::mention_feed::now_ms(),
                 thread_root: None,
                 kind: MentionKind::Mention,
+                message_kind: None,
+                mime_type: None,
+                size_bytes: None,
             })
             .await;
     }

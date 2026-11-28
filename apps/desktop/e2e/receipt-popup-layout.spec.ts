@@ -204,3 +204,57 @@ test("the popup grows with the rows that arrive after it opens", async ({ page }
   expect(after.scroll).toBeLessThanOrEqual(after.client + 1);
   for (const row of after.rows) expect(row.rowHeight).toBeLessThanOrEqual(20);
 });
+
+/** #2145: right edge and font features of every timestamp, plus the box edge. */
+async function measureTimeColumn(page: Page) {
+  return page.locator(POPUP).evaluate((element) => {
+    const popup = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    const contentRight =
+      popup.right - parseFloat(style.paddingInlineEnd) - parseFloat(style.borderInlineEndWidth);
+    const times = [...element.querySelectorAll<HTMLElement>(".receipt-reader-time")];
+    return {
+      contentRight,
+      rights: times.map((time) => time.getBoundingClientRect().right),
+      lefts: times.map((time) => time.getBoundingClientRect().left),
+      numeric: times.map((time) => getComputedStyle(time).fontVariantNumeric)
+    };
+  });
+}
+
+test("timestamps form one right-aligned column flush with the popup's inline end", async ({
+  page
+}) => {
+  await openReaderPopup(page, [
+    "Ann",
+    "Bartholomew Example",
+    "Satoshi Terasaki",
+    "A Reader Whose Display Name Is Deliberately Long Enough To Overflow Any Reasonable Popup Width"
+  ]);
+  const column = await measureTimeColumn(page);
+  expect(column.rights).toHaveLength(4);
+  for (const right of column.rights) {
+    expect(Math.abs(right - column.rights[0]!)).toBeLessThanOrEqual(1);
+    expect(Math.abs(right - column.contentRight)).toBeLessThanOrEqual(1);
+  }
+  for (const numeric of column.numeric) expect(numeric).toContain("tabular-nums");
+});
+
+test("a short name next to a long name leaves no dead space beyond the timestamp", async ({
+  page
+}) => {
+  await openReaderPopup(page, ["Ann", "Bartholomew Example"]);
+  const metrics = await measureReaderPopup(page);
+  const column = await measureTimeColumn(page);
+  const [short, wide] = metrics.rows;
+
+  // The box is still driven by the longest name plus its time.
+  const widest = Math.max(...metrics.rows.map((row) => row.occupied!));
+  expect(Math.abs(metrics.width - (metrics.chrome + widest))).toBeLessThanOrEqual(1);
+  // The widest row has no slack; the short name still hugs its text, and the
+  // timestamp column ends at the box's inline end for both.
+  expect(wide.trailing!).toBeLessThanOrEqual(1);
+  expect(Math.abs(short.nameBox - short.nameText)).toBeLessThanOrEqual(1);
+  expect(Math.abs(column.rights[0]! - column.contentRight)).toBeLessThanOrEqual(1);
+  expect(Math.abs(column.rights[1]! - column.contentRight)).toBeLessThanOrEqual(1);
+});

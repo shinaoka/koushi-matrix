@@ -630,18 +630,9 @@ export async function runLocalMessageActionsScenario() {
       '//button[@role="switch" and @aria-label="Hide deleted messages"]';
     const hideDeletedToggle = await session.browser.$(hideDeletedToggleSelector);
     await hideDeletedToggle.waitForDisplayed({ timeout: timeoutMs });
-    // The Rust default hides redacted messages. Reveal them before checking
-    // their placeholder, then re-enable hiding to verify both projections.
-    await waitForElementAttribute(session.browser, hideDeletedToggleSelector, "aria-checked", "true", timeoutMs, "default hide redacted setting");
-    await hideDeletedToggle.click();
-    await waitForElementAttribute(
-      session.browser,
-      hideDeletedToggleSelector,
-      "aria-checked",
-      "false",
-      timeoutMs,
-      "hide redacted setting before toggle"
-    );
+    // #2166: the Rust default leaves a placeholder, so check it is shown first,
+    // then opt in to hiding to verify both projections.
+    await waitForElementAttribute(session.browser, hideDeletedToggleSelector, "aria-checked", "false", timeoutMs, "default hide redacted setting");
     await waitForElementCountGreaterThan(
       session.browser,
       '.message[data-redacted="true"]',
@@ -651,7 +642,7 @@ export async function runLocalMessageActionsScenario() {
     );
     await waitForDocumentText(
       session.browser,
-      ["Message redacted"],
+      ["Message deleted"],
       timeoutMs,
       "local GUI redacted message placeholder"
     );

@@ -605,6 +605,31 @@ async fn read_room_messages(
     result
 }
 
+/// The documented refusal while Secure Backup has not admitted sends (#2165).
+/// Every room-writing tool answers it, so an assistant can tell a temporary
+/// lock from a fault.
+fn send_not_admitted() -> WireError {
+    WireError::with_reason(
+        ErrorCode::NotPermitted,
+        "send_not_admitted",
+        "sending is unavailable until Secure Backup is ready",
+    )
+}
+
+/// Maps a failed `send_message` command to the closed MCP error vocabulary
+/// (#2165). Only the admission lock is told apart; every other failure keeps
+/// one readable sentence, and no `Debug` rendering of an internal type may
+/// reach `message`.
+fn send_failure(failure: koushi_core::CoreFailure) -> WireError {
+    use koushi_core::{CoreFailure, TimelineFailureKind};
+    match failure {
+        CoreFailure::TimelineOperationFailed {
+            kind: TimelineFailureKind::SecureBackupRequired,
+        } => send_not_admitted(),
+        _ => WireError::new(ErrorCode::Internal, "the message could not be sent"),
+    }
+}
+
 /// Maps one direct message failure to the closed MCP error vocabulary (#1628).
 fn direct_message_failure(failure: koushi_core::DirectMessageFailure) -> WireError {
     use koushi_core::DirectMessageFailure as Failure;
@@ -612,11 +637,7 @@ fn direct_message_failure(failure: koushi_core::DirectMessageFailure) -> WireErr
         Failure::AccountInactive => {
             WireError::new(ErrorCode::AccountUnavailable, "account is not signed in")
         }
-        Failure::SendNotAdmitted => WireError::with_reason(
-            ErrorCode::NotPermitted,
-            "send_not_admitted",
-            "sending is unavailable until Secure Backup is ready",
-        ),
+        Failure::SendNotAdmitted => send_not_admitted(),
         Failure::RoomNotFound => WireError::new(ErrorCode::RoomNotFound, "the room is not joined"),
         Failure::EventNotFound => {
             WireError::new(ErrorCode::EventNotFound, "the event is not in this room")
@@ -1020,6 +1041,13 @@ async fn send_thread_reply(
         )
         .await?;
     ready_account_key(&connection.snapshot().session)?;
+    // #2165: admission is local state, so it is checked before the thread
+    // root is looked up on the server. Offline, that lookup fails first and
+    // would hide the lock behind a generic failure. Core re-checks at
+    // submission, so this is an early answer, not a second authority.
+    if !connection.snapshot().conversation_access().send_admitted {
+        return Err(send_not_admitted());
+    }
     let operation = connection.begin_navigation_operation(
         koushi_diagnostics::NavigationCause::DirectSend,
         koushi_diagnostics::NavigationOrigin::Mcp,
@@ -1179,6 +1207,13 @@ async fn draft_message(
         )
         .await?;
     ready_account_key(&connection.snapshot().session)?;
+    // #2164: while sending is not admitted the message box is read-only, so a
+    // staged draft could be neither edited, sent nor cleared. Admission is
+    // local state, so it is checked before the thread-root and reply-target
+    // reads below (the #2165 ordering) and before anything is staged.
+    if !connection.snapshot().conversation_access().send_admitted {
+        return Err(send_not_admitted());
+    }
     if joined_room_label(&connection, &room_id).is_none() {
         return Err(WireError::new(
             ErrorCode::RoomNotFound,
@@ -1739,10 +1774,7 @@ async fn wait_send_completed(
                 request_id: completed,
                 failure,
             }) if completed == request_id => {
-                return Err(WireError::new(
-                    ErrorCode::Internal,
-                    format!("send failed: {failure:?}"),
-                ));
+                return Err(send_failure(failure));
             }
             Ok(_) => continue,
             Err(_) => {
@@ -2198,3 +2230,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "send_failure_tests.rs"]
+mod send_failure_tests;

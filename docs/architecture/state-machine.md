@@ -3876,8 +3876,9 @@ sanitizes it before exposing it through `TimelineItem.formatted`.
   through the settings store. GUI code may map the snapshot value to CSS only;
   it must not keep a separate wrap preference.
 - Redacted-event visibility is controlled by Rust-owned
-  `SettingsValues.display.hide_redacted`, defaulting to `true` and persisted
-  through the settings store. Redacted events remain in timeline state; Rust
+  `SettingsValues.display.hide_redacted`, defaulting to `false` (opt-in; #2166)
+  and persisted through the settings store. Settings schema 5 resets the
+  `true` that older builds wrote as their default, once. Redacted events remain in timeline state; Rust
   projection marks redacted timeline DTOs with `TimelineItem.is_hidden` when
   the preference is enabled. React omits rows only from that DTO flag and must
   not filter redacted events from a local preference. `DisplayPolicyUpdated`

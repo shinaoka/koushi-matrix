@@ -93,3 +93,92 @@ async fn only_message_like_events_offer_pin() {
         "a redacted event cannot be pinned"
     );
 }
+
+/// #2151: the Jump bar's "new messages" count (`counts_as_message`) reads
+/// `actions.can_pin` deliberately, because it is the projection's existing
+/// "this is a message-like event" fact. This test keeps the two in step: it
+/// builds the rows through the real projection, so if either side changes
+/// meaning, this fails instead of a count quietly moving.
+#[tokio::test]
+async fn counts_as_message_and_can_pin_agree_on_state_notices_and_bot_notices() {
+    use matrix_sdk::ruma::events::room::member::MembershipState;
+
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = room_id!("!count:example.invalid");
+    let alice = user_id!("@alice:example.invalid");
+    let bob = user_id!("@bob:example.invalid");
+    let bot = user_id!("@bot:example.invalid");
+    let join = event_id!("$count-join:example.invalid");
+    let kick = event_id!("$count-kick:example.invalid");
+    let bot_notice = event_id!("$count-bot:example.invalid");
+    let factory = || EventFactory::new().room(room_id);
+    let room = server.sync_joined_room(&client, room_id).await;
+    server
+        .sync_room(
+            &client,
+            JoinedRoomBuilder::new(room_id)
+                .add_timeline_event(factory().sender(bob).member(bob).event_id(join))
+                .add_timeline_event(
+                    factory()
+                        .sender(alice)
+                        .member(bob)
+                        .membership(MembershipState::Leave)
+                        .previous(matrix_sdk_test::event_factory::PreviousMembership::new(
+                            MembershipState::Join,
+                        ))
+                        .event_id(kick),
+                )
+                .add_timeline_event(
+                    factory()
+                        .sender(bot)
+                        .notice("deploy done")
+                        .event_id(bot_notice),
+                ),
+        )
+        .await;
+    let timeline = koushi_timeline_builder(
+        &room,
+        TimelineFocus::Live {
+            hide_threaded_events: true,
+        },
+    )
+    .build()
+    .await
+    .unwrap();
+    let (items, _stream) = timeline.subscribe().await;
+    let key = TimelineKey::room(
+        koushi_protocol::ids::AccountKey(alice.to_string()),
+        room_id.to_string(),
+    );
+    let project = |event_id: &matrix_sdk::ruma::EventId| {
+        items
+            .iter()
+            .find(|item| item.as_event().and_then(|event| event.event_id()) == Some(event_id))
+            .map(|item| {
+                sdk_item_to_timeline_item_with_send_states(
+                    &key,
+                    item,
+                    Some(alice),
+                    None,
+                    None,
+                    None,
+                )
+            })
+            .expect("the synced event is in the timeline")
+    };
+
+    for (id, what) in [(join, "a join"), (kick, "a kick")] {
+        let row = project(id);
+        assert!(
+            !counts_as_message(&row) && !row.actions.can_pin,
+            "{what} is a state notice: neither a counted message nor pinnable"
+        );
+    }
+    let row = project(bot_notice);
+    assert!(
+        counts_as_message(&row) && row.actions.can_pin,
+        "a bot's m.notice is a message: counted and pinnable (the count reads can_pin as the \
+         projection's message-like fact; this test keeps the two in step)"
+    );
+}

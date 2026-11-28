@@ -951,6 +951,11 @@ describe("ContextualRightPanel", () => {
 
     expect(redactableMarkup).toContain(`aria-label="${t("timeline.redactMessage")}"`);
     expect(redactedMarkup).toContain(t("timeline.redactedMessage"));
+    // #2166: the user-facing concept is "deleted", in the placeholder and in the
+    // setting that hides it.
+    expect(redactedMarkup).toContain("Message deleted");
+    expect(redactedMarkup).not.toContain("redacted</");
+    expect(t("settings.hideRedacted")).toBe("Hide deleted messages");
     expect(redactedMarkup).not.toContain("Hidden message");
     expect(redactedMarkup).not.toContain('Reaction 👍, count 2');
     expect(redactedMarkup).not.toContain('class="reaction-pill"');

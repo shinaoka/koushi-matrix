@@ -16,8 +16,10 @@ fn default_code_block_wrap() -> bool {
     true
 }
 
+/// #2166: a deleted message leaves a placeholder until the reader opts in to
+/// hiding it (#35 asked for an opt-in preference).
 fn default_hide_redacted() -> bool {
-    true
+    false
 }
 
 /// #2041: a room's state changes are shown until the reader turns them off.
@@ -956,7 +958,7 @@ impl Default for DisplaySettings {
     fn default() -> Self {
         Self {
             code_block_wrap: true,
-            hide_redacted: true,
+            hide_redacted: default_hide_redacted(),
             show_room_and_member_changes: true,
             url_previews_enabled: true,
             encrypted_url_previews_enabled: default_encrypted_url_previews_enabled(),

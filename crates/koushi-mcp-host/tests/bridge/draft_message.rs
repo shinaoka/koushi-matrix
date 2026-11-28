@@ -69,6 +69,22 @@ impl Harness {
         }
         let core = Arc::new(CoreRuntime::start_with_data_dir(dir.path().join("core")));
         support::sign_in(&core).await;
+        // Staging needs send admission (#2164), so the fixture starts admitted.
+        support::apply_actions(
+            &core,
+            vec![koushi_state::AppAction::SecureBackupGateChanged(
+                koushi_state::SecureBackupGateState::Ready,
+            )],
+        )
+        .await;
+        let connection = core.attach();
+        for _ in 0..500 {
+            if connection.snapshot().conversation_access().send_admitted {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(connection.snapshot().conversation_access().send_admitted);
         support::apply_actions(
             &core,
             vec![koushi_state::AppAction::RoomListUpdated {
@@ -160,6 +176,30 @@ impl Harness {
             .to_string(),
         )
         .expect("grants");
+    }
+
+    /// Closes or reopens send admission, as Secure Backup becoming unready or
+    /// ready again does, and waits until the published snapshot shows it.
+    async fn set_send_admitted(&self, admitted: bool) {
+        let gate = if admitted {
+            koushi_state::SecureBackupGateState::Ready
+        } else {
+            koushi_state::SecureBackupGateState::Checking
+        };
+        // Injected through the reducer: the account hook pins admission open.
+        support::apply_actions(
+            &self.core,
+            vec![koushi_state::AppAction::SecureBackupGateChanged(gate)],
+        )
+        .await;
+        let connection = self.core.attach();
+        for _ in 0..500 {
+            if connection.snapshot().conversation_access().send_admitted == admitted {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("send admission did not settle");
     }
 
     async fn stop(self) {
@@ -621,5 +661,68 @@ async fn a_staged_reply_target_reads_back_and_a_cancelled_one_does_not() {
     assert!(structured(&cancelled)["reply_to_event_id"].is_null());
     assert_eq!(structured(&cancelled)["status"], "assistant");
     assert_eq!(structured(&cancelled)["body"], "answer");
+    harness.stop().await;
+}
+
+const REFUSAL: &str = "sending is unavailable until Secure Backup is ready";
+
+fn assert_send_not_admitted(reply: &Value) {
+    let error = &structured(reply)["error"];
+    assert_eq!(error["code"], "not_permitted", "{reply}");
+    assert_eq!(error["reason"], "send_not_admitted", "{reply}");
+    assert_eq!(error["message"], REFUSAL, "{reply}");
+}
+
+/// #2164: while Secure Backup holds sending back the message box is read-only,
+/// so a draft staged into it could be neither edited, sent nor cleared. The
+/// stage is refused like every other room-writing tool and nothing is staged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_draft_is_refused_while_sending_is_not_admitted_and_stages_nothing() {
+    let mut harness = Harness::start(Some(Harness::account_grant(false, true))).await;
+    harness.set_send_admitted(false).await;
+
+    let reply = harness.call("draft_message", draft("locked out")).await;
+    assert_send_not_admitted(&reply);
+
+    let read = harness.call("get_draft", draft_read()).await;
+    assert_eq!(structured(&read)["status"], "empty", "{read}");
+    assert_eq!(structured(&read)["body"], "", "{read}");
+    harness.stop().await;
+}
+
+/// The check is local state, so it precedes the reply-target lookup that an
+/// unreachable homeserver would fail first (the #2165 ordering).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_lock_is_reported_before_any_reply_target_lookup() {
+    let mut harness = Harness::start(Some(Harness::account_grant(false, true))).await;
+    harness.set_send_admitted(false).await;
+
+    let mut with_reply = draft("locked out");
+    with_reply["reply_to_event_id"] = json!("$target:example.invalid");
+    assert_send_not_admitted(&harness.call("draft_message", with_reply).await);
+
+    let mut in_thread = draft("locked out");
+    in_thread["thread_root_event_id"] = json!(ROOT);
+    assert_send_not_admitted(&harness.call("draft_message", in_thread).await);
+    harness.stop().await;
+}
+
+/// When the lock lifts, staging works again; and a draft staged before the
+/// lock still reads back as the assistant's while the lock is on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn staging_resumes_when_the_lock_lifts_and_an_earlier_draft_stays_the_assistants() {
+    let mut harness = Harness::start(Some(Harness::account_grant(false, true))).await;
+    harness.set_send_admitted(false).await;
+    assert_send_not_admitted(&harness.call("draft_message", draft("first")).await);
+    harness.set_send_admitted(true).await;
+
+    let staged = harness.call("draft_message", draft("after the lock")).await;
+    assert_eq!(structured(&staged)["status"], "staged", "{staged}");
+    draft_state_until(&mut harness, draft_read(), "assistant").await;
+
+    harness.set_send_admitted(false).await;
+    let read = harness.call("get_draft", draft_read()).await;
+    assert_eq!(structured(&read)["status"], "assistant", "{read}");
+    assert_eq!(structured(&read)["body"], "after the lock", "{read}");
     harness.stop().await;
 }
