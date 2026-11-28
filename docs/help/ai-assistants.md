@@ -465,6 +465,7 @@ Two failures look similar and mean different things:
 | `account_unavailable` | The account is not signed in yet: signed out, locked, or still restoring. | Sign in, unlock Koushi, or wait for restore to finish, then retry. |
 | `room_not_found` | The room is unknown to that account or you have left it. | List rooms again and use a room id the account is joined to. |
 | `event_not_found` | The event id is unknown to the room. | Re-run `search_messages` for a current event id. |
+| `not_permitted` with reason `send_not_admitted` | Koushi is showing "Sending is unavailable until Secure Backup is ready." Every tool that writes to a room is refused until it is. | Wait until Secure Backup is ready (or the homeserver is reachable), then retry. |
 | `not_permitted` with reason `not_author` | The target message was sent by another account. | Only your own messages can be edited or deleted. |
 | `unsupported` with reason `not_a_message` | The event id names a state event or another non-message event. | Use a message event id from `read_room_messages` or `search_messages`. |
 | `unsupported` with reason `redacted` | The target message was already deleted. | Nothing to change; `delete_message` on it already succeeds with `already_redacted`. |

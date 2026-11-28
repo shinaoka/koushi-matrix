@@ -257,9 +257,12 @@ async fn quoting_a_thread_message_still_needs_the_send_grant() {
 
     let mut granted = Harness::start(Some(Harness::account_grant(true, true, false))).await;
     let reached = granted.call("send_thread_reply", arguments).await;
-    // This fixture has a reducer session but no SDK session, so the account
-    // answers: the argument was accepted and dispatched, not rejected.
-    assert_eq!(error_code(&reached), "account_unavailable");
+    // This fixture has a reducer session, no SDK session and no Secure Backup
+    // admission, so the account's own refusal answers: the argument was
+    // accepted and the grant passed, not rejected. Admission is checked before
+    // any lookup (#2165), hence the lock and not `account_unavailable`.
+    assert_eq!(error_code(&reached), "not_permitted");
+    assert_eq!(error_reason(&reached), "send_not_admitted");
     granted.stop().await;
 }
 

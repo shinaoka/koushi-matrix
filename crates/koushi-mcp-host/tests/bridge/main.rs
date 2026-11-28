@@ -6,6 +6,7 @@ mod consent_broker;
 mod draft_message;
 mod mentions;
 mod message_actions;
+mod send_admission;
 mod send_attachments;
 mod spaces;
 mod thread_reply_target;
