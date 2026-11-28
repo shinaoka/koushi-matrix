@@ -22,7 +22,7 @@ account and each permission.
 | `get_attachment` | Downloads one attachment into Koushi's media cache and returns its path. | attachments |
 | `send_message` | Sends a message, optionally as a reply, or sends local files with an optional caption. | send; also attachments when sending files |
 | `send_thread_reply` | Posts a plain-text reply in a thread, optionally quoting and mentioning one message of that thread. | send |
-| `draft_message` | Puts plain text into a room's or a thread's composer as a draft for you to review, edit, and send. Replaces, with `replace`, a draft an assistant staged that you have not touched. Never sends. | draft |
+| `draft_message` | Puts plain text into a room's or a thread's composer as a draft for you to review, edit, and send. Replaces, with `replace`, a draft an assistant staged that you have not touched. Never sends. Refused while Secure Backup is not ready, because the message box is read-only then. | draft |
 | `get_draft` | Reads back what a room's or a thread's composer currently holds, and whether it is the assistant's untouched draft, your own text, or empty. Changes nothing. | draft |
 | `get_message` | Fetches one message by its event id, with sender, time, the body after its latest edit, reactions, and its thread or reply relation. | read |
 | `react_to_message` | Adds the assistant account's reaction to a message. Repeating it with the same reaction does nothing. | message actions |

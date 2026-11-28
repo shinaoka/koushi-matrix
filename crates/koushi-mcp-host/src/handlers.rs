@@ -1080,6 +1080,13 @@ async fn draft_message(
         )
         .await?;
     ready_account_key(&connection.snapshot().session)?;
+    // #2164: while sending is not admitted the message box is read-only, so a
+    // staged draft could be neither edited, sent nor cleared. Admission is
+    // local state, so it is checked before the thread-root and reply-target
+    // reads below (the #2165 ordering) and before anything is staged.
+    if !connection.snapshot().conversation_access().send_admitted {
+        return Err(send_not_admitted());
+    }
     if joined_room_label(&connection, &room_id).is_none() {
         return Err(WireError::new(
             ErrorCode::RoomNotFound,
