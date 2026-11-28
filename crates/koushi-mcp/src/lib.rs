@@ -5,6 +5,7 @@
 //! the same wire types and tool definitions. One owner for each contract means
 //! the two processes cannot drift.
 
+pub mod channel;
 pub mod cli;
 pub mod endpoint;
 pub mod ipc;

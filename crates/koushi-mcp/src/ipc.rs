@@ -34,6 +34,9 @@ pub struct Client {
     reader: BufReader<ReadHalf>,
     writer: WriteHalf,
     next_id: u64,
+    /// Push frames that arrived while a response was awaited, in order. Only
+    /// a subscribed connection ever receives any.
+    pending: std::collections::VecDeque<ServerMessage>,
 }
 
 async fn open(endpoint_path: &EndpointFile) -> Result<Stream, WireError> {
@@ -113,6 +116,7 @@ pub async fn connect_with_profile(
         reader: BufReader::new(read_half),
         writer,
         next_id: 1,
+        pending: std::collections::VecDeque::new(),
     };
 
     let hello = ClientMessage::Hello {
@@ -217,42 +221,63 @@ impl Client {
             .await
             .map_err(|_| WireError::new_without_detail(ErrorCode::KoushiUnavailable))?;
 
-        match self.read_message().await? {
-            ServerMessage::Response {
-                id: got,
-                ok,
-                result,
-                error,
-            } if got == id => {
-                if ok {
-                    Ok(result.unwrap_or(serde_json::Value::Null))
-                } else {
-                    Err(error.unwrap_or_else(|| WireError::new_without_detail(ErrorCode::Internal)))
+        loop {
+            match self.read_message().await? {
+                ServerMessage::Response {
+                    id: got,
+                    ok,
+                    result,
+                    error,
+                } if got == id => {
+                    return if ok {
+                        Ok(result.unwrap_or(serde_json::Value::Null))
+                    } else {
+                        Err(error
+                            .unwrap_or_else(|| WireError::new_without_detail(ErrorCode::Internal)))
+                    };
+                }
+                // One request is in flight at a time, so a mismatched id is a
+                // protocol violation rather than something to resynchronize.
+                ServerMessage::Response { .. } => {
+                    return Err(WireError::new_without_detail(ErrorCode::Internal));
+                }
+                ServerMessage::Error {
+                    code,
+                    message,
+                    reason,
+                    ..
+                } => {
+                    return Err(WireError {
+                        code,
+                        message,
+                        reason,
+                    });
+                }
+                // A subscribed connection can be pushed to between a request
+                // and its response; keep the frame for `next_frame`.
+                frame @ (ServerMessage::Push { .. }
+                | ServerMessage::SubEnd { .. }
+                | ServerMessage::WakeBudgetExceeded { .. }) => self.pending.push_back(frame),
+                ServerMessage::HelloOk { .. } => {
+                    return Err(WireError::new_without_detail(ErrorCode::Internal));
                 }
             }
-            // One request is in flight at a time, so a mismatched id is a
-            // protocol violation rather than something to resynchronize.
-            ServerMessage::Response { .. } => {
-                Err(WireError::new_without_detail(ErrorCode::Internal))
-            }
-            ServerMessage::Error {
-                code,
-                message,
-                reason,
-                ..
-            } => Err(WireError {
-                code,
-                message,
-                reason,
-            }),
-            // The launcher never subscribes, so a host has no push to send it.
-            ServerMessage::HelloOk { .. }
-            | ServerMessage::Push { .. }
-            | ServerMessage::SubEnd { .. }
-            | ServerMessage::WakeBudgetExceeded { .. } => {
-                Err(WireError::new_without_detail(ErrorCode::Internal))
-            }
         }
+    }
+
+    /// The next push-side frame of a subscribed connection, waiting as long as
+    /// the stream is idle. A closed socket is `koushi_unavailable`.
+    pub async fn next_frame(&mut self) -> Result<ServerMessage, WireError> {
+        if let Some(frame) = self.pending.pop_front() {
+            return Ok(frame);
+        }
+        let line = read_frame(&mut self.reader)
+            .await
+            .map_err(|_| WireError::new_without_detail(ErrorCode::KoushiUnavailable))?;
+        if line.is_empty() {
+            return Err(WireError::new_without_detail(ErrorCode::KoushiUnavailable));
+        }
+        decode_line(&line).map_err(|_| WireError::new_without_detail(ErrorCode::Internal))
     }
 }
 

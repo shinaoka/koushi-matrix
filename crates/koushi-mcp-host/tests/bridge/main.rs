@@ -1,6 +1,7 @@
 mod account_admission;
 mod bridge_accounts;
 mod bridge_lifecycle;
+mod claude_channel;
 mod cli_bridge;
 mod consent_broker;
 mod draft_message;
