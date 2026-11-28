@@ -164,6 +164,9 @@ fn candidate(event: &str, thread_root: Option<&str>) -> MentionCandidate {
         timestamp_ms: koushi_core::mention_feed::now_ms(),
         thread_root: thread_root.map(str::to_owned),
         kind: MentionKind::Mention,
+        message_kind: None,
+        mime_type: None,
+        size_bytes: None,
     }
 }
 

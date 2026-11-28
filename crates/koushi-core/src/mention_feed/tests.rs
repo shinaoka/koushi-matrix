@@ -11,6 +11,9 @@ fn candidate(event: &str, sender: &str) -> MentionCandidate {
         timestamp_ms: now_ms(),
         thread_root: None,
         kind: MentionKind::Mention,
+        message_kind: None,
+        mime_type: None,
+        size_bytes: None,
     }
 }
 
@@ -543,4 +546,93 @@ async fn a_recreated_feed_has_another_generation_and_a_cursor_names_it() {
     let (first, second) = (memory_feed(), memory_feed());
     assert_ne!(first.generation(), second.generation());
     assert!(first.cursor_for(3).contains(&first.generation()));
+}
+
+mod message_facts {
+    use super::super::intake::message_facts_of;
+    use super::*;
+    use matrix_sdk::ruma::events::room::ImageInfo;
+    use matrix_sdk::ruma::events::room::message::{
+        FileInfo, FileMessageEventContent, ImageMessageEventContent, MessageType,
+        RoomMessageEventContent,
+    };
+    use matrix_sdk::ruma::{mxc_uri, uint};
+
+    #[test]
+    fn intake_records_the_kind_of_text_notice_and_emote() {
+        for (content, kind) in [
+            (RoomMessageEventContent::text_plain("hi"), MessageKind::Text),
+            (
+                RoomMessageEventContent::notice_plain("hi"),
+                MessageKind::Notice,
+            ),
+            (
+                RoomMessageEventContent::emote_plain("hi"),
+                MessageKind::Emote,
+            ),
+        ] {
+            assert_eq!(message_facts_of(&content.msgtype), (kind, None, None));
+        }
+    }
+
+    #[test]
+    fn a_media_message_carries_its_declared_mime_type_and_size() {
+        let mut info = ImageInfo::new();
+        info.mimetype = Some("image/png".to_owned());
+        info.size = Some(uint!(2048));
+        let mut image = ImageMessageEventContent::plain(
+            "secret-name.png".to_owned(),
+            mxc_uri!("mxc://x/y").into(),
+        );
+        image.info = Some(Box::new(info));
+        assert_eq!(
+            message_facts_of(&MessageType::Image(image)),
+            (MessageKind::Image, Some("image/png".to_owned()), Some(2048))
+        );
+
+        let mut file_info = FileInfo::new();
+        file_info.mimetype = Some("application/pdf".to_owned());
+        file_info.size = Some(uint!(7));
+        let mut file =
+            FileMessageEventContent::plain("report.pdf".to_owned(), mxc_uri!("mxc://x/z").into());
+        file.info = Some(Box::new(file_info));
+        assert_eq!(
+            message_facts_of(&MessageType::File(file)),
+            (
+                MessageKind::File,
+                Some("application/pdf".to_owned()),
+                Some(7)
+            )
+        );
+    }
+
+    #[test]
+    fn media_without_info_and_unknown_types_have_no_hint() {
+        let bare = FileMessageEventContent::plain("a.bin".to_owned(), mxc_uri!("mxc://x/z").into());
+        assert_eq!(
+            message_facts_of(&MessageType::File(bare)),
+            (MessageKind::File, None, None)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_fields_are_committed_and_a_row_written_before_them_still_loads() {
+        let feed = memory_feed();
+        let mut media = candidate("$img", "@a:x");
+        media.message_kind = Some(MessageKind::Image);
+        media.mime_type = Some("image/png".to_owned());
+        media.size_bytes = Some(2048);
+        feed.record(media).await;
+        let page = poll(&feed, None).await.expect("page");
+        assert_eq!(page.entries[0].message_kind, Some(MessageKind::Image));
+        assert_eq!(page.entries[0].mime_type.as_deref(), Some("image/png"));
+        assert_eq!(page.entries[0].size_bytes, Some(2048));
+
+        let old = r#"{"seq":1,"room_id":"!r:x","event_id":"$e","sender":"@a:x",
+            "timestamp_ms":5,"thread_root":null,"kind":"mention"}"#;
+        let entry: MentionEntry = serde_json::from_str(old).expect("a pre-change line loads");
+        assert_eq!(entry.message_kind, None);
+        assert_eq!(entry.mime_type, None);
+        assert_eq!(entry.size_bytes, None);
+    }
 }

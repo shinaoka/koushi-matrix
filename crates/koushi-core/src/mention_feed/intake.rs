@@ -5,11 +5,13 @@ use std::sync::Arc;
 use matrix_sdk::event_handler::EventHandlerHandle;
 use matrix_sdk::ruma::OwnedUserId;
 use matrix_sdk::ruma::events::room::member::{MembershipState, StrippedRoomMemberEvent};
-use matrix_sdk::ruma::events::room::message::{OriginalSyncRoomMessageEvent, Relation};
+use matrix_sdk::ruma::events::room::message::{
+    MessageType, OriginalSyncRoomMessageEvent, Relation,
+};
 use matrix_sdk::ruma::push::Action;
 use matrix_sdk::{Client, Room, RoomState};
 
-use super::{MentionCandidate, MentionFeed, MentionFeedRegistry, MentionKind};
+use super::{MentionCandidate, MentionFeed, MentionFeedRegistry, MentionKind, MessageKind};
 
 const HISTORY_CLOCK_SLACK_MS: u64 = 5 * 60 * 1000;
 
@@ -38,6 +40,47 @@ pub(crate) fn classify_message(facts: &MessageFacts<'_>) -> Option<MentionKind> 
         Some(MentionKind::Dm)
     } else {
         None
+    }
+}
+
+/// Kind, declared MIME type and declared size of a message, from the content
+/// the handler already holds. Never a filename, body or caption.
+pub(crate) fn message_facts_of(
+    msgtype: &MessageType,
+) -> (MessageKind, Option<String>, Option<u64>) {
+    fn media(
+        kind: MessageKind,
+        mime: Option<&String>,
+        size: Option<matrix_sdk::ruma::UInt>,
+    ) -> (MessageKind, Option<String>, Option<u64>) {
+        (kind, mime.cloned(), size.map(u64::from))
+    }
+    match msgtype {
+        MessageType::Text(_) => (MessageKind::Text, None, None),
+        MessageType::Notice(_) => (MessageKind::Notice, None, None),
+        MessageType::Emote(_) => (MessageKind::Emote, None, None),
+        MessageType::Location(_) => (MessageKind::Location, None, None),
+        MessageType::Image(c) => media(
+            MessageKind::Image,
+            c.info.as_ref().and_then(|i| i.mimetype.as_ref()),
+            c.info.as_ref().and_then(|i| i.size),
+        ),
+        MessageType::File(c) => media(
+            MessageKind::File,
+            c.info.as_ref().and_then(|i| i.mimetype.as_ref()),
+            c.info.as_ref().and_then(|i| i.size),
+        ),
+        MessageType::Audio(c) => media(
+            MessageKind::Audio,
+            c.info.as_ref().and_then(|i| i.mimetype.as_ref()),
+            c.info.as_ref().and_then(|i| i.size),
+        ),
+        MessageType::Video(c) => media(
+            MessageKind::Video,
+            c.info.as_ref().and_then(|i| i.mimetype.as_ref()),
+            c.info.as_ref().and_then(|i| i.size),
+        ),
+        _ => (MessageKind::Other, None, None),
     }
 }
 
@@ -126,6 +169,7 @@ impl MentionIntake {
             Some(Relation::Thread(thread)) => Some(thread.event_id.to_string()),
             _ => None,
         };
+        let (message_kind, mime_type, size_bytes) = message_facts_of(&event.content.msgtype);
         self.offer(MentionCandidate {
             room_id: room.room_id().to_string(),
             event_id: Some(event.event_id.to_string()),
@@ -133,6 +177,9 @@ impl MentionIntake {
             timestamp_ms,
             thread_root,
             kind,
+            message_kind: Some(message_kind),
+            mime_type,
+            size_bytes,
         })
         .await;
     }
@@ -156,6 +203,9 @@ impl MentionIntake {
             timestamp_ms,
             thread_root: None,
             kind: MentionKind::Invite,
+            message_kind: None,
+            mime_type: None,
+            size_bytes: None,
         })
         .await;
     }
