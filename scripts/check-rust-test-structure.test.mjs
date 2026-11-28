@@ -151,6 +151,40 @@ test("runs representative migrated state, SDK, and src-tauri source-contract rul
   assert.deepEqual(checkDesktopNativeWindowLifecycleContract(), []);
 });
 
+function tauriFixture(files) {
+  const srcRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tauri-commands-"));
+  const write = (relativePath, text) => {
+    fs.mkdirSync(path.dirname(path.join(srcRoot, relativePath)), { recursive: true });
+    fs.writeFileSync(path.join(srcRoot, relativePath), text);
+  };
+  write("lib.rs", "fn run() { tauri::generate_handler![commands::account::registered]; }\n");
+  write("commands/account.rs", "#[tauri::command]\npub async fn registered() {}\n");
+  for (const [relativePath, text] of Object.entries(files)) write(relativePath, text);
+  return srcRoot;
+}
+
+test("command registration guard passes on a registered fixture", () => {
+  assert.deepEqual(checkDesktopTauriCommandRegistrationContract({ srcRoot: tauriFixture({}) }), []);
+});
+
+test("command registration guard reads command files outside the old hard-coded list", () => {
+  const srcRoot = tauriFixture({
+    "commands/native_attention/notification.rs": "#[tauri::command]\npub(crate) async fn unregistered_nested() {}\n"
+  });
+  const failures = checkDesktopTauriCommandRegistrationContract({ srcRoot });
+  assert.equal(failures.length, 1);
+  assert.match(failures[0].message ?? JSON.stringify(failures[0]), /unregistered_nested/);
+});
+
+test("command registration guard collects synchronous and stacked-attribute commands", () => {
+  const srcRoot = tauriFixture({
+    "commands/account.rs": "#[tauri::command]\npub async fn registered() {}\n#[tauri::command]\npub fn unregistered_sync() {}\n#[tauri::command]\n#[allow(dead_code)]\npub(crate) fn unregistered_stacked() {}\n"
+  });
+  const text = JSON.stringify(checkDesktopTauriCommandRegistrationContract({ srcRoot }));
+  assert.match(text, /unregistered_sync/);
+  assert.match(text, /unregistered_stacked/);
+});
+
 test("pins the scroll-back scenario's page size to the renderer's", () => {
   assert.deepEqual(checkCoreQaScrollBackPageEventCount(), []);
 });
