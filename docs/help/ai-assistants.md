@@ -22,7 +22,7 @@ account and each permission.
 | `get_attachment` | Downloads one attachment into Koushi's media cache and returns its path. | attachments |
 | `send_message` | Sends a message, optionally as a reply, or sends local files with an optional caption. | send; also attachments when sending files |
 | `send_thread_reply` | Posts a plain-text reply in a thread, optionally quoting and mentioning one message of that thread. `send_message` and `send_thread_reply` take an optional `mentions` list of user ids that is exactly the event's `m.mentions.user_ids`: a reply then does not add the replied-to sender, and an empty list mentions nobody. Omit it to keep the default. | send |
-| `draft_message` | Puts plain text into a room's or a thread's composer as a draft for you to review, edit, and send. Replaces, with `replace`, a draft an assistant staged that you have not touched. Never sends. | draft |
+| `draft_message` | Puts plain text into a room's or a thread's composer as a draft for you to review, edit, and send. Replaces, with `replace`, a draft an assistant staged that you have not touched. Never sends. Refused while Koushi is not admitting sends (Secure Backup not ready), because the message box is read-only then. | draft |
 | `get_draft` | Reads back what a room's or a thread's composer currently holds, and whether it is the assistant's untouched draft, your own text, or empty. Changes nothing. | draft |
 | `get_message` | Fetches one message by its event id, with sender, time, the body after its latest edit, reactions, and its thread or reply relation. | read |
 | `react_to_message` | Adds the assistant account's reaction to a message. Repeating it with the same reaction does nothing. | message actions |
@@ -530,6 +530,7 @@ What to expect:
 | `account_unavailable` | The account is not signed in yet: signed out, locked, or still restoring. | Sign in, unlock Koushi, or wait for restore to finish, then retry. |
 | `room_not_found` | The room is unknown to that account or you have left it. | List rooms again and use a room id the account is joined to. |
 | `event_not_found` | The event id is unknown to the room. | Re-run `search_messages` for a current event id. |
+| `not_permitted` with reason `send_not_admitted` | Koushi is showing "Sending is unavailable until Secure Backup is ready." Every tool that writes to a room is refused until it is. | Wait until Secure Backup is ready (or the homeserver is reachable), then retry. |
 | `not_permitted` with reason `not_author` | The target message was sent by another account. | Only your own messages can be edited or deleted. |
 | `unsupported` with reason `not_a_message` | The event id names a state event or another non-message event. | Use a message event id from `read_room_messages` or `search_messages`. |
 | `unsupported` with reason `redacted` | The target message was already deleted. | Nothing to change; `delete_message` on it already succeeds with `already_redacted`. |

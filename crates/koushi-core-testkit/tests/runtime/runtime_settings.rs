@@ -659,3 +659,61 @@ async fn runtime_start_migrates_unversioned_encrypted_url_preview_opt_in() {
         serde_json::json!(SETTINGS_SCHEMA_VERSION)
     );
 }
+
+const HIDE_REDACTED_FILE: &str = r#"{
+  "schema_version": __V__,
+  "locale": { "language_tag": null, "text_direction": "auto" },
+  "appearance": { "theme": "dark" },
+  "typography": { "font": "system", "emoji": "system" },
+  "keyboard": { "composer_send_shortcut": "enter" },
+  "display": { "code_block_wrap": true, "hide_redacted": true }
+}
+"#;
+
+/// #2166: builds before schema 5 defaulted `hide_redacted` to on and wrote that
+/// default into every saved file, so a stored `true` is reset once; a `true`
+/// written at schema 5 or later is a deliberate choice and survives restarts.
+#[test]
+fn settings_store_resets_the_retired_hide_redacted_default_once() {
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    let path = write_settings_file(data_dir.path(), &HIDE_REDACTED_FILE.replace("__V__", "4"));
+
+    let values = SettingsStore::new(data_dir.path()).load().expect("load");
+    assert!(
+        !values.display.hide_redacted,
+        "stored pre-v5 default is reset"
+    );
+    assert_eq!(
+        persisted_settings_json(&path)["display"]["hide_redacted"],
+        serde_json::json!(false)
+    );
+
+    let mut chosen = values;
+    chosen.display.hide_redacted = true;
+    SettingsStore::new(data_dir.path())
+        .save(&chosen)
+        .expect("save choice");
+    let reloaded = SettingsStore::new(data_dir.path()).load().expect("reload");
+    assert!(
+        reloaded.display.hide_redacted,
+        "a post-migration choice is kept"
+    );
+}
+
+#[test]
+fn settings_store_keeps_hide_redacted_chosen_at_the_current_schema() {
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    write_settings_file(
+        data_dir.path(),
+        &HIDE_REDACTED_FILE.replace("__V__", &SETTINGS_SCHEMA_VERSION.to_string()),
+    );
+    let values = SettingsStore::new(data_dir.path()).load().expect("load");
+    assert!(values.display.hide_redacted);
+}
+
+#[test]
+fn settings_store_fresh_install_leaves_deleted_messages_visible() {
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    let values = SettingsStore::new(data_dir.path()).load().expect("load");
+    assert!(!values.display.hide_redacted);
+}

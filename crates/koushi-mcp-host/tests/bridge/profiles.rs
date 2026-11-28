@@ -80,6 +80,22 @@ impl World {
             ));
             let user = id.strip_prefix("account:").expect("account id");
             support::sign_in_as(&core, user).await;
+            // Staging a draft needs send admission (#2164), so start admitted.
+            support::apply_actions(
+                &core,
+                vec![koushi_state::AppAction::SecureBackupGateChanged(
+                    koushi_state::SecureBackupGateState::Ready,
+                )],
+            )
+            .await;
+            let attached = core.attach();
+            for _ in 0..500 {
+                if attached.snapshot().conversation_access().send_admitted {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(attached.snapshot().conversation_access().send_admitted);
             if agent {
                 support::mark_agent_account(&core, user).await;
             }
@@ -542,6 +558,10 @@ async fn a_client_name_grant_never_lets_a_profile_through() {
         ("list_rooms", json!({"account_id": AGENT_A})),
         ("read_recent_activity", json!({"account_id": AGENT_A})),
         ("get_draft", json!({"account_id": AGENT_A, "room_id": ROOM})),
+        (
+            "draft_message",
+            json!({"account_id": AGENT_A, "room_id": ROOM, "body": "x"}),
+        ),
         (
             "send_message",
             json!({"account_id": AGENT_A, "room_id": ROOM, "body": "x", "client_request_id": "k"}),
@@ -1104,5 +1124,52 @@ async fn connected_follows_a_live_profiled_connection() {
 
     drop(conn);
     row_where(&world, &id, |row| !row.connected).await;
+    world.shutdown().await;
+}
+
+/// #2164 and the profile-aware authorisation both apply to `draft_message`: a
+/// profile without the draft grant is refused, and a profile with it is still
+/// refused while sending is not admitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_profiled_draft_needs_the_grant_and_an_admitted_send() {
+    let world = World::start(ConsentMode::FailClosed).await;
+    let args = json!({"account_id": AGENT_A, "room_id": ROOM, "body": "hello"});
+    let (id, secret) = world.create("Reader", AGENT_A, read_only()).await;
+    let mut reader = Conn::profiled(&world, "codex", id.as_str(), &secret)
+        .await
+        .expect("connects");
+    let refused = reader.call("draft_message", args.clone()).await;
+    assert_eq!(failure(&refused).0, "consent_required", "{refused}");
+
+    let drafter = ProfileGrants {
+        read: true,
+        draft: true,
+        ..ProfileGrants::default()
+    };
+    let (id, secret) = world.create("Drafter", AGENT_A, drafter).await;
+    let mut drafter = Conn::profiled(&world, "codex", id.as_str(), &secret)
+        .await
+        .expect("connects");
+    let core = world.core(AGENT_A);
+    support::apply_actions(
+        core,
+        vec![koushi_state::AppAction::SecureBackupGateChanged(
+            koushi_state::SecureBackupGateState::Checking,
+        )],
+    )
+    .await;
+    let attached = core.attach();
+    for _ in 0..500 {
+        if !attached.snapshot().conversation_access().send_admitted {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let closed = drafter.call("draft_message", args).await;
+    assert_eq!(
+        failure(&closed).1.as_deref(),
+        Some("send_not_admitted"),
+        "{closed}"
+    );
     world.shutdown().await;
 }

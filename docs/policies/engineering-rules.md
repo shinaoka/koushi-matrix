@@ -522,7 +522,7 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    section order, counts, unread badges, and mention dots from Rust-shaped
    `SidebarModel` fields. The formatted-message renderer keeps direct list
    element children as `li`. `SettingsValues.display.hide_redacted` defaults to
-   `true`. `SettingsValues.media` holds only
+   `false` (#2166: a deleted message leaves a placeholder). `SettingsValues.media` holds only
    `image_upload_compression_policy`: #305 retired the automatic-compression
    preference, and resize/format is chosen per attachment in the upload-staging
    dialog.

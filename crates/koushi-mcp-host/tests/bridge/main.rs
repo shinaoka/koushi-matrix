@@ -9,6 +9,7 @@ mod mentions;
 mod message_actions;
 mod profiles;
 mod protocol_handshake;
+mod send_admission;
 mod send_attachments;
 mod spaces;
 mod subscription;

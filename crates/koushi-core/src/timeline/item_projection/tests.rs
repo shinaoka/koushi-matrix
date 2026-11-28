@@ -2250,3 +2250,21 @@ fn a_table_rebuild_keeps_a_resolved_recoverable_failure() {
         "the SDK's newer report wins"
     );
 }
+
+/// #2166: with the default settings a deleted message keeps its placeholder
+/// row; hiding it is an explicit opt-in.
+#[test]
+fn redacted_row_is_visible_by_default_and_hidden_only_when_opted_in() {
+    let mut redacted = timeline_item("$redacted:test", None, "@alice:test", false);
+    redacted.is_redacted = true;
+    let default_hide = koushi_state::DisplaySettings::default().hide_redacted;
+
+    assert!(
+        !super::timeline_item_is_hidden(&redacted, default_hide, false, true),
+        "default settings keep the placeholder"
+    );
+    assert!(
+        super::timeline_item_is_hidden(&redacted, true, false, true),
+        "hide_redacted = true hides it"
+    );
+}

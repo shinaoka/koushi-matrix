@@ -49,7 +49,7 @@ fn app_state_carries_default_non_secret_settings() {
         state.settings.values.display,
         DisplaySettings {
             code_block_wrap: true,
-            hide_redacted: true,
+            hide_redacted: false,
             show_room_and_member_changes: true,
             url_previews_enabled: true,
             encrypted_url_previews_enabled: false,
@@ -159,9 +159,10 @@ fn settings_values_deserialize_empty_display_as_default() {
 }
 
 /// A settings file written before #2041 has no key for the preference, and the
-/// reader keeps seeing state changes: the default is on.
+/// reader keeps seeing state changes: the default is on. #2166: a deleted
+/// message likewise keeps its placeholder, so a missing `hide_redacted` is off.
 #[test]
-fn settings_values_deserialize_legacy_display_without_hide_redacted_as_default_on() {
+fn settings_values_deserialize_legacy_display_without_hide_redacted_as_default_off() {
     let values = serde_json::from_str::<SettingsValues>(
         r#"{
   "locale": { "language_tag": null, "text_direction": "auto" },
@@ -179,7 +180,7 @@ fn settings_values_deserialize_legacy_display_without_hide_redacted_as_default_o
         values.display,
         DisplaySettings {
             code_block_wrap: false,
-            hide_redacted: true,
+            hide_redacted: false,
             show_room_and_member_changes: true,
             url_previews_enabled: true,
             encrypted_url_previews_enabled: false,
@@ -1194,5 +1195,24 @@ fn retired_auto_load_setting_is_discarded_on_round_trip() {
             .unwrap()
             .get("auto_load_older_messages")
             .is_none()
+    );
+}
+
+/// #2166: hiding deleted messages is opt-in. A fresh install and a file with no
+/// key leave the placeholder; an explicit stored value is read back verbatim
+/// (the one-time reset of the retired default is the settings store's schema
+/// migration, not the deserializer's).
+#[test]
+fn hide_redacted_is_opt_in_and_an_explicit_value_deserializes_verbatim() {
+    assert!(!DisplaySettings::default().hide_redacted);
+    assert!(
+        !serde_json::from_str::<DisplaySettings>("{}")
+            .expect("empty display")
+            .hide_redacted
+    );
+    assert!(
+        serde_json::from_str::<DisplaySettings>(r#"{ "hide_redacted": true }"#)
+            .expect("explicit true")
+            .hide_redacted
     );
 }

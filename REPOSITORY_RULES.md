@@ -163,7 +163,9 @@ to upstream or revert.
 - Every public `#[tauri::command]` in `apps/desktop/src-tauri/src/commands/` is
   registered in `tauri::generate_handler!` in `apps/desktop/src-tauri/src/lib.rs`;
   an unregistered command compiles yet never reaches Rust. The exhaustive guard
-  is rule `desktop.commands.tauri_command_registration`
+  is rule `desktop.commands.tauri_command_registration`, which reads every `.rs`
+  file under `commands/` (recursively) and collects both `async` and
+  synchronous `pub`/`pub(...)` commands
   (`checkDesktopTauriCommandRegistrationContract()` in
   `scripts/check-rust-test-structure.mjs`), run by the CI step "Rust test
   structure checker"; keep it green.

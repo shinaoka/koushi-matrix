@@ -448,27 +448,21 @@ function productionOnly(source, fileName) {
   return result + source.slice(cursor);
 }
 
-function tauriCommandsSource() {
-  return [
-    "commands/account.rs",
-    "commands/activity.rs",
-    "commands/diagnostics.rs",
-    "commands/directory.rs",
-    "commands/e2ee.rs",
-    "commands/history_export.rs",
-    "commands/live_signals.rs",
-    "commands/local_encryption.rs",
-    "commands/mod.rs",
-    "commands/native_attention.rs",
-    "commands/navigation.rs",
-    "commands/profile.rs",
-    "commands/room.rs",
-    "commands/search.rs",
-    "commands/session.rs",
-    "commands/settings.rs",
-    "commands/timeline.rs",
-    "commands/views.rs"
-  ].map((relativePath) => productionOnly(readTauriSource(relativePath), relativePath)).join("\n");
+function tauriCommandFiles(relativeDirectory = "commands", srcRoot = path.join(repositoryRoot, "apps/desktop/src-tauri/src")) {
+  const directory = path.join(srcRoot, relativeDirectory);
+  const files = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+    const relativePath = `${relativeDirectory}/${entry.name}`;
+    if (entry.isDirectory()) files.push(...tauriCommandFiles(relativePath, srcRoot));
+    else if (entry.isFile() && entry.name.endsWith(".rs")) files.push(relativePath);
+  }
+  return files;
+}
+
+function tauriCommandsSource(srcRoot = path.join(repositoryRoot, "apps/desktop/src-tauri/src")) {
+  return tauriCommandFiles("commands", srcRoot)
+    .map((relativePath) => productionOnly(fs.readFileSync(path.join(srcRoot, relativePath), "utf8"), relativePath))
+    .join("\n");
 }
 
 function sourceSection(source, startMarker, endMarker) {
@@ -490,22 +484,35 @@ function orderedMarkers(rule, source, markers) {
   return failures;
 }
 
-function tauriCommandNames(source) {
-  const tokens = lexRust(source);
+export function tauriCommandNames(source) {
+  const tokens = lexRust(source).filter(({ kind }) => kind !== "comment");
   const names = [];
-  for (let index = 0; index + 9 < tokens.length; index += 1) {
-    const values = tokens.slice(index, index + 10).map((token) => token.value);
-    if (values.slice(0, 7).join("") !== "#[tauri::command]" || values[7] !== "pub" || values[8] !== "async" || values[9] !== "fn") continue;
-    const name = tokens[index + 10]?.value;
-    if (tokens[index + 10]?.kind === "identifier") names.push(name);
+  const skipGroup = (start, open, close) => {
+    let depth = 0;
+    for (let cursor = start; cursor < tokens.length; cursor += 1) {
+      if (tokens[cursor].value === open) depth += 1;
+      else if (tokens[cursor].value === close && --depth === 0) return cursor + 1;
+    }
+    return tokens.length;
+  };
+  for (let index = 0; index + 6 < tokens.length; index += 1) {
+    if (tokens.slice(index, index + 7).map((token) => token.value).join("") !== "#[tauri::command]") continue;
+    let cursor = index + 7;
+    while (tokens[cursor]?.value === "#" && tokens[cursor + 1]?.value === "[") cursor = skipGroup(cursor + 1, "[", "]");
+    if (tokens[cursor]?.value !== "pub") continue;
+    cursor += 1;
+    if (tokens[cursor]?.value === "(") cursor = skipGroup(cursor, "(", ")");
+    if (tokens[cursor]?.value === "async") cursor += 1;
+    if (tokens[cursor]?.value !== "fn") continue;
+    if (tokens[cursor + 1]?.kind === "identifier") names.push(tokens[cursor + 1].value);
   }
   return names;
 }
 
-export function checkDesktopTauriCommandRegistrationContract() {
+export function checkDesktopTauriCommandRegistrationContract({ srcRoot = path.join(repositoryRoot, "apps/desktop/src-tauri/src") } = {}) {
   const rule = "desktop.commands.tauri_command_registration";
-  const source = tauriCommandsSource();
-  const libSource = productionOnly(readTauriSource("lib.rs"), "apps/desktop/src-tauri/src/lib.rs");
+  const source = tauriCommandsSource(srcRoot);
+  const libSource = productionOnly(fs.readFileSync(path.join(srcRoot, "lib.rs"), "utf8"), "apps/desktop/src-tauri/src/lib.rs");
   const handlerStart = libSource.indexOf("tauri::generate_handler![");
   const handlerEnd = handlerStart < 0 ? -1 : libSource.indexOf("]", handlerStart);
   const handler = handlerStart >= 0 && handlerEnd >= 0 ? libSource.slice(handlerStart, handlerEnd) : null;
