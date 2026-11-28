@@ -67,6 +67,38 @@ impl MentionKind {
     }
 }
 
+/// What a message is, recorded at intake from the decoded event (#2132 §7).
+/// A closed set: no filename, body, caption or bytes ever enter the feed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageKind {
+    Text,
+    Notice,
+    Emote,
+    Image,
+    File,
+    Audio,
+    Video,
+    Location,
+    Other,
+}
+
+impl MessageKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Notice => "notice",
+            Self::Emote => "emote",
+            Self::Image => "image",
+            Self::File => "file",
+            Self::Audio => "audio",
+            Self::Video => "video",
+            Self::Location => "location",
+            Self::Other => "other",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MentionEntry {
     pub seq: u64,
@@ -77,6 +109,16 @@ pub struct MentionEntry {
     pub timestamp_ms: u64,
     pub thread_root: Option<String>,
     pub kind: MentionKind,
+    /// Absent for an invite and for a row written before this field existed.
+    #[serde(default)]
+    pub message_kind: Option<MessageKind>,
+    /// The sender's declared `info.mimetype`: a hint for triage, never a
+    /// guarantee and never used to decide what is served.
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    /// The sender's declared `info.size`: a hint, like `mime_type`.
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
 }
 
 /// What the intake offers before the feed assigns a sequence number.
@@ -88,6 +130,13 @@ pub struct MentionCandidate {
     pub timestamp_ms: u64,
     pub thread_root: Option<String>,
     pub kind: MentionKind,
+    /// Absent for an invite and for a row written before this field existed.
+    pub message_kind: Option<MessageKind>,
+    /// The sender's declared `info.mimetype`: a hint for triage, never a
+    /// guarantee and never used to decide what is served.
+    pub mime_type: Option<String>,
+    /// The sender's declared `info.size`: a hint, like `mime_type`.
+    pub size_bytes: Option<u64>,
 }
 
 /// The persisted shape. `generation` names this log: a cursor binds to it, so a
@@ -357,6 +406,9 @@ impl MentionFeed {
             timestamp_ms: candidate.timestamp_ms,
             thread_root: candidate.thread_root,
             kind: candidate.kind,
+            message_kind: candidate.message_kind,
+            mime_type: candidate.mime_type,
+            size_bytes: candidate.size_bytes,
         });
         next.prune(now_ms());
         let mut committed = false;

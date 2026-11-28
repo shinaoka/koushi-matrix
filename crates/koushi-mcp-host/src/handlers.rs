@@ -1966,7 +1966,7 @@ pub(crate) fn mention_row(
     account_id: &str,
     entry: &koushi_core::mention_feed::MentionEntry,
 ) -> Value {
-    json!({
+    let mut row = json!({
         "cursor": feed.cursor_for(entry.seq),
         "account_id": account_id,
         "room_id": entry.room_id,
@@ -1975,7 +1975,22 @@ pub(crate) fn mention_row(
         "timestamp_ms": entry.timestamp_ms,
         "thread_root_event_id": entry.thread_root,
         "kind": entry.kind.as_str(),
-    })
+    });
+    // Recorded at intake, never read from the event at push time. Absent means
+    // unknown (a row from before they were recorded, or an invite).
+    // `mime_type` and `size_bytes` are the sender's declared hint, not a
+    // guarantee: nothing may trust them for serving; `get_attachment` returns
+    // the real values for the fetched file.
+    if let Some(kind) = entry.message_kind {
+        row["message_kind"] = json!(kind.as_str());
+    }
+    if let Some(mime) = &entry.mime_type {
+        row["mime_type"] = json!(mime);
+    }
+    if let Some(size) = entry.size_bytes {
+        row["size_bytes"] = json!(size);
+    }
+    row
 }
 
 /// Downloads one file of a message into Koushi's managed media cache and
@@ -2004,20 +2019,21 @@ async fn get_attachment(
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
+    // The profile-aware path shared by every tool: a profile is checked against
+    // its own `attachments` grant, a named client against its stored grant.
     let connection = account_connection(&shared.accounts, &account_id)?;
     let room_label = joined_room_label(&connection, &room_id);
-    shared
-        .broker
-        .authorize(
-            client,
-            &account_id,
-            Need::Attachments,
-            ConsentContext {
-                room_label,
-                message_preview: None,
-            },
-        )
-        .await?;
+    let connection = authorize(
+        shared,
+        client,
+        &account_id,
+        Need::Attachments,
+        ConsentContext {
+            room_label,
+            message_preview: None,
+        },
+    )
+    .await?;
     let operation = connection.begin_navigation_operation(
         koushi_diagnostics::NavigationCause::DirectAttachment,
         koushi_diagnostics::NavigationOrigin::Mcp,

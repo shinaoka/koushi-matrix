@@ -175,6 +175,9 @@ impl World {
                 timestamp_ms: koushi_core::mention_feed::now_ms(),
                 thread_root: None,
                 kind: MentionKind::Mention,
+                message_kind: None,
+                mime_type: None,
+                size_bytes: None,
             })
             .await;
         assert_eq!(outcome, koushi_core::mention_feed::RecordOutcome::Recorded);
@@ -198,6 +201,9 @@ impl World {
                 timestamp_ms: koushi_core::mention_feed::now_ms(),
                 thread_root: None,
                 kind,
+                message_kind: None,
+                mime_type: None,
+                size_bytes: None,
             })
             .await;
         assert_eq!(outcome, koushi_core::mention_feed::RecordOutcome::Recorded);
@@ -692,6 +698,9 @@ async fn a_feed_that_cannot_save_ends_the_subscription_account_unavailable() {
             timestamp_ms: koushi_core::mention_feed::now_ms(),
             thread_root: None,
             kind: MentionKind::Mention,
+            message_kind: None,
+            mime_type: None,
+            size_bytes: None,
         })
         .await;
     assert_eq!(outcome, koushi_core::mention_feed::RecordOutcome::Failed);
@@ -1179,5 +1188,121 @@ async fn an_ipc_client_cannot_read_or_change_its_own_budget() {
         .map(|row| row.wake_budget.clone())
         .expect("row");
     assert_eq!(before, after);
+    world.shutdown().await;
+}
+
+/// A media row as the intake records it: kind, declared MIME type and size.
+async fn record_image(world: &World, account: &str, event: &str) {
+    let outcome = world
+        .feed(account)
+        .record(MentionCandidate {
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: Some(event.to_owned()),
+            sender: "@someone:example.invalid".to_owned(),
+            timestamp_ms: koushi_core::mention_feed::now_ms(),
+            thread_root: None,
+            kind: MentionKind::Mention,
+            message_kind: Some(koushi_core::mention_feed::MessageKind::Image),
+            mime_type: Some("image/png".to_owned()),
+            size_bytes: Some(2048),
+        })
+        .await;
+    assert_eq!(outcome, koushi_core::mention_feed::RecordOutcome::Recorded);
+}
+
+fn tool_failure(reply: &Value) -> (String, Option<String>) {
+    assert_eq!(reply["result"]["isError"], true, "{reply}");
+    let error = &reply["result"]["structuredContent"]["error"];
+    (
+        error["code"].as_str().expect("code").to_owned(),
+        error["reason"].as_str().map(str::to_owned),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pushed_row_carries_the_kind_and_the_declared_media_hint() {
+    let world = World::start().await;
+    let (id, secret) = world.profile(AGENT_A).await;
+    let mut conn = Conn::profiled(&world, &id, &secret).await;
+    sub_of(&conn.subscribe(None).await);
+
+    record_image(&world, AGENT_A, "$img").await;
+    // A row recorded without the fields (older log, or an invite) pushes with
+    // them absent.
+    world.record(AGENT_A, "$plain").await;
+
+    let mut rows = Vec::new();
+    while rows.len() < 2 {
+        let frame = conn
+            .next_frame(Duration::from_secs(10))
+            .await
+            .expect("a push");
+        rows.extend(frame["rows"].as_array().expect("rows").clone());
+    }
+    assert_eq!(rows[0]["event_id"], "$img");
+    assert_eq!(rows[0]["message_kind"], "image");
+    assert_eq!(rows[0]["mime_type"], "image/png");
+    assert_eq!(rows[0]["size_bytes"], 2048);
+    for key in ["message_kind", "mime_type", "size_bytes"] {
+        assert!(
+            rows[1].get(key).is_none(),
+            "{key} must be absent: {}",
+            rows[1]
+        );
+    }
+    // No filename, body or caption is ever part of a row.
+    for key in ["body", "filename", "caption"] {
+        assert!(rows[0].get(key).is_none(), "{key}");
+    }
+    world.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_attachment_follows_the_profiles_attachments_grant() {
+    let world = World::start().await;
+    let granted = world
+        .broker
+        .create_profile(
+            &*world.accounts,
+            "Granted",
+            AGENT_A,
+            ProfileGrants {
+                read: true,
+                attachments: true,
+                ..ProfileGrants::default()
+            },
+        )
+        .await
+        .expect("profile");
+    let granted_secret = std::fs::read_to_string(&granted.secret_path).expect("secret");
+    let (plain_id, plain_secret) = world.profile(AGENT_B).await;
+    let mut allowed = Conn::profiled(&world, &granted.profile_id, granted_secret.trim()).await;
+    let mut denied = Conn::profiled(&world, &plain_id, &plain_secret).await;
+    let args = |account: &str| {
+        json!({"name": "get_attachment", "arguments": {
+            "account_id": account, "room_id": "!room:example.invalid", "event_id": "$img"}})
+    };
+
+    let refused = denied.request("tools/call", args(AGENT_B)).await;
+    assert_eq!(tool_failure(&refused).0, "consent_required", "{refused}");
+    let refused_foreign = denied.request("tools/call", args(AGENT_A)).await;
+    assert_eq!(
+        tool_failure(&refused_foreign),
+        (
+            "not_permitted".to_owned(),
+            Some("profile_account".to_owned())
+        )
+    );
+
+    // With the grant the call gets past authorisation: whatever the fixture
+    // core answers for the missing media, it is not a permission error.
+    let reply = allowed.request("tools/call", args(AGENT_A)).await;
+    if reply["result"]["isError"] == true {
+        let (code, _) = tool_failure(&reply);
+        assert!(
+            code != "consent_required" && code != "not_permitted",
+            "{reply}"
+        );
+    }
     world.shutdown().await;
 }
